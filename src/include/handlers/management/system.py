@@ -1,5 +1,3 @@
-import time
-
 import orjson
 from sqlalchemy import desc, func, true, update
 
@@ -36,14 +34,9 @@ class RequestLockdownHandler(RequestHandler):
             if status_to_change:
                 lockdown_enabled.set()
 
-                # 接下来将数据库 tasks 表中的所有 end_time >= 当前时间的条目的 end_time 修改为当前时间
-                # 令所有任务失效
-                now = time.time()
-                stmt = (
-                    update(FileTask)
-                    .where(FileTask.end_time >= now)
-                    .values(end_time=now)
-                )
+                # cancel all pending file tasks to prevent new file
+                # operations during lockdown.
+                stmt = update(FileTask).where(FileTask.status == 0).values(status=2)
                 session.execute(stmt)
                 session.commit()
             else:
