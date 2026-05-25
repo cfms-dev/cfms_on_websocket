@@ -383,8 +383,8 @@ class Document(BaseObject):
         "DocumentAccessRule", back_populates="document", cascade="all, delete-orphan"
     )
 
-    current_revision_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("document_revisions.id"), nullable=True
+    current_revision_id: Mapped[Optional[str]] = mapped_column(
+        VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
     )
     current_revision: Mapped[Optional["DocumentRevision"]] = relationship(
         "DocumentRevision",
@@ -532,7 +532,9 @@ class DocumentRevision(Base):
     """
 
     __tablename__ = "document_revisions"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(
+        VARCHAR(64), primary_key=True, default=lambda: secrets.token_hex(32)
+    )
     document_id: Mapped[str] = mapped_column(
         VARCHAR(255), ForeignKey("documents.id"), nullable=False
     )
@@ -551,8 +553,8 @@ class DocumentRevision(Base):
         "File", primaryjoin="DocumentRevision.file_id == File.id"
     )
 
-    parent_revision_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("document_revisions.id"), nullable=True
+    parent_revision_id: Mapped[Optional[str]] = mapped_column(
+        VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
     )
     parent_revision: Mapped[Optional["DocumentRevision"]] = relationship(
         "DocumentRevision",

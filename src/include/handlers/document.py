@@ -352,6 +352,7 @@ class RequestUploadDocumentHandler(RequestHandler):
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
+            "parent_revision_id": {"type": ["string", "null"]},
         },
         "required": ["document_id"],
         "additionalProperties": False,
@@ -383,15 +384,18 @@ class RequestUploadDocumentHandler(RequestHandler):
                     path=f"content/files/{today.year}/{today.month}/{real_filename}",
                 )
 
-                try:
-                    latest_revision_id = document.get_latest_revision().id
-                except NoActiveRevisionsError:
-                    latest_revision_id = None
+                if "parent_revision_id" in handler.data:
+                    parent_revision_id = handler.data["parent_revision_id"]
+                else:
+                    try:
+                        parent_revision_id = document.get_latest_revision().id
+                    except NoActiveRevisionsError:
+                        parent_revision_id = None
 
                 new_revision = DocumentRevision(
                     document_id=document_id,
                     file_id=file_id,
-                    parent_revision_id=latest_revision_id,
+                    parent_revision_id=parent_revision_id,
                 )
                 document.revisions.append(new_revision)
 
