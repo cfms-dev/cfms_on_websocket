@@ -74,12 +74,16 @@ def upgrade() -> None:
                               existing_type=sa.String(64), nullable=False)
         batch_op.alter_column('new_parent_revision_id', new_column_name='parent_revision_id',
                               existing_type=sa.String(64), nullable=True)
-        batch_op.create_primary_key('pk_document_revisions', ['id'])
 
     with op.batch_alter_table('documents', schema=None) as batch_op:
         batch_op.drop_column('current_revision_id')
         batch_op.alter_column('new_current_revision_id', new_column_name='current_revision_id',
                               existing_type=sa.String(64), nullable=True)
+
+    # Create PK in a separate batch — the column rename above must be
+    # committed before a PK constraint can reference the new column.
+    with op.batch_alter_table('document_revisions', schema=None) as batch_op:
+        batch_op.create_primary_key('pk_document_revisions', ['id'])
 
     # Recreate FK constraints.
     with op.batch_alter_table('document_revisions', schema=None) as batch_op:
@@ -151,12 +155,16 @@ def downgrade() -> None:
                               existing_type=sa.Integer(), nullable=False)
         batch_op.alter_column('new_parent_revision_id', new_column_name='parent_revision_id',
                               existing_type=sa.Integer(), nullable=True)
-        batch_op.create_primary_key('pk_document_revisions', ['id'])
 
     with op.batch_alter_table('documents', schema=None) as batch_op:
         batch_op.drop_column('current_revision_id')
         batch_op.alter_column('new_current_revision_id', new_column_name='current_revision_id',
                               existing_type=sa.Integer(), nullable=True)
+
+    # Create PK in a separate batch — the column rename above must be
+    # committed before a PK constraint can reference the new column.
+    with op.batch_alter_table('document_revisions', schema=None) as batch_op:
+        batch_op.create_primary_key('pk_document_revisions', ['id'])
 
     # Recreate FK constraints.
     with op.batch_alter_table('document_revisions', schema=None) as batch_op:
