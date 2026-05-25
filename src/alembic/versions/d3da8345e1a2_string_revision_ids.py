@@ -29,7 +29,7 @@ def upgrade() -> None:
     ]
     id_map = {old_id: secrets.token_hex(32) for old_id in old_ids}
 
-    # Drop FK constraints first so we can modify the referenced columns.
+    # Drop FK constraints and PK first so we can modify the referenced columns.
     with op.batch_alter_table('documents', schema=None) as batch_op:
         batch_op.drop_constraint(
             'fk_documents_current_revision_id_document_revisions',
@@ -41,6 +41,7 @@ def upgrade() -> None:
             'fk_document_revisions_parent_revision_id_document_revisions',
             type_='foreignkey'
         )
+        batch_op.drop_constraint('pk_document_revisions', type_='primary')
 
     # Add new string columns alongside the old integer ones.
     with op.batch_alter_table('document_revisions', schema=None) as batch_op:
@@ -97,7 +98,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     conn = op.get_bind()
 
-    # Drop FKs before altering columns.
+    # Drop FKs and PK before altering columns.
     with op.batch_alter_table('documents', schema=None) as batch_op:
         batch_op.drop_constraint(
             'fk_documents_current_revision_id_document_revisions',
@@ -109,6 +110,7 @@ def downgrade() -> None:
             'fk_document_revisions_parent_revision_id_document_revisions',
             type_='foreignkey'
         )
+        batch_op.drop_constraint('pk_document_revisions', type_='primary')
 
     # Pre-compute mapping from hex strings back to integer IDs.
     # Use row number as the new integer ID.
