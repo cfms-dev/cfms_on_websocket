@@ -352,7 +352,15 @@ class RequestUploadDocumentHandler(RequestHandler):
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
-            "parent_revision_id": {"type": ["string", "null"]},
+            "parent_revision_id": {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "maxLength": 64,
+                    },
+                    {"type": "null"},
+                ]
+            },
         },
         "required": ["document_id"],
         "additionalProperties": False,
@@ -386,6 +394,17 @@ class RequestUploadDocumentHandler(RequestHandler):
 
                 if "parent_revision_id" in handler.data:
                     parent_revision_id = handler.data["parent_revision_id"]
+
+                    # Validate the provided parent_revision_id if it's not null
+                    if parent_revision_id and parent_revision_id not in [
+                        rev.id for rev in document.revisions
+                    ]:
+                        handler.conclude_request(
+                            400,
+                            {},
+                            "Parent revision does not exist or belong to in this document",
+                        )
+                        return 400, document_id, handler.username
                 else:
                     try:
                         parent_revision_id = document.get_latest_revision().id
