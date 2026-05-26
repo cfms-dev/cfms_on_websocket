@@ -58,7 +58,7 @@ class RequestGetRevisionHandler(RequestHandler):
     data_schema = {
         "type": "object",
         "properties": {
-            "id": {"type": "string"},
+            "id": {"type": "string", "minLength": 1, "maxLength": 64},
         },
         "required": ["id"],
         "additionalProperties": False,
@@ -95,7 +95,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
-            "revision_id": {"type": "string"},
+            "revision_id": {"type": "string", "minLength": 1, "maxLength": 64},
         },
         "required": ["document_id", "revision_id"],
         "additionalProperties": False,
@@ -138,7 +138,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
     data_schema = {
         "type": "object",
         "properties": {
-            "id": {"type": "string"},
+            "id": {"type": "string", "minLength": 1, "maxLength": 64},
         },
         "required": ["id"],
         "additionalProperties": False,
