@@ -384,7 +384,13 @@ class Document(BaseObject):
     )
 
     current_revision_id: Mapped[Optional[str]] = mapped_column(
-        VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
+        VARCHAR(64),
+        ForeignKey(
+            "document_revisions.id",
+            name="fk_documents_current_revision_id",
+            use_alter=True,
+        ),
+        nullable=True,
     )
     current_revision: Mapped[Optional["DocumentRevision"]] = relationship(
         "DocumentRevision",

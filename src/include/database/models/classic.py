@@ -102,7 +102,12 @@ class User(Base):
 
     preference_dek_id: Mapped[Optional[str]] = mapped_column(
         VARCHAR(64),
-        ForeignKey("keyrings.id", ondelete="SET NULL"),
+        ForeignKey(
+            "keyrings.id",
+            name="fk_users_preference_dek_id",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
         nullable=True,
         unique=True,
     )
