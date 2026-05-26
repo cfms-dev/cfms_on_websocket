@@ -6,6 +6,9 @@
 
 ## Coding style guidelines
 - When introducing dependencies in your code, do not simply add the import statement in the middle of the code; instead, place it at the beginning of the file.
+- Do not insert redundant comments.
+- Avoid anti-patterns when coding.
+- Observe DRY Principle.
 
 ## Testing instructions
 - Run tests only when necessary, as running tests will delete the original database (if SQLite is used as the database engine).

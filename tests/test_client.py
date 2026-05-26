@@ -482,6 +482,14 @@ class CFMSTestClient:
             data["folder_id"] = folder_id
         return await self.send_request("create_document", data)
 
+    async def upload_document(
+        self, document_id: str, parent_revision_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        data = {"document_id": document_id}
+        if parent_revision_id:
+            data["parent_revision_id"] = parent_revision_id
+        return await self.send_request("upload_document", data)
+
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """
         Delete a document.
@@ -522,6 +530,24 @@ class CFMSTestClient:
         return await self.send_request(
             "get_document_info", {"document_id": document_id}
         )
+
+    # --- Revisions ---
+    async def list_revisions(self, document_id: str) -> Dict[str, Any]:
+        return await self.send_request("list_revisions", {"document_id": document_id})
+
+    async def get_revision(self, revision_id: str) -> Dict[str, Any]:
+        return await self.send_request("get_revision", {"id": revision_id})
+
+    async def set_document_revision(
+        self, document_id: str, revision_id: str
+    ) -> Dict[str, Any]:
+        return await self.send_request(
+            "set_current_revision",
+            {"document_id": document_id, "revision_id": revision_id},
+        )
+
+    async def delete_revision(self, revision_id: str) -> Dict[str, Any]:
+        return await self.send_request("delete_revision", {"id": revision_id})
 
     async def list_directory(self, folder_id: Optional[str] = None) -> Dict[str, Any]:
         """
