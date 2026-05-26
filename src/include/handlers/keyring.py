@@ -54,7 +54,7 @@ class RequestUploadUserKeyHandler(RequestHandler):
     data_schema = {
         "type": "object",
         "properties": {
-            "content": {"type": "string", "minLength": 1},
+            "content": {"type": "string", "minLength": 1, "maxLength": 512},
             "label": {"type": "string"},
             "target_username": {"type": "string", "minLength": 1},
         },
