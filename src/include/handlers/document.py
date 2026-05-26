@@ -356,6 +356,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                 "anyOf": [
                     {
                         "type": "string",
+                        "minLength": 1,
                         "maxLength": 64,
                     },
                     {"type": "null"},
