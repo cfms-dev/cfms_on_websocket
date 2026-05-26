@@ -402,7 +402,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                         handler.conclude_request(
                             400,
                             {},
-                            "Parent revision does not exist or belong to in this document",
+                            "Parent revision does not exist or does not belong to this document",
                         )
                         return 400, document_id, handler.username
                 else:
