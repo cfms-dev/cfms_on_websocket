@@ -10,10 +10,10 @@ guarantee the security and stability of running the Service.
 Welcome to Github Issues for improvements and bug reports.
 
 You can access the Chinese Simplified version of the development 
-documentation here: [CFMS Server Documentation][doc-url] 
-However, Since this document was written specifically for the previous 
-version of CFMS, much of it may be outdated. If possible, use code 
-comments as the primary reference.
+documentation here: [CFMS Server Documentation][doc-url].
+
+Note that the documentation may be incomplete or outdated, so don't 
+forget to check the source code for verification.
 
 [doc-url]: https://cfms-server-doc.readthedocs.io/zh_CN/latest
 
