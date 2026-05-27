@@ -1,20 +1,33 @@
 __all__ = [
-    "MissingComponentsError",
+    "RuleRequirementsNotMetError",
     "InvaildPasswordLengthError",
     "check_passwd_requirements",
 ]
 
-from typing import List, Optional
+import re
+from typing import Iterable, Optional, Sequence
 
 
-class MissingComponentsError(ValueError):
-    def __init__(self, missing: set[str]) -> None:
-        self.missing = missing
+class RuleRequirementsNotMetError(ValueError):
+    def __init__(
+        self,
+        passed_count: int,
+        min_passed_counts: int,
+        unpassed_rules: Iterable[str] = [],
+    ) -> None:
+        self.passed_count = passed_count
+        self.min_passed_count = min_passed_counts
+        self.unpassed_rules = unpassed_rules
 
     def __str__(self) -> str:
-        return (
-            f"Password is missing the necessary characters: {', '.join(self.missing)}"
+        msg = (
+            "Password does not meet the rule requirements: "
+            f"{self.passed_count} rules passed, but at least "
+            f"{self.min_passed_count} are required"
         )
+        if self.unpassed_rules:
+            msg += f". Unpassed rules: {', '.join(self.unpassed_rules)}"
+        return msg
 
 
 class InvaildPasswordLengthError(ValueError):
@@ -43,18 +56,26 @@ def check_passwd_requirements(
     passwd: str,
     min_length: int,
     max_length: int,
-    must_contain: Optional[List[List[str]]] = None,
+    rules: Optional[Sequence[str]] = None,
+    min_passed_count: int = 0,
 ) -> None:
     length = len(passwd)
     if not (min_length <= length <= max_length):
         raise InvaildPasswordLengthError(length, min_length, max_length)
 
-    pwd_set = set(passwd)
+    rules = rules or []
+    if not rules or min_passed_count <= 0:
+        return
 
-    if must_contain is None:
-        must_contain = []
+    if min_passed_count > len(rules):
+        min_passed_count = len(rules)
 
-    for group in must_contain:
-        each_set = set(group)
-        if not pwd_set & each_set:
-            raise MissingComponentsError(each_set)
+    matched_rules = {rule for rule in rules if re.search(rule, passwd)}
+    passed_count = len(matched_rules)
+
+    if passed_count >= min_passed_count:
+        return
+
+    unpassed_rules = set(rules) - matched_rules
+
+    raise RuleRequirementsNotMetError(passed_count, min_passed_count, unpassed_rules)

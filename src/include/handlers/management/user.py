@@ -41,7 +41,7 @@ from include.handlers.document import create_file_task
 from include.system.messages import Messages as smsg
 from include.util.pwd import (
     InvaildPasswordLengthError,
-    MissingComponentsError,
+    RuleRequirementsNotMetError,
     check_passwd_requirements,
 )
 from include.util.user import create_user
@@ -985,7 +985,8 @@ class RequestSetPasswdHandler(RequestHandler):
                         new_passwd,
                         global_config["security"]["passwd_min_length"],
                         global_config["security"]["passwd_max_length"],
-                        global_config["security"]["passwd_must_contain"],
+                        global_config["security"]["passwd_rules"],
+                        global_config["security"]["passwd_min_passed_count"],
                     )
             except InvaildPasswordLengthError as e:
                 handler.conclude_request(
@@ -994,8 +995,16 @@ class RequestSetPasswdHandler(RequestHandler):
                     str(e),
                 )
                 return 400, target_username
-            except MissingComponentsError as e:
-                handler.conclude_request(400, {"missing": e.missing}, str(e))
+            except RuleRequirementsNotMetError as e:
+                handler.conclude_request(
+                    400,
+                    {
+                        "passed_count": e.passed_count,
+                        "min_passed_count": e.min_passed_count,
+                        "unpassed_rules": e.unpassed_rules,
+                    },
+                    str(e),
+                )
                 return 400, target_username
 
             try:

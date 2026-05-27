@@ -42,8 +42,15 @@ enable_passwd_force_expiration = true
 require_passwd_enforcement_changes = true
 # Number of days after which a password expires
 passwd_expire_after_days = 365
-# Required character sets in passwords (e.g., ["uppercase", "lowercase", "digits", "special"])
-passwd_must_contain = []
+# The regular expression rules that the password should conform to.
+passwd_rules = [
+    '[A-Z]',        # Capital letters
+    '[a-z]',        # Lowercase letters
+    '[0-9]',        # Digits
+    '[!@#$%^&*()]'  # Special characters
+]
+# The minimum number of rules that a password should conform to when matching `passwd_rules`.
+passwd_min_passed_count = 2
 
 # Whether to require clients to provide a certificate for authentication.
 # If enabled, the server will verify if the client certificate is trusted.
