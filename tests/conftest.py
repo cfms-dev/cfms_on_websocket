@@ -258,10 +258,10 @@ async def document_factory(
 ) -> AsyncGenerator[Callable, None]:
     created_docs = []
 
-    async def _creator(title=None, upload_file="./pyproject.toml"):
+    async def _creator(title=None, upload_file="./pyproject.toml", folder_id=None):
         if not title:
             title = f"Doc_{secrets.token_hex(4)}"
-        response = await authenticated_client.create_document(title)
+        response = await authenticated_client.create_document(title, folder_id)
         data = assert_success(response)
         doc_id = data["document_id"]
         created_docs.append(doc_id)
