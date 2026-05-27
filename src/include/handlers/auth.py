@@ -85,7 +85,8 @@ class RequestLoginHandler(RequestHandler):
                     password,
                     cfg["passwd_min_length"],
                     cfg["passwd_max_length"],
-                    cfg["passwd_must_contain"],
+                    cfg["passwd_rules"],
+                    cfg["passwd_min_passed_count"],
                 )
             except ValueError:
                 return respond(4001, "Password must be changed before you can log in")
