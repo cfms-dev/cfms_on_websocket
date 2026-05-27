@@ -30,8 +30,6 @@ class TestSystemManagement:
             create_resp = await user_client.create_directory("LockdownTestDir")
             try:
                 assert_error(create_resp, 999)  # 999 is lockdown or access denied
-            except Exception:
-                pass
             finally:
                 await user_client.disconnect()
         finally:
