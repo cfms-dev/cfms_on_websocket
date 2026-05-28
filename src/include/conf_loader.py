@@ -1,4 +1,11 @@
-__all__ = ["global_config"]
+"""include/conf_loader.py
+
+This module loads the global configuration from a TOML file.
+It is intended to be imported by other modules to access the configuration settings.
+Load the global configuration from a TOML file.
+
+Ensure that the file is read in binary mode for compatibility with tomllib
+"""
 
 import os
 import secrets
@@ -6,13 +13,7 @@ import tomllib
 
 from tomlkit import dumps, parse
 
-# include/conf_loader.py
-
-# This module loads the global configuration from a TOML file.
-# It is intended to be imported by other modules to access the configuration settings.
-# Load the global configuration from a TOML file.
-
-# Ensure that the file is read in binary mode for compatibility with tomllib
+__all__ = ["global_config"]
 
 if __name__ == "__main__":
     raise RuntimeError("This module should not be run directly.")
@@ -27,8 +28,8 @@ if not os.path.exists("init"):
     secret_key = secrets.token_hex(32)
     pepper = secrets.token_hex(32)
 
-    toml_doc["server"]["secret_key"] = secret_key  # pyright: ignore[reportIndexIssue]
-    toml_doc["security"]["pepper"] = pepper  # pyright: ignore[reportIndexIssue]
+    toml_doc["server"]["secret_key"] = secret_key
+    toml_doc["security"]["pepper"] = pepper
 
     with open("config.toml", "w", encoding="utf-8") as f:
         f.write(dumps(toml_doc))
