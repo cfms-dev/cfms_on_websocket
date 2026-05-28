@@ -18,7 +18,7 @@ import os
 import pathlib
 import secrets
 import threading
-from typing import Any, overload
+from typing import Any, Final, overload
 
 from loguru import logger
 from tomlkit import TOMLDocument, dumps, parse
@@ -70,7 +70,17 @@ class GlobalConfig:
     dict-like read access for backward compatibility.
     """
 
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if not hasattr(cls, "_instance"):
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, config_path: str = "config.toml"):
+        if self._initialized:
+            return
+
         self._config_path = pathlib.Path(config_path).resolve()
         self._data: TOMLDocument
         self._lock = threading.Lock()
@@ -79,6 +89,8 @@ class GlobalConfig:
         self._init_secrets()
         self._load()
         self._start_watching()
+
+        self._initialized = True
 
     # -- first-run initialization ------------------------------------------
 
@@ -176,4 +188,4 @@ class GlobalConfig:
 
 
 # Module-level singleton – imported everywhere as `global_config`.
-global_config = GlobalConfig()
+global_config: Final = GlobalConfig()
