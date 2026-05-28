@@ -128,8 +128,6 @@ class GlobalConfig:
         with open(self._config_path, "w", encoding="utf-8") as f:
             f.write(dumps(toml_doc))
 
-        logger.info(f"Generated secrets written to {self._config_path}")
-
     # -- loading ----------------------------------------------------------
 
     def _load(self):
@@ -142,7 +140,9 @@ class GlobalConfig:
 
         with self._lock:
             self._data = new_data
-        logger.info(f"Configuration reloaded from {self._config_path}")
+
+        if self._initialized:
+            logger.info(f"Configuration reloaded from {self._config_path}")
 
     # -- watchdog ---------------------------------------------------------
 
@@ -157,7 +157,6 @@ class GlobalConfig:
         observer.daemon = True
         observer.start()
         self._observer = observer
-        logger.debug(f"Watching directory for config changes: {watch_dir}")
 
     def reload(self):
         """Force an immediate reload (also called by the watchdog handler)."""
