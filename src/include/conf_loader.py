@@ -30,14 +30,24 @@ __all__ = ["global_config"]
 
 
 class _ConfigEventHandler(FileSystemEventHandler):
-    """Watchdog handler that triggers a config reload on any file event in the
-    watched directory.  Debounces rapid-fire events to avoid parsing the file
-    while it is still being written."""
+    """Watchdog handler that triggers a config reload when the target config
+    file (or a symlink to it) changes in the watched directory.
 
-    def __init__(self, config: GlobalConfig):
+    The directory is watched rather than the file itself so that atomic
+    symlink swaps are picked up, but events are filtered to only react to
+    changes that affect the config file."""
+
+    def __init__(self, config: GlobalConfig, target_path: pathlib.Path):
         self._config = config
+        self._target = target_path.resolve()
         self._debounce_timer: threading.Timer | None = None
         self._debounce_sec = 0.5
+
+    def _is_target(self, event) -> bool:
+        try:
+            return pathlib.Path(event.src_path).resolve() == self._target
+        except OSError:
+            return False
 
     def _schedule_reload(self):
         if self._debounce_timer:
@@ -47,17 +57,17 @@ class _ConfigEventHandler(FileSystemEventHandler):
         self._debounce_timer.start()
 
     def on_modified(self, event):
-        if event.is_directory:
+        if event.is_directory or not self._is_target(event):
             return
         self._schedule_reload()
 
     def on_created(self, event):
-        if event.is_directory:
+        if event.is_directory or not self._is_target(event):
             return
         self._schedule_reload()
 
     def on_moved(self, event):
-        if event.is_directory:
+        if event.is_directory or not self._is_target(event):
             return
         self._schedule_reload()
 
@@ -140,7 +150,7 @@ class GlobalConfig:
         watch_dir = str(self._config_path.parent)
         observer = Observer()
         observer.schedule(
-            _ConfigEventHandler(self),
+            _ConfigEventHandler(self, self._config_path),
             watch_dir,
             recursive=False,
         )

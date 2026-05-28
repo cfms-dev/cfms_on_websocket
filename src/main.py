@@ -1,23 +1,11 @@
 """
-Main entry point for initializing and testing the CFMS WebSocket application.
-- Checks for the existence of an initialization file ("./init") to determine if the database needs to be set up.
-- If not initialized:
-    - Creates all database tables using SQLAlchemy's metadata.
-    - Creates a default "sysop" user group with "shutdown" permission.
-    - Adds an "admin" user with the "sysop" group.
-    - Writes an "init" file to indicate initialization is complete.
-- After initialization (or if already initialized):
-    - Opens a database session and queries for the user with ID 1.
-    - If the user exists, prints the username and all permissions.
-Modules imported:
-- os: For file existence checks.
-- include.conf_loader.global_config: Loads global configuration.
-- include.database.handler: Provides SQLAlchemy engine, Base, and Session.
-- include.classes.version.Version: Handles versioning.
-- include.database.models: Contains ORM models for User and UserGroup.
-- include.util.user.create_user: Function to create a new user.
-Constants:
-- CORE_VERSION: The current version of the core application.
+Main entry module.
+
+Performs initialization checks when starting the CFMS WebSocket application:
+if the system has not been initialized, it creates the database tables, the
+default sysop permission group, and the administrator account, then writes the
+initialization marker; if it has already been initialized, it connects to the
+database directly and loads user information for later processing.
 """
 
 import os
@@ -61,13 +49,15 @@ os.makedirs(ROOT_ABSPATH / "content" / "ssl", exist_ok=True)
 
 def ensure_root_folder():
     """
-    Ensure the root directory's sentinel Folder record exists in the database.
-    This record carries no children of its own; it exists solely so that
-    access rules (and ObjectAccessEntries) can be attached to the root directory
-    through the normal access-control machinery.
+    Ensure that the sentinel Folder record for the root directory exists in
+    the database.
 
-    On creation the root folder is configured with default access rules that
-    restrict read, write and manage access to the ``sysop`` group only.
+    This record has no children of its own; it exists only so access rules
+    and ObjectAccessEntries can be attached to the root directory through the
+    normal access-control mechanism.
+
+    When created, the root folder is configured with default access rules that
+    restrict read, write, and manage access to the ``sysop`` group only.
     """
     _sysop_rule = {
         "match": "all",
@@ -94,8 +84,9 @@ def ensure_root_folder():
 
 def server_init():
     """
-    Initializes the server by checking if the database is already set up.
-    If not, it creates the necessary tables and a default admin user.
+    Initialize the server by checking whether the database is already set up.
+
+    If it is not, create the necessary tables and a default admin user.
     """
     if (
         os.path.exists(ROOT_ABSPATH / "app.db")
@@ -292,11 +283,11 @@ def server_init():
 
 def initialize_providers():
     """
-    Initializes and registers the necessary providers for the application.
+    Initialize and register the providers required by the application.
 
-    This function creates instances of the required providers (e.g., storage,
-    caching, event bus) and registers them with the ProviderManager for later
-    use throughout the application.
+    This function creates instances of the required providers, such as
+    storage, caching, and the event bus, and registers them with the
+    ProviderManager for later use throughout the application.
     """
 
     # Initialize and register storage provider
@@ -370,7 +361,7 @@ def initialize_providers():
 
 def prepare_handlers():
     """
-    Prepares the available request handlers by loading built-in handlers and
+    Prepare the available request handlers by loading built-in handlers and
     extension handlers.
 
     This function populates the `available_functions` dictionary with handlers
@@ -401,11 +392,11 @@ def prepare_handlers():
 
 def prepare_logger():
     """
-    Prepares the logger using loguru with both console and file handlers.
+    Prepare the logger using Loguru with both console and file handlers.
 
     The console handler outputs colored logs at INFO level, while the file
-    handler writes detailed logs at DEBUG level with automatic rotation
-    and compression.
+    handler writes detailed logs at DEBUG level with automatic rotation and
+    compression.
 
     The log file is located at "./content/logs/server.log".
     """
