@@ -5,6 +5,7 @@ This module provides a reusable WebSocket client for testing the CFMS server.
 """
 
 import asyncio
+import base64
 import hashlib
 import mmap
 import os
@@ -19,6 +20,7 @@ from enum import IntEnum
 from typing import Any, Dict, Optional
 
 import orjson
+from Crypto.Cipher import AES
 from websockets.asyncio.client import ClientConnection, connect
 
 HEADER_FORMAT = "!IB"
@@ -482,6 +484,14 @@ class CFMSTestClient:
             data["folder_id"] = folder_id
         return await self.send_request("create_document", data)
 
+    async def upload_document(
+        self, document_id: str, parent_revision_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        data = {"document_id": document_id}
+        if parent_revision_id:
+            data["parent_revision_id"] = parent_revision_id
+        return await self.send_request("upload_document", data)
+
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """
         Delete a document.
@@ -493,6 +503,22 @@ class CFMSTestClient:
             Response indicating success or failure
         """
         return await self.send_request("delete_document", {"document_id": document_id})
+
+    async def purge_document(self, document_id: str) -> Dict[str, Any]:
+        return await self.send_request("purge_document", {"document_id": document_id})
+
+    async def restore_document(
+        self,
+        document_id: str,
+        target_folder_id: Optional[str] = None,
+        new_title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        data = {"document_id": document_id}
+        if target_folder_id is not None:
+            data["target_folder_id"] = target_folder_id
+        if new_title is not None:
+            data["new_title"] = new_title
+        return await self.send_request("restore_document", data)
 
     async def rename_document(self, document_id: str, new_title: str) -> Dict[str, Any]:
         """
@@ -522,6 +548,24 @@ class CFMSTestClient:
         return await self.send_request(
             "get_document_info", {"document_id": document_id}
         )
+
+    # --- Revisions ---
+    async def list_revisions(self, document_id: str) -> Dict[str, Any]:
+        return await self.send_request("list_revisions", {"document_id": document_id})
+
+    async def get_revision(self, revision_id: str) -> Dict[str, Any]:
+        return await self.send_request("get_revision", {"id": revision_id})
+
+    async def set_document_revision(
+        self, document_id: str, revision_id: str
+    ) -> Dict[str, Any]:
+        return await self.send_request(
+            "set_current_revision",
+            {"document_id": document_id, "revision_id": revision_id},
+        )
+
+    async def delete_revision(self, revision_id: str) -> Dict[str, Any]:
+        return await self.send_request("delete_revision", {"id": revision_id})
 
     async def list_directory(self, folder_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -567,6 +611,25 @@ class CFMSTestClient:
             Response indicating success or failure
         """
         return await self.send_request("delete_directory", {"folder_id": folder_id})
+
+    async def list_deleted_items(self, folder_id: str) -> Dict[str, Any]:
+        return await self.send_request("list_deleted_items", {"folder_id": folder_id})
+
+    async def purge_directory(self, folder_id: str) -> Dict[str, Any]:
+        return await self.send_request("purge_directory", {"folder_id": folder_id})
+
+    async def restore_directory(
+        self,
+        folder_id: str,
+        target_parent_id: Optional[str] = None,
+        new_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        data = {"folder_id": folder_id}
+        if target_parent_id is not None:
+            data["target_parent_id"] = target_parent_id
+        if new_name is not None:
+            data["new_name"] = new_name
+        return await self.send_request("restore_directory", data)
 
     async def move_directory(
         self, folder_id: str, target_folder_id: Optional[str]
@@ -720,6 +783,73 @@ class CFMSTestClient:
         """
         return await self.send_request("get_group_info", {"group_name": group_name})
 
+    async def download_file_from_server(self, dl_task_id: str, dest_path: str):
+        if self.multiplexer is None:
+            raise RuntimeError("Not connected (multiplexing missing).")
+
+        stream = self.multiplexer.create_stream()
+        frame = await self._build_and_send_request(
+            stream,
+            "download_file",
+            {"task_id": dl_task_id},
+            include_auth=True,
+        )
+
+        # 1. Parse initial transfer_file frame
+        response = await self._parse_frame_data(frame)
+        if isinstance(response, dict) and response.get("code") not in (None, 200):
+            raise RuntimeError(
+                f"Download failed ({response.get('code')}): {response.get('message', 'Unknown error')}"
+            )
+        if not isinstance(response, dict) or response.get("action") != "transfer_file":
+            raise ValueError(f"Invalid response: {response}")
+
+        # 2. Tell server we are ready
+        await stream.send(b"ready")
+
+        chunks = []
+        aes_key = None
+
+        while True:
+            recv_frame = await stream.recv()
+            if recv_frame is None:
+                break
+            raw_reply = recv_frame.data
+            if isinstance(raw_reply, bytes):
+                msg = orjson.loads(raw_reply.decode("utf-8"))
+            elif isinstance(raw_reply, memoryview):
+                msg = orjson.loads(raw_reply.tobytes().decode("utf-8"))
+            elif isinstance(raw_reply, str):
+                msg = orjson.loads(raw_reply)
+            else:
+                msg = raw_reply
+
+            action = msg.get("action")
+            if action == "file_chunk":
+                chunk_data = msg["data"]
+                encrypted_chunk = base64.b64decode(chunk_data["chunk"])
+                tag = base64.b64decode(chunk_data["tag"])
+                prefix = base64.b64decode(chunk_data["prefix"])
+                index = chunk_data["index"]
+                chunks.append((index, encrypted_chunk, tag, prefix))
+            elif action == "aes_key":
+                aes_key = base64.b64decode(msg["data"]["key"])
+                break
+            elif action == "abort":
+                raise RuntimeError("Server aborted file transfer")
+
+        if not aes_key:
+            raise RuntimeError("Did not receive AES key")
+
+        # Sort and write chunks
+        chunks.sort(key=lambda x: x[0])
+        with open(dest_path, "wb") as f:
+            for index, encrypted_chunk, tag, prefix in chunks:
+                nonce = prefix + index.to_bytes(4, "big")
+                cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
+                decrypted_chunk = cipher.decrypt_and_verify(encrypted_chunk, tag)
+                f.write(decrypted_chunk)
+
     async def upload_file_to_server(self, task_id: str, file_path: str):
         """
         Upload a file to the server over WebSocket connection.
@@ -746,8 +876,15 @@ class CFMSTestClient:
         )
 
         response = await self._parse_frame_data(frame)
+        if isinstance(response, dict) and response.get("code") not in (None, 200):
+            raise RuntimeError(
+                f"Upload failed ({response.get('code')}): {response.get('message', 'Unknown error')}"
+            )
         if not isinstance(response, dict) or response.get("action") != "transfer_file":
             raise ValueError("Invalid action received for file transfer")
+
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"Upload source file not found: {file_path}")
 
         file_size = os.path.getsize(file_path)
         sha256 = calculate_sha256(file_path) if file_size else None
@@ -1132,3 +1269,44 @@ class CFMSTestClient:
         if target_username is not None:
             data["target_username"] = target_username
         return await self.send_request("list_user_keys", data)
+
+    # ------------------------------------------------------------------------
+    # System and Management Functions
+    # ------------------------------------------------------------------------
+    async def set_lockdown(self, status: bool) -> Dict[str, Any]:
+        """Enable or disable global lockdown."""
+        return await self.send_request("lockdown", {"status": status})
+
+    async def update_user_status(self, username: str, status: str) -> Dict[str, Any]:
+        """Update user status ('active' or 'disabled')."""
+        return await self.send_request(
+            "manage_user_status", {"username": username, "status": status}
+        )
+
+    async def block_user(
+        self,
+        username: str,
+        target_type: str,
+        block_types: list[str],
+        target_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Block user from accessing certain things.
+        target_type: "all", "directory", "document"
+        block_types: e.g. ["read", "write"]
+        """
+        data = {
+            "username": username,
+            "target": {"type": target_type},
+            "block_types": block_types,
+        }
+        if target_id is not None:
+            data["target"]["id"] = target_id
+
+        return await self.send_request("block_user", data)
+
+    async def view_audit_logs(
+        self, count: int = 100, offset: int = 0
+    ) -> Dict[str, Any]:
+        """View system audit logs."""
+        data = {"count": count, "offset": offset}
+        return await self.send_request("view_audit_logs", data)

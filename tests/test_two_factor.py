@@ -16,10 +16,7 @@ class TestTwoFactorAuth:
         self, authenticated_client: CFMSTestClient
     ):
         """Test that 2FA is disabled by default for new users."""
-        try:
-            response = await authenticated_client.get_2fa_status()
-        except Exception as e:
-            pytest.fail(f"get_2fa_status() raised an exception: {e}")
+        response = await authenticated_client.get_2fa_status()
 
         assert isinstance(response, dict), "Response should be a dictionary"
         assert "code" in response, "Response missing 'code'"
@@ -37,10 +34,7 @@ class TestTwoFactorAuth:
     @pytest.mark.asyncio
     async def test_setup_2fa(self, authenticated_client: CFMSTestClient):
         """Test setting up 2FA for a user."""
-        try:
-            response = await authenticated_client.setup_2fa()
-        except Exception as e:
-            pytest.fail(f"setup_2fa() raised an exception: {e}")
+        response = await authenticated_client.setup_2fa()
 
         assert isinstance(response, dict), "Response should be a dictionary"
         assert "code" in response, "Response missing 'code'"
@@ -95,10 +89,7 @@ class TestTwoFactorAuth:
             token = totp.now()
 
             # Validate the token
-            try:
-                response = await authenticated_client.validate_2fa(token)
-            except Exception as e:
-                pytest.fail(f"validate_2fa() raised an exception: {e}")
+            response = await authenticated_client.validate_2fa(token)
 
             assert isinstance(response, dict), "Response should be a dictionary"
             assert "code" in response, "Response missing 'code'"
@@ -111,10 +102,7 @@ class TestTwoFactorAuth:
             )  # for now
 
             # Get 2FA status to confirm it's enabled
-            try:
-                status_response = await authenticated_client.get_2fa_status()
-            except Exception as e:
-                pytest.fail(f"get_2fa_status() raised an exception: {e}")
+            status_response = await authenticated_client.get_2fa_status()
 
             assert "data" in status_response, "Response missing 'data'"
             assert status_response["data"].get("enabled") is True, (
@@ -138,10 +126,7 @@ class TestTwoFactorAuth:
         assert setup_response.get("code") == 200, "Failed to setup 2FA"
 
         # Try to validate with an invalid token
-        try:
-            response = await authenticated_client.validate_2fa("000000")
-        except Exception as e:
-            pytest.fail(f"validate_2fa() raised an exception: {e}")
+        response = await authenticated_client.validate_2fa("000000")
 
         assert isinstance(response, dict), "Response should be a dictionary"
         assert "code" in response, "Response missing 'code'"
@@ -160,10 +145,7 @@ class TestTwoFactorAuth:
         self, authenticated_client: CFMSTestClient
     ):
         """Test that validation fails if 2FA hasn't been set up."""
-        try:
-            response = await authenticated_client.validate_2fa("123456")
-        except Exception as e:
-            pytest.fail(f"validate_2fa() raised an exception: {e}")
+        response = await authenticated_client.validate_2fa("123456")
 
         assert isinstance(response, dict), "Response should be a dictionary"
         assert "code" in response, "Response missing 'code'"
@@ -188,10 +170,7 @@ class TestTwoFactorAuth:
         assert validate_response.get("code") == 200, "Failed to validate 2FA"
 
         # Try to setup again
-        try:
-            response = await authenticated_client.setup_2fa()
-        except Exception as e:
-            pytest.fail(f"setup_2fa() raised an exception: {e}")
+        response = await authenticated_client.setup_2fa()
 
         assert isinstance(response, dict), "Response should be a dictionary"
         assert "code" in response, "Response missing 'code'"
@@ -252,10 +231,7 @@ class TestTwoFactorAuth:
         assert validate_response.get("code") == 200, "Failed to validate 2FA"
 
         # Try to cancel with wrong password
-        try:
-            response = await authenticated_client.cancel_2fa("wrong_password")
-        except Exception as e:
-            pytest.fail(f"cancel_2fa() raised an exception: {e}")
+        response = await authenticated_client.cancel_2fa("wrong_password")
 
         assert isinstance(response, dict), "Response should be a dictionary"
         assert "code" in response, "Response missing 'code'"
@@ -294,10 +270,7 @@ class TestTwoFactorAuthLogin:
     @pytest.mark.asyncio
     async def test_login_without_2fa(self, client: CFMSTestClient):
         """Test normal login flow when 2FA is not enabled."""
-        try:
-            response = await client.login("admin", "admin")
-        except Exception as e:
-            pytest.fail(f"login() raised an exception: {e}")
+        response = await client.login("admin", "admin")
 
         # Should succeed with code 200
         assert isinstance(response, dict), "Response should be a dictionary"

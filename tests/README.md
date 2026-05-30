@@ -17,11 +17,10 @@ The test suite provides comprehensive coverage of the server's functionality, in
 
 Before running the tests, ensure you have:
 
-1. Python 3.8 or higher installed
+1. Python 3.13 or higher installed
 2. All project dependencies installed:
    ```bash
-   pip install -r requirements.txt
-   pip install -r requirements-test.txt
+   uv sync --upgrade --dev
    ```
 
 ## Running Tests
@@ -97,42 +96,6 @@ with CFMSTestClient() as client:
     # Create a document
     response = client.create_document("My Document")
 ```
-
-### Fixtures (`conftest.py`)
-
-The test suite uses pytest fixtures for common setup:
-
-- `server_process`: Starts the server for testing
-- `admin_credentials`: Provides admin login credentials
-- `client`: Provides a connected test client
-- `authenticated_client`: Provides an authenticated client
-- `test_document`: Creates a test document (with cleanup)
-- `test_user`: Creates a test user (with cleanup)
-- `test_group`: Creates a test group (with cleanup)
-
-### Test Files
-
-Each test file focuses on a specific area of functionality:
-
-- `test_basic.py`: Server basics and authentication
-- `test_documents.py`: Document operations
-- `test_directories.py`: Directory operations
-- `test_users.py`: User management
-- `test_groups.py`: Group management
-
-## Test Coverage
-
-The test suite covers:
-
-✅ Server connection and basic info  
-✅ Authentication (login, token refresh, invalid credentials)  
-✅ Document CRUD operations  
-✅ Directory operations  
-✅ User management (create, read, delete)  
-✅ Group management (create, read, delete)  
-✅ Authorization checks (operations without authentication)  
-✅ Input validation (empty fields, invalid data)  
-✅ Error handling (nonexistent resources, duplicate entries)  
 
 ## Writing New Tests
 
