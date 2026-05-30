@@ -88,10 +88,13 @@ class TestFileTransfer:
             authenticated_client.multiplexer, "create_stream", lambda: fake_stream
         )
 
+        dest = tmp_path / "aborted.bin"
         with pytest.raises(RuntimeError, match="Server aborted file transfer"):
             await authenticated_client.download_file_from_server(
-                "fake-task-id", str(tmp_path / "aborted.bin")
+                "fake-task-id", str(dest)
             )
+
+        assert not dest.exists() or dest.stat().st_size == 0
 
     @pytest.mark.asyncio
     async def test_upload_missing_source_file_raises_clear_error(
