@@ -58,13 +58,6 @@ class TestRecycleBin:
         deleted_data2 = assert_success(list_deleted2)
         assert not any(d["id"] == doc_id for d in deleted_data2["documents"])
 
-        # Now it shouldn't even be in the deleted items
-        list_deleted2 = await authenticated_client.list_deleted_items(
-            folder_id=folder_id
-        )
-        deleted_data2 = assert_success(list_deleted2)
-        assert not any(d["id"] == doc_id for d in deleted_data2["documents"])
-
     @pytest.mark.asyncio
     async def test_directory_recycle_bin(self, authenticated_client: CFMSTestClient):
         # Create a parent directory
