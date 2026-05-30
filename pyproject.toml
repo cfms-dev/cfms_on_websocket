@@ -19,6 +19,7 @@ dependencies = [
     "orjson>=3.11.7",
     "pluggy>=1.6.0",
     "loguru>=0.7.3",
+    "watchdog>=6.0.0",
 ]
 
 [project.optional-dependencies]

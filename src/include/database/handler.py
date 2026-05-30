@@ -1,5 +1,3 @@
-__all__ = ["engine", "Session", "Base"]
-
 from typing import Any, Self
 
 from sqlalchemy import URL, create_engine, event
@@ -16,6 +14,8 @@ from sqlalchemy.orm import (
 from include.classes.enum.status import EntityStatus
 from include.conf_loader import global_config
 from include.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
+
+__all__ = ["engine", "Session", "Base"]
 
 SUPPORTED_DB_TYPES = {
     "mysql": "mysql+mysqlconnector",
