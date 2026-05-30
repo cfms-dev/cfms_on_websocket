@@ -43,11 +43,17 @@ class _ConfigEventHandler(FileSystemEventHandler):
         self._debounce_timer: threading.Timer | None = None
         self._debounce_sec = 0.5
 
-    def _is_target(self, event) -> bool:
+    @staticmethod
+    def _resolve_path(path_str: str) -> pathlib.Path | None:
+        """Resolve *path_str* to a ``pathlib.Path``, returning ``None`` on
+        any error so that callers can safely inspect arbitrary event paths."""
         try:
-            return pathlib.Path(event.src_path).resolve() == self._target
+            return pathlib.Path(path_str).resolve()
         except OSError:
-            return False
+            return None
+
+    def _is_target(self, event) -> bool:
+        return self._resolve_path(event.src_path) == self._target
 
     def _schedule_reload(self):
         if self._debounce_timer:
@@ -67,7 +73,15 @@ class _ConfigEventHandler(FileSystemEventHandler):
         self._schedule_reload()
 
     def on_moved(self, event):
-        if event.is_directory or not self._is_target(event):
+        if event.is_directory:
+            return
+        # Check both src_path (file moved away from the target) and
+        # dest_path (another file moved *onto* the target, e.g. atomic
+        # write-via-rename).  ``dest_path`` only exists on move events
+        # so we guard with getattr.
+        src_match = self._is_target(event)
+        dest_match = self._resolve_path(getattr(event, "dest_path", "")) == self._target
+        if not src_match and not dest_match:
             return
         self._schedule_reload()
 
