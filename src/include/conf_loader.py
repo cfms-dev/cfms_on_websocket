@@ -131,12 +131,8 @@ class GlobalConfig:
     # -- loading ----------------------------------------------------------
 
     def _load(self):
-        try:
-            with open(self._config_path, "r", encoding="utf-8") as f:
-                new_data = parse(f.read())
-        except Exception:
-            logger.exception(f"Failed to read config from {self._config_path}")
-            return
+        with open(self._config_path, "r", encoding="utf-8") as f:
+            new_data = parse(f.read())
 
         with self._lock:
             self._data = new_data
