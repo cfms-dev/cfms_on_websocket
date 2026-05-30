@@ -46,3 +46,63 @@ class TestFileTransfer:
         downloaded_hash = calculate_sha256(download_dest)
         assert original_hash == downloaded_hash
         assert os.path.getsize(test_file_path) == os.path.getsize(download_dest)
+
+    @pytest.mark.asyncio
+    async def test_download_invalid_task_id_raises_runtime_error(
+        self, authenticated_client: CFMSTestClient, tmp_path
+    ):
+        download_dest = str(tmp_path / "invalid_download.bin")
+
+        with pytest.raises(
+            RuntimeError, match="Download failed \(404\): Task not found"
+        ):
+            await authenticated_client.download_file_from_server(
+                "missing-download-task-id", download_dest
+            )
+
+    @pytest.mark.asyncio
+    async def test_download_aborted_by_server_hook(
+        self, authenticated_client: CFMSTestClient, monkeypatch, tmp_path
+    ):
+        class FakeFrame:
+            def __init__(self, data):
+                self.data = data
+
+        class FakeStream:
+            def __init__(self):
+                self.sent_payloads = []
+                self.responses = [
+                    FakeFrame(b'{"action":"transfer_file"}'),
+                    FakeFrame(b'{"action":"abort"}'),
+                ]
+
+            async def send(self, data):
+                self.sent_payloads.append(data)
+
+            async def recv(self):
+                return self.responses.pop(0)
+
+        fake_stream = FakeStream()
+        monkeypatch.setattr(
+            authenticated_client.multiplexer, "create_stream", lambda: fake_stream
+        )
+
+        with pytest.raises(RuntimeError, match="Server aborted file transfer"):
+            await authenticated_client.download_file_from_server(
+                "fake-task-id", str(tmp_path / "aborted.bin")
+            )
+
+    @pytest.mark.asyncio
+    async def test_upload_missing_source_file_raises_clear_error(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        doc = await document_factory("MissingUploadSourceDoc", upload_file=None)
+        doc_id = doc["document_id"]
+
+        upload_resp = await authenticated_client.upload_document(doc_id)
+        upload_task_id = assert_success(upload_resp)["task_data"]["task_id"]
+
+        with pytest.raises(FileNotFoundError, match="Upload source file not found"):
+            await authenticated_client.upload_file_to_server(
+                upload_task_id, "./does-not-exist-upload-source.bin"
+            )

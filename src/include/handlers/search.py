@@ -66,7 +66,13 @@ class RequestSearchHandler(RequestHandler):
         Returns:
             Tuple containing status code, query, and username for audit logging
         """
-        query: str = handler.data["query"]
+        query: str = handler.data["query"].strip()
+        if not query:
+            handler.conclude_request(
+                400, {}, "Query must not be empty or whitespace only"
+            )
+            return 400, query, handler.username
+
         limit: int = handler.data.get("limit", 100)
         sort_by: str = handler.data.get("sort_by", "name")
         sort_order: str = handler.data.get("sort_order", "asc")

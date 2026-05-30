@@ -1,7 +1,7 @@
 import pytest
 
 from tests.test_client import CFMSTestClient
-from tests.utils import assert_success
+from tests.utils import assert_error, assert_success
 
 
 class TestSearch:
@@ -143,3 +143,42 @@ class TestSearch:
         data_asc = assert_success(response_asc)
         names_asc = [doc["name"] for doc in data_asc["documents"]]
         assert names_asc == sorted(names_asc)
+
+    @pytest.mark.asyncio
+    async def test_search_with_no_targets_returns_empty_results(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        await document_factory("NoTargetSearchDocument")
+        await authenticated_client.create_directory("NoTargetSearchFolder")
+
+        response = await authenticated_client.search(
+            query="NoTargetSearch",
+            search_documents=False,
+            search_directories=False,
+        )
+        data = assert_success(response)
+
+        assert data["documents"] == []
+        assert data["directories"] == []
+        assert data["total_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_rejects_whitespace_query(
+        self, authenticated_client: CFMSTestClient
+    ):
+        response = await authenticated_client.search(query="   ")
+        assert_error(response, 400)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"query": "SortValidation", "sort_by": "invalid-field"},
+            {"query": "SortValidation", "sort_order": "sideways"},
+        ],
+    )
+    async def test_search_rejects_invalid_sort_parameters(
+        self, authenticated_client: CFMSTestClient, payload: dict
+    ):
+        response = await authenticated_client.search(**payload)
+        assert_error(response, 400)

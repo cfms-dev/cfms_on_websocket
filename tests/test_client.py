@@ -797,6 +797,10 @@ class CFMSTestClient:
 
         # 1. Parse initial transfer_file frame
         response = await self._parse_frame_data(frame)
+        if isinstance(response, dict) and response.get("code") not in (None, 200):
+            raise RuntimeError(
+                f"Download failed ({response.get('code')}): {response.get('message', 'Unknown error')}"
+            )
         if not isinstance(response, dict) or response.get("action") != "transfer_file":
             raise ValueError(f"Invalid response: {response}")
 
@@ -872,8 +876,15 @@ class CFMSTestClient:
         )
 
         response = await self._parse_frame_data(frame)
+        if isinstance(response, dict) and response.get("code") not in (None, 200):
+            raise RuntimeError(
+                f"Upload failed ({response.get('code')}): {response.get('message', 'Unknown error')}"
+            )
         if not isinstance(response, dict) or response.get("action") != "transfer_file":
             raise ValueError("Invalid action received for file transfer")
+
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"Upload source file not found: {file_path}")
 
         file_size = os.path.getsize(file_path)
         sha256 = calculate_sha256(file_path) if file_size else None
