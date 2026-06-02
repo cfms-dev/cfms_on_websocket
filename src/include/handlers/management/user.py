@@ -1001,7 +1001,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     {
                         "passed_count": e.passed_count,
                         "min_passed_count": e.min_passed_count,
-                        "unpassed_rules": e.unpassed_rules,
+                        "unpassed_rules": tuple(e.unpassed_rules),
                     },
                     str(e),
                 )
