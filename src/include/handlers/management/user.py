@@ -40,7 +40,7 @@ from include.database.models.entity import Document
 from include.handlers.document import create_file_task
 from include.system.messages import Messages as smsg
 from include.util.pwd import (
-    InvaildPasswordLengthError,
+    InvalidPasswordLengthError,
     RuleRequirementsNotMetError,
     check_passwd_requirements,
 )
