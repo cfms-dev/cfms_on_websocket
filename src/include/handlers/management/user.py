@@ -529,7 +529,7 @@ class RequestListUserBlocksHandler(RequestHandler):
             this_user = User.get_existing(session, handler.username)
 
             if not this_user or not this_user.is_token_valid(handler.token):
-                handler.conclude_request(401, {}, "Invaild user or token")
+                handler.conclude_request(401, {}, "Invalid user or token")
                 return 401, target_username
 
             if (
