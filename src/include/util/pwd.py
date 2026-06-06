@@ -1,6 +1,6 @@
 __all__ = [
     "RuleRequirementsNotMetError",
-    "InvaildPasswordLengthError",
+    "InvalidPasswordLengthError",
     "check_passwd_requirements",
 ]
 
@@ -30,7 +30,7 @@ class RuleRequirementsNotMetError(ValueError):
         return msg
 
 
-class InvaildPasswordLengthError(ValueError):
+class InvalidPasswordLengthError(ValueError):
     def __init__(
         self,
         length: int,
@@ -61,7 +61,7 @@ def check_passwd_requirements(
 ) -> None:
     length = len(passwd)
     if not (min_length <= length <= max_length):
-        raise InvaildPasswordLengthError(length, min_length, max_length)
+        raise InvalidPasswordLengthError(length, min_length, max_length)
 
     rules = rules or []
     if not rules or min_passed_count <= 0:
