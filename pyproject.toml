@@ -1,6 +1,6 @@
 [project]
 name = "cfms-on-websocket"
-version = "0.2.0"
+version = "0.3.0"
 description = "The server-side program for CFMS on WebSocket, a WebSocket-based implementation of the CFMS protocol."
 readme = "README.md"
 requires-python = ">=3.13"
