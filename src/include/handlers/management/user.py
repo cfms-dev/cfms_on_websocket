@@ -217,15 +217,6 @@ class RequestDeleteUserHandler(RequestHandler):
                 return
 
             user_to_delete_username = handler.data["username"]
-            if not user_to_delete_username:
-                handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Username is required",
-                        "data": {},
-                    }
-                )
-                return
 
             user_to_delete = session.get(User, user_to_delete_username)
             if not user_to_delete:
