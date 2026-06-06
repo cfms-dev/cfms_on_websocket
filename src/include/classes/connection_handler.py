@@ -500,6 +500,16 @@ class ConnectionHandler:
         message: Data,
         raise_exceptions: bool = False,
     ):
+        """Broadcast a message to all connected clients.
+
+        If possible, it is recommended to avoid using local providers to publish
+        broadcasts, as this can easily lead to various performance issues on a
+        synchronous server implementation.
+
+        Args:
+            message: The message to broadcast. Must be a string or bytes-like object.
+        """
+
         if isinstance(message, (bytes, bytearray, memoryview)):
             message = bytes(message).decode("utf-8")
         elif not isinstance(message, str):

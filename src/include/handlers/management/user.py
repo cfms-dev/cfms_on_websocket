@@ -40,7 +40,7 @@ from include.database.models.entity import Document
 from include.handlers.document import create_file_task
 from include.system.messages import Messages as smsg
 from include.util.pwd import (
-    InvaildPasswordLengthError,
+    InvalidPasswordLengthError,
     RuleRequirementsNotMetError,
     check_passwd_requirements,
 )
@@ -217,15 +217,6 @@ class RequestDeleteUserHandler(RequestHandler):
                 return
 
             user_to_delete_username = handler.data["username"]
-            if not user_to_delete_username:
-                handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Username is required",
-                        "data": {},
-                    }
-                )
-                return
 
             user_to_delete = session.get(User, user_to_delete_username)
             if not user_to_delete:
@@ -478,7 +469,7 @@ class RequestUnblockUserHandler(RequestHandler):
             this_user = User.get_existing(session, handler.username)
 
             if not this_user or not this_user.is_token_valid(handler.token):
-                handler.conclude_request(401, {}, "Invaild user or token")
+                handler.conclude_request(401, {}, "Invalid user or token")
                 return 401, block_id
 
             if Permissions.UNBLOCK not in this_user.all_permissions:
@@ -529,7 +520,7 @@ class RequestListUserBlocksHandler(RequestHandler):
             this_user = User.get_existing(session, handler.username)
 
             if not this_user or not this_user.is_token_valid(handler.token):
-                handler.conclude_request(401, {}, "Invaild user or token")
+                handler.conclude_request(401, {}, "Invalid user or token")
                 return 401, target_username
 
             if (
@@ -586,15 +577,6 @@ class RequestGetUserInfoHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         user_to_get_username = handler.data["username"]
-        if not user_to_get_username:
-            handler.conclude_request(
-                **{
-                    "code": 400,
-                    "message": "Username is required",
-                    "data": {},
-                }
-            )
-            return
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -988,7 +970,7 @@ class RequestSetPasswdHandler(RequestHandler):
                         global_config["security"]["passwd_rules"],
                         global_config["security"]["passwd_min_passed_count"],
                     )
-            except InvaildPasswordLengthError as e:
+            except InvalidPasswordLengthError as e:
                 handler.conclude_request(
                     400,
                     {"min_length": e.min_length, "max_length": e.max_length},
