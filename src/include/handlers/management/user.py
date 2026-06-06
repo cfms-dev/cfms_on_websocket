@@ -586,15 +586,6 @@ class RequestGetUserInfoHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         user_to_get_username = handler.data["username"]
-        if not user_to_get_username:
-            handler.conclude_request(
-                **{
-                    "code": 400,
-                    "message": "Username is required",
-                    "data": {},
-                }
-            )
-            return
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
