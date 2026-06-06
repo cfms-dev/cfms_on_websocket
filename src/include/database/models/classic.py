@@ -24,14 +24,14 @@ from sqlalchemy.orm.session import object_session
 from include.classes.auth import Token
 from include.classes.enum.permissions import Permissions
 from include.classes.enum.status import UserStatus
-from include.classes.exceptions import (
+from include.conf_loader import global_config
+from include.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
+from include.database.handler import Base, Session
+from include.exceptions.misc import (
     UserNotActiveError,
     UserTOTPFailedError,
     UserTOTPRequiredError,
 )
-from include.conf_loader import global_config
-from include.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
-from include.database.handler import Base, Session
 
 # Module-level PasswordHasher instance — reused across all calls to avoid
 # repeated construction overhead.

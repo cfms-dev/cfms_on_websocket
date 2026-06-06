@@ -9,7 +9,6 @@ from sqlalchemy.orm.session import object_session
 
 from include.classes.access_rule import AccessRuleBase
 from include.classes.enum.status import DocumentRevisionStatus, EntityStatus
-from include.classes.exceptions import NoActiveRevisionsError
 from include.conf_loader import global_config
 from include.constants import AVAILABLE_ACCESS_TYPES, MAX_PARAM_SIZE, QUERY_CHUNK_SIZE
 from include.database.handler import Base
@@ -19,6 +18,7 @@ from include.database.models.file import (
     FileTask,
     _queue_deferred_file_deletion,
 )
+from include.exceptions.misc import NoActiveRevisionsError
 from include.util.count import count_file_references
 from include.util.fetch.fetch import batch_prefetch_granted_ids, prefetch_user_blocks
 
