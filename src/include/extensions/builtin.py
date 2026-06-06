@@ -8,12 +8,12 @@ from sqlalchemy.engine import Engine
 
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
-from include.classes.request_handler import RequestHandler
 from include.conf_loader import global_config
 from include.constants import CORE_VERSION, PROTOCOL_VERSION
 from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.file import File
+from include.handlers.base import RequestHandler
 from include.shared import lockdown_enabled
 from include.system.extmgr import hookimpl
 from include.system.messages import Messages as smsg
@@ -30,7 +30,7 @@ class RequestServerInfoHandler(RequestHandler):
         this_handler: The ConnectionHandler instance handling the request.
     """
 
-    data_schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
 
     def handle(self, handler: ConnectionHandler):
 
@@ -54,7 +54,7 @@ class RequestShutdownHandler(RequestHandler):
         this_handler: The ConnectionHandler instance handling the request.
     """
 
-    data_schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):

@@ -5,7 +5,6 @@ __all__ = [
 
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
-from include.classes.request_handler import RequestHandler
 from include.database.handler import Session
 from include.database.models.classic import (
     User,
@@ -13,12 +12,13 @@ from include.database.models.classic import (
     UserGroupPermission,
     UserMembership,
 )
+from include.handlers.base import RequestHandler
 from include.system.messages import Messages as smsg
 from include.util.group import create_group
 
 
 class RequestListGroupsHandler(RequestHandler):
-    data_schema = {"type": "object", "additionalProperties": False}
+    schema = {"type": "object", "additionalProperties": False}
 
     require_auth = True
 
@@ -58,7 +58,7 @@ class RequestListGroupsHandler(RequestHandler):
 
 
 class RequestCreateGroupHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "group_name": {"type": "string", "minLength": 1},
@@ -117,7 +117,7 @@ class RequestCreateGroupHandler(RequestHandler):
 
 
 class RequestDeleteGroupHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "group_name": {"type": "string", "minLength": 1},
@@ -188,7 +188,7 @@ class RequestDeleteGroupHandler(RequestHandler):
 
 
 class RequestRenameGroupHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "group_name": {"type": "string", "minLength": 1},
@@ -253,7 +253,7 @@ class RequestRenameGroupHandler(RequestHandler):
 
 
 class RequestGetGroupInfoHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "group_name": {"type": "string", "minLength": 1},
@@ -316,7 +316,7 @@ class RequestGetGroupInfoHandler(RequestHandler):
 
 
 class RequestChangeGroupPermissionsHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "group_name": {"type": "string", "minLength": 1},

@@ -12,7 +12,7 @@ from loguru import logger as log
 
 if TYPE_CHECKING:
     from include.classes.connection_handler import ConnectionHandler
-    from include.classes.request_handler import RequestHandler
+    from include.handlers.base import RequestHandler
 
 hookspec = pluggy.HookspecMarker("cfms")
 hookimpl = pluggy.HookimplMarker("cfms")

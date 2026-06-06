@@ -8,11 +8,11 @@ import jsonschema
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
 from include.classes.enum.status import EntityStatus
-from include.classes.request_handler import RequestHandler
 from include.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.entity import Document, Folder
+from include.handlers.base import RequestHandler
 from include.system.messages import Messages as smsg
 from include.util.bulk.purge import purge_documents_bulk
 from include.util.check import (
@@ -37,7 +37,7 @@ class RequestListDirectoryHandler(RequestHandler):
         500 - Internal server error, with the exception message.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {"folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
         "required": ["folder_id"],
@@ -131,7 +131,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
         500 - Internal server error, with the exception message.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {"directory_id": {"type": "string", "minLength": 1}},
         "required": ["directory_id"],
@@ -192,7 +192,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
 
 
 class RequestGetDirectoryAccessRulesHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {"directory_id": {"type": "string", "minLength": 1}},
         "required": ["directory_id"],
@@ -250,7 +250,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
         500 - Internal server error, with the exception message.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "parent_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
@@ -378,7 +378,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
         500 - Internal server error, with the exception message.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
@@ -491,7 +491,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
         500 - Internal server error, with the exception message.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
@@ -579,7 +579,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
 
 class RequestMoveDirectoryHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
@@ -692,7 +692,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
     Handles the "set_directory_rules" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "directory_id": {"type": "string", "minLength": 1},
@@ -764,7 +764,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
     This action is irreversible.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
@@ -857,7 +857,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
     Supports virtual ROOT_DIRECTORY_ID translation to database None.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
@@ -988,7 +988,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
      a specific parent directory.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},

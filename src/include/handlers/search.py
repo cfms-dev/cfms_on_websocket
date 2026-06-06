@@ -12,11 +12,11 @@ from typing import Any, Dict, List
 
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
-from include.classes.request_handler import RequestHandler
 from include.conf_loader import global_config
 from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.entity import NoActiveRevisionsError
+from include.handlers.base import RequestHandler
 from include.util.fetch.fetch import batch_prefetch_granted_ids, prefetch_user_blocks
 from include.util.recursive.ancestors import (
     search_documents_with_access,
@@ -37,7 +37,7 @@ class RequestSearchHandler(RequestHandler):
     5. Supports sorting by multiple criteria (time, size, name, etc.)
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "minLength": 1},

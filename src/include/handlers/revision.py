@@ -1,15 +1,15 @@
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
-from include.classes.request_handler import RequestHandler
 from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.entity import Document, DocumentRevision
+from include.handlers.base import RequestHandler
 from include.handlers.document import create_file_task
 from include.system.messages import Messages as smsg
 
 
 class RequestListRevisionsHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -55,7 +55,7 @@ class RequestListRevisionsHandler(RequestHandler):
 
 
 class RequestGetRevisionHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "id": {"type": "string", "minLength": 1, "maxLength": 64},
@@ -91,7 +91,7 @@ class RequestGetRevisionHandler(RequestHandler):
 
 
 class RequestSetDocumentRevisionHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -135,7 +135,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
 
 
 class RequestDeleteRevisionHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "id": {"type": "string", "minLength": 1, "maxLength": 64},

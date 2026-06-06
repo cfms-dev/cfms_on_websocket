@@ -25,10 +25,10 @@ import time
 
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
-from include.classes.request_handler import RequestHandler
 from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.keyring import UserKey
+from include.handlers.base import RequestHandler
 from include.system.messages import Messages as smsg
 
 
@@ -51,7 +51,7 @@ class RequestUploadUserKeyHandler(RequestHandler):
         404 - User does not exist (admin path only).
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "content": {"type": "string", "minLength": 1, "maxLength": 512},
@@ -118,7 +118,7 @@ class RequestGetUserKeyHandler(RequestHandler):
         404 - Key not found.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "id": {"type": "string", "minLength": 1},
@@ -177,7 +177,7 @@ class RequestDeleteUserKeyHandler(RequestHandler):
         404 - Key not found.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "id": {"type": "string", "minLength": 1},
@@ -235,7 +235,7 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
         404 - Key not found.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "id": {"type": "string", "minLength": 1},
@@ -287,7 +287,7 @@ class RequestListUserKeysHandler(RequestHandler):
         404 - User does not exist (admin path only).
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "target_username": {"type": "string", "minLength": 1},

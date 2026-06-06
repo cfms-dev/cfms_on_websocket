@@ -8,11 +8,11 @@ from include.classes.exceptions import (
     UserTOTPRequiredError,
 )
 from include.classes.misc.guard import LoginGuard
-from include.classes.request_handler import RequestHandler
 from include.conf_loader import global_config
 from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.keyring import UserKey
+from include.handlers.base import RequestHandler
 from include.util.address import get_client_ip
 from include.util.audit import log_audit
 from include.util.pwd import check_passwd_requirements
@@ -23,7 +23,7 @@ class RequestLoginHandler(RequestHandler):
     Handles user login requests.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -132,7 +132,7 @@ class RequestRefreshTokenHandler(RequestHandler):
         500 - Internal server error, with the exception message.
     """
 
-    data_schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    schema = {"type": "object", "properties": {}, "additionalProperties": False}
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):

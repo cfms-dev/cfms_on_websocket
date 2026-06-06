@@ -2,7 +2,6 @@ __all__ = ["RequestGrantAccessHandler", "RequestRevokeAccessHandler"]
 
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
-from include.classes.request_handler import RequestHandler
 from include.database.handler import Session
 from include.database.models.classic import (
     ObjectAccessEntry,
@@ -13,6 +12,7 @@ from include.database.models.entity import (
     Document,
     Folder,
 )
+from include.handlers.base import RequestHandler
 from include.system.messages import Messages as smsg
 
 ENTITY_TYPE_MAPPING = {"user": User, "group": UserGroup}
@@ -20,7 +20,7 @@ TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}
 
 
 class RequestGrantAccessHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "entity_type": {
@@ -132,7 +132,7 @@ class RequestGrantAccessHandler(RequestHandler):
 
 
 class RequestViewAccessEntriesHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "object_type": {
@@ -209,7 +209,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
 
 
 class RequestRevokeAccessHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "entry_id": {

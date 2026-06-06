@@ -12,11 +12,11 @@ from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
 from include.classes.misc.guard import LoginGuard
 from include.classes.multiplexer import FrameType, MultiplexConnection, Stream
-from include.classes.request_handler import RequestHandler
 from include.constants import NONCE_MIN_LENGTH
 from include.database.handler import Session
 from include.database.models.classic import User
 from include.handlers.auth import RequestLoginHandler, RequestRefreshTokenHandler
+from include.handlers.base import RequestHandler
 from include.handlers.directory import (
     RequestCreateDirectoryHandler,
     RequestDeleteDirectoryHandler,
@@ -351,7 +351,7 @@ def handle_request(stream: Stream):
         _request_handler: RequestHandler = available_functions[action]()
 
         try:
-            jsonschema.validate(this_handler.data, _request_handler.data_schema)
+            jsonschema.validate(this_handler.data, _request_handler.schema)
         except jsonschema.ValidationError as error:
             this_handler.conclude_request(
                 400,

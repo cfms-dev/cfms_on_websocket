@@ -21,7 +21,6 @@ import jsonschema
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
 from include.classes.enum.status import EntityStatus
-from include.classes.request_handler import RequestHandler
 from include.constants import FILE_TASK_DEFAULT_DURATION_SECONDS, ROOT_DIRECTORY_ID
 from include.database.handler import Session
 from include.database.models.classic import User
@@ -32,6 +31,7 @@ from include.database.models.entity import (
     NoActiveRevisionsError,
 )
 from include.database.models.file import File, FileTask
+from include.handlers.base import RequestHandler
 from include.system.messages import Messages as smsg
 from include.util.check import (
     get_target_folder_and_check_write,
@@ -82,7 +82,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
     Handles the "get_document_info" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {"document_id": {"type": "string", "minLength": 1}},
         "required": ["document_id"],
@@ -150,7 +150,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
 
 
 class RequestGetDocumentAccessRulesHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {"document_id": {"type": "string", "minLength": 1}},
         "required": ["document_id"],
@@ -198,7 +198,7 @@ class RequestGetDocumentHandler(RequestHandler):
     Handles the "get_document" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {"document_id": {"type": "string", "minLength": 1}},
         "required": ["document_id"],
@@ -245,7 +245,7 @@ class RequestCreateDocumentHandler(RequestHandler):
     Handles the "create_document" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
@@ -348,7 +348,7 @@ class RequestUploadDocumentHandler(RequestHandler):
     Handles the "upload_document" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -442,7 +442,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
     Handles the "delete_document" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -486,7 +486,7 @@ class RequestRenameDocumentHandler(RequestHandler):
     Handles the "rename_document" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -568,7 +568,7 @@ class RequestDownloadFileHandler(RequestHandler):
     Handles the "download_file" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "task_id": {"type": "string", "minLength": 1},
@@ -611,7 +611,7 @@ class RequestUploadFileHandler(RequestHandler):
     Handles the "upload_file" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "task_id": {"type": "string", "minLength": 1},
@@ -652,7 +652,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
     Handles the "set_document_rules" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -722,7 +722,7 @@ class RequestMoveDocumentHandler(RequestHandler):
     Handles the "move_document" action.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -859,7 +859,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
     This action is irreversible and should only be allowed for users with special permissions.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
@@ -911,7 +911,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
     new folder during restoration. Maps virtual ROOT_DIRECTORY_ID to database None.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},

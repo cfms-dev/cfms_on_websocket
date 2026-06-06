@@ -24,7 +24,6 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
 from include.classes.enum.status import UserStatus
-from include.classes.request_handler import RequestHandler
 from include.conf_loader import global_config
 from include.constants import AVAILABLE_BLOCK_TYPES
 from include.database.handler import Session
@@ -37,6 +36,7 @@ from include.database.models.classic import (
     UserGroup,
 )
 from include.database.models.entity import Document
+from include.handlers.base import RequestHandler
 from include.handlers.document import create_file_task
 from include.system.messages import Messages as smsg
 from include.util.pwd import (
@@ -52,7 +52,7 @@ _password_hasher = PasswordHasher()
 
 
 class RequestListUsersHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "additionalProperties": False,
     }
@@ -92,7 +92,7 @@ class RequestListUsersHandler(RequestHandler):
 
 
 class RequestCreateUserHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1, "maxLength": 64},
@@ -190,7 +190,7 @@ class RequestCreateUserHandler(RequestHandler):
 
 
 class RequestDeleteUserHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -285,7 +285,7 @@ class RequestDeleteUserHandler(RequestHandler):
 
 
 class RequestRenameUserHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {
@@ -361,7 +361,7 @@ class RequestBlockUserHandler(RequestHandler):
     (NOT multiple block types), it should be requested in installments.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {
@@ -456,7 +456,7 @@ class RequestUnblockUserHandler(RequestHandler):
     Handler for action `unblock_user`.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "block_id": {
@@ -507,7 +507,7 @@ class RequestUnblockUserHandler(RequestHandler):
 
 
 class RequestListUserBlocksHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {
@@ -573,7 +573,7 @@ class RequestListUserBlocksHandler(RequestHandler):
 
 
 class RequestGetUserInfoHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -651,7 +651,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
     already included in the response.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -724,7 +724,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
     designated as the avatar are changed later, the avatar setting will not be lost.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -786,7 +786,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
 
 
 class RequestChangeUserGroupsHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -851,7 +851,7 @@ class RequestChangeUserGroupsHandler(RequestHandler):
 
 
 class RequestSetPasswdHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -1035,7 +1035,7 @@ class RequestSetPasswdHandler(RequestHandler):
 
 
 class RequestManageUserStatusHandler(RequestHandler):
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "status": {"enum": ["active", "disabled"]},

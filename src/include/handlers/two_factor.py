@@ -12,9 +12,9 @@ import orjson
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
 from include.classes.enum.status import UserStatus
-from include.classes.request_handler import RequestHandler
 from include.database.handler import Session
 from include.database.models.classic import User
+from include.handlers.base import RequestHandler
 
 
 class RequestSetup2FAHandler(RequestHandler):
@@ -31,7 +31,7 @@ class RequestSetup2FAHandler(RequestHandler):
         - backup_codes: List of backup codes for account recovery
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {"method": {"type": "string", "enum": ["totp"]}},
         "additionalProperties": False,
@@ -77,7 +77,7 @@ class RequestValidate2FAHandler(RequestHandler):
     providing a valid code from their authenticator app. This enables 2FA.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "token": {"type": "string", "minLength": 1},
@@ -147,7 +147,7 @@ class RequestDisable2FAHandler(RequestHandler):
     The user must provide their password for verification.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "username": {"type": "string", "minLength": 1},
@@ -213,7 +213,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
     but not yet validated/enabled.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {},
         "additionalProperties": False,
@@ -255,7 +255,7 @@ class RequestGet2FAStatusHandler(RequestHandler):
     Returns whether 2FA is enabled for the authenticated user.
     """
 
-    data_schema = {
+    schema = {
         "type": "object",
         "properties": {
             "target": {"type": "string", "minLength": 1},
