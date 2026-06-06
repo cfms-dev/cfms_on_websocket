@@ -269,7 +269,7 @@ class BaseObject(Base):
 
             if access_type not in AVAILABLE_ACCESS_TYPES:
                 raise ValueError(
-                    f"Invaild access type for {self.__tablename__}: {access_type}"
+                    f"Invalid access type for {self.__tablename__}: {access_type}"
                 )
 
             match access_type:

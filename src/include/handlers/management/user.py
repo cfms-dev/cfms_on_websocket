@@ -970,7 +970,7 @@ class RequestSetPasswdHandler(RequestHandler):
                         global_config["security"]["passwd_rules"],
                         global_config["security"]["passwd_min_passed_count"],
                     )
-            except InvaildPasswordLengthError as e:
+            except InvalidPasswordLengthError as e:
                 handler.conclude_request(
                     400,
                     {"min_length": e.min_length, "max_length": e.max_length},
