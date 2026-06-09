@@ -11,7 +11,7 @@ class DocumentMetadata(Base):
     __tablename__ = "document_metadata"
 
     document_id: Mapped[str] = mapped_column(
-        VARCHAR(64), ForeignKey("document.id", ondelete="CASCADE"), primary_key=True
+        VARCHAR(64), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
     )
     document: Mapped["Document"] = relationship(
         "Document",
