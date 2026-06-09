@@ -26,7 +26,7 @@ from include.constants import (
     ROOT_DIRECTORY_ID,
 )
 from include.database.handler import Base, Session, engine
-from include.database.models.entity import Document, DocumentRevision, Folder
+from include.database.models.entity.obj import Document, DocumentRevision, Folder
 from include.database.models.file import File
 from include.handlers.debugging.throw import RequestThrowExceptionHandler
 from include.providers.manager import ProviderManager

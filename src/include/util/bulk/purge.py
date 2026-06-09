@@ -7,9 +7,9 @@ from include.constants import QUERY_CHUNK_SIZE
 from include.database.models.entity import (
     Document,
     DocumentRevision,
-    _batch_count_other_revisions,
 )
 from include.database.models.file import File, FileTask, _queue_deferred_file_deletion
+from include.util.bulk.count import batch_count_other_revisions
 
 
 def purge_documents_bulk(session: Session, document_ids: List[str]):
@@ -42,7 +42,7 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
 
     # 2. 批量引用计数检查
     # 使用集中计数，排除来自这批文档的引用后若为 0 则可删除
-    other_counts = _batch_count_other_revisions(session, list(file_ids), document_ids)
+    other_counts = batch_count_other_revisions(session, list(file_ids), document_ids)
 
     # 找出仅被这批文档引用、可以物理删除的文件 ID
     deletable_file_ids = [fid for fid in file_ids if other_counts.get(fid, 0) == 0]

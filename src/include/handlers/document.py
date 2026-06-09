@@ -28,9 +28,9 @@ from include.database.models.entity import (
     Document,
     DocumentRevision,
     Folder,
-    NoActiveRevisionsError,
 )
 from include.database.models.file import File, FileTask
+from include.exceptions.misc import NoActiveRevisionsError
 from include.handlers.base import RequestHandler
 from include.system.messages import Messages as smsg
 from include.util.check import (
