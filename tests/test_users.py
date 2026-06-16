@@ -91,6 +91,33 @@ class TestUserOperations:
         data = assert_success(info_response)
         assert "list_users" in data["permissions"]
 
+    @pytest.mark.asyncio
+    async def test_change_user_permissions_requires_set_user_permissions(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        operator_user = await user_factory()
+        target_user = await user_factory()
+
+        login_response = await unauthenticated_client.login(
+            operator_user["username"], operator_user["password"]
+        )
+        assert_success(login_response)
+
+        response = await unauthenticated_client.change_user_permissions(
+            target_user["username"], ["list_users"]
+        )
+        error = assert_error(response, 403)
+        assert error["message"] == "You do not have permission to set user permissions"
+
+        info_response = await authenticated_client.get_user_info(
+            target_user["username"]
+        )
+        data = assert_success(info_response)
+        assert "list_users" not in data["permissions"]
+
 
 class TestUserWithoutAuth:
     @pytest.mark.asyncio
