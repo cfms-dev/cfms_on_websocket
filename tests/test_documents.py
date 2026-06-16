@@ -66,6 +66,43 @@ class TestDocumentOperations:
         assert info["metadata"]["last_modified_by"] == "admin"
 
     @pytest.mark.asyncio
+    async def test_get_document_info_omits_metadata_without_permission(
+        self,
+        authenticated_client: CFMSTestClient,
+        test_document: dict,
+        user_factory,
+    ):
+        document_id = test_document["document_id"]
+
+        set_response = await authenticated_client.set_document_metadata_tags(
+            document_id, ["restricted"]
+        )
+        assert_success(set_response)
+
+        user = await user_factory()
+        grant_response = await authenticated_client.grant_access(
+            entity_type="user",
+            entity_identifier=user["username"],
+            target_type="document",
+            target_identifier=document_id,
+            access_types=["read"],
+            start_time=time.time(),
+        )
+        assert_success(grant_response)
+
+        client = CFMSTestClient()
+        await client.connect()
+        try:
+            login_response = await client.login(user["username"], user["password"])
+            assert_success(login_response)
+
+            info_response = await client.get_document_info(document_id)
+            info = assert_success(info_response)
+            assert "metadata" not in info
+        finally:
+            await client.disconnect()
+
+    @pytest.mark.asyncio
     async def test_set_document_metadata_tags_requires_permission(
         self,
         authenticated_client: CFMSTestClient,
