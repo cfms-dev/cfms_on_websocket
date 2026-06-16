@@ -610,6 +610,8 @@ class RequestGetUserInfoHandler(RequestHandler):
                 "nickname": user_to_get.nickname,
                 "username": user_to_get.username,
                 "permissions": list(user_to_get.all_permissions),
+                "own_permissions": list(user_to_get.own_permissions),
+                "inherited_permissions": list(user_to_get.inherited_permissions),
                 "groups": list(user_to_get.all_groups),
                 "last_login": user_to_get.last_login,
                 "created_time": user_to_get.created_time,

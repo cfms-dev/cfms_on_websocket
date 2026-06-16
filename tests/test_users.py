@@ -92,6 +92,37 @@ class TestUserOperations:
         assert "list_users" in data["permissions"]
 
     @pytest.mark.asyncio
+    async def test_get_user_info_splits_own_and_inherited_permissions(
+        self, authenticated_client: CFMSTestClient, user_factory, group_factory
+    ):
+        test_group = await group_factory(
+            permissions=[{"permission": "list_groups", "start_time": 0}]
+        )
+        test_user = await user_factory()
+
+        permissions_response = await authenticated_client.change_user_permissions(
+            test_user["username"], ["list_users"]
+        )
+        assert_success(permissions_response)
+
+        groups_response = await authenticated_client.send_request(
+            "change_user_groups",
+            {
+                "username": test_user["username"],
+                "groups": [test_group["group_name"]],
+            },
+        )
+        assert_success(groups_response)
+
+        info_response = await authenticated_client.get_user_info(test_user["username"])
+        data = assert_success(info_response)
+
+        assert "list_users" in data["own_permissions"]
+        assert "list_groups" in data["inherited_permissions"]
+        assert "list_users" in data["permissions"]
+        assert "list_groups" in data["permissions"]
+
+    @pytest.mark.asyncio
     async def test_change_user_permissions_requires_set_user_permissions(
         self,
         authenticated_client: CFMSTestClient,

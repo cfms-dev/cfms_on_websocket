@@ -431,23 +431,22 @@ class User(Base):
             ),
         )
 
-    @cached_property
-    def all_permissions(self) -> Set[Permissions]:
-        now = time.time()
-        user_granted_perms, revoked_perms = _permission_grants_and_revocations(
-            self.rights, now
-        )
+    def _group_permission_grants_and_revocations(
+        self, now: Optional[float] = None
+    ) -> tuple[set, set]:
+        if now is None:
+            now = time.time()
+
         group_granted_perms = set()
+        group_revoked_perms = set()
 
         for membership in getattr(self, "groups", []):
             membership: UserMembership
-            # 检查用户组的起止时间
             if membership.start_time is not None and membership.start_time > now:
-                continue  # 尚未生效
+                continue
             if membership.end_time is not None and membership.end_time < now:
-                continue  # 已过期
+                continue
 
-            # 查找组权限
             if hasattr(membership, "group_name"):
                 with Session() as session:
                     group = session.get(UserGroup, membership.group_name)
@@ -456,12 +455,31 @@ class User(Base):
                             _permission_grants_and_revocations(group.permissions, now)
                         )
                         group_granted_perms |= group_grants
-                        revoked_perms |= group_revocations
-
+                        group_revoked_perms |= group_revocations
             else:
                 raise ValueError(
                     f"UserMembership {membership.id} does not have a valid group_name attribute."
                 )
+
+        return group_granted_perms, group_revoked_perms
+
+    @property
+    def inherited_permissions(self) -> Set[Permissions]:
+        group_granted_perms, group_revoked_perms = (
+            self._group_permission_grants_and_revocations()
+        )
+        return group_granted_perms - group_revoked_perms
+
+    @cached_property
+    def all_permissions(self) -> Set[Permissions]:
+        now = time.time()
+        user_granted_perms, revoked_perms = _permission_grants_and_revocations(
+            self.rights, now
+        )
+        group_granted_perms, group_revocations = (
+            self._group_permission_grants_and_revocations(now)
+        )
+        revoked_perms |= group_revocations
 
         all_perms = user_granted_perms | group_granted_perms
         return (all_perms - revoked_perms) if (all_perms or revoked_perms) else set()
