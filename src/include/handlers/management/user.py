@@ -10,6 +10,7 @@ __all__ = [
     "RequestGetUserAvatarHandler",
     "RequestSetUserAvatarHandler",
     "RequestChangeUserGroupsHandler",
+    "RequestChangeUserPermissionsHandler",
     "RequestSetPasswdHandler",
     "RequestManageUserStatusHandler",
 ]
@@ -830,6 +831,87 @@ class RequestChangeUserGroupsHandler(RequestHandler):
         }
 
         handler.conclude_request(**response)
+
+
+class RequestChangeUserPermissionsHandler(RequestHandler):
+    schema = {
+        "type": "object",
+        "properties": {
+            "username": {"type": "string", "minLength": 1},
+            "permissions": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["username", "permissions"],
+        "additionalProperties": False,
+    }
+
+    require_auth = True
+
+    def handle(self, handler: ConnectionHandler):
+        with Session() as session:
+            this_user = User.get_existing(session, handler.username)
+
+            if Permissions.SET_USER_PERMISSIONS not in this_user.all_permissions:
+                handler.conclude_request(
+                    **{
+                        "code": 403,
+                        "message": "You do not have permission to set user permissions",
+                        "data": {},
+                    }
+                )
+                return 403, handler.data["username"], handler.username
+
+            target_username = handler.data["username"]
+            if not target_username:
+                handler.conclude_request(
+                    **{
+                        "code": 400,
+                        "message": "Username is required",
+                        "data": {},
+                    }
+                )
+                return
+
+            user_to_change = session.get(User, target_username)
+            if not user_to_change:
+                handler.conclude_request(
+                    **{
+                        "code": 404,
+                        "message": "User does not exist",
+                        "data": {},
+                    }
+                )
+                return 404, target_username, handler.username
+
+            new_permissions = handler.data.get("permissions", [])
+
+            if not all(isinstance(permission, str) for permission in new_permissions):
+                handler.conclude_request(
+                    **{
+                        "code": 400,
+                        "message": "All permissions must be of type str",
+                        "data": {},
+                    }
+                )
+                return
+
+            if set(new_permissions) != user_to_change.own_permissions:
+                user_to_change.own_permissions = new_permissions
+                session.commit()
+
+        response = {
+            "code": 200,
+            "message": "User permissions set successfully",
+            "data": {},
+        }
+
+        handler.conclude_request(**response)
+        return 0, handler.data["username"], handler.username
 
 
 class RequestSetPasswdHandler(RequestHandler):

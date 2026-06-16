@@ -129,6 +129,7 @@ def server_init():
             {"permission": Permissions.RENAME_USER},
             {"permission": Permissions.MANAGE_USER_STATUS},
             {"permission": Permissions.GET_USER_INFO},
+            {"permission": Permissions.SET_USER_PERMISSIONS},
             {"permission": Permissions.GET_GROUP_INFO},
             {"permission": Permissions.CHANGE_USER_GROUPS},
             {"permission": Permissions.SUPER_SET_PASSWD},

@@ -1,7 +1,7 @@
 import secrets
 import time
 from functools import cached_property
-from typing import TYPE_CHECKING, List, Optional, Set, cast
+from typing import TYPE_CHECKING, Any, Callable, Iterable, List, Optional, Set, cast
 
 import jwt
 import orjson
@@ -41,6 +41,51 @@ if TYPE_CHECKING:
     from include.database.models.blocking import UserBlockEntry
     from include.database.models.file import File
     from include.database.models.keyring import UserKey
+
+
+def _permission_grants_and_revocations(
+    permission_entries: Iterable[Any], now: Optional[float] = None
+) -> tuple[set, set]:
+    if now is None:
+        now = time.time()
+
+    granted_permissions = set()
+    revoked_permissions = set()
+
+    for entry in permission_entries:
+        if entry.end_time is not None and entry.end_time < now:
+            continue
+
+        target = granted_permissions if entry.granted else revoked_permissions
+        target.add(entry.permission)
+
+    return granted_permissions, revoked_permissions
+
+
+def _effective_permissions(
+    permission_entries: Iterable[Any], now: Optional[float] = None
+) -> set:
+    granted_permissions, revoked_permissions = _permission_grants_and_revocations(
+        permission_entries, now
+    )
+    return granted_permissions - revoked_permissions
+
+
+def _replace_permission_entries(
+    session,
+    current_entries: list[Any],
+    new_permission_list: list[str],
+    create_entry: Callable[[str, float], Any],
+) -> None:
+    for old_permission in list(current_entries):
+        session.delete(old_permission)
+    current_entries.clear()
+
+    now = time.time()
+    for permission_name in new_permission_list:
+        permission = create_entry(permission_name, now)
+        session.add(permission)
+        current_entries.append(permission)
 
 
 class User(Base):
@@ -363,18 +408,37 @@ class User(Base):
             self.groups.append(membership)
         # session.commit()
 
+    @property
+    def own_permissions(self) -> Set[Permissions]:
+        return _effective_permissions(self.rights)
+
+    @own_permissions.setter
+    def own_permissions(self, new_permission_list: list[str]):
+        session = object_session(self)
+        if not session:
+            raise RuntimeError()
+
+        _replace_permission_entries(
+            session,
+            self.rights,
+            new_permission_list,
+            lambda permission, now: UserPermission(
+                user=self,
+                username=self.username,
+                permission=permission,
+                start_time=now,
+                end_time=None,
+            ),
+        )
+
     @cached_property
     def all_permissions(self) -> Set[Permissions]:
         now = time.time()
-        # 用户自身有效权限
-        user_perms = {
-            perm.permission
-            for perm in self.rights
-            if perm.granted and (perm.end_time is None or perm.end_time >= now)
-        }
-        # 用户组有效权限与剥夺权限
+        user_granted_perms, revoked_perms = _permission_grants_and_revocations(
+            self.rights, now
+        )
         group_granted_perms = set()
-        group_revoked_perms = set()
+
         for membership in getattr(self, "groups", []):
             membership: UserMembership
             # 检查用户组的起止时间
@@ -388,26 +452,18 @@ class User(Base):
                 with Session() as session:
                     group = session.get(UserGroup, membership.group_name)
                     if group:
-                        for perm in group.permissions:
-                            if perm.end_time is None or perm.end_time >= now:
-                                if perm.granted:
-                                    group_granted_perms.add(perm.permission)
-                                else:
-                                    group_revoked_perms.add(perm.permission)
+                        group_grants, group_revocations = (
+                            _permission_grants_and_revocations(group.permissions, now)
+                        )
+                        group_granted_perms |= group_grants
+                        revoked_perms |= group_revocations
 
             else:
                 raise ValueError(
                     f"UserMembership {membership.id} does not have a valid group_name attribute."
                 )
-        # 合并
-        all_perms = user_perms | group_granted_perms
-        # 再减去被剥夺的权限（包括用户自身和用户组）
-        revoked_perms = {
-            perm.permission
-            for perm in self.rights
-            if not perm.granted and (perm.end_time is None or perm.end_time >= now)
-        }
-        revoked_perms |= group_revoked_perms
+
+        all_perms = user_granted_perms | group_granted_perms
         return (all_perms - revoked_perms) if (all_perms or revoked_perms) else set()
 
 
@@ -503,34 +559,7 @@ class UserGroup(Base):
 
     @property
     def all_permissions(self) -> Set[str]:
-        """
-        该属性的实现是对 User.all_permissions 的复制。
-        """
-
-        now = time.time()
-        # 用户组自身有效权限
-        group_granted_perms = {
-            perm.permission
-            for perm in self.permissions
-            if perm.granted and (perm.end_time is None or perm.end_time >= now)
-        }
-        # 用户组剥夺权限
-        group_revoked_perms = set()
-
-        for perm in self.permissions:
-            if perm.end_time is None or perm.end_time >= now:
-                if perm.granted:
-                    group_granted_perms.add(perm.permission)
-                else:
-                    group_revoked_perms.add(perm.permission)
-        # 合并
-        all_perms = group_granted_perms
-        # 再减去被剥夺的权限
-        return (
-            (all_perms - group_revoked_perms)
-            if (all_perms or group_revoked_perms)
-            else set()
-        )
+        return _effective_permissions(self.permissions)
 
     @all_permissions.setter
     def all_permissions(self, new_permission_list: list[str]):
@@ -538,19 +567,18 @@ class UserGroup(Base):
         if not session:
             raise RuntimeError()
 
-        for old_permission in self.permissions:
-            session.delete(old_permission)
-        self.permissions.clear()
-        for new_permission in new_permission_list:
-            permission = UserGroupPermission(
+        _replace_permission_entries(
+            session,
+            self.permissions,
+            new_permission_list,
+            lambda permission, now: UserGroupPermission(
                 group=self,
                 group_name=self.group_name,
-                permission=new_permission,
-                start_time=time.time(),
+                permission=permission,
+                start_time=now,
                 end_time=None,
-            )
-            session.add(permission)
-            self.permissions.append(permission)
+            ),
+        )
 
     @property
     def members(self) -> set[str]:

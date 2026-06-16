@@ -78,6 +78,46 @@ class TestUserOperations:
         data = assert_success(response)
         assert data["username"] == "admin"
 
+    @pytest.mark.asyncio
+    async def test_change_user_permissions(
+        self, authenticated_client: CFMSTestClient, test_user: dict
+    ):
+        response = await authenticated_client.change_user_permissions(
+            test_user["username"], ["list_users"]
+        )
+        assert_success(response)
+
+        info_response = await authenticated_client.get_user_info(test_user["username"])
+        data = assert_success(info_response)
+        assert "list_users" in data["permissions"]
+
+    @pytest.mark.asyncio
+    async def test_change_user_permissions_requires_set_user_permissions(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        operator_user = await user_factory()
+        target_user = await user_factory()
+
+        login_response = await unauthenticated_client.login(
+            operator_user["username"], operator_user["password"]
+        )
+        assert_success(login_response)
+
+        response = await unauthenticated_client.change_user_permissions(
+            target_user["username"], ["list_users"]
+        )
+        error = assert_error(response, 403)
+        assert error["message"] == "You do not have permission to set user permissions"
+
+        info_response = await authenticated_client.get_user_info(
+            target_user["username"]
+        )
+        data = assert_success(info_response)
+        assert "list_users" not in data["permissions"]
+
 
 class TestUserWithoutAuth:
     @pytest.mark.asyncio
@@ -98,5 +138,14 @@ class TestUserWithoutAuth:
     async def test_get_user_info_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
             "get_user_info", {"username": "admin"}, include_auth=False
+        )
+        assert_error(response, 401)
+
+    @pytest.mark.asyncio
+    async def test_change_user_permissions_without_auth(self, client: CFMSTestClient):
+        response = await client.send_request(
+            "change_user_permissions",
+            {"username": "admin", "permissions": []},
+            include_auth=False,
         )
         assert_error(response, 401)
