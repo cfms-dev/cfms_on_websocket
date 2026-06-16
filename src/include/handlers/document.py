@@ -91,8 +91,8 @@ def mark_document_modified(document: Document, username: str) -> None:
 
 
 def serialize_document_metadata(document: Document) -> dict:
-    metadata_record = document.metadata_record
-    if metadata_record is None:
+    metadata = document.metadata_record
+    if metadata is None:
         return {
             "tags": [],
             "creator": None,
@@ -100,9 +100,9 @@ def serialize_document_metadata(document: Document) -> dict:
         }
 
     return {
-        "tags": [tag.tag for tag in metadata_record.tags],
-        "creator": metadata_record.creator_username,
-        "last_modified_by": metadata_record.last_modified_by_username,
+        "tags": [tag.tag for tag in metadata.tags],
+        "creator": metadata.creator_username,
+        "last_modified_by": metadata.last_modified_by_username,
     }
 
 
@@ -1110,25 +1110,25 @@ class RequestSetDocumentMetadataTagsHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return 403, document_id, handler.username
 
-            metadata_record = get_or_create_document_metadata(document)
+            metadata = get_or_create_document_metadata(document)
             existing_by_tag = {
-                tag_record.tag: tag_record for tag_record in metadata_record.tags
+                tag_record.tag: tag_record for tag_record in metadata.tags
             }
             requested_tag_set = set(normalized_tags)
 
-            for tag_record in list(metadata_record.tags):
+            for tag_record in list(metadata.tags):
                 if tag_record.tag not in requested_tag_set:
-                    metadata_record.tags.remove(tag_record)
+                    metadata.tags.remove(tag_record)
 
             for position, tag in enumerate(normalized_tags):
                 if tag in existing_by_tag:
                     existing_by_tag[tag].position = position
                 else:
-                    metadata_record.tags.append(
+                    metadata.tags.append(
                         DocumentMetadataTag(tag=tag, position=position)
                     )
 
-            metadata_record.last_modified_by_username = user.username
+            metadata.last_modified_by_username = user.username
             session.commit()
 
             handler.conclude_request(
