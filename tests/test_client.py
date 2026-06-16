@@ -743,6 +743,14 @@ class CFMSTestClient:
         """
         return await self.send_request("get_user_info", {"username": username})
 
+    async def change_user_permissions(
+        self, username: str, permissions: list[str]
+    ) -> Dict[str, Any]:
+        return await self.send_request(
+            "change_user_permissions",
+            {"username": username, "permissions": permissions},
+        )
+
     async def list_users(self) -> Dict[str, Any]:
         """
         List all users.

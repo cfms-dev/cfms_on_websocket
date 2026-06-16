@@ -45,6 +45,7 @@ class Permissions(StrEnum):
     LIST_USERS = "list_users"
     MANAGE_2FA = "manage_2fa"
     SET_PASSWD = "set_passwd"
+    SET_USER_PERMISSIONS = "set_user_permissions"
 
     # 组管理
     CREATE_GROUP = "create_group"

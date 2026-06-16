@@ -363,6 +363,41 @@ class User(Base):
             self.groups.append(membership)
         # session.commit()
 
+    @property
+    def own_permissions(self) -> Set[Permissions]:
+        now = time.time()
+        granted_perms = {
+            perm.permission
+            for perm in self.rights
+            if perm.granted and (perm.end_time is None or perm.end_time >= now)
+        }
+        revoked_perms = {
+            perm.permission
+            for perm in self.rights
+            if not perm.granted and (perm.end_time is None or perm.end_time >= now)
+        }
+        return granted_perms - revoked_perms
+
+    @own_permissions.setter
+    def own_permissions(self, new_permission_list: list[str]):
+        session = object_session(self)
+        if not session:
+            raise RuntimeError()
+
+        for old_permission in self.rights:
+            session.delete(old_permission)
+        self.rights.clear()
+        for new_permission in new_permission_list:
+            permission = UserPermission(
+                user=self,
+                username=self.username,
+                permission=new_permission,
+                start_time=time.time(),
+                end_time=None,
+            )
+            session.add(permission)
+            self.rights.append(permission)
+
     @cached_property
     def all_permissions(self) -> Set[Permissions]:
         now = time.time()

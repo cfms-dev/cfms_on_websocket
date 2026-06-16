@@ -73,6 +73,7 @@ from include.handlers.management.system import (
 from include.handlers.management.user import (
     RequestBlockUserHandler,
     RequestChangeUserGroupsHandler,
+    RequestChangeUserPermissionsHandler,
     RequestCreateUserHandler,
     RequestDeleteUserHandler,
     RequestGetUserAvatarHandler,
@@ -166,6 +167,7 @@ available_functions: dict[str, type[RequestHandler]] = {
     "get_user_avatar": RequestGetUserAvatarHandler,
     "set_user_avatar": RequestSetUserAvatarHandler,
     "change_user_groups": RequestChangeUserGroupsHandler,
+    "change_user_permissions": RequestChangeUserPermissionsHandler,
     "set_passwd": RequestSetPasswdHandler,
     # 用户组类
     "list_groups": RequestListGroupsHandler,
