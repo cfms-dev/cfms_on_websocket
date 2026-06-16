@@ -58,6 +58,8 @@ class Permissions(StrEnum):
     # 访问控制与锁定
     VIEW_ACCESS_RULES = "view_access_rules"
     SET_ACCESS_RULES = "set_access_rules"
+    VIEW_METADATA = "view_metadata"
+    SET_METADATA_TAGS = "set_metadata_tags"
     MANAGE_ACCESS = "manage_access"
     VIEW_ACCESS_ENTRIES = "view_access_entries"
     APPLY_LOCKDOWN = "apply_lockdown"

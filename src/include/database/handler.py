@@ -34,6 +34,12 @@ if not drivername:
 if db_type == "sqlite":
     db_file = global_config["database"]["file"]
     engine = create_engine(f"sqlite:///{db_file}", echo=debug_enabled)
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 else:
     username = global_config["database"]["username"]
     password = global_config["database"]["password"]

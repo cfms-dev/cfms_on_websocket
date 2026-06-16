@@ -8,6 +8,7 @@ __all__ = [
     "RequestDownloadFileHandler",
     "RequestUploadFileHandler",
     "RequestSetDocumentRulesHandler",
+    "RequestSetDocumentMetadataTagsHandler",
     "RequestMoveDocumentHandler",
 ]
 
@@ -26,6 +27,8 @@ from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.entity import (
     Document,
+    DocumentMetadata,
+    DocumentMetadataTag,
     DocumentRevision,
     Folder,
 )
@@ -75,6 +78,32 @@ def create_file_task(file: File, transfer_mode: int = 0):
             "start_time": task.start_time,
             "end_time": task.end_time,
         }
+
+
+def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
+    if document.metadata_record is None:
+        document.metadata_record = DocumentMetadata()
+    return document.metadata_record
+
+
+def mark_document_modified(document: Document, username: str) -> None:
+    get_or_create_document_metadata(document).last_modified_by_username = username
+
+
+def serialize_document_metadata(document: Document) -> dict:
+    metadata_record = document.metadata_record
+    if metadata_record is None:
+        return {
+            "tags": [],
+            "creator": None,
+            "last_modified_by": None,
+        }
+
+    return {
+        "tags": [tag.tag for tag in metadata_record.tags],
+        "creator": metadata_record.creator_username,
+        "last_modified_by": metadata_record.last_modified_by_username,
+    }
 
 
 class RequestGetDocumentInfoHandler(RequestHandler):
@@ -144,6 +173,9 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 "access_rules": access_rules,
                 "info_code": info_code,
             }
+
+            if Permissions.VIEW_METADATA in user.all_permissions:
+                data["metadata"] = serialize_document_metadata(document)
 
             handler.conclude_request(200, data, "Document info retrieved successfully")
             return 0, document_id, handler.username
@@ -308,6 +340,10 @@ class RequestCreateDocumentHandler(RequestHandler):
                 title=title,
                 folder_id=folder_id,
             )
+            new_document.metadata_record = DocumentMetadata(
+                creator_username=user.username,
+                last_modified_by_username=user.username,
+            )
             new_revision = DocumentRevision(file_id=new_file.id)
             new_document.revisions.append(new_revision)
 
@@ -418,6 +454,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                     parent_revision_id=parent_revision_id,
                 )
                 document.revisions.append(new_revision)
+                mark_document_modified(document, this_user.username)
 
                 session.add(new_file)
                 session.add(new_revision)
@@ -475,6 +512,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
             document.status_operation_id = (
                 f"OP_DEL_{secrets.token_hex(8)}_{int(time.time())}"
             )
+            mark_document_modified(document, user.username)
             session.commit()
 
         handler.conclude_request(200, {}, "Document successfully deleted")
@@ -551,6 +589,7 @@ class RequestRenameDocumentHandler(RequestHandler):
                 return err_code, document.folder_id, handler.username
 
             document.title = new_title
+            mark_document_modified(document, this_user.username)
             session.commit()
 
             handler.conclude_request(
@@ -702,6 +741,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
                 if apply_access_rules(
                     document, access_rules_to_apply, user, inherit_parent
                 ):
+                    mark_document_modified(document, user.username)
                     session.commit()
                     handler.conclude_request(200, {}, "Set access rules successfully")
                     return 0, document_id, handler.username
@@ -845,6 +885,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                 return err_code, document.folder_id, handler.username
 
             document.folder = target_folder
+            mark_document_modified(document, user.username)
 
             session.commit()
 
@@ -897,6 +938,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
                 return
 
             document.delete_all_revisions(do_commit=False)
+            mark_document_modified(document, user.username)
             session.delete(document)
             session.commit()
 
@@ -1007,6 +1049,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
             document.status_operation_id = None
             document.title = final_title
             document.folder_id = db_folder_id
+            mark_document_modified(document, user.username)
 
             session.commit()
 
@@ -1019,3 +1062,78 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 "Document successfully restored",
             )
             return 0, doc_id, handler.username
+
+
+class RequestSetDocumentMetadataTagsHandler(RequestHandler):
+    schema = {
+        "type": "object",
+        "properties": {
+            "document_id": {"type": "string", "minLength": 1},
+            "tags": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {"type": "string", "minLength": 1, "maxLength": 255},
+            },
+        },
+        "required": ["document_id", "tags"],
+        "additionalProperties": False,
+    }
+
+    require_auth = True
+
+    def handle(self, handler: ConnectionHandler):
+        document_id: str = handler.data["document_id"]
+
+        normalized_tags = []
+        seen_tags = set()
+        for raw_tag in handler.data["tags"]:
+            tag = raw_tag.strip()
+            if not tag:
+                handler.conclude_request(400, {}, "Tags cannot be blank")
+                return 400, document_id, handler.username
+            if tag not in seen_tags:
+                normalized_tags.append(tag)
+                seen_tags.add(tag)
+
+        with Session() as session:
+            user = User.get_existing(session, handler.username)
+            document = session.get(Document, document_id)
+
+            if not document:
+                handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
+                return 404, document_id, handler.username
+
+            if (
+                Permissions.SET_METADATA_TAGS not in user.all_permissions
+                or not document.check_access_requirements(user, access_type="write")
+            ):
+                handler.conclude_access_denial()
+                return 403, document_id, handler.username
+
+            metadata_record = get_or_create_document_metadata(document)
+            existing_by_tag = {
+                tag_record.tag: tag_record for tag_record in metadata_record.tags
+            }
+            requested_tag_set = set(normalized_tags)
+
+            for tag_record in list(metadata_record.tags):
+                if tag_record.tag not in requested_tag_set:
+                    metadata_record.tags.remove(tag_record)
+
+            for position, tag in enumerate(normalized_tags):
+                if tag in existing_by_tag:
+                    existing_by_tag[tag].position = position
+                else:
+                    metadata_record.tags.append(
+                        DocumentMetadataTag(tag=tag, position=position)
+                    )
+
+            metadata_record.last_modified_by_username = user.username
+            session.commit()
+
+            handler.conclude_request(
+                200,
+                {"tags": normalized_tags},
+                "Document metadata tags updated successfully",
+            )
+            return 0, document_id, {"tags": normalized_tags}, handler.username

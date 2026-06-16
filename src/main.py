@@ -14,6 +14,7 @@ import ssl
 import sys
 
 from loguru import logger
+from sqlalchemy import insert, select
 from websockets.sync.server import serve
 
 from include.classes.enum.permissions import Permissions
@@ -26,6 +27,7 @@ from include.constants import (
     ROOT_DIRECTORY_ID,
 )
 from include.database.handler import Base, Session, engine
+from include.database.models.entity import DocumentMetadata
 from include.database.models.entity.obj import Document, DocumentRevision, Folder
 from include.database.models.file import File
 from include.handlers.debugging.throw import RequestThrowExceptionHandler
@@ -82,6 +84,26 @@ def ensure_root_folder():
             session.commit()
 
 
+def ensure_document_metadata_records():
+    document_table = Document.__table__
+    metadata_table = DocumentMetadata.__table__
+
+    missing_document_ids = (
+        select(document_table.c.id)
+        .outerjoin(
+            metadata_table,
+            document_table.c.id == metadata_table.c.document_id,
+        )
+        .where(metadata_table.c.document_id.is_(None))
+    )
+
+    with Session() as session:
+        session.execute(
+            insert(metadata_table).from_select(["document_id"], missing_document_ids)
+        )
+        session.commit()
+
+
 def server_init():
     """
     Initialize the server by checking whether the database is already set up.
@@ -133,6 +155,8 @@ def server_init():
             {"permission": Permissions.SUPER_SET_PASSWD},
             {"permission": Permissions.VIEW_ACCESS_RULES},
             {"permission": Permissions.SET_ACCESS_RULES},
+            {"permission": Permissions.VIEW_METADATA},
+            {"permission": Permissions.SET_METADATA_TAGS},
             {"permission": Permissions.LIST_USERS},
             {"permission": Permissions.LIST_GROUPS},
             {"permission": Permissions.CREATE_GROUP},
@@ -179,12 +203,15 @@ def server_init():
         init_document = Document(
             id="hello", title="Hello World", folder_id=ROOT_DIRECTORY_ID
         )
+        init_document.metadata_record = DocumentMetadata()
         init_document_revision = DocumentRevision(file_id=init_file.id)
         init_document.revisions.append(init_document_revision)
         init_document.current_revision = init_document_revision
         session.add(init_document)
         session.add(init_document_revision)
         session.commit()
+
+    ensure_document_metadata_records()
 
     import secrets
     import string
@@ -487,6 +514,9 @@ def main():
 
     # Ensure the root folder record exists (handles upgrades from older versions)
     ensure_root_folder()
+
+    # Ensure every existing document has its one-to-one metadata row.
+    ensure_document_metadata_records()
 
     # Initialize Providers
     initialize_providers()

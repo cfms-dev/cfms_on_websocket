@@ -9,7 +9,7 @@
 - Do not insert redundant comments.
 - Avoid anti-patterns when coding.
 - Observe the DRY principle.
-- If you need to create an Alembic upgrade/downgrade script, create the framework by running the command `uv run alembic`, and then modify the parts you want to change in the generated file, instead of creating a file from scratch.
+- If you need to create an Alembic upgrade/downgrade script, create the framework by running the command `uv run alembic revision --autogenerate`, and then modify the parts you want to change in the generated file, instead of creating a file from scratch.
 
 ## Testing instructions
 - Run tests only when necessary, as running tests will delete the original database (if SQLite is used as the database engine).

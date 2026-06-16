@@ -9,7 +9,7 @@ __all__ = [
 import secrets
 import time
 from itertools import batched
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import JSON, VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,6 +28,9 @@ from include.database.models.file import (
 from include.exceptions.misc import NoActiveRevisionsError
 from include.util.bulk.count import batch_count_other_revisions
 from include.util.count import count_file_references
+
+if TYPE_CHECKING:
+    from include.database.models.entity.metadata import DocumentMetadata
 
 
 class Folder(BaseObject):  # 文档文件夹
@@ -141,6 +144,12 @@ class Document(BaseObject):
         overlaps="current_revision",  # 声明与 current_revision 的重叠
     )
     inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    metadata_record: Mapped[Optional["DocumentMetadata"]] = relationship(
+        "DocumentMetadata",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     @property
     def active(self):

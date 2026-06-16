@@ -549,6 +549,14 @@ class CFMSTestClient:
             "get_document_info", {"document_id": document_id}
         )
 
+    async def set_document_metadata_tags(
+        self, document_id: str, tags: list[str]
+    ) -> Dict[str, Any]:
+        return await self.send_request(
+            "set_document_metadata_tags",
+            {"document_id": document_id, "tags": tags},
+        )
+
     # --- Revisions ---
     async def list_revisions(self, document_id: str) -> Dict[str, Any]:
         return await self.send_request("list_revisions", {"document_id": document_id})

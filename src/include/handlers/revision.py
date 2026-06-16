@@ -4,7 +4,7 @@ from include.database.handler import Session
 from include.database.models.classic import User
 from include.database.models.entity import Document, DocumentRevision
 from include.handlers.base import RequestHandler
-from include.handlers.document import create_file_task
+from include.handlers.document import create_file_task, mark_document_modified
 from include.system.messages import Messages as smsg
 
 
@@ -128,6 +128,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
                 return 403, document_id, handler.username
 
             document.current_revision_id = revision.id
+            mark_document_modified(document, user.username)
             session.commit()
 
         handler.conclude_request(200, {}, "Current revision set successfully")
@@ -179,6 +180,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
                 child_rev.parent_revision = revision.parent_revision
 
             revision.before_delete()
+            mark_document_modified(document, user.username)
             session.delete(revision)
             session.commit()
 
