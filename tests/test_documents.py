@@ -52,7 +52,7 @@ class TestDocumentOperations:
             "last_modified_by": "admin",
         }
 
-        set_response = await authenticated_client.set_document_metadata_tags(
+        set_response = await authenticated_client.set_document_tags(
             document_id,
             ["secret", "finance", "secret", " topic "],
         )
@@ -74,7 +74,7 @@ class TestDocumentOperations:
     ):
         document_id = test_document["document_id"]
 
-        set_response = await authenticated_client.set_document_metadata_tags(
+        set_response = await authenticated_client.set_document_tags(
             document_id, ["restricted"]
         )
         assert_success(set_response)
@@ -103,7 +103,7 @@ class TestDocumentOperations:
             await client.disconnect()
 
     @pytest.mark.asyncio
-    async def test_set_document_metadata_tags_requires_permission(
+    async def test_set_document_tags_requires_permission(
         self,
         authenticated_client: CFMSTestClient,
         test_document: dict,
@@ -137,9 +137,7 @@ class TestDocumentOperations:
                 login_response = await client.login(username, password)
                 assert_success(login_response)
 
-                set_response = await client.set_document_metadata_tags(
-                    document_id, ["blocked"]
-                )
+                set_response = await client.set_document_tags(document_id, ["blocked"])
                 assert_error(set_response, 403)
             finally:
                 await client.disconnect()
