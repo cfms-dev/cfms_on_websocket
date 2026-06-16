@@ -453,11 +453,11 @@ class RequestUploadDocumentHandler(RequestHandler):
                     file_id=file_id,
                     parent_revision_id=parent_revision_id,
                 )
-                document.revisions.append(new_revision)
-                mark_document_modified(document, this_user.username)
-
                 session.add(new_file)
                 session.add(new_revision)
+
+                document.revisions.append(new_revision)
+                mark_document_modified(document, this_user.username)
 
                 document.current_revision = new_revision
                 session.commit()
