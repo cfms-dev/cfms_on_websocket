@@ -15,7 +15,7 @@ from include.classes.enum.permissions import Permissions
 from include.conf_loader import global_config
 from include.database.handler import Session
 from include.database.models.classic import User
-from include.database.models.entity import NoActiveRevisionsError
+from include.exceptions.misc import NoActiveRevisionsError
 from include.handlers.base import RequestHandler
 from include.util.fetch.fetch import batch_prefetch_granted_ids, prefetch_user_blocks
 from include.util.recursive.ancestors import (

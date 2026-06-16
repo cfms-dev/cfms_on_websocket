@@ -1,301 +1,36 @@
+__all__ = [
+    "Document",
+    "DocumentRevision",
+    "DocumentAccessRule",
+    "Folder",
+    "FolderAccessRule",
+]
+
 import secrets
 import time
 from itertools import batched
-from typing import Iterable, List, Literal, Optional, Union, cast
+from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, VARCHAR, Boolean, Float, ForeignKey, Integer, func
-from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
+from sqlalchemy import JSON, VARCHAR, Boolean, Float, ForeignKey, Integer
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
 from include.classes.access_rule import AccessRuleBase
 from include.classes.enum.status import DocumentRevisionStatus, EntityStatus
-from include.conf_loader import global_config
-from include.constants import AVAILABLE_ACCESS_TYPES, MAX_PARAM_SIZE, QUERY_CHUNK_SIZE
+from include.constants import QUERY_CHUNK_SIZE
 from include.database.handler import Base
-from include.database.models.classic import User
+from include.database.models.entity.base import BaseObject
 from include.database.models.file import (
     File,
     FileTask,
     _queue_deferred_file_deletion,
 )
 from include.exceptions.misc import NoActiveRevisionsError
+from include.util.bulk.count import batch_count_other_revisions
 from include.util.count import count_file_references
-from include.util.fetch.fetch import batch_prefetch_granted_ids, prefetch_user_blocks
 
-
-def _batch_count_other_revisions(
-    session: Session,
-    file_ids: Iterable[str],
-    exclude_doc_ids: Union[str, Iterable[str]],
-) -> dict[str, int]:
-    """
-    计算引用了指定 file_ids 的修订版本数量，但排除属于 exclude_doc_ids 集合的文档。
-
-    参数:
-        file_ids: 待检查的文件 ID 列表。
-        exclude_doc_ids: 单个文档 ID 或文档 ID 集合。这些文档对文件的引用将不被计入。
-    """
-    # Return total references to each file EXCLUDING references that come
-    # from the provided exclude_doc_ids set. This centralizes counting via
-    # `count_file_references` so new FK references are automatically handled.
-
-    # Materialize iterables so they can be safely iterated multiple times.
-    file_ids_list = list(file_ids)
-    if not file_ids_list:
-        return {}
-
-    if isinstance(exclude_doc_ids, str):
-        exclude_doc_ids_list = [exclude_doc_ids]
-    else:
-        exclude_doc_ids_list = list(exclude_doc_ids)
-
-    # Get total references across all tables (uses reflected FKs).
-    total_refs = count_file_references(session, file_ids_list)
-
-    # Count references coming from the excluded documents (DocumentRevision only).
-    # The query combines `file_id IN (...)` and `document_id IN (...)`, so both
-    # dimensions must be chunked to keep total bind variables under MAX_PARAM_SIZE.
-    exclude_chunk_size = max(1, MAX_PARAM_SIZE - QUERY_CHUNK_SIZE)
-    excluded_counts: dict[str, int] = {}
-    for f_chunk in batched(file_ids_list, QUERY_CHUNK_SIZE):
-        for e_chunk in batched(exclude_doc_ids_list, exclude_chunk_size):
-            rows = (
-                session.query(DocumentRevision.file_id, func.count(DocumentRevision.id))
-                .filter(DocumentRevision.file_id.in_(list(f_chunk)))
-                .filter(DocumentRevision.document_id.in_(list(e_chunk)))
-                .group_by(DocumentRevision.file_id)
-                .all()
-            )
-            for file_id, count in rows:
-                excluded_counts[file_id] = excluded_counts.get(file_id, 0) + count
-
-    counts: dict[str, int] = {}
-    for fid in file_ids_list:
-        total = total_refs.get(fid, 0)
-        excluded = excluded_counts.get(fid, 0)
-        counts[fid] = max(0, total - excluded)
-
-    return counts
-
-
-class BaseObject(Base):
-    __abstract__ = True
-
-    id: Mapped[str]
-    access_rules: Mapped[List]
-
-    # Whether to inherit access rules from parent folders.
-    # Useful when enabling recursion check.
-    inherit: Mapped[bool]
-
-    status: Mapped[EntityStatus] = mapped_column(
-        Integer, nullable=False, default=EntityStatus.OK
-    )
-    status_operation_id: Mapped[Optional[str]] = mapped_column(
-        VARCHAR(255), nullable=True, index=True
-    )
-
-    def check_access_requirements(
-        self, user: User, access_type: str = "read", _no_recursive_check=False
-    ) -> bool:
-        """
-        Checks if a given user meets the access requirements for a specific access type based on defined access rules.
-        Args:
-            user (User): The user object whose permissions and groups are to be checked.
-            access_type (int, optional): The type of access to check for. Defaults to `"read"`.
-            _no_recursive_check (bool, optional): Useful when performing batch queries. Defaults to False.
-        Returns:
-            bool: True if the user meets all access requirements for the specified access type, False otherwise.
-        Raises:
-            ValueError: If the "match" value in any rule is not "all" or "any".
-        Access rules are evaluated as follows:
-            - Each rule may specify required permissions ("rights") and/or groups ("groups").
-            - Each requirement can specify a "match" mode: "all" (all required items must be present) or "any" (at least one must be present).
-            - Rules are grouped and evaluated according to their match modes and requirements.
-            - If no access rules are defined, access is granted by default.
-        """
-
-        _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
-
-        def match_rights(sub_rights_group):
-            if not sub_rights_group:
-                return True
-
-            sub_match_mode = sub_rights_group.get("match", "all")
-            sub_rights_require = sub_rights_group.get("require", [])
-
-            if not sub_rights_require:
-                return True
-
-            if sub_match_mode == "all":
-                return set(sub_rights_require).issubset(user.all_permissions)
-
-            elif sub_match_mode == "any":
-                for right in sub_rights_require:
-                    if right in user.all_permissions:
-                        return True
-                return False
-
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_groups(sub_groups_group):
-            if not sub_groups_group:
-                return True
-
-            sub_match_mode = sub_groups_group.get("match", "all")
-            sub_groups_require = sub_groups_group.get("require", [])
-
-            if not sub_groups_require:
-                return True
-
-            if sub_match_mode == "all":
-                return set(sub_groups_require).issubset(user.all_groups)
-
-            elif sub_match_mode == "any":
-                for group in sub_groups_require:
-                    if group in user.all_groups:
-                        return True
-                return False
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_sub_group(sub_group):
-            sub_match_mode = sub_group.get("match", "all")
-            sub_rights_group = sub_group.get("rights", {})
-            sub_groups_group = sub_group.get("groups", {})
-
-            if not (sub_rights_group.get("require", [])) or (
-                not sub_groups_group.get("require", [])
-            ):
-                sub_match_mode = "all"
-
-            if sub_match_mode == "any":
-                return match_rights(sub_rights_group) or match_groups(sub_groups_group)
-            if sub_match_mode == "all":
-                return match_rights(sub_rights_group) and match_groups(sub_groups_group)
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_primary_sub_group(per_match_group):
-            match_mode = per_match_group.get("match", "all")
-            for sub_group in per_match_group["match_groups"]:
-                if not sub_group:
-                    continue
-
-                state = match_sub_group(sub_group)
-
-                if match_mode == "any":
-                    if state:
-                        return True
-                elif match_mode == "all":
-                    if not state:
-                        return False
-
-            if match_mode == "any":
-                return False
-            elif match_mode == "all":
-                return True
-
-        # Checks whether the user or the user group to which he belongs
-        # has special access rights to this object.
-
-        # Get `session` from `User` object
-        _session = object_session(user)
-        if not _session:
-            raise RuntimeError("No active session found for user")
-
-        now = time.time()
-
-        # check user blocks first
-        is_globally_blocked, blocked_ids = prefetch_user_blocks(
-            _session, user, access_type, now
-        )
-        if is_globally_blocked or self.id in blocked_ids:
-            return False
-
-        # then check special access entries
-        self_type = cast(
-            Literal["document", "directory"], _TARGET_TYPE_MAPPING[self.__tablename__]
-        )
-        explicitly_granted_ids = batch_prefetch_granted_ids(
-            _session, user, [self.id], self_type, access_type, now
-        )
-
-        if self.id in explicitly_granted_ids:
-            return True
-
-        if (
-            global_config["access"]["enable_access_recursive_check"]
-            and self.inherit
-            and not _no_recursive_check
-        ):
-            # check all parent folders' access rules
-            parent = None
-            if isinstance(self, Document):
-                parent = self.folder
-            elif isinstance(self, Folder):
-                parent = self.parent
-
-            visited_folder_ids = set()
-            while parent is not None:
-                if parent.id in visited_folder_ids:
-                    # Cycle detected; break to prevent an infinite loop
-                    raise RuntimeError("Cycle detected in folder hierarchy")
-                visited_folder_ids.add(parent.id)
-
-                if not parent.check_access_requirements(user, access_type=access_type):
-                    return False
-
-                if not parent.inherit:
-                    break  # if the parent folder does not inherit, stop checking further up
-
-                parent = parent.parent
-
-        if not self.access_rules:
-            return True
-
-        for each_rule in self.access_rules:
-            if not each_rule:
-                continue
-
-            each_rule: AccessRuleBase
-
-            # access_type 一览：
-            # read - 读
-            # write - 写（删除=清空数据，重命名=写文件元数据，因此都算写）
-            # move - 移动
-            # manage - 管理
-
-            if access_type not in AVAILABLE_ACCESS_TYPES:
-                raise ValueError(
-                    f"Invalid access type for {self.__tablename__}: {access_type}"
-                )
-
-            match access_type:
-                case "read":  # 如果要检查的是读权限
-                    if each_rule.access_type != "read":
-                        continue
-                case "write":  # 如果要检查写权限
-                    if each_rule.access_type not in ["read", "write"]:
-                        continue
-                case "move":
-                    # 取消了对读权限的要求
-                    if each_rule.access_type != "move":
-                        continue
-                case "manage":  # 如果要检查管理权限
-                    if each_rule.access_type not in ["read", "manage"]:
-                        continue
-                case _:
-                    raise NotImplementedError("Unsupported access type")
-
-            if not each_rule.rule_data:
-                continue
-
-            if not match_primary_sub_group(each_rule.rule_data):
-                return False
-
-        return True
+if TYPE_CHECKING:
+    from include.database.models.entity.metadata import DocumentMetadata
 
 
 class Folder(BaseObject):  # 文档文件夹
@@ -409,6 +144,12 @@ class Document(BaseObject):
         overlaps="current_revision",  # 声明与 current_revision 的重叠
     )
     inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    metadata_record: Mapped[Optional["DocumentMetadata"]] = relationship(
+        "DocumentMetadata",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     @property
     def active(self):
@@ -472,7 +213,7 @@ class Document(BaseObject):
         all_file_ids = {row[1] for row in revision_tuples if row[1]}
 
         # Task 3: Chunked batch reference count queries to avoid variable limit.
-        other_counts = _batch_count_other_revisions(session, all_file_ids, self.id)
+        other_counts = batch_count_other_revisions(session, all_file_ids, self.id)
 
         # Determine which files are exclusively referenced by this document's revisions.
         deletable_file_ids = {

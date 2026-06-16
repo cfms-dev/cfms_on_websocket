@@ -26,7 +26,8 @@ from include.constants import (
     ROOT_DIRECTORY_ID,
 )
 from include.database.handler import Base, Session, engine
-from include.database.models.entity import Document, DocumentRevision, Folder
+from include.database.models.entity import DocumentMetadata
+from include.database.models.entity.obj import Document, DocumentRevision, Folder
 from include.database.models.file import File
 from include.handlers.debugging.throw import RequestThrowExceptionHandler
 from include.providers.manager import ProviderManager
@@ -133,6 +134,8 @@ def server_init():
             {"permission": Permissions.SUPER_SET_PASSWD},
             {"permission": Permissions.VIEW_ACCESS_RULES},
             {"permission": Permissions.SET_ACCESS_RULES},
+            {"permission": Permissions.VIEW_METADATA},
+            {"permission": Permissions.SET_METADATA_TAGS},
             {"permission": Permissions.LIST_USERS},
             {"permission": Permissions.LIST_GROUPS},
             {"permission": Permissions.CREATE_GROUP},
@@ -179,6 +182,7 @@ def server_init():
         init_document = Document(
             id="hello", title="Hello World", folder_id=ROOT_DIRECTORY_ID
         )
+        init_document.metadata_record = DocumentMetadata()
         init_document_revision = DocumentRevision(file_id=init_file.id)
         init_document.revisions.append(init_document_revision)
         init_document.current_revision = init_document_revision

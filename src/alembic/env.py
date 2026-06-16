@@ -33,6 +33,8 @@ from include.database.models.entity import (
     Document,
     DocumentRevision,
     DocumentAccessRule,
+    DocumentMetadata,
+    DocumentMetadataTag,
     Folder,
     FolderAccessRule,
 )

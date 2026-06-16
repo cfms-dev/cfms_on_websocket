@@ -42,6 +42,7 @@ from include.handlers.document import (
     RequestRenameDocumentHandler,
     RequestRestoreDocumentHandler,
     RequestSetDocumentRulesHandler,
+    RequestSetDocumentTagsHandler,
     RequestUploadDocumentHandler,
     RequestUploadFileHandler,
 )
@@ -129,6 +130,7 @@ available_functions: dict[str, type[RequestHandler]] = {
     "get_document_info": RequestGetDocumentInfoHandler,
     "get_document_access_rules": RequestGetDocumentAccessRulesHandler,
     "set_document_rules": RequestSetDocumentRulesHandler,
+    "set_document_tags": RequestSetDocumentTagsHandler,
     # 修订版本类
     "list_revisions": RequestListRevisionsHandler,
     "get_revision": RequestGetRevisionHandler,
