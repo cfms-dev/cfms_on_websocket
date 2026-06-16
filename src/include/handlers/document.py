@@ -8,7 +8,7 @@ __all__ = [
     "RequestDownloadFileHandler",
     "RequestUploadFileHandler",
     "RequestSetDocumentRulesHandler",
-    "RequestSetDocumentMetadataTagsHandler",
+    "RequestSetDocumentTagsHandler",
     "RequestMoveDocumentHandler",
 ]
 
@@ -1064,7 +1064,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
             return 0, doc_id, handler.username
 
 
-class RequestSetDocumentMetadataTagsHandler(RequestHandler):
+class RequestSetDocumentTagsHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
