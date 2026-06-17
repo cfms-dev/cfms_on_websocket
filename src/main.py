@@ -178,6 +178,11 @@ def server_init():
     real_filename = secrets.token_hex(32)
     sample_target_path = f"content/files/{today.year}/{today.month}/{real_filename}"
 
+    # Ensure the directory structure exists before writing the file
+    ProviderManager().storage.makedirs(
+        os.path.dirname(sample_target_path), exist_ok=True
+    )
+
     with open(sample_source_path, "rb") as source:
         with ProviderManager().storage.fopen(sample_target_path, "wb") as f:
             f.write(source.read())

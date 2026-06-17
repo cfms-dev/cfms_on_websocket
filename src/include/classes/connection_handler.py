@@ -409,6 +409,10 @@ class ConnectionHandler:
             if not file:
                 raise ValueError(f"File not found for file_id: {file_task.file_id}")
 
+            ProviderManager().storage.makedirs(
+                os.path.dirname(file.path), exist_ok=True
+            )
+
             if file_size == 0:  # 空文件
                 self.stream.send("stop")
 
@@ -426,9 +430,6 @@ class ConnectionHandler:
             self.stream.send(f"ready {chunk_size}")
             try:
                 logger.info("Receiving file: transfer started")
-                ProviderManager().storage.makedirs(
-                    os.path.dirname(file.path), exist_ok=True
-                )
                 with ProviderManager().storage.fopen(file.path, "wb") as f:
                     try:
                         hasher = hashlib.sha256()
