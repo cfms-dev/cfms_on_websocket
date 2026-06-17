@@ -4,6 +4,8 @@ from itertools import batched
 from typing import Optional
 
 import jsonschema
+from sqlalchemy import func, literal, select
+from sqlalchemy.orm import joinedload, raiseload, selectinload
 
 from include.classes.connection_handler import ConnectionHandler
 from include.classes.enum.permissions import Permissions
@@ -11,7 +13,8 @@ from include.classes.enum.status import EntityStatus
 from include.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.handler import Session
 from include.database.models.classic import User
-from include.database.models.entity import Document, Folder
+from include.database.models.entity import Document, DocumentRevision, Folder
+from include.database.models.file import File
 from include.handlers.base import RequestHandler
 from include.system.messages import Messages as smsg
 from include.util.bulk.purge import purge_documents_bulk
@@ -20,6 +23,140 @@ from include.util.check import (
 )
 from include.util.recursive.subtree import fetch_subtree_for_deletion
 from include.util.rule.applying import apply_access_rules
+
+
+def _fetch_latest_active_revisions_by_document(
+    session, document_ids: list[str]
+) -> dict[str, DocumentRevision]:
+    if not document_ids:
+        return {}
+
+    revision_ids_by_document: dict[str, str] = {}
+    document_table = Document.__table__
+    revision_table = DocumentRevision.__table__
+    file_table = File.__table__
+
+    for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
+        chunk_ids = list(chunk)
+        current_chain_anchor = (
+            select(
+                document_table.c.id.label("document_id"),
+                revision_table.c.id.label("revision_id"),
+                revision_table.c.created_time.label("created_time"),
+                revision_table.c.file_id.label("file_id"),
+                revision_table.c.parent_revision_id.label("parent_revision_id"),
+                file_table.c.active.label("file_active"),
+                literal(0).label("depth"),
+            )
+            .select_from(
+                document_table.join(
+                    revision_table,
+                    document_table.c.current_revision_id == revision_table.c.id,
+                ).join(file_table, revision_table.c.file_id == file_table.c.id)
+            )
+            .where(document_table.c.id.in_(chunk_ids))
+        )
+        current_chain = current_chain_anchor.cte(
+            "current_revision_chain", recursive=True
+        )
+        parent_revision = revision_table.alias("parent_revision")
+        parent_file = file_table.alias("parent_file")
+        current_chain = current_chain.union_all(
+            select(
+                current_chain.c.document_id,
+                parent_revision.c.id,
+                parent_revision.c.created_time,
+                parent_revision.c.file_id,
+                parent_revision.c.parent_revision_id,
+                parent_file.c.active,
+                (current_chain.c.depth + 1).label("depth"),
+            ).select_from(
+                current_chain.join(
+                    parent_revision,
+                    current_chain.c.parent_revision_id == parent_revision.c.id,
+                ).join(parent_file, parent_revision.c.file_id == parent_file.c.id)
+            )
+        )
+        active_current_chain = (
+            select(
+                current_chain.c.document_id,
+                current_chain.c.revision_id,
+                func.row_number()
+                .over(
+                    partition_by=current_chain.c.document_id,
+                    order_by=current_chain.c.depth,
+                )
+                .label("row_number"),
+            )
+            .where(current_chain.c.file_active.is_(True))
+            .subquery()
+        )
+        current_chain_rows = session.execute(
+            select(
+                active_current_chain.c.document_id,
+                active_current_chain.c.revision_id,
+            ).where(active_current_chain.c.row_number == 1)
+        ).all()
+        for document_id, revision_id in current_chain_rows:
+            revision_ids_by_document[document_id] = revision_id
+
+        fallback_document_ids = [
+            document_id
+            for document_id in chunk_ids
+            if document_id not in revision_ids_by_document
+        ]
+        if not fallback_document_ids:
+            continue
+
+        active_revisions = (
+            select(
+                revision_table.c.document_id,
+                revision_table.c.id.label("revision_id"),
+                func.row_number()
+                .over(
+                    partition_by=revision_table.c.document_id,
+                    order_by=revision_table.c.created_time.desc(),
+                )
+                .label("row_number"),
+            )
+            .select_from(
+                revision_table.join(
+                    file_table, revision_table.c.file_id == file_table.c.id
+                )
+            )
+            .where(
+                revision_table.c.document_id.in_(fallback_document_ids),
+                file_table.c.active.is_(True),
+            )
+            .subquery()
+        )
+        fallback_rows = session.execute(
+            select(
+                active_revisions.c.document_id, active_revisions.c.revision_id
+            ).where(active_revisions.c.row_number == 1)
+        ).all()
+        for document_id, revision_id in fallback_rows:
+            revision_ids_by_document[document_id] = revision_id
+
+    if not revision_ids_by_document:
+        return {}
+
+    revisions: list[DocumentRevision] = []
+    revision_ids = list(revision_ids_by_document.values())
+    for chunk in batched(revision_ids, QUERY_CHUNK_SIZE):
+        revisions.extend(
+            session.query(DocumentRevision)
+            .options(joinedload(DocumentRevision.file), raiseload("*"))
+            .filter(DocumentRevision.id.in_(list(chunk)))
+            .all()
+        )
+
+    revisions_by_id = {revision.id: revision for revision in revisions}
+    return {
+        document_id: revisions_by_id[revision_id]
+        for document_id, revision_id in revision_ids_by_document.items()
+        if revision_id in revisions_by_id
+    }
 
 
 class RequestListDirectoryHandler(RequestHandler):
@@ -58,7 +195,12 @@ class RequestListDirectoryHandler(RequestHandler):
             if not folder_id:
                 folder_id = ROOT_DIRECTORY_ID
 
-            folder = session.get(Folder, folder_id)
+            folder = (
+                session.query(Folder)
+                .options(selectinload(Folder.access_rules))
+                .filter(Folder.id == folder_id)
+                .first()
+            )
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return 404, folder_id, handler.username
@@ -67,20 +209,28 @@ class RequestListDirectoryHandler(RequestHandler):
                 Permissions.SUPER_LIST_DIRECTORY in this_user.all_permissions
                 or folder.check_access_requirements(this_user, "read")
             )
-            parent = folder.parent
-            children = folder.children
-            documents = folder.documents
 
             if not has_permission:
                 handler.conclude_access_denial()
                 return 403, folder_id, handler.username
 
-            active_documents = [document for document in documents if document.active]
+            children = (
+                session.query(Folder)
+                .options(raiseload("*"))
+                .filter(Folder.parent_id == folder_id)
+                .all()
+            )
+            documents = (
+                session.query(Document)
+                .options(raiseload("*"))
+                .filter(Document.folder_id == folder_id)
+                .all()
+            )
+            latest_revisions_by_document = _fetch_latest_active_revisions_by_document(
+                session, [document.id for document in documents]
+            )
 
-            if parent:
-                parent_id = parent.id
-            else:
-                parent_id = None
+            parent_id = folder.parent_id
 
             response = {
                 "code": 200,
@@ -92,13 +242,16 @@ class RequestListDirectoryHandler(RequestHandler):
                             "id": document.id,
                             "title": document.title,
                             "created_time": document.created_time,
-                            "last_modified": (
-                                last_revision := document.get_latest_revision()
-                            ).created_time,
+                            "last_modified": last_revision.created_time,
                             "sha256": last_revision.file.sha256,
                             "size": last_revision.file.size,
                         }
-                        for document in active_documents
+                        for document in documents
+                        if (
+                            last_revision := latest_revisions_by_document.get(
+                                document.id
+                            )
+                        )
                     ],
                     "folders": [
                         {

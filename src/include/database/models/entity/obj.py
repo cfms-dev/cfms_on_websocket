@@ -154,10 +154,10 @@ class Document(BaseObject):
     @property
     def active(self):
         try:
-            self.get_latest_revision()
+            latest_revision = self.get_latest_revision()
         except (RuntimeError, NoActiveRevisionsError):
             return False
-        return True
+        return latest_revision is not None
 
     def get_latest_revision(self) -> "DocumentRevision":
         """
@@ -168,15 +168,13 @@ class Document(BaseObject):
         - 如果 current_revision 不为空，则从指定的 current_revision 开始，寻找从修订版本树末端上溯遇到的第一个活跃修订版本。
         - 如果 current_revision 为空（这一般仅在从过去的版本升级时发生），则将全体修订版本按`created_time`降序排列，返回第一个`revision.active`为`True`的修订版本。
         """
-        if not self.revisions:
-            raise RuntimeError("A document cannot have no revisions.")
-
-        if self.current_revision:
-            if self.current_revision.active:
-                return self.current_revision
+        current_revision = self.current_revision
+        if current_revision is not None:
+            if current_revision.active:
+                return current_revision
 
             # find active revisions
-            latest_revision = self.current_revision.parent_revision
+            latest_revision = current_revision.parent_revision
             while latest_revision is not None:
                 if latest_revision.active:
                     return latest_revision
@@ -185,9 +183,12 @@ class Document(BaseObject):
             # if goes here, use backward compatibility method
 
         # for backward compatibility
+        revisions = self.revisions
+        if not revisions:
+            raise RuntimeError("A document cannot have no revisions.")
 
         # 过滤出active为True的修订版本
-        active_revisions = [rev for rev in self.revisions if rev.active]
+        active_revisions = [rev for rev in revisions if rev.active]
 
         if not active_revisions:
             raise NoActiveRevisionsError("No active revisions found.")
