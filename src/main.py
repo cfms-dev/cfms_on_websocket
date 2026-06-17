@@ -177,7 +177,12 @@ def server_init():
 
     with Session() as session:
         # not using `ROOT_ABSPATH` here to allow easy migration
-        init_file = File(id="init", path=sample_file_path, active=True)
+        init_file = File(
+            id="init",
+            path=sample_file_path,
+            size=os.path.getsize(sample_file_path),
+            active=True,
+        )
         session.add(init_file)
 
         init_document = Document(

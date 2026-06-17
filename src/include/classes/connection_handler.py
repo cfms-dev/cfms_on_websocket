@@ -414,6 +414,9 @@ class ConnectionHandler:
 
                 # Create an empty file and mark the task as completed
                 ProviderManager().storage.fopen(file.path, "wb").close()
+                file_task.status = 1
+                file.sha256 = sha256
+                file.size = 0
                 file.active = True
                 session.commit()
 
@@ -476,6 +479,7 @@ class ConnectionHandler:
 
                 file_task.status = 1
                 file.sha256 = sha256
+                file.size = actual_size
                 file.active = True
                 session.commit()
 

@@ -4,7 +4,16 @@ import time
 from typing import List, Optional
 
 from loguru import logger as log
-from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer, Text, event
+from sqlalchemy import (
+    VARCHAR,
+    BigInteger,
+    Boolean,
+    Float,
+    ForeignKey,
+    Integer,
+    Text,
+    event,
+)
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
@@ -68,6 +77,7 @@ class File(Base):
     # or mismatch, so don't use it as a must
 
     path: Mapped[str] = mapped_column(Text, nullable=False)
+    _size: Mapped[Optional[int]] = mapped_column("size", BigInteger, nullable=True)
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
@@ -77,11 +87,28 @@ class File(Base):
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     @property
-    def size(self):
+    def size(self) -> Optional[int]:
+        """File size in bytes.
+
+        The file size will be obtained from the database first;
+        If not set, attempts to retrieve it from the storage provider.
+
+        Users should note that if they want to obtain the current actual size
+        of the physical file, they should directly call the
+        StorageProvider().getsize() method, which is a function with high I/O
+        overhead.
+        """
+
+        if self._size is not None:
+            return self._size
         try:
             return ProviderManager().storage.getsize(self.path)
         except Exception:
             return None
+
+    @size.setter
+    def size(self, value: Optional[int]) -> None:
+        self._size = value
 
     @property
     def writeable(self):

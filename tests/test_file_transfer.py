@@ -1,10 +1,43 @@
 import os
 import re
+import sqlite3
 
 import pytest
 
 from tests.test_client import CFMSTestClient, calculate_sha256
 from tests.utils import assert_success
+
+
+def _get_revision_file_size(revision_id: str) -> int | None:
+    with sqlite3.connect("src/app.db") as connection:
+        row = connection.execute(
+            """
+            SELECT files.size
+            FROM files
+            JOIN document_revisions ON document_revisions.file_id = files.id
+            WHERE document_revisions.id = ?
+            """,
+            (revision_id,),
+        ).fetchone()
+
+    return row[0] if row else None
+
+
+def _set_revision_file_size(revision_id: str, size: int) -> None:
+    with sqlite3.connect("src/app.db") as connection:
+        connection.execute(
+            """
+            UPDATE files
+            SET size = ?
+            WHERE id = (
+                SELECT file_id
+                FROM document_revisions
+                WHERE id = ?
+            )
+            """,
+            (size, revision_id),
+        )
+        connection.commit()
 
 
 class TestFileTransfer:
@@ -34,6 +67,10 @@ class TestFileTransfer:
         revisions = assert_success(list_resp)["revisions"]
         current_rev = next((r for r in revisions if r["is_current"]), None)
         assert current_rev is not None
+        original_size = os.path.getsize(test_file_path)
+        assert _get_revision_file_size(current_rev["id"]) == original_size
+
+        _set_revision_file_size(current_rev["id"], 1)
 
         # 4. Prepare download
         get_rev_resp = await authenticated_client.get_revision(current_rev["id"])
@@ -46,7 +83,8 @@ class TestFileTransfer:
         # 6. Verify checksum matches
         downloaded_hash = calculate_sha256(download_dest)
         assert original_hash == downloaded_hash
-        assert os.path.getsize(test_file_path) == os.path.getsize(download_dest)
+        assert original_size == os.path.getsize(download_dest)
+        assert _get_revision_file_size(current_rev["id"]) == original_size
 
     @pytest.mark.asyncio
     async def test_download_invalid_task_id_raises_runtime_error(

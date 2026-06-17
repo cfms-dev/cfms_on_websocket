@@ -122,6 +122,9 @@ def ext_on_file_uploaded(id: str, path: str, sha256: str):
             if not existing:
                 return
 
+            if uploaded.size is not None:
+                existing.size = uploaded.size
+
             engine = cast(Engine, session.get_bind())
             for table, colname in _get_file_references(engine):
                 stmt = (
