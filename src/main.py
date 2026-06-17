@@ -89,6 +89,11 @@ def server_init():
 
     If it is not, create the necessary tables and a default admin user.
     """
+    import datetime
+    import secrets
+
+    from include.util.group import create_group
+
     if (
         os.path.exists(ROOT_ABSPATH / "app.db")
         and global_config["database"]["type"] == "sqlite"
@@ -100,8 +105,6 @@ def server_init():
 
     # Ensure the root folder exists before seeding any objects that reference it.
     ensure_root_folder()
-
-    from include.util.group import create_group
 
     create_group(
         group_name="user",
@@ -169,18 +172,22 @@ def server_init():
     initialize_providers()
 
     # Add sample file and document
-    sample_file_path = "content/hello"
+    sample_source_path = "content/hello"
 
-    with open(sample_file_path, "rb") as source:
-        with ProviderManager().storage.fopen(sample_file_path, "wb") as f:
+    today = datetime.date.today()
+    real_filename = secrets.token_hex(32)
+    sample_target_path = f"content/files/{today.year}/{today.month}/{real_filename}"
+
+    with open(sample_source_path, "rb") as source:
+        with ProviderManager().storage.fopen(sample_target_path, "wb") as f:
             f.write(source.read())
 
     with Session() as session:
         # not using `ROOT_ABSPATH` here to allow easy migration
         init_file = File(
             id="init",
-            path=sample_file_path,
-            size=os.path.getsize(sample_file_path),
+            path=sample_target_path,
+            size=os.path.getsize(sample_source_path),
             active=True,
         )
         session.add(init_file)
