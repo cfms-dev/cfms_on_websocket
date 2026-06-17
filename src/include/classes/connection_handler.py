@@ -167,11 +167,13 @@ class ConnectionHandler:
                 f"Task {file_task.id}: preparing to send file (id: {file_task.file_id})."
             )
 
-            file_size = ProviderManager().storage.getsize(file.path)
+            file_path = file.path  # 防止 Session 关闭后可能出现的异常
+            file_size = ProviderManager().storage.getsize(file_path)
+            if file.size != file_size:
+                file.size = file_size
+                session.commit()
 
             self.logger.info(f"Calculation complete. File size: {file_size}")
-
-            file_path = file.path  # 防止 Session 关闭后可能出现的异常
 
             ### 发送方首先发出文件信息
             chunk_size = global_config["server"]["file_chunk_size"]  # 文件分块大小
@@ -201,20 +203,6 @@ class ConnectionHandler:
                 self.conclude_request(400, {}, "Client not ready for file transfer")
                 return
 
-            if file_size == 0:
-                self.logger.info("Empty file, no need to send")
-                return
-
-            # Get or set the AES key for this file transfer task
-            if file_task.encryption_key:
-                aes_key = base64.b64decode(file_task.encryption_key)
-            else:
-                aes_key = get_random_bytes(32)  # AES-256
-                file_task.encryption_key = base64.b64encode(aes_key).decode()
-                session.commit()
-
-            self.logger.info(f"File transmission begin. Offset: {offset}")
-
             # offset >= 0 is already guaranteed by JSON Schema validation
             if offset > file_size:
                 self.logger.error(
@@ -233,6 +221,33 @@ class ConnectionHandler:
                     "Invalid offset: must be a multiple of chunk_size or zero",
                 )
                 return
+
+            if file_size == 0:
+                self.logger.info("Empty file, no need to send")
+                file_task.status = 1
+                session.commit()
+                self.stream.send(
+                    orjson.dumps(
+                        {
+                            "action": "transfer_file",
+                            "data": {
+                                "flag": "empty_file",
+                            },
+                        },
+                    ),
+                    FrameType.CONCLUSION,
+                )
+                return
+
+            # Get or set the AES key for this file transfer task
+            if file_task.encryption_key:
+                aes_key = base64.b64decode(file_task.encryption_key)
+            else:
+                aes_key = get_random_bytes(32)  # AES-256
+                file_task.encryption_key = base64.b64encode(aes_key).decode()
+                session.commit()
+
+            self.logger.info(f"File transmission begin. Offset: {offset}")
 
             try:
                 with ProviderManager().storage.fopen(file_path) as file:
@@ -293,7 +308,8 @@ class ConnectionHandler:
                                     "key": base64.b64encode(aes_key).decode(),
                                 },
                             },
-                        )
+                        ),
+                        FrameType.CONCLUSION,
                     )
                     file_task.status = 1
                     session.commit()
@@ -306,7 +322,8 @@ class ConnectionHandler:
                                     "key": None,
                                 },
                             },
-                        )
+                        ),
+                        FrameType.CONCLUSION,
                     )
 
             except (
@@ -381,7 +398,8 @@ class ConnectionHandler:
             return
 
         sha256: str = task_info["data"].get("sha256")
-        file_size: int = task_info["data"].get("file_size")
+        # required field, guaranteed by JSON Schema validation
+        file_size: int = task_info["data"]["file_size"]
         max_chunk_size: int = task_info["data"].get(
             "max_chunk_size", FILE_TRANSFER_MAX_CHUNK_SIZE
         )
@@ -433,13 +451,18 @@ class ConnectionHandler:
                 with ProviderManager().storage.fopen(file.path, "wb") as f:
                     try:
                         hasher = hashlib.sha256()
-                        while True:
+                        received_size = 0
+                        while received_size < file_size:
                             # Receive data from the client
                             data = self.stream.recv().data
+                            if not data:
+                                break
+
                             f.write(data)
                             hasher.update(data)
+                            received_size += len(data)
 
-                            if not data or len(data) < chunk_size:
+                            if len(data) < chunk_size:
                                 break
                     except (
                         websockets.ConnectionClosed,

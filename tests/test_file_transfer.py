@@ -1,11 +1,25 @@
+import hashlib
 import os
 import re
+import shutil
 import sqlite3
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
+import orjson
 import pytest
+from sqlalchemy import Table, create_engine
+from sqlalchemy.orm import sessionmaker
 
 from tests.test_client import CFMSTestClient, calculate_sha256
 from tests.utils import assert_success
+
+_project_root = Path(__file__).resolve().parent.parent
+_src_path = _project_root / "src"
 
 
 def _get_revision_file_size(revision_id: str) -> int | None:
@@ -38,6 +52,162 @@ def _set_revision_file_size(revision_id: str, size: int) -> None:
             (size, revision_id),
         )
         connection.commit()
+
+
+class _FakeFrame:
+    def __init__(self, data):
+        self.data = data
+
+
+@dataclass
+class _SentPayload:
+    data: object
+    frame_type: object = None
+
+
+class _FakeLogger:
+    def info(self, *_args, **_kwargs):
+        pass
+
+    def error(self, *_args, **_kwargs):
+        pass
+
+    def debug(self, *_args, **_kwargs):
+        pass
+
+
+class _FakeStorage:
+    def __init__(self, root):
+        self.root = root
+
+    def _resolve(self, path):
+        return self.root / path
+
+    def fopen(self, path, mode="rb"):
+        return open(self._resolve(path), mode)
+
+    def getsize(self, path):
+        return os.path.getsize(self._resolve(path))
+
+    def makedirs(self, path, mode=0o777, exist_ok=False):
+        os.makedirs(self._resolve(path), mode=mode, exist_ok=exist_ok)
+
+    def remove(self, path):
+        os.remove(self._resolve(path))
+
+
+class _FakeProviderManager:
+    def __init__(self, storage):
+        self.storage = storage
+
+
+class _FakeDownloadStream:
+    def __init__(self):
+        self.sent_payloads = []
+        self.responses = [_FakeFrame(b"ready")]
+
+    def send(self, data, frame_type=None, **_kwargs):
+        self.sent_payloads.append(_SentPayload(data, frame_type))
+
+    def recv(self):
+        return self.responses.pop(0)
+
+
+class _FakeUploadStream:
+    def __init__(self, frames):
+        self.sent_payloads = []
+        self.responses = [_FakeFrame(frame) for frame in frames]
+
+    def send(self, data, frame_type=None, **_kwargs):
+        self.sent_payloads.append(_SentPayload(data, frame_type))
+
+    def recv(self):
+        return self.responses.pop(0)
+
+
+def _new_transfer_handler(connection_handler_cls, stream):
+    handler = connection_handler_cls.__new__(connection_handler_cls)
+    handler.stream = stream
+    handler.logger = _FakeLogger()
+    return handler
+
+
+def _sent_json_messages(stream):
+    return [
+        orjson.loads(sent_payload.data)
+        for sent_payload in stream.sent_payloads
+        if isinstance(sent_payload.data, bytes | bytearray | memoryview)
+    ]
+
+
+@pytest.fixture
+def file_task_context(monkeypatch, tmp_path):
+    _src = str(_src_path)
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    shutil.copy(_src_path / "config.toml.sample", config_dir / "config.toml")
+    (config_dir / "init").write_text("", encoding="utf-8")
+    monkeypatch.chdir(config_dir)
+
+    import include.classes.connection_handler as connection_handler
+    from include.classes.connection_handler import ConnectionHandler
+    from include.classes.multiplexer import FrameType
+    from include.constants import FILE_TRANSFER_MIN_CHUNK_SIZE
+    from include.database.handler import Base
+    from include.database.models.file import File, FileTask
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'file_tasks.db'}")
+    Base.metadata.create_all(
+        engine, tables=[cast(Table, File.__table__), cast(Table, FileTask.__table__)]
+    )
+    TestingSession = sessionmaker(bind=engine)
+
+    monkeypatch.setattr(connection_handler, "Session", TestingSession)
+    monkeypatch.setattr(
+        connection_handler,
+        "ProviderManager",
+        lambda: _FakeProviderManager(_FakeStorage(tmp_path)),
+    )
+    monkeypatch.setattr(
+        connection_handler,
+        "pm",
+        SimpleNamespace(
+            hook=SimpleNamespace(
+                ext_on_empty_file_uploaded=lambda **_kwargs: None,
+                ext_on_file_uploaded=lambda **_kwargs: None,
+            )
+        ),
+    )
+
+    return SimpleNamespace(
+        session=TestingSession,
+        ConnectionHandler=ConnectionHandler,
+        FrameType=FrameType,
+        File=File,
+        FileTask=FileTask,
+        FILE_TRANSFER_MIN_CHUNK_SIZE=FILE_TRANSFER_MIN_CHUNK_SIZE,
+    )
+
+
+def _create_file_task(context, path, mode, status=0):
+    session_factory = context.session
+    with session_factory() as session:
+        file = context.File(id=f"file-{mode}-{path}", path=path)
+        task = context.FileTask(
+            id=f"task-{mode}-{path}",
+            file_id=file.id,
+            mode=mode,
+            status=status,
+            start_time=time.time(),
+            end_time=time.time() + 60,
+        )
+        session.add(file)
+        session.add(task)
+        session.commit()
+        return task.id, file.id
 
 
 class TestFileTransfer:
@@ -148,3 +318,77 @@ class TestFileTransfer:
             await authenticated_client.upload_file_to_server(
                 upload_task_id, "./does-not-exist-upload-source.bin"
             )
+
+
+def test_empty_download_marks_file_task_completed(file_task_context, tmp_path):
+    relative_path = "empty-download.bin"
+    (tmp_path / relative_path).write_bytes(b"")
+    task_id, file_id = _create_file_task(file_task_context, relative_path, mode=0)
+
+    stream = _FakeDownloadStream()
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.send_file(task_id, offset=0)
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        file = session.get(file_task_context.File, file_id)
+
+        assert task.status == 1
+        assert task.encryption_key is None
+        assert file.size == 0
+
+    sent_messages = _sent_json_messages(stream)
+    transfer_info, transfer_end = sent_messages
+
+    assert [message["action"] for message in sent_messages] == [
+        "transfer_file",
+        "transfer_file",
+    ]
+    assert transfer_info["data"]["file_size"] == 0
+    assert transfer_info["data"]["total_chunks"] == 0
+    assert transfer_end["data"] == {"flag": "empty_file"}
+    assert stream.sent_payloads[-1].frame_type == file_task_context.FrameType.CONCLUSION
+
+
+def test_exact_chunk_upload_marks_file_task_completed(
+    file_task_context,
+):
+    relative_path = "uploads/exact-chunk.bin"
+    task_id, file_id = _create_file_task(file_task_context, relative_path, mode=1)
+    chunk_size = file_task_context.FILE_TRANSFER_MIN_CHUNK_SIZE
+    payload = b"a" * (chunk_size * 2)
+    transfer_request = orjson.dumps(
+        {
+            "action": "transfer_file",
+            "data": {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "file_size": len(payload),
+                "max_chunk_size": chunk_size,
+            },
+        }
+    )
+    stream = _FakeUploadStream(
+        [
+            transfer_request,
+            payload[:chunk_size],
+            payload[chunk_size:],
+        ]
+    )
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.receive_file(task_id)
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        file = session.get(file_task_context.File, file_id)
+        assert task.status == 1
+        assert file.active is True
+        assert file.size == len(payload)
+
+    sent_messages = _sent_json_messages(stream)
+    assert any(
+        message.get("code") == 200
+        and message.get("message") == "File received successfully"
+        for message in sent_messages
+    )
