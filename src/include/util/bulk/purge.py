@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from include.constants import QUERY_CHUNK_SIZE
 from include.database.models.entity import (
     Document,
+    DocumentAccessRule,
     DocumentRevision,
 )
 from include.database.models.file import File, FileTask, _queue_deferred_file_deletion
@@ -32,6 +33,10 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
     if not revision_data:
         # 如果这些文档都没有修订版本，直接删除文档记录即可
         for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
+            session.query(DocumentAccessRule).filter(
+                DocumentAccessRule.document_id.in_(chunk)
+            ).delete(synchronize_session=False)
+        for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
             session.query(Document).filter(Document.id.in_(chunk)).delete(
                 synchronize_session=False
             )
@@ -50,34 +55,50 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
     # 3. 批量删除 (使用 SQL 级别的 delete)
     # 我们处于 no_autoflush 模式下运行此块
 
-    # 3a. 清理相关任务
+    # 3a. 先解除文档与修订版本、修订版本之间的外键引用
+    for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
+        session.query(Document).filter(Document.id.in_(chunk)).update(
+            {Document.current_revision_id: None}, synchronize_session=False
+        )
+
+    for chunk in batched(rev_ids, QUERY_CHUNK_SIZE):
+        session.query(DocumentRevision).filter(DocumentRevision.id.in_(chunk)).update(
+            {DocumentRevision.parent_revision_id: None}, synchronize_session=False
+        )
+
+    # 3b. 清理相关任务
     if deletable_file_ids:
         for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
             session.query(FileTask).filter(FileTask.file_id.in_(chunk)).delete(
                 synchronize_session=False
             )
 
-    # 3b. 收集文件路径并删除 File 记录
+    # 3c. 收集文件路径。File 记录必须等 DocumentRevision 删除后才能删除。
+    deletable_files = []
     if deletable_file_ids:
         for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
-            files = session.query(File).filter(File.id.in_(chunk)).all()
-            for f in files:
-                _queue_deferred_file_deletion(session, f.path)
-            session.query(File).filter(File.id.in_(chunk)).delete(
-                synchronize_session=False
-            )
+            deletable_files.extend(session.query(File).filter(File.id.in_(chunk)).all())
 
-    # 3c. 批量删除修订版本和文档
+    # 3d. 批量删除修订版本、文件和文档
     for chunk in batched(rev_ids, QUERY_CHUNK_SIZE):
         session.query(DocumentRevision).filter(DocumentRevision.id.in_(chunk)).delete(
             synchronize_session=False
         )
 
+    if deletable_files:
+        for f in deletable_files:
+            _queue_deferred_file_deletion(session, f.path)
+
+        deletable_file_ids = [f.id for f in deletable_files]
+        for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
+            session.query(File).filter(File.id.in_(chunk)).delete(
+                synchronize_session=False
+            )
+
     for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-        # 还要处理 current_revision_id 的外键约束
-        session.query(Document).filter(Document.id.in_(chunk)).update(
-            {Document.current_revision_id: None}, synchronize_session=False
-        )
+        session.query(DocumentAccessRule).filter(
+            DocumentAccessRule.document_id.in_(chunk)
+        ).delete(synchronize_session=False)
         session.query(Document).filter(Document.id.in_(chunk)).delete(
             synchronize_session=False
         )
