@@ -148,7 +148,6 @@ class ConnectionHandler:
         """
 
         with Session() as session:
-            # Query the FileTask table to get the file_id associated with the task_id
             file_task = session.get(FileTask, task_id)
             if not file_task:
                 raise ValueError(f"File transfer task not found for task_id: {task_id}")
@@ -158,183 +157,193 @@ class ConnectionHandler:
                 raise ValueError(
                     f"File transfer task already completed or cancelled: {task_id}"
                 )
-            # Query the File table to get the file path associated with the file_id
             file = session.get(File, file_task.file_id)
             if not file:
                 raise ValueError(f"File not found for file_id: {file_task.file_id}")
 
-            self.logger.info(
-                f"Task {file_task.id}: preparing to send file (id: {file_task.file_id})."
-            )
+            file_id = file.id
+            file_path = file.path
+            stored_file_size = file.size
+            encryption_key = file_task.encryption_key
 
-            file_path = file.path  # 防止 Session 关闭后可能出现的异常
-            file_size = ProviderManager().storage.getsize(file_path)
-            if file.size != file_size:
+        self.logger.info(f"Task {task_id}: preparing to send file (id: {file_id}).")
+
+        file_size = ProviderManager().storage.getsize(file_path)
+        if stored_file_size != file_size:
+            with Session() as session:
+                file = session.get(File, file_id)
+                if not file:
+                    raise ValueError(f"File not found for file_id: {file_id}")
                 file.size = file_size
                 session.commit()
 
-            self.logger.info(f"Calculation complete. File size: {file_size}")
+        self.logger.info(f"Calculation complete. File size: {file_size}")
 
-            ### 发送方首先发出文件信息
-            chunk_size = global_config["server"]["file_chunk_size"]  # 文件分块大小
-            total_chunks = (file_size + chunk_size - 1) // chunk_size
+        chunk_size = global_config["server"]["file_chunk_size"]
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
 
+        self.stream.send(
+            orjson.dumps(
+                {
+                    "action": "transfer_file",
+                    "data": {
+                        "file_size": file_size,
+                        "chunk_size": chunk_size,
+                        "total_chunks": total_chunks,
+                    },
+                },
+            )
+        )
+
+        received_response = self.stream.recv()
+        if received_response.data != b"ready":
+            self.logger.error(
+                "Client did not acknowledge readiness for file "
+                f"transfer: {received_response}"
+            )
+            self.conclude_request(400, {}, "Client not ready for file transfer")
+            return
+
+        if offset > file_size:
+            self.logger.error(
+                f"Invalid offset: {offset} (exceeds file size: {file_size})"
+            )
+            self.conclude_request(400, {}, "Invalid offset: exceeds file size")
+            return
+
+        if offset % chunk_size != 0:
+            self.logger.error(
+                f"Invalid offset: {offset} (not aligned to chunk size: {chunk_size})"
+            )
+            self.conclude_request(
+                400,
+                {},
+                "Invalid offset: must be a multiple of chunk_size or zero",
+            )
+            return
+
+        if file_size == 0:
+            self.logger.info("Empty file, no need to send")
+            with Session() as session:
+                file_task = session.get(FileTask, task_id)
+                if not file_task:
+                    raise ValueError(
+                        f"File transfer task not found for task_id: {task_id}"
+                    )
+                file_task.status = 1
+                session.commit()
             self.stream.send(
                 orjson.dumps(
                     {
                         "action": "transfer_file",
                         "data": {
-                            "file_size": file_size,  # 原始文件的大小
-                            "chunk_size": chunk_size,  # 分块大小
-                            "total_chunks": total_chunks,  # 文件总分块数
+                            "flag": "empty_file",
                         },
                     },
-                )
+                ),
+                FrameType.CONCLUSION,
             )
+            return
 
-            received_response = (
-                self.stream.recv()
-            )  # Wait for client acknowledgment before sending the file
-            if received_response.data != b"ready":
-                self.logger.error(
-                    "Client did not acknowledge readiness for file "
-                    f"transfer: {received_response}"
-                )
-                self.conclude_request(400, {}, "Client not ready for file transfer")
-                return
+        if encryption_key:
+            aes_key = base64.b64decode(encryption_key)
+        else:
+            aes_key = get_random_bytes(32)
+            encoded_key = base64.b64encode(aes_key).decode()
+            with Session() as session:
+                file_task = session.get(FileTask, task_id)
+                if not file_task:
+                    raise ValueError(
+                        f"File transfer task not found for task_id: {task_id}"
+                    )
+                if file_task.encryption_key:
+                    aes_key = base64.b64decode(file_task.encryption_key)
+                else:
+                    file_task.encryption_key = encoded_key
+                    session.commit()
 
-            # offset >= 0 is already guaranteed by JSON Schema validation
-            if offset > file_size:
-                self.logger.error(
-                    f"Invalid offset: {offset} (exceeds file size: {file_size})"
-                )
-                self.conclude_request(400, {}, "Invalid offset: exceeds file size")
-                return
+        self.logger.info(f"File transmission begin. Offset: {offset}")
 
-            if offset % chunk_size != 0:
-                self.logger.error(
-                    f"Invalid offset: {offset} (not aligned to chunk size: {chunk_size})"
-                )
-                self.conclude_request(
-                    400,
-                    {},
-                    "Invalid offset: must be a multiple of chunk_size or zero",
-                )
-                return
-
-            if file_size == 0:
-                self.logger.info("Empty file, no need to send")
-                file_task.status = 1
-                session.commit()
-                self.stream.send(
-                    orjson.dumps(
-                        {
-                            "action": "transfer_file",
-                            "data": {
-                                "flag": "empty_file",
-                            },
-                        },
-                    ),
-                    FrameType.CONCLUSION,
-                )
-                return
-
-            # Get or set the AES key for this file transfer task
-            if file_task.encryption_key:
-                aes_key = base64.b64decode(file_task.encryption_key)
-            else:
-                aes_key = get_random_bytes(32)  # AES-256
-                file_task.encryption_key = base64.b64encode(aes_key).decode()
-                session.commit()
-
-            self.logger.info(f"File transmission begin. Offset: {offset}")
-
-            try:
-                with ProviderManager().storage.fopen(file_path) as file:
-                    if offset > 0:
-                        if not file.seekable():
-                            self.logger.error(
-                                f"File is not seekable, cannot resume from offset: {offset}"
-                            )
-                            self.conclude_request(
-                                400,
-                                {},
-                                "File is not seekable, cannot resume from non-zero offset",
-                            )
-                            return
-
-                        file.seek(offset)
-                        chunk_index = offset // chunk_size
-
-                    else:
-                        chunk_index = 0
-
-                    while True:
-                        chunk = file.read(chunk_size)
-                        if not chunk:
-                            break
-
-                        # For each chunk, generate a unique nonce by combining a random
-                        # prefix with the chunk index.
-                        prefix = get_random_bytes(8)
-                        nonce = prefix + chunk_index.to_bytes(4, "big")
-                        cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce, mac_len=16)
-
-                        encrypted_chunk, tag = cipher.encrypt_and_digest(chunk)
-                        payload = {
-                            "action": "file_chunk",
-                            "data": {
-                                "index": chunk_index,
-                                "chunk": base64.b64encode(encrypted_chunk).decode(),
-                                "tag": base64.b64encode(tag).decode(),
-                                "prefix": base64.b64encode(prefix).decode(),
-                            },
-                        }
-                        self.stream.send(
-                            orjson.dumps(
-                                payload,
-                            )
+        try:
+            with ProviderManager().storage.fopen(file_path) as file:
+                if offset > 0:
+                    if not file.seekable():
+                        self.logger.error(
+                            f"File is not seekable, cannot resume from offset: {offset}"
                         )
-                        chunk_index += 1
+                        self.conclude_request(
+                            400,
+                            {},
+                            "File is not seekable, cannot resume from non-zero offset",
+                        )
+                        return
 
-                session.refresh(file_task)  # Refresh to get the latest status
+                    file.seek(offset)
+                    chunk_index = offset // chunk_size
 
-                if file_task.status == 0:
+                else:
+                    chunk_index = 0
+
+                while True:
+                    chunk = file.read(chunk_size)
+                    if not chunk:
+                        break
+
+                    prefix = get_random_bytes(8)
+                    nonce = prefix + chunk_index.to_bytes(4, "big")
+                    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce, mac_len=16)
+
+                    encrypted_chunk, tag = cipher.encrypt_and_digest(chunk)
+                    payload = {
+                        "action": "file_chunk",
+                        "data": {
+                            "index": chunk_index,
+                            "chunk": base64.b64encode(encrypted_chunk).decode(),
+                            "tag": base64.b64encode(tag).decode(),
+                            "prefix": base64.b64encode(prefix).decode(),
+                        },
+                    }
                     self.stream.send(
                         orjson.dumps(
-                            {
-                                "action": "aes_key",
-                                "data": {
-                                    "key": base64.b64encode(aes_key).decode(),
-                                },
-                            },
-                        ),
-                        FrameType.CONCLUSION,
+                            payload,
+                        )
                     )
+                    chunk_index += 1
+
+            with Session() as session:
+                file_task = session.get(FileTask, task_id)
+                if not file_task:
+                    raise ValueError(
+                        f"File transfer task not found for task_id: {task_id}"
+                    )
+                if file_task.status == 0:
                     file_task.status = 1
                     session.commit()
+                    key_to_send = base64.b64encode(aes_key).decode()
                 else:
-                    self.stream.send(
-                        orjson.dumps(
-                            {
-                                "action": "aes_key",
-                                "data": {
-                                    "key": None,
-                                },
-                            },
-                        ),
-                        FrameType.CONCLUSION,
-                    )
+                    key_to_send = None
 
-            except (
-                websockets.ConnectionClosed,
-                websockets.exceptions.ConnectionClosedError,
-            ):
-                self.logger.info("File transmission aborted: Connection closed")
-                return
-            except Exception as e:
-                self.report_error(e, context=f"Error sending file {file_path}")
-                return
+            self.stream.send(
+                orjson.dumps(
+                    {
+                        "action": "aes_key",
+                        "data": {
+                            "key": key_to_send,
+                        },
+                    },
+                ),
+                FrameType.CONCLUSION,
+            )
+
+        except (
+            websockets.ConnectionClosed,
+            websockets.exceptions.ConnectionClosedError,
+        ):
+            self.logger.info("File transmission aborted: Connection closed")
+            return
+        except Exception as e:
+            self.report_error(e, context=f"Error sending file {file_path}")
+            return
 
         self.logger.info(f"File {file_path} sent successfully.")
 
@@ -410,9 +419,7 @@ class ConnectionHandler:
             else max_chunk_size
         )
 
-        ### 获取任务与文件基本信息
         with Session() as session:
-            # Query the FileTask table to get the file_id associated with the task_id
             file_task = session.get(FileTask, task_id)
             if not file_task:
                 raise ValueError(f"File transfer task not found for task_id: {task_id}")
@@ -422,106 +429,120 @@ class ConnectionHandler:
                 raise ValueError(
                     f"File transfer task already completed or cancelled: {task_id}"
                 )
-            # Query the File table to get the file path associated with the file_id
             file = session.get(File, file_task.file_id)
             if not file:
                 raise ValueError(f"File not found for file_id: {file_task.file_id}")
 
-            ProviderManager().storage.makedirs(
-                os.path.dirname(file.path), exist_ok=True
-            )
+            file_id = file.id
+            file_path = file.path
 
-            if file_size == 0:  # 空文件
-                self.stream.send("stop")
+        ProviderManager().storage.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-                # Create an empty file and mark the task as completed
-                ProviderManager().storage.fopen(file.path, "wb").close()
+        if file_size == 0:
+            self.stream.send("stop")
+
+            ProviderManager().storage.fopen(file_path, "wb").close()
+            with Session() as session:
+                file_task = session.get(FileTask, task_id)
+                if not file_task:
+                    raise ValueError(
+                        f"File transfer task not found for task_id: {task_id}"
+                    )
+                file = session.get(File, file_id)
+                if not file:
+                    raise ValueError(f"File not found for file_id: {file_id}")
                 file_task.status = 1
                 file.sha256 = sha256
                 file.size = 0
                 file.active = True
                 session.commit()
 
-                pm.hook.ext_on_empty_file_uploaded(id=file.id, path=file.path)
+            pm.hook.ext_on_empty_file_uploaded(id=file_id, path=file_path)
+            return
+
+        self.stream.send(f"ready {chunk_size}")
+        try:
+            logger.info("Receiving file: transfer started")
+            with ProviderManager().storage.fopen(file_path, "wb") as f:
+                try:
+                    hasher = hashlib.sha256()
+                    received_size = 0
+                    while received_size < file_size:
+                        data = self.stream.recv().data
+                        if not data:
+                            break
+
+                        f.write(data)
+                        hasher.update(data)
+                        received_size += len(data)
+
+                        if len(data) < chunk_size:
+                            break
+                except (
+                    websockets.ConnectionClosed,
+                    websockets.exceptions.ConnectionClosedOK,
+                ):
+                    raise
+
+            actual_size = ProviderManager().storage.getsize(file_path)
+            if file_size and actual_size != file_size:
+                self.logger.error(
+                    f"File size mismatch: expected {file_size}, got {actual_size}"
+                )
+                ProviderManager().storage.remove(file_path)
+
+                self.conclude_request(
+                    400,
+                    {},
+                    f"File size mismatch: expected {file_size}, got {actual_size}",
+                )
                 return
 
-            self.stream.send(f"ready {chunk_size}")
-            try:
-                logger.info("Receiving file: transfer started")
-                with ProviderManager().storage.fopen(file.path, "wb") as f:
-                    try:
-                        hasher = hashlib.sha256()
-                        received_size = 0
-                        while received_size < file_size:
-                            # Receive data from the client
-                            data = self.stream.recv().data
-                            if not data:
-                                break
-
-                            f.write(data)
-                            hasher.update(data)
-                            received_size += len(data)
-
-                            if len(data) < chunk_size:
-                                break
-                    except (
-                        websockets.ConnectionClosed,
-                        websockets.exceptions.ConnectionClosedOK,
-                    ):
-                        raise
-
-                # 校验文件大小
-                actual_size = ProviderManager().storage.getsize(file.path)
-                if file_size and actual_size != file_size:
+            if sha256:
+                actual_sha256 = hasher.hexdigest()
+                if actual_sha256 != sha256:
                     self.logger.error(
-                        f"File size mismatch: expected {file_size}, got {actual_size}"
+                        f"SHA256 mismatch: expected {sha256}, got {actual_sha256}"
                     )
-                    ProviderManager().storage.remove(file.path)
+                    ProviderManager().storage.remove(file_path)
 
                     self.conclude_request(
                         400,
                         {},
-                        f"File size mismatch: expected {file_size}, got {actual_size}",
+                        f"SHA256 mismatch: expected {sha256}, got {actual_sha256}",
                     )
                     return
 
-                # 校验sha256
-                if sha256:
-                    actual_sha256 = hasher.hexdigest()
-                    if actual_sha256 != sha256:
-                        self.logger.error(
-                            f"SHA256 mismatch: expected {sha256}, got {actual_sha256}"
-                        )
-                        ProviderManager().storage.remove(file.path)
-
-                        self.conclude_request(
-                            400,
-                            {},
-                            f"SHA256 mismatch: expected {sha256}, got {actual_sha256}",
-                        )
-                        return
-
+            with Session() as session:
+                file_task = session.get(FileTask, task_id)
+                if not file_task:
+                    raise ValueError(
+                        f"File transfer task not found for task_id: {task_id}"
+                    )
+                file = session.get(File, file_id)
+                if not file:
+                    raise ValueError(f"File not found for file_id: {file_id}")
                 file_task.status = 1
                 file.sha256 = sha256
                 file.size = actual_size
                 file.active = True
                 session.commit()
 
-                pm.hook.ext_on_file_uploaded(id=file.id, path=file.path, sha256=sha256)
+            pm.hook.ext_on_file_uploaded(id=file_id, path=file_path, sha256=sha256)
 
-                self.logger.info(
-                    f"File received and saved to {file.path}, total size: {actual_size}"
-                )
+            self.logger.info(
+                f"File received and saved to {file_path}, total size: {actual_size}"
+            )
 
-                self.conclude_request(200, {}, "File received successfully")
+            self.conclude_request(200, {}, "File received successfully")
 
-            except ConnectionError:
-                self.logger.info("File reception aborted: Connection closed")
-                return
+        except ConnectionError:
+            self.logger.info("File reception aborted: Connection closed")
+            return
 
-            except Exception as e:
-                self.report_error(e, context=f"Error receiving file for task {task_id}")
-                return
+        except Exception as e:
+            self.report_error(e, context=f"Error receiving file for task {task_id}")
+            return
 
     def broadcast(
         self,

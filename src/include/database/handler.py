@@ -33,12 +33,19 @@ if not drivername:
 
 if db_type == "sqlite":
     db_file = global_config["database"]["file"]
-    engine = create_engine(f"sqlite:///{db_file}", echo=debug_enabled)
+    engine = create_engine(
+        f"sqlite:///{db_file}",
+        connect_args={"timeout": 30},
+        echo=debug_enabled,
+    )
 
     @event.listens_for(engine, "connect")
     def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 else:
     username = global_config["database"]["username"]
