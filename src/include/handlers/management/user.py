@@ -23,6 +23,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 from include.classes.connection_handler import ConnectionHandler
+from include.classes.enum.misc import TransferMode
 from include.classes.enum.permissions import Permissions
 from include.classes.enum.status import UserStatus
 from include.conf_loader import global_config
@@ -690,7 +691,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
             avatar = user_to_get.avatar
 
             if avatar:
-                avatar_task_data = create_file_task(avatar, 0)
+                avatar_task_data = create_file_task(avatar, TransferMode.DOWNLOAD)
                 handler.conclude_request(
                     200, {"task_data": avatar_task_data}, smsg.SUCCESS
                 )

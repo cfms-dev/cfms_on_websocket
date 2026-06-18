@@ -15,11 +15,12 @@ __all__ = [
 import datetime
 import secrets
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import jsonschema
 
 from include.classes.connection_handler import ConnectionHandler
+from include.classes.enum.misc import TransferMode
 from include.classes.enum.permissions import Permissions
 from include.classes.enum.status import EntityStatus
 from include.constants import FILE_TASK_DEFAULT_DURATION_SECONDS, ROOT_DIRECTORY_ID
@@ -43,7 +44,9 @@ from include.util.check import (
 from include.util.rule.applying import apply_access_rules
 
 
-def create_file_task(file: File, transfer_mode: int = 0):
+def create_file_task(
+    file: File, transfer_mode: TransferMode = TransferMode.DOWNLOAD
+) -> dict[str, Any]:
     """
     Creates a new file processing task for the specified file.
     Args:
@@ -59,7 +62,7 @@ def create_file_task(file: File, transfer_mode: int = 0):
 
     with Session() as session:
         if not file:
-            return None
+            raise ValueError("File can not be None when creating a file task")
 
         now = time.time()
         task = FileTask(
@@ -77,6 +80,8 @@ def create_file_task(file: File, transfer_mode: int = 0):
             "provider": "native",  # Literal['native', ...]
             "start_time": task.start_time,
             "end_time": task.end_time,
+            # Only download tasks support resume
+            "supports_resume": transfer_mode == TransferMode.DOWNLOAD,
         }
 
 
@@ -362,7 +367,9 @@ class RequestCreateDocumentHandler(RequestHandler):
                 new_document.current_revision = new_revision
                 session.commit()
 
-                task_data = create_file_task(new_revision.file, transfer_mode=1)
+                task_data = create_file_task(
+                    new_revision.file, transfer_mode=TransferMode.UPLOAD
+                )
                 handler.conclude_request(
                     200,
                     {"document_id": new_document.id, "task_data": task_data},
@@ -466,7 +473,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return 404, document_id, handler.username
 
-            task_data = create_file_task(new_file, 1)
+            task_data = create_file_task(new_file, TransferMode.UPLOAD)
 
         handler.conclude_request(
             200, {"task_data": task_data}, "Task successfully created"
