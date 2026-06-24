@@ -60,7 +60,8 @@ def backup_context(monkeypatch, tmp_path):
     (config_dir / "init").write_text("", encoding="utf-8")
     monkeypatch.chdir(config_dir)
 
-    from include.backup import (
+    from include.database.handler import Base
+    from maintenance.backup import (
         BackupFormatError,
         BackupIntegrityError,
         BackupRestoreError,
@@ -69,7 +70,6 @@ def backup_context(monkeypatch, tmp_path):
         import_backup,
         read_backup_header,
     )
-    from include.database.handler import Base
 
     return SimpleNamespace(
         Base=Base,

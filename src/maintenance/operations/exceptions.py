@@ -1,0 +1,2 @@
+class MaintenanceOperationError(RuntimeError):
+    pass
