@@ -194,7 +194,7 @@ def _usage_error(ctx: typer.Context, message: str) -> None:
     cls=_helpful_command(
         argument_hints={
             "username": (
-                "Choose the account whose password should be reset. "
+                "Choose the account whose password should be reset.\n"
                 "Example: maintain user reset-password alice --password NewPass123!"
             ),
         },

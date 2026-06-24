@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -8,6 +9,8 @@ import typer
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _SRC_PATH = _PROJECT_ROOT / "src"
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_BOX_DRAWING_RE = re.compile(r"[\u2500-\u257F]")
 
 
 def _run_maintain(cwd: Path, args: list[str], *, check: bool = True):
@@ -47,6 +50,12 @@ def _run_python(cwd: Path, code: str):
             f"stderr:\n{result.stderr}"
         )
     return result
+
+
+def _normalize_cli_output(output: str) -> str:
+    output = _ANSI_ESCAPE_RE.sub("", output)
+    output = _BOX_DRAWING_RE.sub(" ", output)
+    return " ".join(output.split())
 
 
 def _make_src_dir(tmp_path: Path, name: str = "src") -> Path:
@@ -261,7 +270,7 @@ def test_incomplete_commands_show_contextual_hints(tmp_path):
     for args, expected_parts in cases:
         result = _run_maintain(tmp_path, args, check=False)
         output = result.stdout + result.stderr
-        normalized_output = " ".join(output.replace("│", " ").split())
+        normalized_output = _normalize_cli_output(output)
 
         assert result.returncode != 0
         for expected_part in expected_parts:
