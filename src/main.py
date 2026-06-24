@@ -30,8 +30,8 @@ from include.database.models.entity import DocumentMetadata
 from include.database.models.entity.obj import Document, DocumentRevision, Folder
 from include.database.models.file import File
 from include.handlers.debugging.throw import RequestThrowExceptionHandler
+from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
-from include.providers.storage import LocalStorageProvider
 from include.router import (
     available_functions,
     handle_connection,
@@ -301,84 +301,6 @@ def server_init():
 
     with open(ROOT_ABSPATH / "init", "w") as f:
         f.write("This file indicates that the database has been initialized.\n")
-
-
-def initialize_providers():
-    """
-    Initialize and register the providers required by the application.
-
-    This function creates instances of the required providers, such as
-    storage, caching, and the event bus, and registers them with the
-    ProviderManager for later use throughout the application.
-    """
-
-    # Initialize and register storage provider
-    match global_config["provider"]["storage"]:
-        case "local":
-            storage_provider = LocalStorageProvider()
-        case "s3":
-            from include.providers.storage.s3 import S3StorageProvider
-
-            s3_cfg = global_config["s3"]
-            storage_provider = S3StorageProvider(
-                bucket_name=s3_cfg["bucket"],
-                endpoint_url=s3_cfg["endpoint_url"],
-                aws_access_key_id=s3_cfg["access_key_id"],
-                aws_secret_access_key=s3_cfg["secret_access_key"],
-                region_name=s3_cfg["region_name"],
-            )
-        case _:
-            raise ValueError(
-                f"Unsupported storage provider type: {global_config['provider']['storage']}"
-            )
-
-    ProviderManager().register(storage_provider)
-
-    # Initialize and register caching provider
-    match global_config["provider"]["caching"]:
-        case "memory":
-            from include.providers.caching import MemoryCachingProvider
-
-            caching_provider = MemoryCachingProvider()
-        case "redis":
-            from include.providers.caching import RedisCachingProvider
-
-            redis_cfg = global_config["redis"]
-            caching_provider = RedisCachingProvider(
-                host=redis_cfg["host"],
-                port=redis_cfg["port"],
-                password=redis_cfg.get("password", ""),
-                db=redis_cfg.get("db", 0),
-            )
-        case _:
-            raise ValueError(
-                f"Unsupported caching provider type: {global_config['caching']['type']}"
-            )
-
-    ProviderManager().register(caching_provider)
-
-    # Initialize and register event bus provider
-    match global_config["provider"]["event_bus"]:
-        case "local":
-            from include.providers.events import LocalEventBusProvider
-
-            event_bus_provider = LocalEventBusProvider()
-        case "redis":
-            from include.providers.events import RedisEventBusProvider
-
-            redis_cfg = global_config["redis"]
-            event_bus_provider = RedisEventBusProvider(
-                host=redis_cfg["host"],
-                port=redis_cfg["port"],
-                password=redis_cfg.get("password", ""),
-                db=redis_cfg.get("db", 0),
-            )
-        case _:
-            raise ValueError(
-                f"Unsupported event bus provider type: {global_config['event_bus']['type']}"
-            )
-
-    ProviderManager().register(event_bus_provider)
 
 
 def prepare_handlers():
