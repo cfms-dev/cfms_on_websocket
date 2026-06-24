@@ -9,7 +9,7 @@ from tomlkit import dumps, parse
 
 
 @dataclass(frozen=True)
-class TestServerSettings:
+class ServerTestSettings:
     host: str
     port: int
     use_ssl: bool
@@ -53,7 +53,7 @@ def restore_config(backup: ConfigBackup) -> None:
     atomic_write(backup.path, backup.original_bytes)
 
 
-def write_test_config(src_dir: Path, port: int) -> TestServerSettings:
+def write_test_config(src_dir: Path, port: int) -> ServerTestSettings:
     config_path = src_dir / "config.toml"
     sample_path = src_dir / "config.toml.sample"
 
@@ -79,7 +79,7 @@ def write_test_config(src_dir: Path, port: int) -> TestServerSettings:
     config["provider"]["event_bus"] = "local"
 
     atomic_write(config_path, dumps(config).encode("utf-8"))
-    return TestServerSettings(
+    return ServerTestSettings(
         host="::1",
         port=port,
         use_ssl=True,

@@ -15,7 +15,7 @@ from typing import Awaitable, Callable
 from tests.support.server import ServerLogCapture, start_server, stop_server
 from tests.support.test_config import (
     ConfigBackup,
-    TestServerSettings,
+    ServerTestSettings,
     capture_config,
     reserve_local_port,
     restore_config,
@@ -102,7 +102,7 @@ async def timed_call(stats: LoadStats, fn: Callable[[], Awaitable[dict]]) -> Non
 
 async def run_worker(
     worker_id: int,
-    settings: TestServerSettings,
+    settings: ServerTestSettings,
     scenario: str,
     deadline: float,
     ramp_up: float,
@@ -163,7 +163,7 @@ async def run_worker(
 
 def prepare_managed_server(
     src_dir: Path,
-) -> tuple[TestServerSettings, ConfigBackup, tuple["Popen", "ServerLogCapture"]]:
+) -> tuple[ServerTestSettings, ConfigBackup, tuple["Popen", "ServerLogCapture"]]:
     backup = capture_config(src_dir / "config.toml")
     settings = write_test_config(src_dir, reserve_local_port())
     for key, value in {
@@ -192,7 +192,7 @@ async def run_load(args) -> dict:
     if managed:
         settings, backup, server = prepare_managed_server(src_dir)
     else:
-        settings = TestServerSettings(
+        settings = ServerTestSettings(
             host=args.host or os.environ.get("CFMS_TEST_HOST", "localhost"),
             port=args.port
             if args.port is not None

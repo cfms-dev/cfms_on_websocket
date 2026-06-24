@@ -14,7 +14,7 @@ import pytest_asyncio
 
 from tests.support.server import start_server, stop_server
 from tests.support.test_config import (
-    TestServerSettings,
+    ServerTestSettings,
     capture_config,
     reserve_local_port,
     restore_config,
@@ -25,7 +25,7 @@ from tests.utils import assert_success
 
 
 @pytest.fixture(scope="session")
-def protected_test_config() -> Generator[TestServerSettings, None, None]:
+def protected_test_config() -> Generator[ServerTestSettings, None, None]:
     """Write test config, then restore the original config at session teardown."""
     src_dir = Path("src").resolve()
     config_backup = capture_config(src_dir / "config.toml")
@@ -62,14 +62,14 @@ def protected_test_config() -> Generator[TestServerSettings, None, None]:
 
 @pytest.fixture(scope="session")
 def test_server_settings(
-    protected_test_config: TestServerSettings,
-) -> TestServerSettings:
+    protected_test_config: ServerTestSettings,
+) -> ServerTestSettings:
     return protected_test_config
 
 
 @pytest.fixture(scope="session")
 def server_process(
-    test_server_settings: TestServerSettings,
+    test_server_settings: ServerTestSettings,
 ) -> Generator[subprocess.Popen, None, None]:
     """Start the CFMS server subprocess."""
     process, logs = start_server(test_server_settings)
@@ -92,7 +92,7 @@ def admin_credentials(server_process) -> dict:
 
 @pytest_asyncio.fixture
 async def client(
-    server_process, test_server_settings: TestServerSettings
+    server_process, test_server_settings: ServerTestSettings
 ) -> AsyncGenerator[CFMSTestClient, None]:
     test_client = CFMSTestClient(
         host=test_server_settings.host,
@@ -127,7 +127,7 @@ async def authenticated_client(
 
 @pytest_asyncio.fixture
 async def unauthenticated_client(
-    server_process, test_server_settings: TestServerSettings
+    server_process, test_server_settings: ServerTestSettings
 ) -> AsyncGenerator[CFMSTestClient, None]:
     test_client = CFMSTestClient(
         host=test_server_settings.host,

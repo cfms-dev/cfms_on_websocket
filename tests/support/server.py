@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import IO
 
-from tests.support.test_config import TestServerSettings
+from tests.support.test_config import ServerTestSettings
 
 
 class ServerLogCapture:
@@ -80,7 +80,7 @@ def log_server_output(
 
 
 def start_server(
-    settings: TestServerSettings,
+    settings: ServerTestSettings,
 ) -> tuple[subprocess.Popen, ServerLogCapture]:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
