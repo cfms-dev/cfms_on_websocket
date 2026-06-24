@@ -219,37 +219,37 @@ def test_incomplete_commands_show_contextual_hints(tmp_path):
         (
             ["user", "reset-password"],
             [
-                "Choose the account whose password should be reset.",
+                "Account whose password should be reset.",
                 "maintain user reset-password alice",
             ],
         ),
         (
             ["user", "reset-password", "alice", "--password"],
-            ["Provide the new password after --password"],
+            ["Option '--password' requires an argument."],
         ),
         (
             ["user", "clear-totp"],
             [
-                "Choose exactly one TOTP target",
+                "Clear TOTP state for one user or all users.",
                 "maintain user clear-totp --all --yes",
             ],
         ),
         (
             ["backup", "export"],
-            ["Choose where the encrypted backup should be written."],
+            ["Where the encrypted backup should be written."],
         ),
         (
             ["backup", "export", "backup.confbak", "--key-out"],
-            ["Provide a file path after --key-out"],
+            ["Option '--key-out' requires an argument."],
         ),
         (
             ["backup", "info"],
-            ["Provide the backup file to inspect."],
+            ["Backup file to inspect."],
         ),
         (
             ["backup", "import"],
             [
-                "Provide the encrypted backup file to import",
+                "Backup file to import",
                 "--key-file backup.key --yes",
             ],
         ),
@@ -259,11 +259,11 @@ def test_incomplete_commands_show_contextual_hints(tmp_path):
         ),
         (
             ["backup", "import", "backup.confbak", "--key"],
-            ["Provide the base64url decryption key after --key"],
+            ["Option '--key' requires an argument."],
         ),
         (
             ["backup", "import", "backup.confbak", "--key-file"],
-            ["Provide the path to a file containing the decryption key"],
+            ["Option '--key-file' requires an argument."],
         ),
     ]
 
@@ -348,9 +348,9 @@ def test_backup_export_info_and_import(tmp_path):
     )
 
     assert "Backup Export" in export_result.stdout
-    assert "Backup progress" in export_result.stdout
     assert "Backup export completed" in export_result.stdout
     assert "Starting backup export" in export_result.stderr
+    assert "Adding archive member" in export_result.stderr
     assert (source_src / "backup.confbak").is_file()
     assert (source_src / "backup.key").is_file()
 
@@ -377,7 +377,6 @@ def test_backup_export_info_and_import(tmp_path):
     )
 
     assert "Backup Import" in import_result.stdout
-    assert "Backup progress" in import_result.stdout
     assert "Backup import completed" in import_result.stdout
     assert "Starting backup import" in import_result.stderr
     assert (target_src / "init").is_file()

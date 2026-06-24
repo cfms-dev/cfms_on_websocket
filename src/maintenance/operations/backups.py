@@ -10,7 +10,9 @@ from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import ensure_src_workdir, initialize_providers
 
 if TYPE_CHECKING:
-    from maintenance.backup import BackupHeader, BackupProgressHandler
+    from rich.progress import Progress
+
+    from maintenance.backup import BackupHeader
 
 
 LOGGER = logging.getLogger(__name__)
@@ -40,7 +42,8 @@ def export_backup(
     output_path: str | Path,
     *,
     key_output_path: str | Path | None = None,
-    progress_handler: BackupProgressHandler | None = None,
+    progress: Progress | None = None,
+    show_progress_details: bool = False,
 ) -> BackupExportResult:
     ensure_src_workdir()
     backup_module = _load_backup_module()
@@ -53,7 +56,8 @@ def export_backup(
             output_path,
             key_output_path=key_output_path,
             warning_handler=warnings.append,
-            progress_handler=progress_handler,
+            progress=progress,
+            show_progress_details=show_progress_details,
         )
     except (backup_module.BackupError, OSError, ValueError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
@@ -82,7 +86,8 @@ def import_backup(
     *,
     key: str | None = None,
     key_file: str | Path | None = None,
-    progress_handler: BackupProgressHandler | None = None,
+    progress: Progress | None = None,
+    show_progress_details: bool = False,
 ) -> BackupImportResult:
     ensure_src_workdir()
     if (key is None) == (key_file is None):
@@ -102,7 +107,8 @@ def import_backup(
             backup_path,
             key_text,
             init_path=Path("init"),
-            progress_handler=progress_handler,
+            progress=progress,
+            show_progress_details=show_progress_details,
         )
     except (backup_module.BackupError, OSError, ValueError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc

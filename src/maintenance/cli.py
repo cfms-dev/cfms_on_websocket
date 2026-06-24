@@ -3,16 +3,21 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, ClassVar
+from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
-from rich.text import Text
-from typer.core import TyperCommand
-from typer.core import _click as click
 
 from maintenance import operations
 from maintenance.runtime import MaintenanceRuntimeError
@@ -28,54 +33,6 @@ VerboseOption = Annotated[
         help="Show detailed diagnostic logs.",
     ),
 ]
-
-
-class HelpfulUsageCommand(TyperCommand):
-    argument_hints: ClassVar[dict[str, str]] = {}
-    option_value_hints: ClassVar[dict[str, str]] = {}
-
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        try:
-            return super().parse_args(ctx, args)
-        except click.exceptions.MissingParameter as exc:
-            hint = self._missing_parameter_hint(exc)
-            if hint is None:
-                raise
-            raise click.exceptions.UsageError(
-                f"{exc.format_message()}\n\n{hint}",
-                ctx,
-            ) from exc
-        except click.exceptions.BadOptionUsage as exc:
-            hint = self.option_value_hints.get(exc.option_name)
-            if hint is None:
-                raise
-            raise click.exceptions.UsageError(
-                f"{exc.format_message()}\n\n{hint}",
-                ctx,
-            ) from exc
-
-    def _missing_parameter_hint(
-        self,
-        exc: click.exceptions.MissingParameter,
-    ) -> str | None:
-        if exc.param is None or exc.param.name is None:
-            return None
-        return self.argument_hints.get(exc.param.name)
-
-
-def _helpful_command(
-    *,
-    argument_hints: dict[str, str] | None = None,
-    option_value_hints: dict[str, str] | None = None,
-) -> type[HelpfulUsageCommand]:
-    return type(
-        "MaintenanceHelpfulUsageCommand",
-        (HelpfulUsageCommand,),
-        {
-            "argument_hints": dict(argument_hints or {}),
-            "option_value_hints": dict(option_value_hints or {}),
-        },
-    )
 
 
 app = typer.Typer(
@@ -153,29 +110,15 @@ def _configure_logging(verbose: bool) -> None:
     logger.propagate = False
 
 
-def _build_backup_progress_handler(verbose: bool) -> Callable[[Any], None]:
-    def handle_progress(event: Any) -> None:
-        if event.verbose_only and not verbose:
-            return
-
-        line = Text()
-        if event.verbose_only:
-            line.append("Backup detail ", style="dim cyan")
-        else:
-            line.append("Backup progress ", style="cyan")
-        line.append(
-            f"[{event.current_step}/{event.total_steps}] ",
-            style="bold",
-        )
-        line.append(str(event.message))
-        if event.completed_units is not None and event.total_units is not None:
-            line.append(f" ({event.completed_units}/{event.total_units})")
-        if event.detail:
-            line.append(": ")
-            line.append(str(event.detail))
-        console.print(line)
-
-    return handle_progress
+def _build_backup_progress() -> Progress:
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", markup=False),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    )
 
 
 def _confirm_or_exit(message: str, yes: bool) -> None:
@@ -185,29 +128,20 @@ def _confirm_or_exit(message: str, yes: bool) -> None:
         raise typer.Exit(1)
 
 
-def _usage_error(ctx: typer.Context, message: str) -> None:
-    raise click.exceptions.UsageError(message, ctx)
+def _parameter_error(message: str) -> None:
+    raise typer.BadParameter(message)
 
 
 @user_app.command(
     "reset-password",
-    cls=_helpful_command(
-        argument_hints={
-            "username": (
-                "Choose the account whose password should be reset.\n"
-                "Example: maintain user reset-password alice --password NewPass123!"
-            ),
-        },
-        option_value_hints={
-            "--password": (
-                "Provide the new password after --password, or omit the option "
-                "to let maintain generate a secure password."
-            ),
-        },
-    ),
+    no_args_is_help=True,
+    epilog="Example: maintain user reset-password alice --password NewPass123!",
 )
 def reset_password(
-    username: Annotated[str, typer.Argument(help="Username to update.")],
+    username: Annotated[
+        str,
+        typer.Argument(help="Account whose password should be reset."),
+    ],
     password: Annotated[
         str | None,
         typer.Option(
@@ -240,17 +174,14 @@ def reset_password(
 
 @user_app.command(
     "clear-totp",
-    cls=_helpful_command(
-        argument_hints={
-            "username": (
-                "Choose one target user, or use --all to clear TOTP state for "
-                "every user. Example: maintain user clear-totp alice"
-            ),
-        },
+    no_args_is_help=True,
+    epilog=(
+        "Examples:\n"
+        "  maintain user clear-totp alice\n"
+        "  maintain user clear-totp --all --yes"
     ),
 )
 def clear_totp(
-    ctx: typer.Context,
     username: Annotated[
         str | None,
         typer.Argument(help="Username whose TOTP state should be cleared."),
@@ -267,8 +198,7 @@ def clear_totp(
     """Clear TOTP state for one user or all users."""
 
     if all_users == bool(username):
-        _usage_error(
-            ctx,
+        _parameter_error(
             "Choose exactly one TOTP target: provide a username or pass --all.\n\n"
             "Examples:\n"
             "  maintain user clear-totp alice\n"
@@ -303,23 +233,14 @@ def fill_pepper() -> None:
 
 @backup_app.command(
     "export",
-    cls=_helpful_command(
-        argument_hints={
-            "output_path": (
-                "Choose where the encrypted backup should be written. "
-                "Example: maintain backup export backup.confbak --key-out backup.key"
-            ),
-        },
-        option_value_hints={
-            "--key-out": (
-                "Provide a file path after --key-out to save the generated "
-                "decryption key there."
-            ),
-        },
-    ),
+    no_args_is_help=True,
+    epilog="Example: maintain backup export backup.confbak --key-out backup.key",
 )
 def export_backup(
-    output_path: Annotated[Path, typer.Argument(help="Backup file to create.")],
+    output_path: Annotated[
+        Path,
+        typer.Argument(help="Where the encrypted backup should be written."),
+    ],
     key_output_path: Annotated[
         Path | None,
         typer.Option("--key-out", help="File to receive the generated key."),
@@ -329,14 +250,15 @@ def export_backup(
     """Export an encrypted CFMS backup."""
 
     _configure_logging(verbose)
-    progress_handler = _build_backup_progress_handler(verbose)
-    result = _run(
-        lambda: operations.export_backup(
-            output_path,
-            key_output_path=key_output_path,
-            progress_handler=progress_handler,
-        ),
-    )
+    with _build_backup_progress() as progress:
+        result = _run(
+            lambda: operations.export_backup(
+                output_path,
+                key_output_path=key_output_path,
+                progress=progress,
+                show_progress_details=verbose,
+            ),
+        )
 
     table = Table(title="Backup Export", show_header=False)
     table.add_column("Field", style="cyan")
@@ -370,14 +292,8 @@ def _print_backup_warnings(warnings: tuple[str, ...]) -> None:
 
 @backup_app.command(
     "info",
-    cls=_helpful_command(
-        argument_hints={
-            "backup_path": (
-                "Provide the backup file to inspect. "
-                "Example: maintain backup info backup.confbak"
-            ),
-        },
-    ),
+    no_args_is_help=True,
+    epilog="Example: maintain backup info backup.confbak",
 )
 def backup_info(
     backup_path: Annotated[Path, typer.Argument(help="Backup file to inspect.")],
@@ -404,25 +320,14 @@ def backup_info(
 
 @backup_app.command(
     "import",
-    cls=_helpful_command(
-        argument_hints={
-            "backup_path": (
-                "Provide the encrypted backup file to import, plus exactly one "
-                "key source. Example: maintain backup import backup.confbak "
-                "--key-file backup.key --yes"
-            ),
-        },
-        option_value_hints={
-            "--key": "Provide the base64url decryption key after --key.",
-            "--key-file": (
-                "Provide the path to a file containing the decryption key after "
-                "--key-file."
-            ),
-        },
+    no_args_is_help=True,
+    epilog=(
+        "Examples:\n"
+        "  maintain backup import backup.confbak --key-file backup.key --yes\n"
+        "  maintain backup import backup.confbak --key <base64url-key> --yes"
     ),
 )
 def import_backup(
-    ctx: typer.Context,
     backup_path: Annotated[Path, typer.Argument(help="Backup file to import.")],
     key: Annotated[
         str | None,
@@ -442,8 +347,7 @@ def import_backup(
 
     _configure_logging(verbose)
     if (key is None) == (key_file_path is None):
-        _usage_error(
-            ctx,
+        _parameter_error(
             "Choose exactly one decryption key source: pass --key or --key-file.\n\n"
             "Examples:\n"
             "  maintain backup import backup.confbak --key-file backup.key --yes\n"
@@ -455,15 +359,16 @@ def import_backup(
         "and config keys. Continue?",
         yes,
     )
-    progress_handler = _build_backup_progress_handler(verbose)
-    result = _run(
-        lambda: operations.import_backup(
-            backup_path,
-            key=key,
-            key_file=key_file_path,
-            progress_handler=progress_handler,
-        ),
-    )
+    with _build_backup_progress() as progress:
+        result = _run(
+            lambda: operations.import_backup(
+                backup_path,
+                key=key,
+                key_file=key_file_path,
+                progress=progress,
+                show_progress_details=verbose,
+            ),
+        )
 
     table = Table(title="Backup Import", show_header=False)
     table.add_column("Field", style="cyan")

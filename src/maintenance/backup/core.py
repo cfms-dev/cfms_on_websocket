@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 import warnings
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -23,6 +23,7 @@ import orjson
 import tomlkit
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from rich.progress import Progress, TaskID
 from sqlalchemy import DateTime, Table, func, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
@@ -175,20 +176,71 @@ class BackupWarning(UserWarning):
     pass
 
 
-@dataclass(frozen=True)
-class BackupProgressEvent:
-    phase: str
-    message: str
-    current_step: int
-    total_steps: int
-    detail: str | None = None
-    completed_units: int | None = None
-    total_units: int | None = None
-    verbose_only: bool = False
-
-
-BackupProgressHandler = Callable[[BackupProgressEvent], None]
 BackupWarningHandler = Callable[[str], None]
+
+
+@dataclass
+class _BackupProgressReporter:
+    progress: Progress | None
+    show_details: bool = False
+    overall_task_id: TaskID | None = None
+    detail_task_ids: dict[str, TaskID] = field(default_factory=dict)
+
+    def update_overall(
+        self,
+        *,
+        message: str,
+        current_step: int,
+        total_steps: int,
+        detail: str | None = None,
+    ) -> None:
+        if self.progress is None:
+            return
+
+        description = _format_progress_description(message, detail)
+        if self.overall_task_id is None:
+            self.overall_task_id = self.progress.add_task(
+                description,
+                total=total_steps,
+                completed=0,
+            )
+        self.progress.update(
+            self.overall_task_id,
+            total=total_steps,
+            completed=current_step,
+            description=description,
+            refresh=True,
+        )
+
+    def update_detail(
+        self,
+        *,
+        phase: str,
+        message: str,
+        detail: str | None = None,
+        completed_units: int | None = None,
+        total_units: int | None = None,
+    ) -> None:
+        if self.progress is None or not self.show_details:
+            return
+
+        description = _format_progress_description(message, detail)
+        task_id = self.detail_task_ids.get(phase)
+        if task_id is None:
+            task_id = self.progress.add_task(
+                description,
+                total=total_units,
+                completed=0,
+            )
+            self.detail_task_ids[phase] = task_id
+
+        self.progress.update(
+            task_id,
+            total=total_units,
+            completed=completed_units,
+            description=description,
+            refresh=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -234,9 +286,11 @@ def export_backup(
     storage_provider: StorageProvider | None = None,
     config=global_config,
     warning_handler: BackupWarningHandler | None = None,
-    progress_handler: BackupProgressHandler | None = None,
+    progress: Progress | None = None,
+    show_progress_details: bool = False,
 ) -> str:
     storage = storage_provider or ProviderManager().storage
+    progress_reporter = _BackupProgressReporter(progress, show_progress_details)
     key_bytes = key or secrets.token_bytes(32)
     if len(key_bytes) != 32:
         raise ValueError("Backup key must be exactly 32 bytes")
@@ -245,7 +299,7 @@ def export_backup(
     output.parent.mkdir(parents=True, exist_ok=True)
     LOGGER.debug("Starting backup export to %s", output)
     _emit_progress(
-        progress_handler,
+        progress_reporter,
         phase="prepare_export",
         message="Preparing backup export",
         current_step=1,
@@ -273,10 +327,10 @@ def export_backup(
             storage_provider=storage,
             config=config,
             warning_handler=warning_handler,
-            progress_handler=progress_handler,
+            progress_reporter=progress_reporter,
         )
         _emit_progress(
-            progress_handler,
+            progress_reporter,
             phase="write_manifest",
             message="Writing backup manifest",
             current_step=4,
@@ -284,20 +338,27 @@ def export_backup(
         )
         _write_json(staging_dir / "manifest.json", manifest)
         _emit_progress(
-            progress_handler,
+            progress_reporter,
             phase="encrypt_archive",
             message="Compressing and encrypting backup payload",
             current_step=5,
             total_steps=EXPORT_PROGRESS_STEPS,
         )
-        _write_encrypted_archive(output, staging_dir, header_bytes, key_bytes, nonce)
+        _write_encrypted_archive(
+            output,
+            staging_dir,
+            header_bytes,
+            key_bytes,
+            nonce,
+            progress_reporter=progress_reporter,
+        )
 
     encoded_key = encode_backup_key(key_bytes)
     if key_output_path is not None:
         LOGGER.debug("Writing backup key to %s", key_output_path)
         Path(key_output_path).write_text(f"{encoded_key}\n", encoding="utf-8")
     _emit_progress(
-        progress_handler,
+        progress_reporter,
         phase="complete_export",
         message="Backup export completed",
         current_step=6,
@@ -317,16 +378,18 @@ def import_backup(
     storage_provider: StorageProvider | None = None,
     config_path: str | os.PathLike[str] = "config.toml",
     init_path: str | os.PathLike[str] = ROOT_ABSPATH / "init",
-    progress_handler: BackupProgressHandler | None = None,
+    progress: Progress | None = None,
+    show_progress_details: bool = False,
 ) -> dict[str, Any]:
     key_bytes = decode_backup_key(key) if isinstance(key, str) else key
     if len(key_bytes) != 32:
         raise ValueError("Backup key must be exactly 32 bytes")
 
     storage = storage_provider or ProviderManager().storage
+    progress_reporter = _BackupProgressReporter(progress, show_progress_details)
     LOGGER.debug("Starting backup import from %s", backup_path)
     _emit_progress(
-        progress_handler,
+        progress_reporter,
         phase="read_header",
         message="Reading backup header",
         current_step=1,
@@ -337,7 +400,7 @@ def import_backup(
     _validate_header(header)
 
     _emit_progress(
-        progress_handler,
+        progress_reporter,
         phase="prepare_target",
         message="Preparing target database",
         current_step=2,
@@ -352,7 +415,7 @@ def import_backup(
         compressed_payload = tmp_path / "payload.tar.xz"
         LOGGER.debug("Created backup import workspace: %s", tmp_path)
         _emit_progress(
-            progress_handler,
+            progress_reporter,
             phase="decrypt_payload",
             message="Decrypting backup payload",
             current_step=3,
@@ -370,7 +433,7 @@ def import_backup(
         extract_dir = tmp_path / "payload"
         extract_dir.mkdir()
         _emit_progress(
-            progress_handler,
+            progress_reporter,
             phase="extract_payload",
             message="Extracting backup payload",
             current_step=4,
@@ -378,7 +441,7 @@ def import_backup(
         )
         _safe_extract_tar_xz(compressed_payload, extract_dir)
         _emit_progress(
-            progress_handler,
+            progress_reporter,
             phase="validate_manifest",
             message="Validating backup manifest",
             current_step=5,
@@ -389,7 +452,7 @@ def import_backup(
 
         try:
             _emit_progress(
-                progress_handler,
+                progress_reporter,
                 phase="restore_files",
                 message="Restoring storage files",
                 current_step=6,
@@ -399,10 +462,10 @@ def import_backup(
                 extract_dir,
                 manifest,
                 storage,
-                progress_handler=progress_handler,
+                progress_reporter=progress_reporter,
             )
             _emit_progress(
-                progress_handler,
+                progress_reporter,
                 phase="restore_database",
                 message="Restoring database rows",
                 current_step=7,
@@ -412,10 +475,10 @@ def import_backup(
                 extract_dir,
                 manifest,
                 session_factory,
-                progress_handler=progress_handler,
+                progress_reporter=progress_reporter,
             )
             _emit_progress(
-                progress_handler,
+                progress_reporter,
                 phase="restore_config",
                 message="Restoring configuration keys",
                 current_step=8,
@@ -436,7 +499,7 @@ def import_backup(
             raise
 
     _emit_progress(
-        progress_handler,
+        progress_reporter,
         phase="complete_import",
         message="Backup import completed",
         current_step=9,
@@ -487,7 +550,7 @@ def _stage_backup_payload(
     storage_provider: StorageProvider,
     config,
     warning_handler: BackupWarningHandler | None = None,
-    progress_handler: BackupProgressHandler | None = None,
+    progress_reporter: _BackupProgressReporter | None = None,
 ) -> dict[str, Any]:
     tables_dir = staging_dir / "tables"
     files_dir = staging_dir / "files"
@@ -495,7 +558,7 @@ def _stage_backup_payload(
     files_dir.mkdir()
 
     _emit_progress(
-        progress_handler,
+        progress_reporter,
         phase="export_tables",
         message="Exporting database tables",
         current_step=2,
@@ -504,10 +567,10 @@ def _stage_backup_payload(
     table_manifest = _export_tables(
         tables_dir,
         session_factory,
-        progress_handler=progress_handler,
+        progress_reporter=progress_reporter,
     )
     _emit_progress(
-        progress_handler,
+        progress_reporter,
         phase="export_files",
         message="Copying storage files",
         current_step=3,
@@ -518,7 +581,7 @@ def _stage_backup_payload(
         session_factory,
         storage_provider,
         warning_handler=warning_handler,
-        progress_handler=progress_handler,
+        progress_reporter=progress_reporter,
     )
     return {
         "format_version": BACKUP_FORMAT_VERSION,
@@ -538,7 +601,7 @@ def _export_tables(
     tables_dir: Path,
     session_factory: sessionmaker,
     *,
-    progress_handler: BackupProgressHandler | None = None,
+    progress_reporter: _BackupProgressReporter | None = None,
 ) -> dict[str, Any]:
     metadata_tables = _backup_tables()
     manifest: dict[str, Any] = {}
@@ -553,7 +616,7 @@ def _export_tables(
                 len(BACKUP_TABLE_NAMES),
             )
             _emit_progress(
-                progress_handler,
+                progress_reporter,
                 phase="export_table",
                 message="Exporting table",
                 current_step=2,
@@ -594,7 +657,7 @@ def _export_files(
     storage_provider: StorageProvider,
     *,
     warning_handler: BackupWarningHandler | None = None,
-    progress_handler: BackupProgressHandler | None = None,
+    progress_reporter: _BackupProgressReporter | None = None,
 ) -> list[dict[str, Any]]:
     file_rows: list[dict[str, Any]] = []
     files_table = _backup_tables()["files"]
@@ -622,7 +685,7 @@ def _export_files(
             len(file_rows),
         )
         _emit_progress(
-            progress_handler,
+            progress_reporter,
             phase="export_file",
             message="Copying storage file",
             current_step=3,
@@ -692,6 +755,8 @@ def _write_encrypted_archive(
     header_bytes: bytes,
     key: bytes,
     nonce: bytes,
+    *,
+    progress_reporter: _BackupProgressReporter | None = None,
 ) -> None:
     prefix = _header_prefix(header_bytes)
     cipher = Cipher(algorithms.AES(key), modes.GCM(nonce))
@@ -702,7 +767,11 @@ def _write_encrypted_archive(
     temp_output = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
     LOGGER.debug("Writing encrypted archive via temporary file %s", temp_output)
     try:
-        _write_compressed_payload(compressed_payload, staging_dir)
+        _write_compressed_payload(
+            compressed_payload,
+            staging_dir,
+            progress_reporter=progress_reporter,
+        )
         with temp_output.open("wb") as raw_output:
             raw_output.write(prefix)
             with compressed_payload.open("rb") as source:
@@ -718,19 +787,40 @@ def _write_encrypted_archive(
         raise
 
 
-def _write_compressed_payload(output_path: Path, staging_dir: Path) -> None:
+def _write_compressed_payload(
+    output_path: Path,
+    staging_dir: Path,
+    *,
+    progress_reporter: _BackupProgressReporter | None = None,
+) -> None:
     LOGGER.debug("Creating compressed payload at %s", output_path)
+    staged_files = sorted((staging_dir / "files").iterdir())
+    archive_members = [
+        (staging_dir / "manifest.json", "manifest.json"),
+        *(
+            (
+                staging_dir / "tables" / f"{table_name}.jsonl",
+                f"tables/{table_name}.jsonl",
+            )
+            for table_name in BACKUP_TABLE_NAMES
+        ),
+        *((staged_file, f"files/{staged_file.name}") for staged_file in staged_files),
+    ]
+    total_members = len(archive_members)
     with lzma.open(output_path, "wb", preset=6) as compressed:
         with tarfile.open(fileobj=compressed, mode="w|") as tar:
-            _add_staged_file(tar, staging_dir / "manifest.json", "manifest.json")
-            for table_name in BACKUP_TABLE_NAMES:
+            for member_index, (source_path, archive_path) in enumerate(
+                archive_members,
+                start=1,
+            ):
                 _add_staged_file(
                     tar,
-                    staging_dir / "tables" / f"{table_name}.jsonl",
-                    f"tables/{table_name}.jsonl",
+                    source_path,
+                    archive_path,
+                    progress_reporter=progress_reporter,
+                    member_index=member_index,
+                    total_members=total_members,
                 )
-            for staged_file in sorted((staging_dir / "files").iterdir()):
-                _add_staged_file(tar, staged_file, f"files/{staged_file.name}")
     LOGGER.debug("Compressed payload created at %s", output_path)
 
 
@@ -788,7 +878,7 @@ def _restore_files(
     manifest: dict[str, Any],
     storage_provider: StorageProvider,
     *,
-    progress_handler: BackupProgressHandler | None = None,
+    progress_reporter: _BackupProgressReporter | None = None,
 ) -> list[str]:
     written_paths = []
     file_entries = manifest["files"]
@@ -802,7 +892,7 @@ def _restore_files(
             len(file_entries),
         )
         _emit_progress(
-            progress_handler,
+            progress_reporter,
             phase="restore_file",
             message="Restoring storage file",
             current_step=6,
@@ -841,7 +931,7 @@ def _restore_database(
     manifest: dict[str, Any],
     session_factory: sessionmaker,
     *,
-    progress_handler: BackupProgressHandler | None = None,
+    progress_reporter: _BackupProgressReporter | None = None,
 ) -> None:
     tables = _backup_tables()
     deferred_updates: dict[str, list[dict[str, Any]]] = {
@@ -858,7 +948,7 @@ def _restore_database(
                 len(INSERT_ORDER),
             )
             _emit_progress(
-                progress_handler,
+                progress_reporter,
                 phase="restore_table",
                 message="Restoring table",
                 current_step=7,
@@ -1144,9 +1234,34 @@ def _header_prefix(header_bytes: bytes) -> bytes:
 
 
 def _add_staged_file(
-    tar: tarfile.TarFile, source_path: Path, archive_path: str
+    tar: tarfile.TarFile,
+    source_path: Path,
+    archive_path: str,
+    *,
+    progress_reporter: _BackupProgressReporter | None = None,
+    member_index: int | None = None,
+    total_members: int | None = None,
 ) -> None:
     stat_result = source_path.stat()
+    LOGGER.debug(
+        "Adding archive member %s from %s (%d byte(s), %s/%s)",
+        archive_path,
+        source_path,
+        stat_result.st_size,
+        member_index if member_index is not None else "?",
+        total_members if total_members is not None else "?",
+    )
+    _emit_progress(
+        progress_reporter,
+        phase="archive_member",
+        message="Adding archive member",
+        current_step=5,
+        total_steps=EXPORT_PROGRESS_STEPS,
+        detail=archive_path,
+        completed_units=member_index,
+        total_units=total_members,
+        verbose_only=True,
+    )
     info = tarfile.TarInfo(archive_path)
     info.size = stat_result.st_size
     info.mtime = int(stat_result.st_mtime)
@@ -1191,7 +1306,7 @@ def _backup_tables() -> dict[str, Table]:
 
 
 def _emit_progress(
-    progress_handler: BackupProgressHandler | None,
+    progress_reporter: _BackupProgressReporter | None,
     *,
     phase: str,
     message: str,
@@ -1202,20 +1317,29 @@ def _emit_progress(
     total_units: int | None = None,
     verbose_only: bool = False,
 ) -> None:
-    if progress_handler is None:
+    if progress_reporter is None:
         return
-    progress_handler(
-        BackupProgressEvent(
+    if verbose_only:
+        progress_reporter.update_detail(
             phase=phase,
             message=message,
-            current_step=current_step,
-            total_steps=total_steps,
             detail=detail,
             completed_units=completed_units,
             total_units=total_units,
-            verbose_only=verbose_only,
         )
+        return
+    progress_reporter.update_overall(
+        message=message,
+        current_step=current_step,
+        total_steps=total_steps,
+        detail=detail,
     )
+
+
+def _format_progress_description(message: str, detail: str | None = None) -> str:
+    if detail:
+        return f"{message}: {detail}"
+    return message
 
 
 def _config_get(config, keys: tuple[str, ...], default: Any = None) -> Any:

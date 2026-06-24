@@ -1,10 +1,14 @@
 import datetime as dt
+import logging
 import sys
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import tomlkit
+from rich.console import Console
+from rich.progress import Progress
 from sqlalchemy import create_engine, event, insert, select, update
 from sqlalchemy.orm import sessionmaker
 
@@ -412,7 +416,13 @@ def _normalize(value):
     return value
 
 
-def test_backup_header_and_roundtrip_restore(backup_context, tmp_path):
+def _test_progress() -> Progress:
+    return Progress(
+        console=Console(file=StringIO(), force_terminal=False, width=120),
+    )
+
+
+def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
     base = backup_context.Base
     source_engine, source_session = _new_database(base, tmp_path / "source.db")
     target_engine, target_session = _new_database(base, tmp_path / "target.db")
@@ -423,60 +433,71 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path):
     _seed_source(base, source_engine, source_storage)
 
     backup_path = tmp_path / "backup.conf"
-    export_progress = []
-    key_text = backup_context.export_backup(
-        backup_path,
-        session_factory=source_session,
-        storage_provider=_RootedStorage(source_storage),
-        config=backup_context.source_config,
-        progress_handler=export_progress.append,
-    )
+    caplog.set_level(logging.DEBUG, logger="maintenance.backup.core")
+    with _test_progress() as export_progress:
+        key_text = backup_context.export_backup(
+            backup_path,
+            session_factory=source_session,
+            storage_provider=_RootedStorage(source_storage),
+            config=backup_context.source_config,
+            progress=export_progress,
+            show_progress_details=True,
+        )
 
     assert backup_path.read_bytes().startswith(b"CONF")
     header = backup_context.read_backup_header(backup_path)
     assert header.created_at
     assert header.encryption == "AES-256-GCM"
-    assert [event.phase for event in export_progress if not event.verbose_only] == [
-        "prepare_export",
-        "export_tables",
-        "export_files",
-        "write_manifest",
-        "encrypt_archive",
-        "complete_export",
+    export_tasks = list(export_progress.tasks)
+    assert any(
+        task.description.startswith("Backup export completed")
+        and task.completed == task.total
+        for task in export_tasks
+    )
+    assert any(task.description.startswith("Exporting table") for task in export_tasks)
+    assert any(
+        task.description.startswith("Copying storage file") for task in export_tasks
+    )
+    assert any(
+        task.description.startswith("Adding archive member") for task in export_tasks
+    )
+    archive_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "Adding archive member" in record.getMessage()
     ]
-    assert any(event.phase == "export_table" for event in export_progress)
-    assert any(event.phase == "export_file" for event in export_progress)
+    assert any("manifest.json" in message for message in archive_logs)
+    assert any("tables/files.jsonl" in message for message in archive_logs)
+    assert any("files/00000000.bin" in message for message in archive_logs)
 
     target_config = tmp_path / "target-config.toml"
     _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
     init_path = tmp_path / "target-init"
-    import_progress = []
-    result = backup_context.import_backup(
-        backup_path,
-        key_text,
-        session_factory=target_session,
-        db_engine=target_engine,
-        storage_provider=_RootedStorage(target_storage),
-        config_path=target_config,
-        init_path=init_path,
-        progress_handler=import_progress.append,
-    )
+    with _test_progress() as import_progress:
+        result = backup_context.import_backup(
+            backup_path,
+            key_text,
+            session_factory=target_session,
+            db_engine=target_engine,
+            storage_provider=_RootedStorage(target_storage),
+            config_path=target_config,
+            init_path=init_path,
+            progress=import_progress,
+            show_progress_details=True,
+        )
 
     assert result["created_at"] == header.created_at
     assert init_path.exists()
-    assert [event.phase for event in import_progress if not event.verbose_only] == [
-        "read_header",
-        "prepare_target",
-        "decrypt_payload",
-        "extract_payload",
-        "validate_manifest",
-        "restore_files",
-        "restore_database",
-        "restore_config",
-        "complete_import",
-    ]
-    assert any(event.phase == "restore_file" for event in import_progress)
-    assert any(event.phase == "restore_table" for event in import_progress)
+    import_tasks = list(import_progress.tasks)
+    assert any(
+        task.description.startswith("Backup import completed")
+        and task.completed == task.total
+        for task in import_tasks
+    )
+    assert any(
+        task.description.startswith("Restoring storage file") for task in import_tasks
+    )
+    assert any(task.description.startswith("Restoring table") for task in import_tasks)
     assert _dump_backup_tables(base, source_engine) == _dump_backup_tables(
         base, target_engine
     )
