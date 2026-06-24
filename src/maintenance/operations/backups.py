@@ -17,6 +17,7 @@ class BackupExportResult:
     output_path: Path
     key_output_path: Path | None
     key: str
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,10 +39,15 @@ def export_backup(
 ) -> BackupExportResult:
     ensure_src_workdir()
     backup = _load_backup_module()
+    warnings: list[str] = []
 
     try:
         initialize_providers()
-        key = backup.export_backup(output_path, key_output_path=key_output_path)
+        key = backup.export_backup(
+            output_path,
+            key_output_path=key_output_path,
+            warning_handler=warnings.append,
+        )
     except (backup.BackupError, OSError, ValueError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
 
@@ -49,6 +55,7 @@ def export_backup(
         output_path=Path(output_path),
         key_output_path=None if key_output_path is None else Path(key_output_path),
         key=key,
+        warnings=tuple(warnings),
     )
 
 

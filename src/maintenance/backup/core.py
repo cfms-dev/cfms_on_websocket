@@ -12,7 +12,8 @@ import secrets
 import shutil
 import tarfile
 import tempfile
-from collections.abc import Iterable
+import warnings
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -165,6 +166,10 @@ class BackupRestoreError(BackupError):
     pass
 
 
+class BackupWarning(UserWarning):
+    pass
+
+
 @dataclass(frozen=True)
 class BackupHeader:
     format_version: int
@@ -207,6 +212,7 @@ def export_backup(
     session_factory: sessionmaker = Session,
     storage_provider: StorageProvider | None = None,
     config=global_config,
+    warning_handler: Callable[[str], None] | None = None,
 ) -> str:
     storage = storage_provider or ProviderManager().storage
     key_bytes = key or secrets.token_bytes(32)
@@ -234,6 +240,7 @@ def export_backup(
             session_factory=session_factory,
             storage_provider=storage,
             config=config,
+            warning_handler=warning_handler,
         )
         _write_json(staging_dir / "manifest.json", manifest)
         _write_encrypted_archive(output, staging_dir, header_bytes, key_bytes, nonce)
@@ -338,6 +345,7 @@ def _stage_backup_payload(
     session_factory: sessionmaker,
     storage_provider: StorageProvider,
     config,
+    warning_handler: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     tables_dir = staging_dir / "tables"
     files_dir = staging_dir / "files"
@@ -345,7 +353,12 @@ def _stage_backup_payload(
     files_dir.mkdir()
 
     table_manifest = _export_tables(tables_dir, session_factory)
-    file_manifest = _export_files(files_dir, session_factory, storage_provider)
+    file_manifest = _export_files(
+        files_dir,
+        session_factory,
+        storage_provider,
+        warning_handler=warning_handler,
+    )
     return {
         "format_version": BACKUP_FORMAT_VERSION,
         "core_version": str(CORE_VERSION),
@@ -395,6 +408,8 @@ def _export_files(
     files_dir: Path,
     session_factory: sessionmaker,
     storage_provider: StorageProvider,
+    *,
+    warning_handler: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     file_rows: list[dict[str, Any]] = []
     files_table = _backup_tables()["files"]
@@ -406,13 +421,23 @@ def _export_files(
             file_rows.append(dict(row))
 
     file_manifest = []
-    for index, row in enumerate(file_rows):
+    for row in file_rows:
         file_id = str(row["id"])
         storage_path = str(row["path"])
+        active = bool(row["active"])
+        index = len(file_manifest)
         archive_path = f"files/{index:08d}.bin"
         staged_file = files_dir / f"{index:08d}.bin"
 
         if not storage_provider.exists(storage_path):
+            if not active:
+                _warn_backup_skip(
+                    "Skipping inactive database file record "
+                    f"{file_id!r} because its physical file is missing: "
+                    f"{storage_path}",
+                    warning_handler,
+                )
+                continue
             raise BackupIntegrityError(
                 f"Physical file for database file record {file_id!r} is missing: "
                 f"{storage_path}"
@@ -438,6 +463,16 @@ def _export_files(
         )
 
     return file_manifest
+
+
+def _warn_backup_skip(
+    message: str,
+    warning_handler: Callable[[str], None] | None,
+) -> None:
+    if warning_handler is not None:
+        warning_handler(message)
+        return
+    warnings.warn(message, BackupWarning, stacklevel=2)
 
 
 def _write_encrypted_archive(

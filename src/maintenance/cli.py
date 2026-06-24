@@ -278,6 +278,7 @@ def export_backup(
     if result.key_output_path is None:
         table.add_row("Decryption key", result.key)
         console.print(table)
+        _print_backup_warnings(result.warnings)
         console.print(
             "[bold yellow]Store this key safely. "
             "It is required to import the backup.[/]"
@@ -285,6 +286,19 @@ def export_backup(
     else:
         table.add_row("Key file", str(result.key_output_path))
         console.print(table)
+        _print_backup_warnings(result.warnings)
+
+
+def _print_backup_warnings(warnings: tuple[str, ...]) -> None:
+    if not warnings:
+        return
+    console.print(
+        Panel(
+            "\n".join(warnings),
+            title="Skipped Files",
+            border_style="yellow",
+        )
+    )
 
 
 @backup_app.command(

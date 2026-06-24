@@ -65,6 +65,7 @@ def backup_context(monkeypatch, tmp_path):
         BackupFormatError,
         BackupIntegrityError,
         BackupRestoreError,
+        BackupWarning,
         decode_backup_key,
         export_backup,
         import_backup,
@@ -76,6 +77,7 @@ def backup_context(monkeypatch, tmp_path):
         BackupFormatError=BackupFormatError,
         BackupIntegrityError=BackupIntegrityError,
         BackupRestoreError=BackupRestoreError,
+        BackupWarning=BackupWarning,
         decode_backup_key=decode_backup_key,
         export_backup=export_backup,
         import_backup=import_backup,
@@ -537,6 +539,57 @@ def test_export_fails_when_physical_file_is_missing(backup_context, tmp_path):
             storage_provider=_RootedStorage(source_storage),
             config=backup_context.source_config,
         )
+
+
+def test_export_skips_missing_inactive_physical_file(backup_context, tmp_path):
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_storage = tmp_path / "source-storage"
+    target_storage = tmp_path / "target-storage"
+    source_storage.mkdir()
+    target_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+
+    missing_storage_path = "content/files/inactive-missing.bin"
+    with source_engine.begin() as connection:
+        connection.execute(
+            insert(base.metadata.tables["files"]),
+            {
+                "id": "file-inactive-missing",
+                "sha256": None,
+                "path": missing_storage_path,
+                "size": 123,
+                "created_time": 1_700_000_001.0,
+                "active": False,
+            },
+        )
+
+    backup_path = tmp_path / "backup.conf"
+    with pytest.warns(backup_context.BackupWarning, match="Skipping inactive"):
+        key_text = backup_context.export_backup(
+            backup_path,
+            session_factory=source_session,
+            storage_provider=_RootedStorage(source_storage),
+            config=backup_context.source_config,
+        )
+
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+    result = backup_context.import_backup(
+        backup_path,
+        key_text,
+        session_factory=target_session,
+        db_engine=target_engine,
+        storage_provider=_RootedStorage(target_storage),
+        config_path=target_config,
+        init_path=tmp_path / "target-init",
+    )
+
+    assert "file-inactive-missing" not in {
+        entry["file_id"] for entry in result["files"]
+    }
+    assert not (target_storage / Path(missing_storage_path)).exists()
 
 
 def test_import_rejects_non_empty_target(backup_context, tmp_path):
