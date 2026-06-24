@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Iterable
+from typing import Any, Iterable
 
 import orjson
 import tomlkit
@@ -196,20 +196,6 @@ class BackupHeader:
             "encryption": self.encryption,
             "nonce": self.nonce,
         }
-
-
-class _EncryptingWriter:
-    def __init__(self, raw: BinaryIO, encryptor):
-        self._raw = raw
-        self._encryptor = encryptor
-
-    def write(self, data: bytes) -> int:
-        if data:
-            self._raw.write(self._encryptor.update(data))
-        return len(data)
-
-    def flush(self) -> None:
-        self._raw.flush()
 
 
 def export_backup(
@@ -465,24 +451,15 @@ def _write_encrypted_archive(
     encryptor = cipher.encryptor()
     encryptor.authenticate_additional_data(prefix)
 
+    compressed_payload = staging_dir / "payload.tar.xz"
     temp_output = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
     try:
+        _write_compressed_payload(compressed_payload, staging_dir)
         with temp_output.open("wb") as raw_output:
             raw_output.write(prefix)
-            encrypting_output = _EncryptingWriter(raw_output, encryptor)
-            with lzma.LZMAFile(encrypting_output, "wb", preset=6) as compressed:
-                with tarfile.open(fileobj=compressed, mode="w|") as tar:
-                    _add_staged_file(
-                        tar, staging_dir / "manifest.json", "manifest.json"
-                    )
-                    for table_name in BACKUP_TABLE_NAMES:
-                        _add_staged_file(
-                            tar,
-                            staging_dir / "tables" / f"{table_name}.jsonl",
-                            f"tables/{table_name}.jsonl",
-                        )
-                    for staged_file in sorted((staging_dir / "files").iterdir()):
-                        _add_staged_file(tar, staged_file, f"files/{staged_file.name}")
+            with compressed_payload.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    raw_output.write(encryptor.update(chunk))
             raw_output.write(encryptor.finalize())
             raw_output.write(encryptor.tag)
         os.replace(temp_output, output_path)
@@ -490,6 +467,20 @@ def _write_encrypted_archive(
         with contextlib.suppress(FileNotFoundError):
             temp_output.unlink()
         raise
+
+
+def _write_compressed_payload(output_path: Path, staging_dir: Path) -> None:
+    with lzma.open(output_path, "wb", preset=6) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w|") as tar:
+            _add_staged_file(tar, staging_dir / "manifest.json", "manifest.json")
+            for table_name in BACKUP_TABLE_NAMES:
+                _add_staged_file(
+                    tar,
+                    staging_dir / "tables" / f"{table_name}.jsonl",
+                    f"tables/{table_name}.jsonl",
+                )
+            for staged_file in sorted((staging_dir / "files").iterdir()):
+                _add_staged_file(tar, staged_file, f"files/{staged_file.name}")
 
 
 def _decrypt_payload(
