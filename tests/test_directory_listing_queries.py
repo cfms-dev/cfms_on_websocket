@@ -1,5 +1,4 @@
 import os
-import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,14 +9,11 @@ from sqlalchemy.orm import joinedload, raiseload, sessionmaker
 
 
 @pytest.fixture(scope="module")
-def directory_models():
+def directory_models(protected_test_config):
     repo_root = Path(__file__).resolve().parents[1]
     src_path = repo_root / "src"
     if str(src_path) not in sys.path:
         sys.path.insert(0, str(src_path))
-    config_path = src_path / "config.toml"
-    if not config_path.exists():
-        shutil.copy(src_path / "config.toml.sample", config_path)
 
     original_cwd = Path.cwd()
     try:

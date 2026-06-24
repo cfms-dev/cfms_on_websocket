@@ -45,6 +45,8 @@ test_logs/
 init
 app*.db
 app*.db-journal
+app*.db-shm
+app*.db-wal
 admin_password.txt
 config.toml
 

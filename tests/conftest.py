@@ -6,161 +6,75 @@ import asyncio
 import os
 import secrets
 import subprocess
-import sys
-import threading
-import time
+from pathlib import Path
 from typing import AsyncGenerator, Callable, Generator
 
 import pytest
 import pytest_asyncio
 
+from tests.support.server import start_server, stop_server
+from tests.support.test_config import (
+    TestServerSettings,
+    capture_config,
+    reserve_local_port,
+    restore_config,
+    write_test_config,
+)
 from tests.test_client import CFMSTestClient
 from tests.utils import assert_success
 
 
-def log_server_output(process: subprocess.Popen, log_dir: str = "test_logs"):
-    os.makedirs(log_dir, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    stdout_path = os.path.join(log_dir, f"server_stdout_{timestamp}.log")
-    stderr_path = os.path.join(log_dir, f"server_stderr_{timestamp}.log")
-
-    stdout_file = open(stdout_path, "w", encoding="utf-8", buffering=1)
-    stderr_file = open(stderr_path, "w", encoding="utf-8", buffering=1)
-
-    stop_event = threading.Event()
-
-    def read_stream(stream, output_file):
-        try:
-            while not stop_event.is_set():
-                line = stream.readline()
-                if not line:
-                    break
-                try:
-                    output_file.write(line)
-                    output_file.flush()
-                except (ValueError, OSError):
-                    break
-        except Exception:
-            pass
-
-    stdout_thread = threading.Thread(
-        target=read_stream, args=(process.stdout, stdout_file), daemon=True
-    )
-    stderr_thread = threading.Thread(
-        target=read_stream, args=(process.stderr, stderr_file), daemon=True
-    )
-
-    stdout_thread.start()
-    stderr_thread.start()
-
-    return stdout_thread, stderr_thread, stdout_file, stderr_file, stop_event
-
-
 @pytest.fixture(scope="session")
-def test_config():
-    """Prepare and clean up configuration and data for testing."""
-    src_config_file = "src/config.toml"
-
-    if not os.path.exists(src_config_file):
-        import shutil
-
-        if not os.path.exists("src/config.toml.sample"):
-            raise RuntimeError("Config sample file not found: src/config.toml.sample")
-        shutil.copy("src/config.toml.sample", src_config_file)
-
-    with open(src_config_file, "r", encoding="utf-8") as f:
-        config_content = f.read()
-
-    config_changes = {
-        "debug = false": "debug = true",
-        "enable_passwd_force_expiration = true": "enable_passwd_force_expiration = false",
-        "require_passwd_enforcement_changes = true": "require_passwd_enforcement_changes = false",
-        "dualstack_ipv6 = true": "dualstack_ipv6 = false",
+def protected_test_config() -> Generator[TestServerSettings, None, None]:
+    """Write test config, then restore the original config at session teardown."""
+    src_dir = Path("src").resolve()
+    config_backup = capture_config(src_dir / "config.toml")
+    port = reserve_local_port()
+    old_env = {
+        key: os.environ.get(key)
+        for key in ("CFMS_TEST_HOST", "CFMS_TEST_PORT", "CFMS_TEST_USE_SSL")
     }
-    for old, new in config_changes.items():
-        config_content = config_content.replace(old, new)
-
-    with open(src_config_file, "w", encoding="utf-8") as f:
-        f.write(config_content)
 
     artifacts = ["init", "app.db", "admin_password.txt"]
-    for artifact in artifacts:
-        artifact_path = os.path.join("src", artifact)
-        if os.path.exists(artifact_path):
-            os.remove(artifact_path)
+    try:
+        settings = write_test_config(src_dir, port)
+        os.environ["CFMS_TEST_HOST"] = settings.host
+        os.environ["CFMS_TEST_PORT"] = str(settings.port)
+        os.environ["CFMS_TEST_USE_SSL"] = "1" if settings.use_ssl else "0"
 
-    os.makedirs("src/content/ssl", exist_ok=True)
-    os.makedirs("src/content/logs", exist_ok=True)
+        for artifact in artifacts:
+            artifact_path = src_dir / artifact
+            if artifact_path.exists():
+                artifact_path.unlink()
 
-    yield
-    # Could potentially clean up app.db here if desired, but helps with post-mortem debug if left
+        (src_dir / "content" / "ssl").mkdir(parents=True, exist_ok=True)
+        (src_dir / "content" / "logs").mkdir(parents=True, exist_ok=True)
+
+        yield settings
+    finally:
+        restore_config(config_backup)
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @pytest.fixture(scope="session")
-def server_process(test_config) -> Generator[subprocess.Popen, None, None]:
+def test_server_settings(
+    protected_test_config: TestServerSettings,
+) -> TestServerSettings:
+    return protected_test_config
+
+
+@pytest.fixture(scope="session")
+def server_process(
+    test_server_settings: TestServerSettings,
+) -> Generator[subprocess.Popen, None, None]:
     """Start the CFMS server subprocess."""
-    print("\n[TEST SETUP] Starting CFMS server...", file=sys.stderr)
-
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
-    process = subprocess.Popen(
-        [sys.executable, "main.py"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
-        cwd=os.path.join(os.getcwd(), "src"),
-        env=env,
-    )
-
-    stdout_thread, stderr_thread, stdout_file, stderr_file, stop_event = (
-        log_server_output(process, "test_logs")
-    )
-    process._log_threads = (stdout_thread, stderr_thread, stop_event)
-    process._log_files = (stdout_file, stderr_file)
-
-    max_wait = 20
-    waited = 0
-    while waited < max_wait:
-        time.sleep(0.5)
-        waited += 0.5
-        if process.poll() is not None:
-            break
-        if os.path.exists("src/admin_password.txt"):
-            time.sleep(1)  # wait for full startup
-            break
-
-    if not os.path.exists("src/admin_password.txt"):
-        process.terminate()
-        process.wait(timeout=3)
-        raise RuntimeError(
-            f"Server initialization timed out or crashed after {max_wait}s."
-        )
-
-    print("[TEST SETUP] Server started successfully!", file=sys.stderr)
+    process, logs = start_server(test_server_settings)
     yield process
-
-    # Cleanup
-    print("\n[TEST CLEANUP] Shutting down server...", file=sys.stderr)
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-
-    stop_event.set()
-    for pipe in (process.stdout, process.stderr):
-        try:
-            if pipe:
-                pipe.close()
-        except:
-            pass
-
-    stdout_thread.join(timeout=2)
-    stderr_thread.join(timeout=2)
-    stdout_file.close()
-    stderr_file.close()
+    stop_server(process, logs)
 
 
 @pytest.fixture(scope="session")
@@ -177,8 +91,14 @@ def admin_credentials(server_process) -> dict:
 
 
 @pytest_asyncio.fixture
-async def client(server_process) -> AsyncGenerator[CFMSTestClient, None]:
-    test_client = CFMSTestClient()
+async def client(
+    server_process, test_server_settings: TestServerSettings
+) -> AsyncGenerator[CFMSTestClient, None]:
+    test_client = CFMSTestClient(
+        host=test_server_settings.host,
+        port=test_server_settings.port,
+        use_ssl=test_server_settings.use_ssl,
+    )
     for attempt in range(5):
         try:
             await test_client.connect()
@@ -207,9 +127,13 @@ async def authenticated_client(
 
 @pytest_asyncio.fixture
 async def unauthenticated_client(
-    server_process,
+    server_process, test_server_settings: TestServerSettings
 ) -> AsyncGenerator[CFMSTestClient, None]:
-    test_client = CFMSTestClient()
+    test_client = CFMSTestClient(
+        host=test_server_settings.host,
+        port=test_server_settings.port,
+        use_ssl=test_server_settings.use_ssl,
+    )
     for attempt in range(5):
         try:
             await test_client.connect()

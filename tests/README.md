@@ -25,10 +25,14 @@ Before running the tests, ensure you have:
 
 ## Running Tests
 
+The test suite backs up `src/config.toml` before writing a test configuration
+and restores it at session teardown. SQLite data and generated runtime files
+may still be recreated during integration tests.
+
 ### Run All Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Run Specific Test Files
@@ -70,6 +74,12 @@ pytest -v
 
 ```bash
 pytest -s
+```
+
+### Run a WebSocket Stress Smoke Test
+
+```bash
+uv run python -m tests.stress.ws_load --users 50 --duration 60 --scenario mixed --json
 ```
 
 ## Test Structure

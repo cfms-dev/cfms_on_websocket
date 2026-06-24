@@ -197,6 +197,19 @@ class AsyncMultiplexConnection:
                 pass
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def _format_ws_host(host: str) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
 class CFMSTestClient:
     """
     A test client for the CFMS WebSocket server.
@@ -206,7 +219,12 @@ class CFMSTestClient:
     and connection management automatically.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 5104, use_ssl: bool = True):
+    def __init__(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        use_ssl: bool | None = None,
+    ):
         """
         Initialize the test client.
 
@@ -215,9 +233,13 @@ class CFMSTestClient:
             port: Server port
             use_ssl: Whether to use SSL/TLS connection
         """
-        self.host = host
-        self.port = port
-        self.use_ssl = use_ssl
+        self.host = host or os.environ.get("CFMS_TEST_HOST", "localhost")
+        self.port = (
+            port if port is not None else int(os.environ.get("CFMS_TEST_PORT", "5104"))
+        )
+        self.use_ssl = (
+            use_ssl if use_ssl is not None else _env_bool("CFMS_TEST_USE_SSL", True)
+        )
         self.websocket: Optional[ClientConnection] = None
         self.multiplexer: Optional[AsyncMultiplexConnection] = None
         self.username: Optional[str] = None
@@ -231,7 +253,7 @@ class CFMSTestClient:
             return
 
         protocol = "wss" if self.use_ssl else "ws"
-        uri = f"{protocol}://{self.host}:{self.port}"
+        uri = f"{protocol}://{_format_ws_host(self.host)}:{self.port}"
 
         if self.use_ssl:
             ssl_context = ssl.create_default_context()
@@ -248,7 +270,7 @@ class CFMSTestClient:
         for attempt in range(1, max_retries + 1):
             try:
                 # connect(...) returns an async connection object
-                self.websocket = await connect(uri, ssl=ssl_context)
+                self.websocket = await connect(uri, ssl=ssl_context, proxy=None)
                 self.multiplexer = AsyncMultiplexConnection(self.websocket)
                 return
             except Exception as exc:
