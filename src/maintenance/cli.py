@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, ClassVar
+from typing import Annotated, Any, ClassVar
 
 import typer
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from typer.core import TyperCommand
 from typer.core import _click as click
 
@@ -16,6 +19,15 @@ from maintenance.runtime import MaintenanceRuntimeError
 
 console = Console()
 error_console = Console(stderr=True)
+_LOG_HANDLER_MARKER = "_cfms_maintenance_cli_handler"
+VerboseOption = Annotated[
+    bool,
+    typer.Option(
+        "--verbose",
+        "-v",
+        help="Show detailed diagnostic logs.",
+    ),
+]
 
 
 class HelpfulUsageCommand(TyperCommand):
@@ -115,6 +127,55 @@ def _print_error(message: str) -> None:
 
 def _print_success(message: str) -> None:
     console.print(Panel(message, title="Done", border_style="green"))
+
+
+def _configure_logging(verbose: bool) -> None:
+    logger = logging.getLogger("maintenance")
+    for handler in list(logger.handlers):
+        if getattr(handler, _LOG_HANDLER_MARKER, False):
+            logger.removeHandler(handler)
+
+    if not verbose:
+        logger.setLevel(logging.WARNING)
+        logger.propagate = True
+        return
+
+    handler = RichHandler(
+        console=error_console,
+        markup=False,
+        rich_tracebacks=False,
+        show_path=False,
+    )
+    setattr(handler, _LOG_HANDLER_MARKER, True)
+    handler.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+
+def _build_backup_progress_handler(verbose: bool) -> Callable[[Any], None]:
+    def handle_progress(event: Any) -> None:
+        if event.verbose_only and not verbose:
+            return
+
+        line = Text()
+        if event.verbose_only:
+            line.append("Backup detail ", style="dim cyan")
+        else:
+            line.append("Backup progress ", style="cyan")
+        line.append(
+            f"[{event.current_step}/{event.total_steps}] ",
+            style="bold",
+        )
+        line.append(str(event.message))
+        if event.completed_units is not None and event.total_units is not None:
+            line.append(f" ({event.completed_units}/{event.total_units})")
+        if event.detail:
+            line.append(": ")
+            line.append(str(event.detail))
+        console.print(line)
+
+    return handle_progress
 
 
 def _confirm_or_exit(message: str, yes: bool) -> None:
@@ -244,7 +305,7 @@ def fill_pepper() -> None:
     "export",
     cls=_helpful_command(
         argument_hints={
-            "output": (
+            "output_path": (
                 "Choose where the encrypted backup should be written. "
                 "Example: maintain backup export backup.confbak --key-out backup.key"
             ),
@@ -258,17 +319,23 @@ def fill_pepper() -> None:
     ),
 )
 def export_backup(
-    output: Annotated[Path, typer.Argument(help="Backup file to create.")],
-    key_out: Annotated[
+    output_path: Annotated[Path, typer.Argument(help="Backup file to create.")],
+    key_output_path: Annotated[
         Path | None,
         typer.Option("--key-out", help="File to receive the generated key."),
     ] = None,
+    verbose: VerboseOption = False,
 ) -> None:
     """Export an encrypted CFMS backup."""
 
+    _configure_logging(verbose)
+    progress_handler = _build_backup_progress_handler(verbose)
     result = _run(
-        lambda: operations.export_backup(output, key_output_path=key_out),
-        status="Exporting encrypted backup...",
+        lambda: operations.export_backup(
+            output_path,
+            key_output_path=key_output_path,
+            progress_handler=progress_handler,
+        ),
     )
 
     table = Table(title="Backup Export", show_header=False)
@@ -305,7 +372,7 @@ def _print_backup_warnings(warnings: tuple[str, ...]) -> None:
     "info",
     cls=_helpful_command(
         argument_hints={
-            "backup": (
+            "backup_path": (
                 "Provide the backup file to inspect. "
                 "Example: maintain backup info backup.confbak"
             ),
@@ -313,12 +380,14 @@ def _print_backup_warnings(warnings: tuple[str, ...]) -> None:
     ),
 )
 def backup_info(
-    backup: Annotated[Path, typer.Argument(help="Backup file to inspect.")],
+    backup_path: Annotated[Path, typer.Argument(help="Backup file to inspect.")],
+    verbose: VerboseOption = False,
 ) -> None:
     """Show unencrypted backup header information."""
 
+    _configure_logging(verbose)
     header = _run(
-        lambda: operations.read_backup_info(backup),
+        lambda: operations.read_backup_info(backup_path),
         status="Reading backup header...",
     )
 
@@ -337,7 +406,7 @@ def backup_info(
     "import",
     cls=_helpful_command(
         argument_hints={
-            "backup": (
+            "backup_path": (
                 "Provide the encrypted backup file to import, plus exactly one "
                 "key source. Example: maintain backup import backup.confbak "
                 "--key-file backup.key --yes"
@@ -354,12 +423,12 @@ def backup_info(
 )
 def import_backup(
     ctx: typer.Context,
-    backup: Annotated[Path, typer.Argument(help="Backup file to import.")],
+    backup_path: Annotated[Path, typer.Argument(help="Backup file to import.")],
     key: Annotated[
         str | None,
         typer.Option("--key", help="Base64url decryption key."),
     ] = None,
-    key_file: Annotated[
+    key_file_path: Annotated[
         Path | None,
         typer.Option("--key-file", help="File containing the decryption key."),
     ] = None,
@@ -367,10 +436,12 @@ def import_backup(
         bool,
         typer.Option("--yes", help="Skip confirmation for high-risk operations."),
     ] = False,
+    verbose: VerboseOption = False,
 ) -> None:
     """Import an encrypted CFMS backup into an empty database."""
 
-    if (key is None) == (key_file is None):
+    _configure_logging(verbose)
+    if (key is None) == (key_file_path is None):
         _usage_error(
             ctx,
             "Choose exactly one decryption key source: pass --key or --key-file.\n\n"
@@ -384,9 +455,14 @@ def import_backup(
         "and config keys. Continue?",
         yes,
     )
+    progress_handler = _build_backup_progress_handler(verbose)
     result = _run(
-        lambda: operations.import_backup(backup, key=key, key_file=key_file),
-        status="Importing encrypted backup...",
+        lambda: operations.import_backup(
+            backup_path,
+            key=key,
+            key_file=key_file_path,
+            progress_handler=progress_handler,
+        ),
     )
 
     table = Table(title="Backup Import", show_header=False)

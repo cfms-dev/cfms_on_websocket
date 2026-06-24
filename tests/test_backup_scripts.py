@@ -423,21 +423,34 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path):
     _seed_source(base, source_engine, source_storage)
 
     backup_path = tmp_path / "backup.conf"
+    export_progress = []
     key_text = backup_context.export_backup(
         backup_path,
         session_factory=source_session,
         storage_provider=_RootedStorage(source_storage),
         config=backup_context.source_config,
+        progress_handler=export_progress.append,
     )
 
     assert backup_path.read_bytes().startswith(b"CONF")
     header = backup_context.read_backup_header(backup_path)
     assert header.created_at
     assert header.encryption == "AES-256-GCM"
+    assert [event.phase for event in export_progress if not event.verbose_only] == [
+        "prepare_export",
+        "export_tables",
+        "export_files",
+        "write_manifest",
+        "encrypt_archive",
+        "complete_export",
+    ]
+    assert any(event.phase == "export_table" for event in export_progress)
+    assert any(event.phase == "export_file" for event in export_progress)
 
     target_config = tmp_path / "target-config.toml"
     _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
     init_path = tmp_path / "target-init"
+    import_progress = []
     result = backup_context.import_backup(
         backup_path,
         key_text,
@@ -446,10 +459,24 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path):
         storage_provider=_RootedStorage(target_storage),
         config_path=target_config,
         init_path=init_path,
+        progress_handler=import_progress.append,
     )
 
     assert result["created_at"] == header.created_at
     assert init_path.exists()
+    assert [event.phase for event in import_progress if not event.verbose_only] == [
+        "read_header",
+        "prepare_target",
+        "decrypt_payload",
+        "extract_payload",
+        "validate_manifest",
+        "restore_files",
+        "restore_database",
+        "restore_config",
+        "complete_import",
+    ]
+    assert any(event.phase == "restore_file" for event in import_progress)
+    assert any(event.phase == "restore_table" for event in import_progress)
     assert _dump_backup_tables(base, source_engine) == _dump_backup_tables(
         base, target_engine
     )

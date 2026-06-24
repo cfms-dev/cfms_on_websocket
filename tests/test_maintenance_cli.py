@@ -328,17 +328,31 @@ def test_backup_export_info_and_import(tmp_path):
 
     export_result = _run_maintain(
         source_src,
-        ["backup", "export", "backup.confbak", "--key-out", "backup.key"],
+        [
+            "backup",
+            "export",
+            "backup.confbak",
+            "--key-out",
+            "backup.key",
+            "--verbose",
+        ],
     )
 
     assert "Backup Export" in export_result.stdout
+    assert "Backup progress" in export_result.stdout
+    assert "Backup export completed" in export_result.stdout
+    assert "Starting backup export" in export_result.stderr
     assert (source_src / "backup.confbak").is_file()
     assert (source_src / "backup.key").is_file()
 
-    info_result = _run_maintain(source_src, ["backup", "info", "backup.confbak"])
+    info_result = _run_maintain(
+        source_src,
+        ["backup", "info", "backup.confbak", "--verbose"],
+    )
 
     assert "CFMS Backup" in info_result.stdout
     assert "AES-256-GCM" in info_result.stdout
+    assert "Reading backup info" in info_result.stderr
 
     import_result = _run_maintain(
         target_src,
@@ -349,8 +363,12 @@ def test_backup_export_info_and_import(tmp_path):
             "--key-file",
             str(source_src / "backup.key"),
             "--yes",
+            "--verbose",
         ],
     )
 
     assert "Backup Import" in import_result.stdout
+    assert "Backup progress" in import_result.stdout
+    assert "Backup import completed" in import_result.stdout
+    assert "Starting backup import" in import_result.stderr
     assert (target_src / "init").is_file()

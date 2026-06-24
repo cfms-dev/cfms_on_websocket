@@ -16,3 +16,4 @@
 - Back up the database (`app.db`) first, if available, before running any tests.
 - Use the provided MCP tools to run tests whenever possible, instead of the traditional command-line method.
 - Add or update tests for the code you change, even if nobody asked.
+- DO NOT run ruff by yourself since this tool is, and can only be accessed via pre-commit hooks.
