@@ -13,10 +13,17 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _BOX_DRAWING_RE = re.compile(r"[\u2500-\u257F]")
 
 
-def _run_maintain(cwd: Path, args: list[str], *, check: bool = True):
+def _run_maintain(
+    cwd: Path,
+    args: list[str],
+    *,
+    check: bool = True,
+    input_text: str | None = None,
+):
     result = subprocess.run(
         ["uv", "run", "--project", str(_PROJECT_ROOT), "maintain", *args],
         cwd=cwd,
+        input=input_text,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -339,6 +346,39 @@ def test_clear_totp_for_single_user_and_all_users(tmp_path):
 
     assert state["alice"]["totp_enabled"] is False
     assert state["bob"]["totp_enabled"] is False
+
+
+def test_clear_totp_all_abort_uses_typer_abort_and_keeps_users(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_users(src_dir)
+
+    result = _run_maintain(
+        src_dir,
+        ["user", "clear-totp", "--all"],
+        check=False,
+        input_text="n\n",
+    )
+    state = _read_user_state(src_dir, "OldPass123!")
+
+    assert result.returncode == 1
+    assert "Aborted." in result.stderr
+    assert state["alice"]["totp_enabled"] is True
+    assert state["bob"]["totp_enabled"] is True
+
+
+def test_backup_import_abort_uses_typer_abort_before_operation(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+
+    result = _run_maintain(
+        src_dir,
+        ["backup", "import", "missing.confbak", "--key", "abc"],
+        check=False,
+        input_text="n\n",
+    )
+
+    assert result.returncode == 1
+    assert "Aborted." in result.stderr
+    assert not (src_dir / "init").exists()
 
 
 def test_backup_export_info_and_import(tmp_path):

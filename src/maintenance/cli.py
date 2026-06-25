@@ -125,15 +125,10 @@ def _build_backup_progress() -> Progress:
     )
 
 
-def _confirm_or_exit(message: str, yes: bool) -> None:
+def _confirm_or_abort(message: str, yes: bool) -> None:
     if yes:
         return
-    if not typer.confirm(message):
-        raise typer.Exit(1)
-
-
-def _parameter_error(message: str) -> None:
-    raise typer.BadParameter(message)
+    typer.confirm(message, abort=True)
 
 
 @user_app.command(
@@ -202,7 +197,7 @@ def clear_totp(
     """Clear TOTP state for one user or all users."""
 
     if all_users == bool(username):
-        _parameter_error(
+        raise typer.BadParameter(
             "Choose exactly one TOTP target: provide a username or pass --all.\n\n"
             "Examples:\n"
             "  maintain user clear-totp alice\n"
@@ -210,7 +205,7 @@ def clear_totp(
         )
 
     if all_users:
-        _confirm_or_exit("Clear TOTP state for every user?", yes)
+        _confirm_or_abort("Clear TOTP state for every user?", yes)
 
     result = _run(
         lambda: operations.clear_totp(username, all_users=all_users),
@@ -351,14 +346,14 @@ def import_backup(
 
     _configure_logging(verbose)
     if (key is None) == (key_file_path is None):
-        _parameter_error(
+        raise typer.BadParameter(
             "Choose exactly one decryption key source: pass --key or --key-file.\n\n"
             "Examples:\n"
             "  maintain backup import backup.confbak --key-file backup.key --yes\n"
             "  maintain backup import backup.confbak --key <base64url-key> --yes",
         )
 
-    _confirm_or_exit(
+    _confirm_or_abort(
         "Importing a backup will write database rows, storage files, "
         "and config keys. Continue?",
         yes,
