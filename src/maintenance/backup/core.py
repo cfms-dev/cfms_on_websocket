@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import contextlib
 import datetime as dt
 import enum
@@ -88,6 +89,11 @@ GCM_TAG_BYTES = 16
 MAX_HEADER_BYTES = 64 * 1024
 EXPORT_PROGRESS_STEPS = 6
 IMPORT_PROGRESS_STEPS = 9
+HUMAN_KEY_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+HUMAN_KEY_DATA_LENGTH = 52
+HUMAN_KEY_GROUP_SIZE = 4
+HUMAN_KEY_MAX_VALUE = 1 << 256
+HUMAN_KEY_SEPARATOR = "-"
 
 BACKUP_TABLE_NAMES = (
     "files",
@@ -154,6 +160,79 @@ DEFERRED_UPDATE_ORDER = (
     ("document_revisions", "id", ("parent_revision_id",)),
     ("documents", "id", ("current_revision_id",)),
 )
+
+
+class BackupComponent(str, enum.Enum):
+    ACCOUNTS = "accounts"
+    DOCUMENT_LIBRARY = "documents"
+    AUDIT_LOG = "audit"
+    BANNED_SUBNETS = "banned_subnets"
+    CONFIGURATION = "configuration"
+
+
+BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
+    BackupComponent.ACCOUNTS: (
+        "users",
+        "user_groups",
+        "group_permissions",
+        "user_memberships",
+        "user_permissions",
+        "keyrings",
+        "userblock_entries",
+        "userblock_sub_entries",
+    ),
+    BackupComponent.DOCUMENT_LIBRARY: (
+        "folders",
+        "folder_access_rules",
+        "documents",
+        "document_revisions",
+        "document_access_rules",
+        "document_metadata",
+        "document_metadata_tags",
+        "object_access_entries",
+    ),
+    BackupComponent.AUDIT_LOG: ("audit_entries",),
+    BackupComponent.BANNED_SUBNETS: ("banned_subnets",),
+    BackupComponent.CONFIGURATION: (),
+}
+BACKUP_COMPONENT_DEPENDENCIES: dict[BackupComponent, tuple[BackupComponent, ...]] = {
+    BackupComponent.DOCUMENT_LIBRARY: (BackupComponent.ACCOUNTS,),
+    BackupComponent.AUDIT_LOG: (BackupComponent.ACCOUNTS,),
+}
+DOCUMENT_ACCESS_TARGET_TYPES = frozenset({"document", "directory"})
+
+
+@dataclass(frozen=True)
+class BackupExportSelection:
+    components: frozenset[BackupComponent]
+
+    def __post_init__(self) -> None:
+        normalized = frozenset(
+            _coerce_backup_component(item) for item in self.components
+        )
+        if not normalized:
+            raise ValueError("Choose at least one backup component")
+        object.__setattr__(self, "components", normalized)
+
+    @classmethod
+    def from_component_values(
+        cls,
+        values: Iterable[BackupComponent | str],
+    ) -> "BackupExportSelection":
+        return cls(frozenset(_coerce_backup_component(value) for value in values))
+
+    @classmethod
+    def full(cls) -> "BackupExportSelection":
+        return cls(frozenset(BackupComponent))
+
+    def resolved_components(self) -> frozenset[BackupComponent]:
+        return _resolve_component_dependencies(self.components)
+
+
+@dataclass(frozen=True)
+class _TableExportResult:
+    manifest: dict[str, Any]
+    file_ids: frozenset[str] | None
 
 
 class BackupError(RuntimeError):
@@ -282,6 +361,7 @@ def export_backup(
     *,
     key: bytes | None = None,
     key_output_path: str | os.PathLike[str] | None = None,
+    selection: BackupExportSelection | None = None,
     session_factory: sessionmaker = Session,
     storage_provider: StorageProvider | None = None,
     config=global_config,
@@ -326,6 +406,7 @@ def export_backup(
             session_factory=session_factory,
             storage_provider=storage,
             config=config,
+            selection=selection,
             warning_handler=warning_handler,
             progress_reporter=progress_reporter,
         )
@@ -480,11 +561,16 @@ def import_backup(
             _emit_progress(
                 progress_reporter,
                 phase="restore_config",
-                message="Restoring configuration keys",
+                message=(
+                    "Restoring configuration keys"
+                    if _manifest_includes_configuration(manifest)
+                    else "Skipping configuration keys"
+                ),
                 current_step=8,
                 total_steps=IMPORT_PROGRESS_STEPS,
             )
-            _restore_config_keys(config_path, manifest)
+            if _manifest_includes_configuration(manifest):
+                _restore_config_keys(config_path, manifest)
             LOGGER.debug("Writing init marker to %s", init_path)
             Path(init_path).write_text(
                 "This file indicates that the database has been initialized.\n",
@@ -526,7 +612,20 @@ def read_backup_header(
 def encode_backup_key(key: bytes) -> str:
     if len(key) != 32:
         raise ValueError("Backup key must be exactly 32 bytes")
-    return base64.urlsafe_b64encode(key).decode("ascii").rstrip("=")
+    value = int.from_bytes(key, "big")
+    chars = []
+    for _ in range(HUMAN_KEY_DATA_LENGTH):
+        value, index = divmod(value, len(HUMAN_KEY_ALPHABET))
+        chars.append(HUMAN_KEY_ALPHABET[index])
+    if value:
+        raise ValueError("Backup key is too large for the human-readable format")
+
+    encoded = "".join(reversed(chars))
+    groups = [
+        encoded[index : index + HUMAN_KEY_GROUP_SIZE]
+        for index in range(0, len(encoded), HUMAN_KEY_GROUP_SIZE)
+    ]
+    return HUMAN_KEY_SEPARATOR.join(groups)
 
 
 def decode_backup_key(value: str) -> bytes:
@@ -536,11 +635,50 @@ def decode_backup_key(value: str) -> bytes:
     padding = "=" * (-len(normalized) % 4)
     try:
         decoded = base64.urlsafe_b64decode(normalized + padding)
-    except ValueError as exc:
+        if len(decoded) == 32:
+            return decoded
+    except (binascii.Error, ValueError) as exc:
+        if _looks_like_human_backup_key(normalized):
+            return _decode_human_backup_key(normalized)
         raise ValueError("Backup key is not valid base64url") from exc
-    if len(decoded) != 32:
-        raise ValueError("Backup key must decode to exactly 32 bytes")
-    return decoded
+    if _looks_like_human_backup_key(normalized):
+        return _decode_human_backup_key(normalized)
+    raise ValueError("Backup key must decode to exactly 32 bytes")
+
+
+def _decode_human_backup_key(value: str) -> bytes:
+    data = _normalize_human_backup_key(value)
+    if len(data) != HUMAN_KEY_DATA_LENGTH:
+        raise ValueError(
+            f"Human-readable backup key must contain {HUMAN_KEY_DATA_LENGTH} "
+            "data characters"
+        )
+
+    number = 0
+    alphabet_index = {
+        character: index for index, character in enumerate(HUMAN_KEY_ALPHABET)
+    }
+    for character in data:
+        try:
+            digit = alphabet_index[character]
+        except KeyError as exc:
+            raise ValueError(
+                f"Human-readable backup key contains invalid character {character!r}"
+            ) from exc
+        number = number * len(HUMAN_KEY_ALPHABET) + digit
+
+    if number >= HUMAN_KEY_MAX_VALUE:
+        raise ValueError("Human-readable backup key value is out of range")
+    return number.to_bytes(32, "big")
+
+
+def _looks_like_human_backup_key(value: str) -> bool:
+    data = _normalize_human_backup_key(value)
+    return len(data) == HUMAN_KEY_DATA_LENGTH or HUMAN_KEY_SEPARATOR in value
+
+
+def _normalize_human_backup_key(value: str) -> str:
+    return value.replace(HUMAN_KEY_SEPARATOR, "").replace(" ", "")
 
 
 def _stage_backup_payload(
@@ -549,6 +687,7 @@ def _stage_backup_payload(
     session_factory: sessionmaker,
     storage_provider: StorageProvider,
     config,
+    selection: BackupExportSelection | None = None,
     warning_handler: BackupWarningHandler | None = None,
     progress_reporter: _BackupProgressReporter | None = None,
 ) -> dict[str, Any]:
@@ -564,9 +703,10 @@ def _stage_backup_payload(
         current_step=2,
         total_steps=EXPORT_PROGRESS_STEPS,
     )
-    table_manifest = _export_tables(
+    table_export = _export_tables(
         tables_dir,
         session_factory,
+        selection=selection,
         progress_reporter=progress_reporter,
     )
     _emit_progress(
@@ -580,40 +720,63 @@ def _stage_backup_payload(
         files_dir,
         session_factory,
         storage_provider,
+        file_ids=table_export.file_ids,
         warning_handler=warning_handler,
         progress_reporter=progress_reporter,
     )
-    return {
+    components = _selection_components(selection)
+    manifest = {
         "format_version": BACKUP_FORMAT_VERSION,
         "core_version": str(CORE_VERSION),
         "exported_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "tables": table_manifest,
+        "components": sorted(component.value for component in components),
+        "tables": table_export.manifest,
         "excluded_tables": sorted(EXCLUDED_TABLE_NAMES),
         "files": file_manifest,
-        "configuration": {
+    }
+    if BackupComponent.CONFIGURATION in components:
+        manifest["configuration"] = {
             "security": {"pepper": _config_get(config, ("security", "pepper"), "")},
             "server": {"secret_key": _config_get(config, ("server", "secret_key"), "")},
-        },
-    }
+        }
+    else:
+        manifest["configuration"] = {}
+    return manifest
 
 
 def _export_tables(
     tables_dir: Path,
     session_factory: sessionmaker,
     *,
+    selection: BackupExportSelection | None = None,
     progress_reporter: _BackupProgressReporter | None = None,
-) -> dict[str, Any]:
+) -> _TableExportResult:
     metadata_tables = _backup_tables()
     manifest: dict[str, Any] = {}
+    components = _selection_components(selection)
+    full_export = selection is None
 
     with session_factory() as session:
         connection = session.connection()
-        for table_index, table_name in enumerate(BACKUP_TABLE_NAMES, start=1):
+        file_ids = None
+        table_names = BACKUP_TABLE_NAMES
+        if not full_export:
+            file_ids = _collect_selected_file_ids(
+                connection,
+                metadata_tables,
+                components,
+            )
+            table_names = _selected_table_names(
+                components,
+                include_files=bool(file_ids),
+            )
+
+        for table_index, table_name in enumerate(table_names, start=1):
             LOGGER.debug(
                 "Exporting table %s (%d/%d)",
                 table_name,
                 table_index,
-                len(BACKUP_TABLE_NAMES),
+                len(table_names),
             )
             _emit_progress(
                 progress_reporter,
@@ -623,7 +786,7 @@ def _export_tables(
                 total_steps=EXPORT_PROGRESS_STEPS,
                 detail=table_name,
                 completed_units=table_index,
-                total_units=len(BACKUP_TABLE_NAMES),
+                total_units=len(table_names),
                 verbose_only=True,
             )
             table = metadata_tables[table_name]
@@ -634,6 +797,14 @@ def _export_tables(
             statement = select(table)
             if order_by:
                 statement = statement.order_by(*order_by)
+            if not full_export:
+                statement = _apply_export_table_filter(
+                    statement,
+                    table,
+                    table_name,
+                    components,
+                    file_ids or frozenset(),
+                )
 
             with rows_path.open("wb") as f:
                 for row in connection.execute(statement).mappings():
@@ -648,7 +819,10 @@ def _export_tables(
             manifest[table_name] = {"columns": columns, "rows": row_count}
             LOGGER.debug("Exported table %s with %d row(s)", table_name, row_count)
 
-    return manifest
+    return _TableExportResult(
+        manifest=manifest,
+        file_ids=file_ids,
+    )
 
 
 def _export_files(
@@ -656,6 +830,7 @@ def _export_files(
     session_factory: sessionmaker,
     storage_provider: StorageProvider,
     *,
+    file_ids: frozenset[str] | None = None,
     warning_handler: BackupWarningHandler | None = None,
     progress_reporter: _BackupProgressReporter | None = None,
 ) -> list[dict[str, Any]]:
@@ -665,6 +840,11 @@ def _export_files(
     with session_factory() as session:
         connection = session.connection()
         statement = select(files_table).order_by(files_table.c.id)
+        if file_ids is not None:
+            if not file_ids:
+                statement = statement.where(files_table.c.id.in_([]))
+            else:
+                statement = statement.where(files_table.c.id.in_(sorted(file_ids)))
         for row in connection.execute(statement).mappings():
             file_rows.append(dict(row))
 
@@ -749,6 +929,96 @@ def _warn_backup_skip(
     warnings.warn(message, BackupWarning, stacklevel=2)
 
 
+def _coerce_backup_component(value: BackupComponent | str) -> BackupComponent:
+    if isinstance(value, BackupComponent):
+        return value
+    try:
+        return BackupComponent(value)
+    except ValueError as exc:
+        allowed = ", ".join(component.value for component in BackupComponent)
+        raise ValueError(
+            f"Unknown backup component {value!r}; choose from {allowed}"
+        ) from exc
+
+
+def _selection_components(
+    selection: BackupExportSelection | None,
+) -> frozenset[BackupComponent]:
+    if selection is None:
+        return frozenset(BackupComponent)
+    return selection.resolved_components()
+
+
+def _resolve_component_dependencies(
+    components: Iterable[BackupComponent],
+) -> frozenset[BackupComponent]:
+    resolved = set(components)
+    changed = True
+    while changed:
+        changed = False
+        for component in tuple(resolved):
+            for dependency in BACKUP_COMPONENT_DEPENDENCIES.get(component, ()):
+                if dependency not in resolved:
+                    resolved.add(dependency)
+                    changed = True
+    return frozenset(resolved)
+
+
+def _selected_table_names(
+    components: frozenset[BackupComponent],
+    *,
+    include_files: bool,
+) -> tuple[str, ...]:
+    selected = set()
+    for component in components:
+        selected.update(BACKUP_COMPONENT_TABLES[component])
+    if include_files:
+        selected.add("files")
+    return tuple(
+        table_name for table_name in BACKUP_TABLE_NAMES if table_name in selected
+    )
+
+
+def _collect_selected_file_ids(
+    connection,
+    tables: dict[str, Table],
+    components: frozenset[BackupComponent],
+) -> frozenset[str]:
+    file_ids: set[str] = set()
+    if BackupComponent.ACCOUNTS in components:
+        users = tables["users"]
+        statement = select(users.c.avatar_id).where(users.c.avatar_id.is_not(None))
+        for row in connection.execute(statement):
+            file_ids.add(str(row[0]))
+
+    if BackupComponent.DOCUMENT_LIBRARY in components:
+        revisions = tables["document_revisions"]
+        statement = select(revisions.c.file_id).where(revisions.c.file_id.is_not(None))
+        for row in connection.execute(statement):
+            file_ids.add(str(row[0]))
+
+    return frozenset(file_ids)
+
+
+def _apply_export_table_filter(
+    statement,
+    table: Table,
+    table_name: str,
+    components: frozenset[BackupComponent],
+    file_ids: frozenset[str],
+):
+    if table_name == "files":
+        return statement.where(table.c.id.in_(sorted(file_ids)))
+    if (
+        table_name == "object_access_entries"
+        and BackupComponent.DOCUMENT_LIBRARY in components
+    ):
+        return statement.where(
+            table.c.target_type.in_(sorted(DOCUMENT_ACCESS_TARGET_TYPES))
+        )
+    return statement
+
+
 def _write_encrypted_archive(
     output_path: Path,
     staging_dir: Path,
@@ -795,14 +1065,16 @@ def _write_compressed_payload(
 ) -> None:
     LOGGER.debug("Creating compressed payload at %s", output_path)
     staged_files = sorted((staging_dir / "files").iterdir())
+    staged_tables = staging_dir / "tables"
     archive_members = [
         (staging_dir / "manifest.json", "manifest.json"),
         *(
             (
-                staging_dir / "tables" / f"{table_name}.jsonl",
+                staged_tables / f"{table_name}.jsonl",
                 f"tables/{table_name}.jsonl",
             )
             for table_name in BACKUP_TABLE_NAMES
+            if (staged_tables / f"{table_name}.jsonl").is_file()
         ),
         *((staged_file, f"files/{staged_file.name}") for staged_file in staged_files),
     ]
@@ -934,18 +1206,19 @@ def _restore_database(
     progress_reporter: _BackupProgressReporter | None = None,
 ) -> None:
     tables = _backup_tables()
+    table_names = _manifest_table_names(manifest)
     deferred_updates: dict[str, list[dict[str, Any]]] = {
-        table_name: [] for table_name in DEFERRED_COLUMNS
+        table_name: [] for table_name in DEFERRED_COLUMNS if table_name in table_names
     }
 
     with session_factory.begin() as session:
         connection = session.connection()
-        for table_index, table_name in enumerate(INSERT_ORDER, start=1):
+        for table_index, table_name in enumerate(table_names, start=1):
             LOGGER.debug(
                 "Restoring table %s (%d/%d)",
                 table_name,
                 table_index,
-                len(INSERT_ORDER),
+                len(table_names),
             )
             _emit_progress(
                 progress_reporter,
@@ -955,7 +1228,7 @@ def _restore_database(
                 total_steps=IMPORT_PROGRESS_STEPS,
                 detail=table_name,
                 completed_units=table_index,
-                total_units=len(INSERT_ORDER),
+                total_units=len(table_names),
                 verbose_only=True,
             )
             table = tables[table_name]
@@ -974,6 +1247,8 @@ def _restore_database(
             LOGGER.debug("Restored table %s with %d row(s)", table_name, len(rows))
 
         for table_name, pk_name, column_names in DEFERRED_UPDATE_ORDER:
+            if table_name not in table_names:
+                continue
             table = tables[table_name]
             for row in deferred_updates.get(table_name, []):
                 values = {
@@ -1078,11 +1353,23 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         )
     table_names = set(manifest.get("tables", {}).keys())
     expected = set(BACKUP_TABLE_NAMES)
-    if table_names != expected:
+    unknown_tables = table_names - expected
+    if unknown_tables:
+        raise BackupFormatError(
+            f"Backup table set contains unsupported tables: {sorted(unknown_tables)}"
+        )
+    if "components" not in manifest and table_names != expected:
         raise BackupFormatError(
             "Backup table set does not match this server version: "
             f"expected {sorted(expected)}, got {sorted(table_names)}"
         )
+    if "components" in manifest:
+        try:
+            BackupExportSelection.from_component_values(manifest["components"])
+        except (TypeError, ValueError) as exc:
+            raise BackupFormatError(
+                "Backup manifest contains invalid components"
+            ) from exc
     for excluded in EXCLUDED_TABLE_NAMES:
         if excluded in table_names:
             raise BackupFormatError(f"Excluded table {excluded!r} is present")
@@ -1093,6 +1380,15 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         len(table_names),
         len(manifest.get("files", [])),
     )
+
+
+def _manifest_table_names(manifest: dict[str, Any]) -> tuple[str, ...]:
+    table_names = set(manifest.get("tables", {}))
+    return tuple(table_name for table_name in INSERT_ORDER if table_name in table_names)
+
+
+def _manifest_includes_configuration(manifest: dict[str, Any]) -> bool:
+    return bool(manifest.get("configuration"))
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:

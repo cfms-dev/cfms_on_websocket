@@ -381,6 +381,59 @@ def test_backup_import_abort_uses_typer_abort_before_operation(tmp_path):
     assert not (src_dir / "init").exists()
 
 
+def test_backup_export_interactive_rejects_other_arguments(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    cases = [
+        ["backup", "export", "-i", "backup.confbak"],
+        ["backup", "export", "-i", "--key-out", "backup.key"],
+        ["backup", "export", "-i", "--verbose"],
+    ]
+
+    for args in cases:
+        result = _run_maintain(src_dir, args, check=False)
+        output = _normalize_cli_output(result.stdout + result.stderr)
+
+        assert result.returncode != 0
+        assert "Interactive export must be invoked" in output
+
+
+def test_backup_export_interactive_wizard_and_import(tmp_path):
+    source_src = _make_src_dir(tmp_path, "interactive-source")
+    target_src = _make_src_dir(tmp_path, "interactive-target")
+    _create_empty_database(source_src)
+
+    input_text = "\n\n\n\n\ninteractive.confbak\nfile\ninteractive.key\ny\n"
+    export_result = _run_maintain(
+        source_src,
+        ["backup", "export", "-i"],
+        input_text=input_text,
+    )
+
+    assert "Backup Wizard" in export_result.stdout
+    assert "Backup Export Summary" in export_result.stdout
+    assert (source_src / "interactive.confbak").is_file()
+    assert (source_src / "interactive.key").is_file()
+    key_text = (source_src / "interactive.key").read_text(encoding="utf-8").strip()
+    key_data = key_text.replace("-", "")
+    assert len(key_data) == 52
+    assert not set(key_data) & set("01OILl")
+
+    import_result = _run_maintain(
+        target_src,
+        [
+            "backup",
+            "import",
+            str(source_src / "interactive.confbak"),
+            "--key-file",
+            str(source_src / "interactive.key"),
+            "--yes",
+        ],
+    )
+
+    assert "Backup Import" in import_result.stdout
+    assert (target_src / "init").is_file()
+
+
 def test_backup_export_info_and_import(tmp_path):
     source_src = _make_src_dir(tmp_path, "source-src")
     target_src = _make_src_dir(tmp_path, "target-src")

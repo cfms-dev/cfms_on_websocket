@@ -17,6 +17,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.prompt import Confirm, Prompt
 from rich.table import Column, Table
 
 from maintenance import operations
@@ -25,6 +26,25 @@ from maintenance.runtime import MaintenanceRuntimeError
 console = Console()
 error_console = Console(stderr=True)
 _LOG_HANDLER_MARKER = "_cfms_maintenance_cli_handler"
+_INTERACTIVE_BACKUP_COMPONENTS = (
+    (
+        "accounts",
+        "Accounts, groups, permissions, keyrings, and user block rules",
+        True,
+    ),
+    (
+        "documents",
+        "Document library, directories, revisions, metadata, and access rules",
+        True,
+    ),
+    ("audit", "Audit log entries", True),
+    ("banned_subnets", "Banned network subnets", True),
+    ("configuration", "Configuration secrets needed by restored servers", True),
+)
+_INTERACTIVE_COMPONENT_DEPENDENCIES = {
+    "documents": ("accounts",),
+    "audit": ("accounts",),
+}
 VerboseOption = Annotated[
     bool,
     typer.Option(
@@ -237,16 +257,40 @@ def fill_pepper() -> None:
 )
 def export_backup(
     output_path: Annotated[
-        Path,
+        Path | None,
         typer.Argument(help="Where the encrypted backup should be written."),
-    ],
+    ] = None,
     key_output_path: Annotated[
         Path | None,
         typer.Option("--key-out", help="File to receive the generated key."),
     ] = None,
+    interactive: Annotated[
+        bool,
+        typer.Option(
+            "--interactive",
+            "-i",
+            help="Run an interactive backup export wizard.",
+        ),
+    ] = False,
     verbose: VerboseOption = False,
 ) -> None:
     """Export an encrypted CFMS backup."""
+
+    if interactive:
+        if output_path is not None or key_output_path is not None or verbose:
+            raise typer.BadParameter(
+                "Interactive export must be invoked as "
+                "`maintain backup export -i` without other arguments or options."
+            )
+        _run_interactive_backup_export()
+        return
+    if output_path is None:
+        raise typer.BadParameter(
+            "Where the encrypted backup should be written.\n\n"
+            "Examples:\n"
+            "  maintain backup export backup.confbak --key-out backup.key\n"
+            "  maintain backup export -i"
+        )
 
     _configure_logging(verbose)
     with _build_backup_progress() as progress:
@@ -259,22 +303,150 @@ def export_backup(
             ),
         )
 
+    _print_backup_export_result(result)
+
+
+def _print_backup_export_result(
+    result: operations.BackupExportResult,
+    *,
+    show_key: bool | None = None,
+) -> None:
+    if show_key is None:
+        show_key = result.key_output_path is None
+
     table = Table(title="Backup Export", show_header=False)
     table.add_column("Field", style="cyan")
     table.add_column("Value", style="green")
     table.add_row("Backup", str(result.output_path))
-    if result.key_output_path is None:
+    if result.key_output_path is not None:
+        table.add_row("Key file", str(result.key_output_path))
+    if show_key:
         table.add_row("Decryption key", result.key)
-        console.print(table)
-        _print_backup_warnings(result.warnings)
+    console.print(table)
+    _print_backup_warnings(result.warnings)
+    if show_key:
         console.print(
             "[bold yellow]Store this key safely. "
             "It is required to import the backup.[/]"
         )
-    else:
-        table.add_row("Key file", str(result.key_output_path))
-        console.print(table)
-        _print_backup_warnings(result.warnings)
+
+
+def _run_interactive_backup_export() -> None:
+    _configure_logging(False)
+    console.print(Panel("Interactive backup export", title="Backup Wizard"))
+    components, added_components = _prompt_backup_components()
+    output_path = Path(
+        Prompt.ask(
+            "Backup output path",
+            default="backup.confbak",
+            console=console,
+        )
+    )
+    key_mode = Prompt.ask(
+        "Key output",
+        choices=["terminal", "file", "both"],
+        default="terminal",
+        console=console,
+    )
+    key_output_path = None
+    if key_mode in {"file", "both"}:
+        default_key_path = str(output_path.with_suffix(".key"))
+        key_output_path = Path(
+            Prompt.ask(
+                "Key output path",
+                default=default_key_path,
+                console=console,
+            )
+        )
+
+    _print_interactive_backup_summary(
+        components,
+        added_components=added_components,
+        output_path=output_path,
+        key_output_path=key_output_path,
+        key_mode=key_mode,
+    )
+    if not Confirm.ask(
+        "Export backup with these settings?",
+        default=True,
+        console=console,
+    ):
+        raise typer.Abort()
+
+    with _build_backup_progress() as progress:
+        result = _run(
+            lambda: operations.export_backup(
+                output_path,
+                key_output_path=key_output_path,
+                components=components,
+                progress=progress,
+                show_progress_details=False,
+            ),
+        )
+    _print_backup_export_result(result, show_key=key_mode in {"terminal", "both"})
+
+
+def _prompt_backup_components() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    selected: set[str] = set()
+    table = Table(title="Backup Components", show_header=True)
+    table.add_column("Component", style="cyan")
+    table.add_column("Included data", style="green")
+    for component, description, _default in _INTERACTIVE_BACKUP_COMPONENTS:
+        table.add_row(component, description)
+    console.print(table)
+
+    for component, description, default in _INTERACTIVE_BACKUP_COMPONENTS:
+        if Confirm.ask(f"Export {description}?", default=default, console=console):
+            selected.add(component)
+    if not selected:
+        raise typer.BadParameter("Choose at least one backup component.")
+
+    explicit = set(selected)
+    selected = _resolve_interactive_backup_components(selected)
+    added = tuple(sorted(selected - explicit))
+    if added:
+        console.print(
+            Panel(
+                ", ".join(added),
+                title="Automatically Included Dependencies",
+                border_style="yellow",
+            )
+        )
+    return tuple(sorted(selected)), added
+
+
+def _resolve_interactive_backup_components(components: set[str]) -> set[str]:
+    resolved = set(components)
+    changed = True
+    while changed:
+        changed = False
+        for component in tuple(resolved):
+            for dependency in _INTERACTIVE_COMPONENT_DEPENDENCIES.get(component, ()):
+                if dependency not in resolved:
+                    resolved.add(dependency)
+                    changed = True
+    return resolved
+
+
+def _print_interactive_backup_summary(
+    components: tuple[str, ...],
+    *,
+    added_components: tuple[str, ...],
+    output_path: Path,
+    key_output_path: Path | None,
+    key_mode: str,
+) -> None:
+    summary = Table(title="Backup Export Summary", show_header=False)
+    summary.add_column("Field", style="cyan")
+    summary.add_column("Value", style="green")
+    summary.add_row("Components", ", ".join(components))
+    if added_components:
+        summary.add_row("Auto-included", ", ".join(added_components))
+    summary.add_row("Backup", str(output_path))
+    summary.add_row("Key output", key_mode)
+    if key_output_path is not None:
+        summary.add_row("Key file", str(key_output_path))
+    console.print(summary)
 
 
 def _print_backup_warnings(warnings: tuple[str, ...]) -> None:

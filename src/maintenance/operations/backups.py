@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,12 +43,18 @@ def export_backup(
     output_path: str | Path,
     *,
     key_output_path: str | Path | None = None,
+    components: Iterable[str] | None = None,
     progress: Progress | None = None,
     show_progress_details: bool = False,
 ) -> BackupExportResult:
     ensure_src_workdir()
     backup_module = _load_backup_module()
     warnings: list[str] = []
+    selection = (
+        None
+        if components is None
+        else backup_module.BackupExportSelection.from_component_values(components)
+    )
 
     try:
         LOGGER.debug("Initializing providers for backup export")
@@ -55,6 +62,7 @@ def export_backup(
         key = backup_module.export_backup(
             output_path,
             key_output_path=key_output_path,
+            selection=selection,
             warning_handler=warnings.append,
             progress=progress,
             show_progress_details=show_progress_details,

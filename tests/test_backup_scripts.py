@@ -66,11 +66,13 @@ def backup_context(monkeypatch, tmp_path):
 
     from include.database.handler import Base
     from maintenance.backup import (
+        BackupExportSelection,
         BackupFormatError,
         BackupIntegrityError,
         BackupRestoreError,
         BackupWarning,
         decode_backup_key,
+        encode_backup_key,
         export_backup,
         import_backup,
         read_backup_header,
@@ -82,7 +84,9 @@ def backup_context(monkeypatch, tmp_path):
         BackupIntegrityError=BackupIntegrityError,
         BackupRestoreError=BackupRestoreError,
         BackupWarning=BackupWarning,
+        BackupExportSelection=BackupExportSelection,
         decode_backup_key=decode_backup_key,
+        encode_backup_key=encode_backup_key,
         export_backup=export_backup,
         import_backup=import_backup,
         read_backup_header=read_backup_header,
@@ -422,6 +426,36 @@ def _test_progress() -> Progress:
     )
 
 
+def test_backup_key_uses_human_readable_format(backup_context):
+    key = bytes(range(32))
+    encoded = backup_context.encode_backup_key(key)
+    data = encoded.replace("-", "")
+
+    assert len(data) == 52
+    assert not set(data) & set("01OILl")
+    assert backup_context.decode_backup_key(encoded) == key
+
+
+def test_backup_key_decoder_rejects_invalid_human_keys(backup_context):
+    key = bytes(range(32))
+    encoded = backup_context.encode_backup_key(key)
+
+    with pytest.raises(ValueError, match="invalid character"):
+        backup_context.decode_backup_key(f"{encoded[:-1]}0")
+
+    with pytest.raises(ValueError, match="data characters"):
+        backup_context.decode_backup_key(encoded[:-1])
+
+    with pytest.raises(ValueError, match="out of range"):
+        backup_context.decode_backup_key("Z" * 52)
+
+
+def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context):
+    legacy_key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+
+    assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
+
+
 def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
     base = backup_context.Base
     source_engine, source_session = _new_database(base, tmp_path / "source.db")
@@ -525,6 +559,66 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         assert file_tasks == []
         assert login_throttles == []
         assert traffic_throttles == []
+
+
+def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_storage = tmp_path / "source-storage"
+    target_storage = tmp_path / "target-storage"
+    source_storage.mkdir()
+    target_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+
+    backup_path = tmp_path / "documents.conf"
+    selection = backup_context.BackupExportSelection.from_component_values(
+        ["documents"]
+    )
+    key_text = backup_context.export_backup(
+        backup_path,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+        selection=selection,
+    )
+
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+    backup_context.import_backup(
+        backup_path,
+        key_text,
+        session_factory=target_session,
+        db_engine=target_engine,
+        storage_provider=_RootedStorage(target_storage),
+        config_path=target_config,
+        init_path=tmp_path / "target-init",
+    )
+
+    restored = _dump_backup_tables(base, target_engine)
+    assert [row["id"] for row in restored["documents"]] == ["doc-1"]
+    assert [row["id"] for row in restored["folders"]] == ["/", "folder-1"]
+    assert [row["document_id"] for row in restored["document_access_rules"]] == [
+        "doc-1"
+    ]
+    assert [row["folder_id"] for row in restored["folder_access_rules"]] == ["folder-1"]
+    assert [row["target_identifier"] for row in restored["object_access_entries"]] == [
+        "doc-1"
+    ]
+    assert [row["username"] for row in restored["users"]] == ["alice"]
+    assert {row["id"] for row in restored["files"]} == {"file-avatar", "file-doc"}
+    assert restored["audit_entries"] == []
+    assert restored["banned_subnets"] == []
+    assert (target_storage / "content" / "files" / "doc.bin").read_bytes() == (
+        source_storage / "content" / "files" / "doc.bin"
+    ).read_bytes()
+    assert (target_storage / "content" / "files" / "avatar.bin").read_bytes() == (
+        source_storage / "content" / "files" / "avatar.bin"
+    ).read_bytes()
+
+    restored_config = tomlkit.parse(target_config.read_text(encoding="utf-8"))
+    assert restored_config["security"]["pepper"] == "target-pepper"
+    assert restored_config["server"]["secret_key"] == "target-secret"
 
 
 def test_wrong_magic_and_wrong_key_fail(backup_context, tmp_path):

@@ -1,6 +1,8 @@
 from maintenance.backup.core import (
     BACKUP_MAGIC,
+    BackupComponent,
     BackupError,
+    BackupExportSelection,
     BackupFormatError,
     BackupHeader,
     BackupIntegrityError,
@@ -16,7 +18,9 @@ from maintenance.backup.core import (
 
 __all__ = [
     "BACKUP_MAGIC",
+    "BackupComponent",
     "BackupError",
+    "BackupExportSelection",
     "BackupFormatError",
     "BackupHeader",
     "BackupIntegrityError",
