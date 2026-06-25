@@ -195,6 +195,17 @@ def test_run_prints_error_after_status_exits(monkeypatch):
     assert events == ["enter", "exit", "error:boom"]
 
 
+def test_backup_progress_shares_verbose_log_console():
+    from maintenance import cli
+
+    progress = cli._build_backup_progress()
+    description_column = progress.columns[1].get_table_column()
+
+    assert progress.console is cli.error_console
+    assert description_column.no_wrap is True
+    assert description_column.overflow == "ellipsis"
+
+
 def test_command_rejects_non_src_workdir(tmp_path):
     result = _run_maintain(tmp_path, ["config", "fill-pepper"], check=False)
 
@@ -348,7 +359,7 @@ def test_backup_export_info_and_import(tmp_path):
     )
 
     assert "Backup Export" in export_result.stdout
-    assert "Backup export completed" in export_result.stdout
+    assert "Backup export completed" in export_result.stderr
     assert "Starting backup export" in export_result.stderr
     assert "Adding archive member" in export_result.stderr
     assert (source_src / "backup.confbak").is_file()
@@ -377,6 +388,6 @@ def test_backup_export_info_and_import(tmp_path):
     )
 
     assert "Backup Import" in import_result.stdout
-    assert "Backup import completed" in import_result.stdout
+    assert "Backup import completed" in import_result.stderr
     assert "Starting backup import" in import_result.stderr
     assert (target_src / "init").is_file()

@@ -17,7 +17,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
-from rich.table import Table
+from rich.table import Column, Table
 
 from maintenance import operations
 from maintenance.runtime import MaintenanceRuntimeError
@@ -113,11 +113,15 @@ def _configure_logging(verbose: bool) -> None:
 def _build_backup_progress() -> Progress:
     return Progress(
         SpinnerColumn(),
-        TextColumn("{task.description}", markup=False),
+        TextColumn(
+            "{task.description}",
+            markup=False,
+            table_column=Column(ratio=1, no_wrap=True, overflow="ellipsis"),
+        ),
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
-        console=console,
+        console=error_console,
     )
 
 
