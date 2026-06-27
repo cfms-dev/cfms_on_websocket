@@ -195,8 +195,6 @@ class BaseObject(Base):
             and self.inherit
             and not _no_recursive_check
         ):
-            from include.database.models.documents import Document, Folder
-
             parent = None
             if isinstance(self, Document):
                 parent = self.folder
