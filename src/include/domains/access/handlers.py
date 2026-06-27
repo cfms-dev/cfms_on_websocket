@@ -1,16 +1,16 @@
 __all__ = ["RequestGrantAccessHandler", "RequestRevokeAccessHandler"]
 
-from include.database.session import Session
-from include.domains.access.models import ObjectAccessEntry
-from include.domains.access.permissions import Permissions
-from include.domains.documents import (
+from include.database.models.access import ObjectAccessEntry
+from include.database.models.documents import (
     Document,
     Folder,
 )
-from include.domains.identity.models import (
+from include.database.models.identity import (
     User,
     UserGroup,
 )
+from include.database.session import Session
+from include.domains.access.permissions import Permissions
 from include.domains.operations.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler

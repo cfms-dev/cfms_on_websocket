@@ -7,12 +7,16 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
 
 from include.config.constants import QUERY_CHUNK_SIZE
+from include.database.models.access import ObjectAccessEntry
+from include.database.models.documents import (
+    Document,
+    DocumentRevision,
+    EntityStatus,
+    Folder,
+)
+from include.database.models.identity import User
 from include.domains.access.authorization.evaluation import check_access_for_object
 from include.domains.access.authorization.grants import prefetch_user_blocks
-from include.domains.access.models import ObjectAccessEntry
-from include.domains.documents import Document, DocumentRevision, Folder
-from include.domains.documents.base import EntityStatus
-from include.domains.identity.models import User
 
 
 def fetch_subtree_for_deletion(

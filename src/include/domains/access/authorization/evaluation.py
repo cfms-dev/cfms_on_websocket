@@ -1,10 +1,10 @@
 from enum import IntEnum
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
+from include.database.models.access import ObjectAccessEntry
+from include.database.models.documents import Document, Folder
+from include.database.models.identity import User
 from include.domains.access.authorization.access_rules import AccessRuleBase
-from include.domains.access.models import ObjectAccessEntry
-from include.domains.documents import Document, Folder
-from include.domains.identity.models import User
 
 
 class SingleNodeCheckResult(IntEnum):

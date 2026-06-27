@@ -23,23 +23,23 @@ from include.config.constants import (
     FILE_TASK_DEFAULT_DURATION_SECONDS,
     ROOT_DIRECTORY_ID,
 )
-from include.database.session import Session
-from include.domains.access.authorization.access_rules import apply_access_rules
-from include.domains.access.permissions import Permissions
-from include.domains.documents import (
+from include.database.models.documents import (
     Document,
     DocumentMetadata,
     DocumentMetadataTag,
     DocumentRevision,
+    EntityStatus,
     Folder,
 )
-from include.domains.documents.base import EntityStatus
+from include.database.models.files import File, FileTask, TransferMode
+from include.database.models.identity import User
+from include.database.session import Session
+from include.domains.access.authorization.access_rules import apply_access_rules
+from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
     handle_name_duplicate,
 )
-from include.domains.documents.files import File, FileTask, TransferMode
-from include.domains.identity.models import User
 from include.domains.operations.messages import Messages as smsg
 from include.exceptions.misc import NoActiveRevisionsError
 from include.transport.connection import ConnectionHandler

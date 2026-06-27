@@ -10,8 +10,12 @@ from typing import Optional, Union
 
 from loguru import logger as log
 
+from include.database.models.security import (
+    BannedSubnet,
+    LoginThrottle,
+    TrafficThrottle,
+)
 from include.database.session import Session
-from include.domains.security.models import BannedSubnet, LoginThrottle, TrafficThrottle
 from include.providers.manager import ProviderManager
 
 logger = log.bind(name="login_guard")

@@ -4,12 +4,12 @@ from typing import List
 from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
-from include.domains.documents import (
+from include.database.models.documents import (
     Document,
     DocumentAccessRule,
     DocumentRevision,
 )
-from include.domains.documents.files import (
+from include.database.models.files import (
     File,
     FileTask,
     _queue_deferred_file_deletion,

@@ -3,12 +3,12 @@ from typing import Literal
 from sqlalchemy import or_
 
 from include.config.constants import AVAILABLE_BLOCK_TYPES
-from include.domains.access.models import (
+from include.database.models.access import (
     ObjectAccessEntry,
     UserBlockEntry,
     UserBlockSubEntry,
 )
-from include.domains.identity.models import User
+from include.database.models.identity import User
 
 
 def prefetch_user_blocks(

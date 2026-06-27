@@ -6,10 +6,10 @@ import jsonschema
 from sqlalchemy.orm import Mapped
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
-from include.domains.identity.models import User
+from include.database.models.identity import User
 
 if TYPE_CHECKING:
-    from include.domains.documents import Document, Folder
+    from include.database.models.documents import Document, Folder
 
 __all__ = [
     "AccessRuleBase",
@@ -82,7 +82,7 @@ def set_access_rules(
         ValueError: if an access type is unrecognised or rule data is null.
         TypeError: if ``target`` is neither a Document nor a Folder.
     """
-    from include.domains.documents import (
+    from include.database.models.documents import (
         Document,
         DocumentAccessRule,
         Folder,

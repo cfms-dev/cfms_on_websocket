@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
 from include.config.settings import global_config
-from include.domains.documents import Document, Folder
-from include.domains.identity.models import User
+from include.database.models.documents import Document, Folder
+from include.database.models.identity import User
 from include.domains.operations.messages import Messages as smsg
 
 

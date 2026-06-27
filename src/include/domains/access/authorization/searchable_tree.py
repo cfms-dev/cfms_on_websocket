@@ -10,8 +10,8 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
 
-from include.domains.access.models import ObjectAccessEntry
-from include.domains.documents import Document, Folder
+from include.database.models.access import ObjectAccessEntry
+from include.database.models.documents import Document, Folder
 
 
 # ── 内部辅助：给定起始 folder_id 集合和需要查OAE的目标ID集合，

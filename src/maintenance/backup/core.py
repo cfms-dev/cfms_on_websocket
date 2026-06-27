@@ -31,13 +31,12 @@ from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import CORE_VERSION, ROOT_ABSPATH
 from include.config.settings import global_config
-from include.database.session import Base, Session, engine
-from include.domains.access.models import (
+from include.database.models.access import (
     ObjectAccessEntry,
     UserBlockEntry,
     UserBlockSubEntry,
 )
-from include.domains.documents import (
+from include.database.models.documents import (
     Document,
     DocumentAccessRule,
     DocumentMetadata,
@@ -46,17 +45,18 @@ from include.domains.documents import (
     Folder,
     FolderAccessRule,
 )
-from include.domains.documents.files import File
-from include.domains.identity.models import (
+from include.database.models.files import File
+from include.database.models.identity import (
     User,
     UserGroup,
     UserGroupPermission,
     UserMembership,
     UserPermission,
 )
-from include.domains.keyrings.models import UserKey
-from include.domains.operations.models import AuditEntry
-from include.domains.security import BannedSubnet
+from include.database.models.keyrings import UserKey
+from include.database.models.operations import AuditEntry
+from include.database.models.security import BannedSubnet
+from include.database.session import Base, Session, engine
 from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
 

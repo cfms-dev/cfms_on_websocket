@@ -2,10 +2,10 @@ import time
 from typing import Any, Optional
 
 from include.config.settings import global_config
+from include.database.models.identity import User
+from include.database.models.keyrings import UserKey
 from include.database.session import Session
-from include.domains.identity.models import User
 from include.domains.identity.validators.passwords import check_passwd_requirements
-from include.domains.keyrings.models import UserKey
 from include.domains.operations.commands.audit import log_audit
 from include.domains.security.guards.login import LoginGuard
 from include.exceptions.misc import (

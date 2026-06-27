@@ -26,7 +26,6 @@ from include.config.settings import global_config
 from include.database.session import Base, Session
 from include.domains.access.permissions import Permissions
 from include.domains.identity.tokens import Token
-from include.domains.operations.models import AuditEntry
 from include.exceptions.misc import (
     UserNotActiveError,
     UserTOTPFailedError,
@@ -38,9 +37,10 @@ from include.exceptions.misc import (
 _password_hasher = PasswordHasher()
 
 if TYPE_CHECKING:
-    from include.domains.access.models import UserBlockEntry
-    from include.domains.documents.files import File
-    from include.domains.keyrings.models import UserKey
+    from include.database.models.access import UserBlockEntry
+    from include.database.models.files import File
+    from include.database.models.keyrings import UserKey
+    from include.database.models.operations import AuditEntry
 
 
 class UserStatus(IntEnum):

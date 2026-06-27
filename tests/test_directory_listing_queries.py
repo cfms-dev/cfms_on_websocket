@@ -18,11 +18,11 @@ def directory_models(protected_test_config):
     original_cwd = Path.cwd()
     try:
         os.chdir(src_path)
-        import include.domains.access.models as blocking
-        import include.domains.keyrings.models as keyring
+        import include.database.models.access as blocking
+        import include.database.models.keyrings as keyring
+        from include.database.models.documents import Document, DocumentRevision, Folder
+        from include.database.models.files import File
         from include.database.session import Base
-        from include.domains.documents import Document, DocumentRevision, Folder
-        from include.domains.documents.files import File
         from include.domains.documents.handlers.directories import (
             _fetch_latest_active_revisions_by_document,
         )

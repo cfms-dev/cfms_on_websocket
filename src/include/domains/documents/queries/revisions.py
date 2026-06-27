@@ -28,7 +28,7 @@ def batch_count_other_revisions(
         Dict mapping file_id to reference count excluding specified documents.
     """
     # FIXME: Use lazy import when Python 3.15 is out
-    from include.domains.documents.models import DocumentRevision
+    from include.database.models.documents import DocumentRevision
 
     # Materialize iterables so they can be safely iterated multiple times.
     file_ids_list = list(file_ids)

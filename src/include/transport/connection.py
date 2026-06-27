@@ -17,8 +17,8 @@ from include.config.constants import (
     FILE_TRANSFER_MIN_CHUNK_SIZE,
 )
 from include.config.settings import global_config
+from include.database.models.files import File, FileTask
 from include.database.session import Session
-from include.domains.documents.files import File, FileTask
 from include.domains.operations.messages import Messages as smsg
 from include.extensions.manager import pm
 from include.observability.exception_logging import log_exception_with_id

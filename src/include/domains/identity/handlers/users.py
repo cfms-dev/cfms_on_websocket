@@ -24,21 +24,21 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 
 from include.config.constants import AVAILABLE_BLOCK_TYPES
 from include.config.settings import global_config
-from include.database.session import Session
-from include.domains.access.models import (
+from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
 )
-from include.domains.access.permissions import Permissions
-from include.domains.documents import Document
-from include.domains.documents.files import TransferMode
-from include.domains.documents.handlers.documents import create_file_task
-from include.domains.identity.commands.users import create_user
-from include.domains.identity.models import (
+from include.database.models.documents import Document
+from include.database.models.files import TransferMode
+from include.database.models.identity import (
     User,
     UserGroup,
     UserStatus,
 )
+from include.database.session import Session
+from include.domains.access.permissions import Permissions
+from include.domains.documents.handlers.documents import create_file_task
+from include.domains.identity.commands.users import create_user
 from include.domains.identity.validators.passwords import (
     InvalidPasswordLengthError,
     RuleRequirementsNotMetError,

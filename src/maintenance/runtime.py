@@ -1,24 +1,10 @@
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 
 class MaintenanceRuntimeError(RuntimeError):
     pass
-
-
-MODEL_MODULES = (
-    "include.domains.access.models",
-    "include.domains.identity.models",
-    "include.domains.documents.base",
-    "include.domains.documents.files",
-    "include.domains.documents.metadata",
-    "include.domains.documents.models",
-    "include.domains.keyrings.models",
-    "include.domains.operations.models",
-    "include.domains.security",
-)
 
 
 def ensure_src_workdir(cwd: Path | None = None) -> Path:
@@ -32,8 +18,7 @@ def ensure_src_workdir(cwd: Path | None = None) -> Path:
 
 
 def load_database_models() -> None:
-    for module_name in MODEL_MODULES:
-        importlib.import_module(module_name)
+    import include.database.models  # noqa: F401
 
 
 def initialize_providers() -> None:

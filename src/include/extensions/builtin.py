@@ -8,11 +8,11 @@ from sqlalchemy.engine import Engine
 
 from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from include.config.settings import global_config
+from include.database.models.files import File
+from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.documents.files import File
 from include.domains.documents.queries.file_references import _get_file_references
-from include.domains.identity.models import User
 from include.domains.operations.messages import Messages as smsg
 from include.extensions.manager import hookimpl
 from include.shared import lockdown_enabled

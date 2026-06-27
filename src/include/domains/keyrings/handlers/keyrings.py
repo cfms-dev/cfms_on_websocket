@@ -23,10 +23,10 @@ __all__ = [
 
 import time
 
+from include.database.models.identity import User
+from include.database.models.keyrings import UserKey
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.identity.models import User
-from include.domains.keyrings.models import UserKey
 from include.domains.operations.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler

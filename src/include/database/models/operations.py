@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import secrets
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import JSON, VARCHAR, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
-from include.domains.identity.models import User
+
+if TYPE_CHECKING:
+    from include.database.models.identity import User
 
 
 class AuditEntry(Base):
@@ -16,7 +20,7 @@ class AuditEntry(Base):
     )
     action: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
     username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=True)
-    user: Mapped[User] = relationship("User", back_populates="audit_entries")
+    user: Mapped["User"] = relationship("User", back_populates="audit_entries")
     target: Mapped[str] = mapped_column(VARCHAR(255), nullable=True)
     data: Mapped[dict] = mapped_column(JSON, nullable=True)
     result: Mapped[int] = mapped_column(Integer, nullable=False)

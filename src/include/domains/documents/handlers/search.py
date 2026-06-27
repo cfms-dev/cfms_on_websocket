@@ -11,6 +11,7 @@ import time
 from typing import Any, Dict, List
 
 from include.config.settings import global_config
+from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import check_access_for_object
 from include.domains.access.authorization.grants import (
@@ -22,7 +23,6 @@ from include.domains.access.authorization.searchable_tree import (
     search_folders_with_access,
 )
 from include.domains.access.permissions import Permissions
-from include.domains.identity.models import User
 from include.exceptions.misc import NoActiveRevisionsError
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler

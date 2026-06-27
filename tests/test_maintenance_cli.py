@@ -110,7 +110,7 @@ from maintenance.runtime import load_database_models
 load_database_models()
 
 from include.database.session import Base, Session, engine
-from include.domains.identity.models import User
+from include.database.models.identity import User
 
 Base.metadata.create_all(engine)
 hasher = PasswordHasher()
@@ -144,7 +144,7 @@ from maintenance.runtime import load_database_models
 load_database_models()
 
 from include.database.session import Session
-from include.domains.identity.models import User
+from include.database.models.identity import User
 
 with Session() as session:
     data = {{}}

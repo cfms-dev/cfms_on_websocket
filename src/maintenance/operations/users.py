@@ -29,8 +29,8 @@ def reset_password(username: str, password: str | None = None) -> PasswordResetR
     ensure_src_workdir()
     load_database_models()
 
+    from include.database.models.identity import User
     from include.database.session import Session
-    from include.domains.identity.models import User
 
     new_password = password or build_random_password()
     with Session() as session:
@@ -60,8 +60,8 @@ def clear_totp(
         )
     load_database_models()
 
+    from include.database.models.identity import User
     from include.database.session import Session
-    from include.domains.identity.models import User
 
     with Session() as session:
         if all_users:

@@ -8,18 +8,22 @@ from sqlalchemy import func, literal, select
 from sqlalchemy.orm import joinedload, raiseload, selectinload
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
+from include.database.models.documents import (
+    Document,
+    DocumentRevision,
+    EntityStatus,
+    Folder,
+)
+from include.database.models.files import File
+from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
 from include.domains.access.permissions import Permissions
-from include.domains.documents import Document, DocumentRevision, Folder
-from include.domains.documents.base import EntityStatus
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.name_conflicts import (
     handle_name_duplicate,
 )
-from include.domains.documents.files import File
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
-from include.domains.identity.models import User
 from include.domains.operations.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler

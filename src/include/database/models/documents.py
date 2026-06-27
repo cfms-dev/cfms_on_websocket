@@ -1,7 +1,14 @@
+from __future__ import annotations
+
 __all__ = [
+    "BaseObject",
+    "EntityStatus",
     "Document",
     "DocumentRevision",
+    "DocumentRevisionStatus",
     "DocumentAccessRule",
+    "DocumentMetadata",
+    "DocumentMetadataTag",
     "Folder",
     "FolderAccessRule",
 ]
@@ -10,27 +17,244 @@ import secrets
 import time
 from enum import IntEnum
 from itertools import batched
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Literal, Optional, cast
 
 from sqlalchemy import JSON, VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
-from include.config.constants import QUERY_CHUNK_SIZE
-from include.database.session import Base
-from include.domains.access.authorization.access_rules import AccessRuleBase
-from include.domains.documents.base import BaseObject, EntityStatus
-from include.domains.documents.files import (
+from include.config.constants import AVAILABLE_ACCESS_TYPES, QUERY_CHUNK_SIZE
+from include.config.settings import global_config
+from include.database.models.files import (
     File,
     FileTask,
     _queue_deferred_file_deletion,
+)
+from include.database.session import Base
+from include.domains.access.authorization.access_rules import AccessRuleBase
+from include.domains.access.authorization.grants import (
+    batch_prefetch_granted_ids,
+    prefetch_user_blocks,
 )
 from include.domains.documents.queries.file_references import count_file_references
 from include.domains.documents.queries.revisions import batch_count_other_revisions
 from include.exceptions.misc import NoActiveRevisionsError
 
 if TYPE_CHECKING:
-    from include.domains.documents.metadata import DocumentMetadata
+    from include.database.models.identity import User
+
+
+class EntityStatus(IntEnum):
+    OK = 0
+    DELETED = 1
+    LOCKED = 2
+
+
+class BaseObject(Base):
+    __abstract__ = True
+
+    id: Mapped[str]
+    access_rules: Mapped[List]
+
+    # Whether to inherit access rules from parent folders.
+    # Useful when enabling recursion check.
+    inherit: Mapped[bool]
+
+    status: Mapped[EntityStatus] = mapped_column(
+        Integer, nullable=False, default=EntityStatus.OK
+    )
+    status_operation_id: Mapped[Optional[str]] = mapped_column(
+        VARCHAR(255), nullable=True, index=True
+    )
+
+    def check_access_requirements(
+        self, user: User, access_type: str = "read", _no_recursive_check=False
+    ) -> bool:
+        """
+        Checks if a given user meets the access requirements for a specific access type based on defined access rules.
+        Args:
+            user (User): The user object whose permissions and groups are to be checked.
+            access_type (int, optional): The type of access to check for. Defaults to `"read"`.
+            _no_recursive_check (bool, optional): Useful when performing batch queries. Defaults to False.
+        Returns:
+            bool: True if the user meets all access requirements for the specified access type, False otherwise.
+        Raises:
+            ValueError: If the "match" value in any rule is not "all" or "any".
+        Access rules are evaluated as follows:
+            - Each rule may specify required permissions ("rights") and/or groups ("groups").
+            - Each requirement can specify a "match" mode: "all" (all required items must be present) or "any" (at least one must be present).
+            - Rules are grouped and evaluated according to their match modes and requirements.
+            - If no access rules are defined, access is granted by default.
+        """
+
+        _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
+
+        def match_rights(sub_rights_group):
+            if not sub_rights_group:
+                return True
+
+            sub_match_mode = sub_rights_group.get("match", "all")
+            sub_rights_require = sub_rights_group.get("require", [])
+
+            if not sub_rights_require:
+                return True
+
+            if sub_match_mode == "all":
+                return set(sub_rights_require).issubset(user.all_permissions)
+
+            elif sub_match_mode == "any":
+                for right in sub_rights_require:
+                    if right in user.all_permissions:
+                        return True
+                return False
+
+            else:
+                raise ValueError('the value of "match" must be "all" or "any"')
+
+        def match_groups(sub_groups_group):
+            if not sub_groups_group:
+                return True
+
+            sub_match_mode = sub_groups_group.get("match", "all")
+            sub_groups_require = sub_groups_group.get("require", [])
+
+            if not sub_groups_require:
+                return True
+
+            if sub_match_mode == "all":
+                return set(sub_groups_require).issubset(user.all_groups)
+
+            elif sub_match_mode == "any":
+                for group in sub_groups_require:
+                    if group in user.all_groups:
+                        return True
+                return False
+            else:
+                raise ValueError('the value of "match" must be "all" or "any"')
+
+        def match_sub_group(sub_group):
+            sub_match_mode = sub_group.get("match", "all")
+            sub_rights_group = sub_group.get("rights", {})
+            sub_groups_group = sub_group.get("groups", {})
+
+            if not (sub_rights_group.get("require", [])) or (
+                not sub_groups_group.get("require", [])
+            ):
+                sub_match_mode = "all"
+
+            if sub_match_mode == "any":
+                return match_rights(sub_rights_group) or match_groups(sub_groups_group)
+            if sub_match_mode == "all":
+                return match_rights(sub_rights_group) and match_groups(sub_groups_group)
+            else:
+                raise ValueError('the value of "match" must be "all" or "any"')
+
+        def match_primary_sub_group(per_match_group):
+            match_mode = per_match_group.get("match", "all")
+            for sub_group in per_match_group["match_groups"]:
+                if not sub_group:
+                    continue
+
+                state = match_sub_group(sub_group)
+
+                if match_mode == "any":
+                    if state:
+                        return True
+                elif match_mode == "all":
+                    if not state:
+                        return False
+
+            if match_mode == "any":
+                return False
+            elif match_mode == "all":
+                return True
+
+        _session = object_session(user)
+        if not _session:
+            raise RuntimeError("No active session found for user")
+
+        now = time.time()
+
+        is_globally_blocked, blocked_ids = prefetch_user_blocks(
+            _session, user, access_type, now
+        )
+        if is_globally_blocked or self.id in blocked_ids:
+            return False
+
+        self_type = cast(
+            Literal["document", "directory"], _TARGET_TYPE_MAPPING[self.__tablename__]
+        )
+        explicitly_granted_ids = batch_prefetch_granted_ids(
+            _session, user, [self.id], self_type, access_type, now
+        )
+
+        if self.id in explicitly_granted_ids:
+            return True
+
+        if (
+            global_config["access"]["enable_access_recursive_check"]
+            and self.inherit
+            and not _no_recursive_check
+        ):
+            from include.database.models.documents import Document, Folder
+
+            parent = None
+            if isinstance(self, Document):
+                parent = self.folder
+            elif isinstance(self, Folder):
+                parent = self.parent
+
+            visited_folder_ids = set()
+            while parent is not None:
+                if parent.id in visited_folder_ids:
+                    raise RuntimeError("Cycle detected in folder hierarchy")
+                visited_folder_ids.add(parent.id)
+
+                if not parent.check_access_requirements(user, access_type=access_type):
+                    return False
+
+                if not parent.inherit:
+                    break
+
+                parent = parent.parent
+
+        if not self.access_rules:
+            return True
+
+        for each_rule in self.access_rules:
+            if not each_rule:
+                continue
+
+            each_rule: AccessRuleBase
+
+            if access_type not in AVAILABLE_ACCESS_TYPES:
+                raise ValueError(
+                    f"Invalid access type for {self.__tablename__}: {access_type}"
+                )
+
+            match access_type:
+                case "read":
+                    if each_rule.access_type != "read":
+                        continue
+                case "write":
+                    if each_rule.access_type not in ["read", "write"]:
+                        continue
+                case "move":
+                    if each_rule.access_type != "move":
+                        continue
+                case "manage":
+                    if each_rule.access_type not in ["read", "manage"]:
+                        continue
+                case _:
+                    raise NotImplementedError("Unsupported access type")
+
+            if not each_rule.rule_data:
+                continue
+
+            if not match_primary_sub_group(each_rule.rule_data):
+                return False
+
+        return True
 
 
 class DocumentRevisionStatus(IntEnum):
@@ -402,4 +626,57 @@ class FolderAccessRule(Base, AccessRuleBase):
         return f"FolderAccessRule(id={self.id!r}, folder_id={self.folder_id!r}, rule_data={self.rule_data!r})"
 
 
-from include.domains.documents import metadata as _metadata  # noqa: E402, F401
+class DocumentMetadata(Base):
+    __tablename__ = "document_metadata"
+
+    document_id: Mapped[str] = mapped_column(
+        VARCHAR(255), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    creator_username: Mapped[Optional[str]] = mapped_column(
+        VARCHAR(64),
+        ForeignKey("users.username", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    last_modified_by_username: Mapped[Optional[str]] = mapped_column(
+        VARCHAR(64),
+        ForeignKey("users.username", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    document: Mapped["Document"] = relationship(
+        "Document",
+        back_populates="metadata_record",
+        foreign_keys=[document_id],
+    )
+    creator: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[creator_username]
+    )
+    last_modified_by: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[last_modified_by_username]
+    )
+    tags: Mapped[List["DocumentMetadataTag"]] = relationship(
+        "DocumentMetadataTag",
+        back_populates="metadata_record",
+        cascade="all, delete-orphan",
+        order_by="DocumentMetadataTag.position",
+    )
+
+
+class DocumentMetadataTag(Base):
+    __tablename__ = "document_metadata_tags"
+
+    document_id: Mapped[str] = mapped_column(
+        VARCHAR(255),
+        ForeignKey("document_metadata.document_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    metadata_record: Mapped["DocumentMetadata"] = relationship(
+        "DocumentMetadata",
+        back_populates="tags",
+        foreign_keys=[document_id],
+    )

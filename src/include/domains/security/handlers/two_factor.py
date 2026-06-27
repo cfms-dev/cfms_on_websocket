@@ -9,9 +9,9 @@ from operator import xor
 
 import orjson
 
+from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.identity.models import User, UserStatus
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler
 

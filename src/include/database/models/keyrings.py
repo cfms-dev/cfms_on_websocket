@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from include.database.session import Base
 
 if TYPE_CHECKING:
-    from include.domains.identity.models import User
+    from include.database.models.identity import User
 
 
 class UserKey(Base):

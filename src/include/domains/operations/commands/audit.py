@@ -1,7 +1,7 @@
 from typing import Optional
 
+from include.database.models.operations import AuditEntry
 from include.database.session import Session
-from include.domains.operations.models import AuditEntry
 
 
 def log_audit(

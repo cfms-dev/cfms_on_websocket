@@ -203,8 +203,8 @@ def file_task_context(monkeypatch, tmp_path):
 
     import include.transport.connection as connection_handler
     from include.config.constants import FILE_TRANSFER_MIN_CHUNK_SIZE
+    from include.database.models.files import File, FileTask
     from include.database.session import Base
-    from include.domains.documents.files import File, FileTask
     from include.transport.connection import ConnectionHandler
     from include.transport.multiplexing import FrameType
 

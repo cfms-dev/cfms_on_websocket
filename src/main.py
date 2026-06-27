@@ -16,6 +16,7 @@ import sys
 from loguru import logger
 from websockets.sync.server import serve
 
+import include.database.models  # noqa: F401
 from include.config.constants import (
     CORE_VERSION,
     DEFAULT_SSL_CERT_VALIDITY_DAYS,
@@ -23,12 +24,16 @@ from include.config.constants import (
     ROOT_DIRECTORY_ID,
 )
 from include.config.settings import global_config
+from include.database.models.documents import (
+    Document,
+    DocumentMetadata,
+    DocumentRevision,
+    Folder,
+)
+from include.database.models.files import File
 from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
-from include.domains.documents import DocumentMetadata
-from include.domains.documents.files import File
-from include.domains.documents.models import Document, DocumentRevision, Folder
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler

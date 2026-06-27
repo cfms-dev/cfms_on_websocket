@@ -1,7 +1,7 @@
 import time
 
+from include.database.models.identity import UserGroup, UserGroupPermission
 from include.database.session import Session
-from include.domains.identity.models import UserGroup, UserGroupPermission
 
 
 def create_group(**kwargs) -> None:

@@ -9,6 +9,7 @@ import websockets.sync.server
 from loguru import logger as log
 
 from include.config.constants import NONCE_MIN_LENGTH
+from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.handlers import (
     RequestGrantAccessHandler,
@@ -80,7 +81,6 @@ from include.domains.identity.handlers.users import (
     RequestSetUserAvatarHandler,
     RequestUnblockUserHandler,
 )
-from include.domains.identity.models import User
 from include.domains.keyrings.handlers.keyrings import (
     RequestDeleteUserKeyHandler,
     RequestGetUserKeyHandler,

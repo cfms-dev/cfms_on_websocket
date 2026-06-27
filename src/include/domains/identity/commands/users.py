@@ -2,8 +2,8 @@ import time
 
 from argon2 import PasswordHasher
 
+from include.database.models.identity import User, UserMembership, UserPermission
 from include.database.session import Session
-from include.domains.identity.models import User, UserMembership, UserPermission
 
 # Module-level PasswordHasher instance — reused across all calls to avoid
 # repeated construction overhead.
