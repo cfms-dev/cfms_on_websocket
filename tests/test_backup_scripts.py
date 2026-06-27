@@ -64,7 +64,7 @@ def backup_context(monkeypatch, tmp_path):
     (config_dir / "init").write_text("", encoding="utf-8")
     monkeypatch.chdir(config_dir)
 
-    from include.database.handler import Base
+    from include.database.session import Base
     from maintenance.backup import (
         BackupExportSelection,
         BackupFormatError,

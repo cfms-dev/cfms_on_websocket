@@ -1,5 +1,5 @@
 """
 CFMS Database Module
 
-Database connection handler and ORM models for the CFMS system.
+Database engine, session, and declarative base for the CFMS system.
 """

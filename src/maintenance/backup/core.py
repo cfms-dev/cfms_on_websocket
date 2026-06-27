@@ -29,20 +29,15 @@ from sqlalchemy import DateTime, Table, func, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
-from include.conf_loader import global_config
-from include.constants import CORE_VERSION, ROOT_ABSPATH
-from include.database.handler import Base, Session, engine
-from include.database.models.blocking import UserBlockEntry, UserBlockSubEntry
-from include.database.models.classic import (
-    AuditEntry,
+from include.config.constants import CORE_VERSION, ROOT_ABSPATH
+from include.config.settings import global_config
+from include.database.session import Base, Session, engine
+from include.domains.access.models import (
     ObjectAccessEntry,
-    User,
-    UserGroup,
-    UserGroupPermission,
-    UserMembership,
-    UserPermission,
+    UserBlockEntry,
+    UserBlockSubEntry,
 )
-from include.database.models.entity import (
+from include.domains.documents import (
     Document,
     DocumentAccessRule,
     DocumentMetadata,
@@ -51,9 +46,17 @@ from include.database.models.entity import (
     Folder,
     FolderAccessRule,
 )
-from include.database.models.file import File
-from include.database.models.keyring import UserKey
-from include.database.models.security import BannedSubnet
+from include.domains.documents.files import File
+from include.domains.identity.models import (
+    User,
+    UserGroup,
+    UserGroupPermission,
+    UserMembership,
+    UserPermission,
+)
+from include.domains.keyrings.models import UserKey
+from include.domains.operations.models import AuditEntry
+from include.domains.security import BannedSubnet
 from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
 

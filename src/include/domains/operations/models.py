@@ -1,0 +1,26 @@
+import secrets
+import time
+from typing import Optional
+
+from sqlalchemy import JSON, VARCHAR, Float, ForeignKey, Integer
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from include.database.session import Base
+from include.domains.identity.models import User
+
+
+class AuditEntry(Base):
+    __tablename__ = "audit_entries"
+    id: Mapped[str] = mapped_column(
+        VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
+    )
+    action: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=True)
+    user: Mapped[User] = relationship("User", back_populates="audit_entries")
+    target: Mapped[str] = mapped_column(VARCHAR(255), nullable=True)
+    data: Mapped[dict] = mapped_column(JSON, nullable=True)
+    result: Mapped[int] = mapped_column(Integer, nullable=False)
+    remote_address: Mapped[Optional[str]] = mapped_column(VARCHAR(64), nullable=True)
+    logged_time: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=False, default=time.time, index=True
+    )

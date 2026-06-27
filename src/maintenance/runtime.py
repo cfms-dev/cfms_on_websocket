@@ -9,12 +9,15 @@ class MaintenanceRuntimeError(RuntimeError):
 
 
 MODEL_MODULES = (
-    "include.database.models.blocking",
-    "include.database.models.classic",
-    "include.database.models.entity",
-    "include.database.models.file",
-    "include.database.models.keyring",
-    "include.database.models.security",
+    "include.domains.access.models",
+    "include.domains.identity.models",
+    "include.domains.documents.base",
+    "include.domains.documents.files",
+    "include.domains.documents.metadata",
+    "include.domains.documents.models",
+    "include.domains.keyrings.models",
+    "include.domains.operations.models",
+    "include.domains.security",
 )
 
 

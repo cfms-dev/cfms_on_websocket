@@ -18,17 +18,17 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
-from include.database.handler import Base
-from include.database.models.blocking import UserBlockEntry, UserBlockSubEntry
-from include.database.models.classic import (
+from include.database.session import Base
+from include.domains.access.models import UserBlockEntry, UserBlockSubEntry
+from include.domains.identity.models import (
     User,
     UserGroup,
     UserGroupPermission,
     UserPermission,
     UserMembership,
 )
-from include.database.models.file import File, FileTask
-from include.database.models.entity import (
+from include.domains.documents.files import File, FileTask
+from include.domains.documents import (
     BaseObject,
     Document,
     DocumentRevision,
@@ -38,8 +38,8 @@ from include.database.models.entity import (
     Folder,
     FolderAccessRule,
 )
-from include.database.models.keyring import UserKey
-from include.database.models.security import BannedSubnet, LoginThrottle, TrafficThrottle
+from include.domains.keyrings.models import UserKey
+from include.domains.security import BannedSubnet, LoginThrottle, TrafficThrottle
 
 target_metadata = Base.metadata
 

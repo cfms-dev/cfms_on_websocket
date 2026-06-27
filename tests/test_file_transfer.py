@@ -201,12 +201,12 @@ def file_task_context(monkeypatch, tmp_path):
     (config_dir / "init").write_text("", encoding="utf-8")
     monkeypatch.chdir(config_dir)
 
-    import include.classes.connection_handler as connection_handler
-    from include.classes.connection_handler import ConnectionHandler
-    from include.classes.multiplexer import FrameType
-    from include.constants import FILE_TRANSFER_MIN_CHUNK_SIZE
-    from include.database.handler import Base
-    from include.database.models.file import File, FileTask
+    import include.transport.connection as connection_handler
+    from include.config.constants import FILE_TRANSFER_MIN_CHUNK_SIZE
+    from include.database.session import Base
+    from include.domains.documents.files import File, FileTask
+    from include.transport.connection import ConnectionHandler
+    from include.transport.multiplexing import FrameType
 
     engine = create_engine(f"sqlite:///{tmp_path / 'file_tasks.db'}")
     Base.metadata.create_all(
@@ -403,7 +403,7 @@ def test_empty_download_marks_file_task_completed(file_task_context, tmp_path):
 def test_download_does_not_hold_db_session_while_waiting_for_client(
     file_task_context, monkeypatch, tmp_path
 ):
-    import include.classes.connection_handler as connection_handler
+    import include.transport.connection as connection_handler
 
     relative_path = "download-without-open-session.bin"
     (tmp_path / relative_path).write_bytes(b"download payload")
@@ -466,7 +466,7 @@ def test_exact_chunk_upload_marks_file_task_completed(
 def test_upload_does_not_hold_db_session_while_receiving_chunks(
     file_task_context, monkeypatch
 ):
-    import include.classes.connection_handler as connection_handler
+    import include.transport.connection as connection_handler
 
     relative_path = "uploads/without-open-session.bin"
     task_id, _file_id = _create_file_task(file_task_context, relative_path, mode=1)

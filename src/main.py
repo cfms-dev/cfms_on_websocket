@@ -16,32 +16,32 @@ import sys
 from loguru import logger
 from websockets.sync.server import serve
 
-from include.classes.enum.permissions import Permissions
-from include.classes.misc.guard import LoginGuard
-from include.conf_loader import global_config
-from include.constants import (
+from include.config.constants import (
     CORE_VERSION,
     DEFAULT_SSL_CERT_VALIDITY_DAYS,
     ROOT_ABSPATH,
     ROOT_DIRECTORY_ID,
 )
-from include.database.handler import Base, Session, engine
-from include.database.models.entity import DocumentMetadata
-from include.database.models.entity.obj import Document, DocumentRevision, Folder
-from include.database.models.file import File
-from include.handlers.debugging.throw import RequestThrowExceptionHandler
+from include.config.settings import global_config
+from include.database.session import Base, Session, engine
+from include.domains.access.authorization.access_rules import set_access_rules
+from include.domains.access.permissions import Permissions
+from include.domains.documents import DocumentMetadata
+from include.domains.documents.files import File
+from include.domains.documents.models import Document, DocumentRevision, Folder
+from include.domains.operations.broadcast import on_global_broadcast
+from include.domains.security.guards.login import LoginGuard
+from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
+from include.extensions.manager import load_extensions_from_directory, pm
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
-from include.router import (
+from include.transport.client_address import is_v6_address
+from include.transport.request_entrypoint import global_process_request
+from include.transport.router import (
     available_functions,
     handle_connection,
     whitelisted_functions,
 )
-from include.system.extmgr import load_extensions_from_directory, pm
-from include.system.listeners import on_global_broadcast
-from include.util.address import is_v6_address
-from include.util.entrance import global_process_request
-from include.util.rule.applying import set_access_rules
 
 # fix
 os.makedirs(ROOT_ABSPATH / "content" / "logs", exist_ok=True)
@@ -92,7 +92,7 @@ def server_init():
     import datetime
     import secrets
 
-    from include.util.group import create_group
+    from include.domains.identity.commands.groups import create_group
 
     if (
         os.path.exists(ROOT_ABSPATH / "app.db")
@@ -211,7 +211,7 @@ def server_init():
     import secrets
     import string
 
-    from include.util.user import create_user
+    from include.domains.identity.commands.users import create_user
 
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{};:,.<>?/"
     password = "".join(secrets.choice(alphabet) for _ in range(16))

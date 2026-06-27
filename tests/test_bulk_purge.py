@@ -82,28 +82,29 @@ def session():
 
 @pytest.fixture()
 def bulk_purge_module(monkeypatch):
-    entity_module = types.ModuleType("include.database.models.entity")
+    entity_module = types.ModuleType("include.domains.documents")
     entity_module.Document = MDocument
     entity_module.DocumentAccessRule = MDocumentAccessRule
     entity_module.DocumentRevision = MDocumentRevision
 
-    file_module = types.ModuleType("include.database.models.file")
+    file_module = types.ModuleType("include.domains.documents.files")
     file_module.File = MFile
     file_module.FileTask = MFileTask
     file_module._queue_deferred_file_deletion = lambda session, path: (
         session.info.setdefault("queued_paths", []).append(path)
     )
 
-    monkeypatch.setitem(sys.modules, "include.database.models.entity", entity_module)
-    monkeypatch.setitem(sys.modules, "include.database.models.file", file_module)
+    monkeypatch.setitem(sys.modules, "include.domains.documents", entity_module)
+    monkeypatch.setitem(sys.modules, "include.domains.documents.files", file_module)
 
     module_path = (
         Path(__file__).resolve().parent.parent
         / "src"
         / "include"
-        / "util"
-        / "bulk"
-        / "purge.py"
+        / "domains"
+        / "documents"
+        / "commands"
+        / "bulk_purge.py"
     )
     spec = importlib.util.spec_from_file_location("bulk_purge_under_test", module_path)
     module = importlib.util.module_from_spec(spec)

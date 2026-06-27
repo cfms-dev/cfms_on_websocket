@@ -45,14 +45,14 @@ from sqlalchemy.orm import (
 
 # ---------------------------------------------------------------------------
 # Make ``include`` importable without the full project config.
-# count.py → include.constants → include.classes.version (no config needed).
+# file_references.py -> include.config.constants -> include.config.version (no config needed).
 # ---------------------------------------------------------------------------
 _src = str(Path(__file__).resolve().parent.parent / "src")
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from include.constants import MAX_PARAM_SIZE, QUERY_CHUNK_SIZE  # noqa: E402
-from include.util.count import (  # noqa: E402
+from include.config.constants import MAX_PARAM_SIZE, QUERY_CHUNK_SIZE  # noqa: E402
+from include.domains.documents.queries.file_references import (  # noqa: E402
     _clear_file_references_cache,
     _get_file_references,
     count_file_references,
@@ -376,7 +376,7 @@ class TestCountFileReferences:
         _get_file_references(eng)
 
         _clear_file_references_cache()
-        from include.util.count import _CACHED_REFS
+        from include.domains.documents.queries.file_references import _CACHED_REFS
 
         assert len(_CACHED_REFS) == 0
 
