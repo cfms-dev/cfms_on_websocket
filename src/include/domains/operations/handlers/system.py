@@ -8,7 +8,7 @@ from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.operations.messages import Messages as smsg
+from include.messages import Messages as smsg
 from include.shared import lockdown_enabled
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler

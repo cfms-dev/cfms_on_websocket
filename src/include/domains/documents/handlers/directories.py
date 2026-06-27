@@ -24,7 +24,7 @@ from include.domains.documents.commands.name_conflicts import (
     handle_name_duplicate,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
-from include.domains.operations.messages import Messages as smsg
+from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler
 

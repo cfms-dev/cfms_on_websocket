@@ -40,8 +40,8 @@ from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
     handle_name_duplicate,
 )
-from include.domains.operations.messages import Messages as smsg
 from include.exceptions.misc import NoActiveRevisionsError
+from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler
 

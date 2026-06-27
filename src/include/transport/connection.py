@@ -19,8 +19,8 @@ from include.config.constants import (
 from include.config.settings import global_config
 from include.database.models.files import File, FileTask
 from include.database.session import Session
-from include.domains.operations.messages import Messages as smsg
 from include.extensions.manager import pm
+from include.messages import Messages as smsg
 from include.observability.exception_logging import log_exception_with_id
 from include.providers.manager import ProviderManager
 from include.transport.multiplexing import FrameType, Stream

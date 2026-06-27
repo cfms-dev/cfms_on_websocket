@@ -13,8 +13,8 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.documents.queries.file_references import _get_file_references
-from include.domains.operations.messages import Messages as smsg
 from include.extensions.manager import hookimpl
+from include.messages import Messages as smsg
 from include.shared import lockdown_enabled
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler

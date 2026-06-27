@@ -44,7 +44,7 @@ from include.domains.identity.validators.passwords import (
     RuleRequirementsNotMetError,
     check_passwd_requirements,
 )
-from include.domains.operations.messages import Messages as smsg
+from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler
 

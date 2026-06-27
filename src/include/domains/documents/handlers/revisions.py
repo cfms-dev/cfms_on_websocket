@@ -6,7 +6,7 @@ from include.domains.documents.handlers.documents import (
     create_file_task,
     mark_document_modified,
 )
-from include.domains.operations.messages import Messages as smsg
+from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler
 

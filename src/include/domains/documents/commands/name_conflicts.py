@@ -6,7 +6,7 @@ from include.config.constants import ROOT_DIRECTORY_ID
 from include.config.settings import global_config
 from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
-from include.domains.operations.messages import Messages as smsg
+from include.messages import Messages as smsg
 
 
 def get_target_folder_and_check_write(
