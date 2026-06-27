@@ -1,21 +1,10 @@
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 
 class MaintenanceRuntimeError(RuntimeError):
     pass
-
-
-MODEL_MODULES = (
-    "include.database.models.blocking",
-    "include.database.models.classic",
-    "include.database.models.entity",
-    "include.database.models.file",
-    "include.database.models.keyring",
-    "include.database.models.security",
-)
 
 
 def ensure_src_workdir(cwd: Path | None = None) -> Path:
@@ -29,8 +18,7 @@ def ensure_src_workdir(cwd: Path | None = None) -> Path:
 
 
 def load_database_models() -> None:
-    for module_name in MODEL_MODULES:
-        importlib.import_module(module_name)
+    import include.database.models  # noqa: F401
 
 
 def initialize_providers() -> None:

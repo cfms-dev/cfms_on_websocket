@@ -10,7 +10,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-from include.conf_loader import global_config
+from include.config.settings import global_config
 from include.providers.base import StorageProvider
 from include.providers.storage import LocalStorageProvider
 
