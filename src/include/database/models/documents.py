@@ -151,23 +151,22 @@ class BaseObject(Base):
 
         def match_primary_sub_group(per_match_group):
             match_mode = per_match_group.get("match", "all")
+            if match_mode not in ("all", "any"):
+                raise ValueError('the value of "match" must be "all" or "any"')
+
             for sub_group in per_match_group["match_groups"]:
                 if not sub_group:
                     continue
 
                 state = match_sub_group(sub_group)
 
-                if match_mode == "any":
-                    if state:
+                match (match_mode, state):
+                    case ("any", True):
                         return True
-                elif match_mode == "all":
-                    if not state:
+                    case ("all", False):
                         return False
 
-            if match_mode == "any":
-                return False
-            elif match_mode == "all":
-                return True
+            return match_mode == "all"
 
         _session = object_session(user)
         if not _session:
