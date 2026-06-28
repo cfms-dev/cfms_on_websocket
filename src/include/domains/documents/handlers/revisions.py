@@ -8,7 +8,7 @@ from include.domains.documents.handlers.documents import (
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestListRevisionsHandler(RequestHandler):
@@ -32,14 +32,14 @@ class RequestListRevisionsHandler(RequestHandler):
 
             if document is None:
                 handler.conclude_request(404, {}, "Document not found")
-                return 404, document_id, handler.username
+                return Result(code=404, target=document_id, username=handler.username)
 
             if (
                 Permissions.LIST_REVISIONS not in user.all_permissions
                 or not document.check_access_requirements(user, "read")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return 403, document_id, handler.username
+                return Result(code=403, target=document_id, username=handler.username)
 
             revisions = [
                 {
@@ -54,7 +54,7 @@ class RequestListRevisionsHandler(RequestHandler):
         handler.conclude_request(
             200, {"revisions": revisions}, "Revisions listed successfully"
         )
-        return 200, document_id, handler.username
+        return Result(code=200, target=document_id, username=handler.username)
 
 
 class RequestGetRevisionHandler(RequestHandler):
@@ -78,19 +78,19 @@ class RequestGetRevisionHandler(RequestHandler):
 
             if revision is None:
                 handler.conclude_request(404, {}, "Revision not found")
-                return 404, revision_id, handler.username
+                return Result(code=404, target=revision_id, username=handler.username)
 
             if (
                 Permissions.VIEW_REVISION not in user.all_permissions
                 or not revision.document.check_access_requirements(user, "read")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return 403, revision_id, handler.username
+                return Result(code=403, target=revision_id, username=handler.username)
 
             task_data = create_file_task(revision.file)
 
         handler.conclude_request(200, {"task_data": task_data}, smsg.SUCCESS)
-        return 200, revision_id, handler.username
+        return Result(code=200, target=revision_id, username=handler.username)
 
 
 class RequestSetDocumentRevisionHandler(RequestHandler):
@@ -121,21 +121,21 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
                 or revision.document_id != document.id
             ):
                 handler.conclude_request(404, {}, "Document or Revision not found")
-                return 404, document_id, handler.username
+                return Result(code=404, target=document_id, username=handler.username)
 
             if (
                 Permissions.SET_CURRENT_REVISION not in user.all_permissions
                 or not document.check_access_requirements(user, "write")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return 403, document_id, handler.username
+                return Result(code=403, target=document_id, username=handler.username)
 
             document.current_revision_id = revision.id
             mark_document_modified(document, user.username)
             session.commit()
 
         handler.conclude_request(200, {}, "Current revision set successfully")
-        return 200, document_id, handler.username
+        return Result(code=200, target=document_id, username=handler.username)
 
 
 class RequestDeleteRevisionHandler(RequestHandler):
@@ -161,7 +161,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
 
             if revision is None:
                 handler.conclude_request(404, {}, "Revision not found")
-                return 404, revision_id, handler.username
+                return Result(code=404, target=revision_id, username=handler.username)
 
             document = revision.document
             if (
@@ -169,14 +169,14 @@ class RequestDeleteRevisionHandler(RequestHandler):
                 or len(document.revisions) == 1  # backward compatibility
             ):
                 handler.conclude_request(400, {}, "Cannot delete the current revision")
-                return 400, revision_id, handler.username
+                return Result(code=400, target=revision_id, username=handler.username)
 
             if (
                 Permissions.DELETE_REVISION not in user.all_permissions
                 or document.check_access_requirements(user, "write") is False
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return 403, revision_id, handler.username
+                return Result(code=403, target=revision_id, username=handler.username)
 
             # Try to connect parent and child revisions directly
             for child_rev in revision.child_revisions:
@@ -188,4 +188,4 @@ class RequestDeleteRevisionHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, "Revision deleted successfully")
-        return 200, revision_id, handler.username
+        return Result(code=200, target=revision_id, username=handler.username)

@@ -13,7 +13,7 @@ from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestSetup2FAHandler(RequestHandler):
@@ -65,7 +65,7 @@ class RequestSetup2FAHandler(RequestHandler):
                     "backup_codes": backup_codes,
                 },
             )
-            return 200, handler.username
+            return Result(code=200, target=handler.username)
 
 
 class RequestValidate2FAHandler(RequestHandler):
@@ -135,7 +135,7 @@ class RequestValidate2FAHandler(RequestHandler):
         else:
             handler.conclude_request(401, {}, "Invalid verification code")
 
-        return (0 if success else 401), username
+        return Result(code=0 if success else 401, target=username)
 
 
 class RequestDisable2FAHandler(RequestHandler):
@@ -176,32 +176,40 @@ class RequestDisable2FAHandler(RequestHandler):
                 else "Password should not be provided when disabling 2FA for another user"
             )
             handler.conclude_request(400, {}, error_msg)
-            return 400, target_username, requester_username
+            return Result(code=400, target=target_username, username=requester_username)
 
         with Session() as session:
             user = session.get(User, target_username)
             if not user or not user.totp_enabled:
                 handler.conclude_request(400, {}, "2FA not enabled or user not found")
-                return 400, target_username, requester_username
+                return Result(
+                    code=400, target=target_username, username=requester_username
+                )
 
             if password:
                 if not user.verify_password(password):
                     handler.conclude_request(401, {}, "Invalid password")
-                    return 401, target_username, requester_username
+                    return Result(
+                        code=401, target=target_username, username=requester_username
+                    )
 
                 if user.status != UserStatus.ACTIVE:
                     handler.conclude_request(4003, {}, "User account is not active")
-                    return 4003, target_username, requester_username
+                    return Result(
+                        code=4003, target=target_username, username=requester_username
+                    )
             else:
                 requester = User.get_existing(session, requester_username)
                 if Permissions.MANAGE_2FA not in requester.all_permissions:
                     handler.conclude_request(403, {}, "Permission denied")
-                    return 403, target_username, requester_username
+                    return Result(
+                        code=403, target=target_username, username=requester_username
+                    )
 
             user.disable_totp()
 
         handler.conclude_request(200, {}, "2FA disabled successfully")
-        return 0, target_username, requester_username
+        return Result(code=0, target=target_username, username=requester_username)
 
 
 class RequestCancel2FASetupHandler(RequestHandler):
@@ -289,7 +297,9 @@ class RequestGet2FAStatusHandler(RequestHandler):
                     message="Forbidden: Cannot access another user's two-factor authentication status",
                     data={},
                 )
-                return 403, target_username, handler.username
+                return Result(
+                    code=403, target=target_username, username=handler.username
+                )
 
             handler.conclude_request(
                 code=200,

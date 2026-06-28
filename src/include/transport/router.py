@@ -1,6 +1,6 @@
 import threading
 import time
-from typing import Optional, Union
+from typing import Optional
 
 import jsonschema
 import orjson
@@ -108,7 +108,7 @@ from include.shared import clients, clients_lock, lockdown_enabled
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
 from include.transport.multiplexing import FrameType, MultiplexConnection, Stream
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 logger = log.bind(name="connection_handler")
 
@@ -203,6 +203,21 @@ whitelisted_functions = [
     "upload_file",
     "download_file",
 ]
+
+
+def _log_handler_result(
+    action: str,
+    result: Result,
+    remote_address: Optional[str] = None,
+) -> None:
+    log_audit(
+        action,
+        result.code,
+        username=result.username,
+        target=result.target,
+        data=result.data,
+        remote_address=remote_address,
+    )
 
 
 def _validate_replay_protection(
@@ -391,14 +406,7 @@ def handle_request(stream: Stream):
                 return
             t1 = time.perf_counter()
 
-            callback: Union[
-                int,
-                tuple[int, Optional[str]],
-                tuple[int, Optional[str], dict],
-                tuple[int, Optional[str], str],
-                tuple[int, Optional[str], dict, str],
-                None,
-            ] = _request_handler.handle(this_handler)
+            callback: Optional[Result] = _request_handler.handle(this_handler)
 
             t2 = time.perf_counter()
             pm.hook.ext_post_request(
@@ -417,56 +425,11 @@ def handle_request(stream: Stream):
             this_handler.report_error(e)
             return
 
-        if type(callback) is tuple:
-            match callback:
-                case (result, target) if len(callback) == 2:
-                    # 不判断各元素类型是否正确。第二个元素是目标对象
-                    log_audit(
-                        action,
-                        result,
-                        target=target,
-                        remote_address=this_handler.remote_address,
-                    )
-                case (result, target, data) if (
-                    isinstance(data, dict) and len(callback) == 3
-                ):
-                    log_audit(
-                        action,
-                        result,
-                        target=target,
-                        data=data,
-                        remote_address=this_handler.remote_address,
-                    )
-                case (result, target, username) if (
-                    isinstance(username, str) and len(callback) == 3
-                ):
-                    log_audit(
-                        action,
-                        result,
-                        target=target,
-                        username=username,
-                        remote_address=this_handler.remote_address,
-                    )
-                case (result, target, data, username) if len(callback) == 4:
-                    log_audit(
-                        action,
-                        result,
-                        target=target,
-                        data=data,
-                        username=username,
-                        remote_address=this_handler.remote_address,
-                    )
-                case _:
-                    raise TypeError
-        elif type(callback) is int:
-            log_audit(action, callback)
-        elif callback is None:
-            # 这个设计为两种情况所预留：
-            # 1. 为旧版本代码的向下兼容考量；
-            # 2. 为不适合采用 return 提交审计信息的逻辑预留。
+        if callback is None:
+            # 为不适合采用 return 提交审计信息的逻辑预留。
             return
-        else:
-            raise ValueError(f"Invalid returned value from handler: {callback!r}")
+
+        _log_handler_result(action, callback, this_handler.remote_address)
     else:
         # Handle unknown actions
         this_handler.conclude_request(400, {}, f"Unknown action: {this_handler.action}")

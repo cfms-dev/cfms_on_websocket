@@ -4,7 +4,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional, Set, Type, Union
+from typing import TYPE_CHECKING, Dict, Optional, Set, Type
 
 import pluggy
 import websockets.sync.server
@@ -12,7 +12,7 @@ from loguru import logger as log
 
 if TYPE_CHECKING:
     from include.transport.connection import ConnectionHandler
-    from include.transport.request_handler import RequestHandler
+    from include.transport.request_handler import RequestHandler, Result
 
 hookspec = pluggy.HookspecMarker("cfms")
 hookimpl = pluggy.HookimplMarker("cfms")
@@ -84,14 +84,7 @@ class ServerHookSpecs:
         self,
         action: str,
         handler: "ConnectionHandler",
-        callback: Union[
-            int,
-            tuple[int, Optional[str]],
-            tuple[int, Optional[str], dict],
-            tuple[int, Optional[str], str],
-            tuple[int, Optional[str], dict, str],
-            None,
-        ],
+        callback: Optional["Result"],
         time_cost: float,
     ) -> None: ...
 

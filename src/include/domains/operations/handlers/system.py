@@ -11,7 +11,7 @@ from include.domains.access.permissions import Permissions
 from include.messages import Messages as smsg
 from include.shared import lockdown_enabled
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestLockdownHandler(RequestHandler):
@@ -32,7 +32,7 @@ class RequestLockdownHandler(RequestHandler):
 
             if Permissions.APPLY_LOCKDOWN not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return 403, None, handler.username
+                return Result(code=403, target=None, username=handler.username)
 
             if status_to_change:
                 lockdown_enabled.set()
@@ -59,7 +59,7 @@ class RequestLockdownHandler(RequestHandler):
                 }
             )
         )
-        return 0, None, handler.username
+        return Result(code=0, target=None, username=handler.username)
 
 
 class RequestViewAuditLogsHandler(RequestHandler):
@@ -85,7 +85,7 @@ class RequestViewAuditLogsHandler(RequestHandler):
 
             if Permissions.VIEW_AUDIT_LOGS not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return 403, None, handler.username
+                return Result(code=403, target=None, username=handler.username)
 
             queried_entries = (
                 session.query(AuditEntry)
@@ -126,9 +126,9 @@ class RequestViewAuditLogsHandler(RequestHandler):
         handler.conclude_request(
             200, {"total": total_count, "entries": result}, smsg.SUCCESS
         )
-        return (
-            0,
-            None,
-            {"offset": offset, "entries_count": entries_count},
-            handler.username,
+        return Result(
+            code=0,
+            target=None,
+            data={"offset": offset, "entries_count": entries_count},
+            username=handler.username,
         )

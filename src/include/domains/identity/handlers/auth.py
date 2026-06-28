@@ -15,7 +15,7 @@ from include.exceptions.misc import (
 )
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestLoginHandler(RequestHandler):
@@ -43,7 +43,7 @@ class RequestLoginHandler(RequestHandler):
 
         def respond(code: int, message: str, data: Optional[dict[str, Any]] = None):
             handler.conclude_request(code=code, data=data or {}, message=message)
-            return code, username
+            return Result(code=code, target=username)
 
         def fail(code: int, message: str):
             # Throttle by both IP+username and IP-only

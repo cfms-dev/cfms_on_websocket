@@ -25,7 +25,7 @@ from include.domains.access.authorization.searchable_tree import (
 from include.domains.access.permissions import Permissions
 from include.exceptions.misc import NoActiveRevisionsError
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestSearchHandler(RequestHandler):
@@ -74,7 +74,7 @@ class RequestSearchHandler(RequestHandler):
             handler.conclude_request(
                 400, {}, "Query must not be empty or whitespace only"
             )
-            return 400, query, handler.username
+            return Result(code=400, target=query, username=handler.username)
 
         limit: int = handler.data.get("limit", 100)
         sort_by: str = handler.data.get("sort_by", "name")
@@ -241,4 +241,4 @@ class RequestSearchHandler(RequestHandler):
                 response_data,
                 f"Search completed successfully. Found {len(all_results)} result(s).",
             )
-            return 0, query, handler.username
+            return Result(code=0, target=query, username=handler.username)

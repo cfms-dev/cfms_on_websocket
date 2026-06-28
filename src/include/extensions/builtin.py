@@ -1,6 +1,6 @@
 import os
 import threading
-from typing import Optional, Union, cast
+from typing import Optional, cast
 
 from loguru import logger as log
 from sqlalchemy import update
@@ -17,7 +17,7 @@ from include.extensions.manager import hookimpl
 from include.messages import Messages as smsg
 from include.shared import lockdown_enabled
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 logger = log.bind(name="builtin")
 
@@ -81,14 +81,7 @@ def ext_register_handlers():
 def ext_post_request(
     action: str,
     handler: ConnectionHandler,
-    callback: Union[
-        int,
-        tuple[int, Optional[str]],
-        tuple[int, Optional[str], dict],
-        tuple[int, Optional[str], str],
-        tuple[int, Optional[str], dict, str],
-        None,
-    ],
+    callback: Optional[Result],
     time_cost: float,
 ) -> None:
     logger.debug(f"Handled action '{action}' in {time_cost:.3f} seconds")

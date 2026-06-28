@@ -29,7 +29,7 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestUploadUserKeyHandler(RequestHandler):
@@ -76,11 +76,15 @@ class RequestUploadUserKeyHandler(RequestHandler):
             if target_username and target_username != handler.username:
                 if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
                     handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return 403, target_username, handler.username
+                    return Result(
+                        code=403, target=target_username, username=handler.username
+                    )
                 owner = session.get(User, target_username)
                 if not owner:
                     handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
-                    return 404, target_username, handler.username
+                    return Result(
+                        code=404, target=target_username, username=handler.username
+                    )
             else:
                 target_username = handler.username
                 owner = this_user
@@ -99,7 +103,7 @@ class RequestUploadUserKeyHandler(RequestHandler):
                 {"id": key.id},
                 "Key uploaded successfully",
             )
-            return 200, target_username, handler.username
+            return Result(code=200, target=target_username, username=handler.username)
 
 
 class RequestGetUserKeyHandler(RequestHandler):
@@ -138,14 +142,14 @@ class RequestGetUserKeyHandler(RequestHandler):
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return 404, key_id, handler.username
+                return Result(code=404, target=key_id, username=handler.username)
 
             # Authorisation: the key must belong to the requesting user, or the
             # user must have admin-level manage_keyrings permission.
             if key.username != handler.username:
                 if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
                     handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return 403, key_id, handler.username
+                    return Result(code=403, target=key_id, username=handler.username)
 
             handler.conclude_request(
                 200,
@@ -158,7 +162,7 @@ class RequestGetUserKeyHandler(RequestHandler):
                 },
                 "Key retrieved successfully",
             )
-            return 200, key_id, handler.username
+            return Result(code=200, target=key_id, username=handler.username)
 
 
 class RequestDeleteUserKeyHandler(RequestHandler):
@@ -197,12 +201,12 @@ class RequestDeleteUserKeyHandler(RequestHandler):
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return 404, key_id, handler.username
+                return Result(code=404, target=key_id, username=handler.username)
 
             if key.username != handler.username:
                 if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
                     handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return 403, key_id, handler.username
+                    return Result(code=403, target=key_id, username=handler.username)
 
             # If this key is set as the owner's preference DEK, clear it before deletion
             owner_user = session.get(User, key.username)
@@ -215,7 +219,7 @@ class RequestDeleteUserKeyHandler(RequestHandler):
             session.commit()
 
             handler.conclude_request(200, {}, "Key deleted successfully")
-            return 200, key_id, handler.username
+            return Result(code=200, target=key_id, username=handler.username)
 
 
 class RequestSetPreferenceDEKHandler(RequestHandler):
@@ -255,12 +259,12 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return 404, key_id, handler.username
+                return Result(code=404, target=key_id, username=handler.username)
 
             if key.username != handler.username:
                 if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
                     handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return 403, key_id, handler.username
+                    return Result(code=403, target=key_id, username=handler.username)
 
             key_owner = User.get_existing(session, key.username)
             key_owner.preference_dek = key
@@ -268,7 +272,7 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
             session.commit()
 
             handler.conclude_request(200, {}, "Preference DEK updated successfully")
-            return 200, key_id, handler.username
+            return Result(code=200, target=key_id, username=handler.username)
 
 
 class RequestListUserKeysHandler(RequestHandler):
@@ -307,11 +311,15 @@ class RequestListUserKeysHandler(RequestHandler):
             if target_username != handler.username:
                 if Permissions.MANAGE_KEYRINGS not in operator.all_permissions:
                     handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return 403, target_username, handler.username
+                    return Result(
+                        code=403, target=target_username, username=handler.username
+                    )
 
             if not target_user:
                 handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
-                return 404, target_username, handler.username
+                return Result(
+                    code=404, target=target_username, username=handler.username
+                )
 
             keys = (
                 session.query(UserKey).filter(UserKey.username == target_username).all()
@@ -332,4 +340,4 @@ class RequestListUserKeysHandler(RequestHandler):
                 },
                 "Keyring listed successfully",
             )
-            return 200, target_username, handler.username
+            return Result(code=200, target=target_username, username=handler.username)

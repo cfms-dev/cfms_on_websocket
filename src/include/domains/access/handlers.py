@@ -13,7 +13,7 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 ENTITY_TYPE_MAPPING = {"user": User, "group": UserGroup}
 TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}
@@ -72,24 +72,23 @@ class RequestGrantAccessHandler(RequestHandler):
                 handler.conclude_request(
                     400, {}, "The start time should be before the end time"
                 )
-                return 400, None, handler.data, handler.username
+                return Result(
+                    code=400, target=None, data=handler.data, username=handler.username
+                )
 
             operator = User.get_existing(session, handler.username)
 
             if Permissions.MANAGE_ACCESS not in operator.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MANAGE_ACCESS)
-                return 403, handler.username
+                return Result(code=403, target=handler.username)
 
             entity: User | UserGroup | None = session.get(
                 ENTITY_TYPE_MAPPING[entity_type], entity_identifier
             )
             if not entity:
                 handler.conclude_request(404, {}, smsg.ENTITY_NOT_FOUND)
-                return (
-                    404,
-                    None,
-                    handler.data,
-                    handler.username,
+                return Result(
+                    code=404, target=None, data=handler.data, username=handler.username
                 )
 
             target: Document | Folder | None = session.get(
@@ -97,21 +96,18 @@ class RequestGrantAccessHandler(RequestHandler):
             )
             if not target:
                 handler.conclude_request(404, {}, smsg.TARGET_NOT_FOUND)
-                return (
-                    404,
-                    None,
-                    handler.data,
-                    handler.username,
+                return Result(
+                    code=404, target=None, data=handler.data, username=handler.username
                 )
 
             for access_type in access_types:
                 if not target.check_access_requirements(operator, access_type):
                     handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                    return (
-                        403,
-                        None,
-                        handler.data,
-                        handler.username,
+                    return Result(
+                        code=403,
+                        target=None,
+                        data=handler.data,
+                        username=handler.username,
                     )
 
                 new = ObjectAccessEntry(
@@ -128,7 +124,9 @@ class RequestGrantAccessHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
-        return 200, None, handler.data, handler.username
+        return Result(
+            code=200, target=None, data=handler.data, username=handler.username
+        )
 
 
 class RequestViewAccessEntriesHandler(RequestHandler):
@@ -164,7 +162,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                     message="You do not have permission to view access entries",
                     data={},
                 )
-                return 403, handler.username
+                return Result(code=403, target=handler.username)
 
             if object_type in ["user", "group"]:
                 _query_result = (
@@ -200,11 +198,14 @@ class RequestViewAccessEntriesHandler(RequestHandler):
             ]
 
         handler.conclude_request(200, {"result": result}, smsg.SUCCESS)
-        return (
-            200,
-            None,
-            {"object_type": object_type, "object_identifier": object_identifier},
-            handler.username,
+        return Result(
+            code=200,
+            target=None,
+            data={
+                "object_type": object_type,
+                "object_identifier": object_identifier,
+            },
+            username=handler.username,
         )
 
 
@@ -231,17 +232,14 @@ class RequestRevokeAccessHandler(RequestHandler):
 
             if Permissions.MANAGE_ACCESS not in operator.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MANAGE_ACCESS)
-                return 403, None, handler.username
+                return Result(code=403, target=None, username=handler.username)
 
             # Get the access entry
             entry = session.get(ObjectAccessEntry, entry_id)
             if not entry:
                 handler.conclude_request(404, {}, smsg.ACCESS_ENTRY_NOT_FOUND)
-                return (
-                    404,
-                    None,
-                    handler.data,
-                    handler.username,
+                return Result(
+                    code=404, target=None, data=handler.data, username=handler.username
                 )
 
             # Delete the entry
@@ -249,4 +247,6 @@ class RequestRevokeAccessHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
-        return 200, None, handler.data, handler.username
+        return Result(
+            code=200, target=None, data=handler.data, username=handler.username
+        )

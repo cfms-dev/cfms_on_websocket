@@ -46,7 +46,7 @@ from include.domains.identity.validators.passwords import (
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 # Module-level PasswordHasher instance — reused across all calls to avoid
 # repeated construction overhead.
@@ -188,7 +188,7 @@ class RequestCreateUserHandler(RequestHandler):
             )
 
         handler.conclude_request(200, {}, "User created successfully")
-        return 0, new_username, handler.username
+        return Result(code=0, target=new_username, username=handler.username)
 
 
 class RequestDeleteUserHandler(RequestHandler):
@@ -401,13 +401,13 @@ class RequestBlockUserHandler(RequestHandler):
 
         if not set(block_types).issubset(AVAILABLE_BLOCK_TYPES):
             handler.conclude_request(400, {}, "Unsupported block type(s)")
-            return 400, target_username
+            return Result(code=400, target=target_username)
 
         if not_after >= 0 and not_after <= not_before:
             handler.conclude_request(
                 400, {}, "`not_after` must be later than `not_before`"
             )
-            return 400, target_username
+            return Result(code=400, target=target_username)
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -416,7 +416,9 @@ class RequestBlockUserHandler(RequestHandler):
                 handler.conclude_request(
                     403, {}, "You do not have permission to block users"
                 )
-                return 403, target_username, handler.username
+                return Result(
+                    code=403, target=target_username, username=handler.username
+                )
 
             # 创建主条目
             now = time.time()
@@ -441,7 +443,7 @@ class RequestBlockUserHandler(RequestHandler):
             block_id = block_entry.block_id
 
         handler.conclude_request(200, {"block_id": block_id}, "User blocked")
-        return 200, target_username, handler.username
+        return Result(code=200, target=target_username, username=handler.username)
 
 
 class RequestUnblockUserHandler(RequestHandler):
@@ -472,22 +474,22 @@ class RequestUnblockUserHandler(RequestHandler):
 
             if not this_user or not this_user.is_token_valid(handler.token):
                 handler.conclude_request(401, {}, "Invalid user or token")
-                return 401, block_id
+                return Result(code=401, target=block_id)
 
             if Permissions.UNBLOCK not in this_user.all_permissions:
                 handler.conclude_request(
                     403, {}, "You do not have permission to unblock users"
                 )
-                return 403, block_id, handler.username
+                return Result(code=403, target=block_id, username=handler.username)
 
             block_entry = session.get(UserBlockEntry, block_id)
             if not block_entry:
                 handler.conclude_request(404, {}, "Specified entry not found")
-                return 404, block_id, handler.username
+                return Result(code=404, target=block_id, username=handler.username)
 
             if 0 <= block_entry.not_after < time.time():
                 handler.conclude_request(400, {}, "The specified block has ended")
-                return 400, block_id, handler.username
+                return Result(code=400, target=block_id, username=handler.username)
 
             # Currently, the operation of unblocking is to remove entries from
             # the database. However, an alternative approach is to set their
@@ -496,7 +498,7 @@ class RequestUnblockUserHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, "Unblocked user")
-        return 200, block_id, handler.username
+        return Result(code=200, target=block_id, username=handler.username)
 
 
 class RequestListUserBlocksHandler(RequestHandler):
@@ -523,7 +525,7 @@ class RequestListUserBlocksHandler(RequestHandler):
 
             if not this_user or not this_user.is_token_valid(handler.token):
                 handler.conclude_request(401, {}, "Invalid user or token")
-                return 401, target_username
+                return Result(code=401, target=target_username)
 
             if (
                 Permissions.LIST_USER_BLOCKS not in this_user.all_permissions
@@ -532,7 +534,9 @@ class RequestListUserBlocksHandler(RequestHandler):
                 handler.conclude_request(
                     403, {}, "You do not have permission to list user blocks"
                 )
-                return 403, target_username, handler.username
+                return Result(
+                    code=403, target=target_username, username=handler.username
+                )
 
             block_entries = (
                 session.query(UserBlockEntry)
@@ -562,7 +566,7 @@ class RequestListUserBlocksHandler(RequestHandler):
                 )
 
         handler.conclude_request(200, {"blocks": blocks_data}, "List of user blocks")
-        return 200, target_username, handler.username
+        return Result(code=200, target=target_username, username=handler.username)
 
 
 class RequestGetUserInfoHandler(RequestHandler):
@@ -736,7 +740,9 @@ class RequestSetUserAvatarHandler(RequestHandler):
                 handler.conclude_request(
                     403, {}, "You do not have permission to set other user's avatar"
                 )
-                return 403, target_username, handler.username
+                return Result(
+                    code=403, target=target_username, username=handler.username
+                )
 
             user_to_update = session.get(User, target_username)
             if not user_to_update:
@@ -768,7 +774,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, "User avatar updated successfully")
-        return 200, target_username, handler.username
+        return Result(code=200, target=target_username, username=handler.username)
 
 
 class RequestChangeUserGroupsHandler(RequestHandler):
@@ -867,7 +873,9 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 403, handler.data["username"], handler.username
+                return Result(
+                    code=403, target=handler.data["username"], username=handler.username
+                )
 
             target_username = handler.data["username"]
             if not target_username:
@@ -889,7 +897,9 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 404, target_username, handler.username
+                return Result(
+                    code=404, target=target_username, username=handler.username
+                )
 
             new_permissions = handler.data.get("permissions", [])
 
@@ -914,7 +924,9 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
         }
 
         handler.conclude_request(**response)
-        return 0, handler.data["username"], handler.username
+        return Result(
+            code=0, target=handler.data["username"], username=handler.username
+        )
 
 
 class RequestSetPasswdHandler(RequestHandler):
@@ -1061,7 +1073,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     {"min_length": e.min_length, "max_length": e.max_length},
                     str(e),
                 )
-                return 400, target_username
+                return Result(code=400, target=target_username)
             except RuleRequirementsNotMetError as e:
                 handler.conclude_request(
                     400,
@@ -1072,7 +1084,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     },
                     str(e),
                 )
-                return 400, target_username
+                return Result(code=400, target=target_username)
 
             try:
                 _same = _password_hasher.verify(user.pass_hash, new_passwd)
@@ -1125,7 +1137,7 @@ class RequestManageUserStatusHandler(RequestHandler):
                 handler.conclude_request(
                     403, {}, "You do not have permission to manage user status"
                 )
-                return 403, None, handler.username
+                return Result(code=403, target=None, username=handler.username)
 
             mapping = {
                 "active": UserStatus.ACTIVE,
@@ -1136,20 +1148,20 @@ class RequestManageUserStatusHandler(RequestHandler):
                 handler.conclude_request(
                     400, {}, "Cannot change your own account status"
                 )
-                return 400, username, handler.username
+                return Result(code=400, target=username, username=handler.username)
 
             user = session.get(User, username)
             if not user:
                 handler.conclude_request(404, {}, "User does not exist")
-                return 404, None, handler.username
+                return Result(code=404, target=None, username=handler.username)
 
             if user.status == mapping[new_status]:
                 handler.conclude_request(400, {}, f"User is already {new_status}")
-                return 400, None, handler.username
+                return Result(code=400, target=None, username=handler.username)
             else:
                 user.status = mapping[new_status]
 
             session.commit()
 
         handler.conclude_request(200, {}, "User status updated successfully")
-        return 200, username, handler.username
+        return Result(code=200, target=username, username=handler.username)

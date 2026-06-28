@@ -3,7 +3,7 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestThrowExceptionHandler(RequestHandler):
@@ -19,7 +19,7 @@ class RequestThrowExceptionHandler(RequestHandler):
 
             if Permissions.DEBUGGING not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.USER_LACKS_DEBUGGING_PERMISSION)
-                return 403, None, handler.username
+                return Result(code=403, target=None, username=handler.username)
 
         raise Exception(
             "This is a test exception thrown by RequestThrowExceptionHandler."

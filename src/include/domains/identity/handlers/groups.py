@@ -14,7 +14,7 @@ from include.domains.access.permissions import Permissions
 from include.domains.identity.commands.groups import create_group
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler
+from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestListGroupsHandler(RequestHandler):
@@ -100,7 +100,9 @@ class RequestCreateGroupHandler(RequestHandler):
 
             if Permissions.CREATE_GROUP not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED_CREATE_GROUP)
-                return 403, new_group_name, handler.username
+                return Result(
+                    code=403, target=new_group_name, username=handler.username
+                )
 
             if session.get(UserGroup, new_group_name):
                 handler.conclude_request(400, {}, smsg.GROUP_ALREADY_EXISTS)
@@ -113,7 +115,7 @@ class RequestCreateGroupHandler(RequestHandler):
             )
 
         handler.conclude_request(200, {}, "Group created successfully")
-        return 0, new_group_name, handler.username
+        return Result(code=0, target=new_group_name, username=handler.username)
 
 
 class RequestDeleteGroupHandler(RequestHandler):
@@ -141,7 +143,11 @@ class RequestDeleteGroupHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 403, handler.data["group_name"], handler.username
+                return Result(
+                    code=403,
+                    target=handler.data["group_name"],
+                    username=handler.username,
+                )
 
             group_to_delete_name: str = handler.data["group_name"]
             group_to_delete = session.get(UserGroup, group_to_delete_name)
@@ -154,7 +160,9 @@ class RequestDeleteGroupHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 404, group_to_delete_name, handler.username
+                return Result(
+                    code=404, target=group_to_delete_name, username=handler.username
+                )
 
             # Retrieve all memberships associated with the group
             memberships_to_delete = (
@@ -184,7 +192,9 @@ class RequestDeleteGroupHandler(RequestHandler):
         }
 
         handler.conclude_request(**response)
-        return 0, handler.data["group_name"], handler.username
+        return Result(
+            code=0, target=handler.data["group_name"], username=handler.username
+        )
 
 
 class RequestRenameGroupHandler(RequestHandler):
@@ -215,7 +225,9 @@ class RequestRenameGroupHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 403, target_group_name, handler.username
+                return Result(
+                    code=403, target=target_group_name, username=handler.username
+                )
 
             new_display_name: str | None = handler.data.get("display_name", None)
             if type(new_display_name) not in (str, None):
@@ -249,7 +261,7 @@ class RequestRenameGroupHandler(RequestHandler):
         }
 
         handler.conclude_request(**response)
-        return 0, target_group_name, handler.username
+        return Result(code=0, target=target_group_name, username=handler.username)
 
 
 class RequestGetGroupInfoHandler(RequestHandler):
@@ -287,7 +299,11 @@ class RequestGetGroupInfoHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 403, handler.data["group_name"], handler.username
+                return Result(
+                    code=403,
+                    target=handler.data["group_name"],
+                    username=handler.username,
+                )
 
             group = session.get(UserGroup, handler.data["group_name"])
             if not group:
@@ -298,7 +314,11 @@ class RequestGetGroupInfoHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 404, handler.data["group_name"], handler.username
+                return Result(
+                    code=404,
+                    target=handler.data["group_name"],
+                    username=handler.username,
+                )
 
             response = {
                 "code": 200,
@@ -312,7 +332,9 @@ class RequestGetGroupInfoHandler(RequestHandler):
             }
 
             handler.conclude_request(**response)
-            return 0, handler.data["group_name"], handler.username
+            return Result(
+                code=0, target=handler.data["group_name"], username=handler.username
+            )
 
 
 class RequestChangeGroupPermissionsHandler(RequestHandler):
@@ -357,7 +379,11 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 403, handler.data["group_name"], handler.username
+                return Result(
+                    code=403,
+                    target=handler.data["group_name"],
+                    username=handler.username,
+                )
 
             group = session.get(UserGroup, handler.data["group_name"])
             if not group:
@@ -368,7 +394,11 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
                         "data": {},
                     }
                 )
-                return 404, handler.data["group_name"], handler.username
+                return Result(
+                    code=404,
+                    target=handler.data["group_name"],
+                    username=handler.username,
+                )
 
             new_permissions = handler.data.get("permissions", [])
 
@@ -394,4 +424,6 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
         }
 
         handler.conclude_request(**response)
-        return 0, handler.data["group_name"], handler.username
+        return Result(
+            code=0, target=handler.data["group_name"], username=handler.username
+        )
