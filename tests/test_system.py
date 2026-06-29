@@ -95,8 +95,14 @@ class TestSystemManagement:
 
             await websocket.send(payload)
 
-            with pytest.raises(ConnectionClosed):
+            with pytest.raises(ConnectionClosed) as excinfo:
                 await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            assert excinfo.value.code == 1002
+            assert (
+                excinfo.value.reason
+                == "Protocol error: invalid client-initiated stream"
+            )
 
     @pytest.mark.asyncio
     async def test_audit_logs(self, authenticated_client: CFMSTestClient):

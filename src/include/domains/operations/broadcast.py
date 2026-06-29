@@ -13,7 +13,19 @@ def on_global_broadcast(msg: str):
             try:
                 stream = conn.create_stream()
                 if not stream.send_nowait(encoded_msg, frame_type=FrameType.CONCLUSION):
+                    outbound_queue = getattr(conn, "_outbound", None)
+                    outbound_queue_size = (
+                        outbound_queue.qsize()
+                        if outbound_queue is not None
+                        and hasattr(outbound_queue, "qsize")
+                        else None
+                    )
+                    remote_address = getattr(conn, "remote_address", None)
                     conn.close()
-                    logger.warning("Dropped slow client during global broadcast")
+                    logger.warning(
+                        "Dropped slow client during global broadcast: "
+                        f"remote_address={remote_address}, "
+                        f"outbound_queue_size={outbound_queue_size}"
+                    )
             except Exception as e:
                 logger.warning(f"Failed to forward global broadcast: {e}")

@@ -142,7 +142,9 @@ class MultiplexConnection:
                             )
                             self._ws.close(
                                 code=1002,
-                                reason="client-initiated streams must use odd ids",
+                                reason=(
+                                    "Protocol error: invalid client-initiated stream"
+                                ),
                             )
                             return
                         # Notify the local main thread about the peer stream.
@@ -269,15 +271,17 @@ class MultiplexConnection:
                     try:
                         self._ws.close()
                     except Exception:
+                        # The send failure is already reported to callers.
                         pass
                     return
 
                 if item.done is not None:
                     item.done.set()
         finally:
-            self._fail_pending_sends(
-                ConnectionError("MultiplexConnection send loop stopped")
+            error = self._send_error or ConnectionError(
+                "MultiplexConnection send loop stopped"
             )
+            self._fail_pending_sends(error)
 
     def _fail_pending_sends(self, exc: BaseException):
         while True:
@@ -299,8 +303,10 @@ class MultiplexConnection:
         try:
             self._outbound.put_nowait(None)
         except queue.Full:
+            # Pending senders were already failed; closing must not block.
             pass
         try:
             self._ws.close()
         except Exception:
+            # Close is best-effort because callers may invoke it repeatedly.
             pass
