@@ -420,7 +420,7 @@ class RequestBlockUserHandler(RequestHandler):
                     code=403, target=target_username, username=handler.username
                 )
 
-            # 创建主条目
+            # Create the parent entry.
             now = time.time()
             block_entry = UserBlockEntry(
                 username=target_username,
@@ -970,7 +970,8 @@ class RequestSetPasswdHandler(RequestHandler):
                 )
                 return
 
-            # 初始化操作员用户，如果没有指定 operator, 则以目标用户充任
+            # Initialize the operator user. If no operator is specified, the
+            # target user acts as the operator.
             if operator_username:
                 if not handler.token:
                     handler.conclude_request(
@@ -992,10 +993,10 @@ class RequestSetPasswdHandler(RequestHandler):
                         }
                     )
                     return
-            else:  # 这条路径下的 operator_user 应该永远也不会被调用。
+            else:  # operator_user should never be used on this path.
                 operator_user = None
 
-            if old_passwd:  # 如果指定了旧密码，说明是用户更改自己的密码
+            if old_passwd:  # An old password means the user changes their own password.
                 # Disallow these elevated flags when a user is changing their own password
                 _flags_set = []
                 if bypass_passwd_requirements:
@@ -1038,7 +1039,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     )
                     return
 
-            else:  # 用户更改其他用户的密码
+            else:  # User changes another user's password.
                 if not operator_user:
                     handler.conclude_request(
                         **{

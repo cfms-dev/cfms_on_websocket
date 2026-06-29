@@ -201,7 +201,7 @@ class AsyncMultiplexConnection:
         except Exception:
             pass
 
-        # 显式取消并回收 _dispatcher_task
+        # Explicitly cancel and await _dispatcher_task.
         if hasattr(self, "_dispatcher_task") and not self._dispatcher_task.done():
             self._dispatcher_task.cancel()
             try:

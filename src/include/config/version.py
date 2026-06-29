@@ -15,12 +15,12 @@ class Version:
             r"(?:_([a-zA-Z]+)"  # optional _type
             r"(\d*)?)?"  # optional type_num
         )
-        # 版本号正则说明：
-        # (\d+)         匹配主版本号
-        # \.(\d+)       匹配次版本号
-        # \.(\d+)       匹配修订号
-        # (?:\.(\d+))?  可选的构建号
-        # (?:_([a-zA-Z]+)(\d*)?)? 可选的类型及其编号
+        # Version pattern groups:
+        # (\d+) matches the major version.
+        # \.(\d+) matches the minor version.
+        # \.(\d+) matches the patch version.
+        # (?:\.(\d+))? optionally matches the build number.
+        # (?:_([a-zA-Z]+)(\d*)?)? optionally matches type and type number.
         match = re.match(version_pattern, version_str)
         if not match:
             raise ValueError(f"Invalid version string: {version_str}")
@@ -31,8 +31,8 @@ class Version:
         self.type = match.group(5) or ""
         self.type_num = int(match.group(6)) if match.group(6) else 0
 
-        # type_order 字典用于定义版本类型的优先级，数值越小优先级越高。
-        # 优先级分配如下：release 和未指定类型优先级最高（0），
+        # Lower values indicate higher version type precedence.
+        # Release and unspecified types have the highest precedence.
         self.type_order = {"release": 0, "": 0, "rc": 1, "beta": 2, "alpha": 3}
 
     def _cmp_tuple(self):

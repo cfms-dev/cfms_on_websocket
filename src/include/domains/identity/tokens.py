@@ -19,7 +19,7 @@ class Token:
         self.username = username
         self.secret = secret
 
-        # 调用 raw.setter
+        # Invoke raw.setter.
         self.raw = raw_token
 
     @property
@@ -33,9 +33,9 @@ class Token:
             self.exp = None
             return
 
-        # 解析 token
+        # Decode the token.
         decoded = jwt.decode(self._raw, self.secret, algorithms="HS256")
-        if self.username:  # 一般不建议为 Token 预设用户名后再为 raw_token 赋值。
+        if self.username:  # Avoid presetting username before assigning raw_token.
             if decoded.get("username") != self.username:
                 raise ValueError("New token does not belong to the assigned user")
         else:

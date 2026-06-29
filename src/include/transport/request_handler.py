@@ -25,9 +25,10 @@ class RequestHandler(ABC):
             Abstract method to process a request. Must be implemented by subclasses.
             Returns:
                 1. -> None
-                    该结果将被忽略，用于不适合通过返回值提交审计信息的逻辑。
+                    The result is ignored. Use this for flows that should not
+                    submit audit information through the return value.
                 2. -> Result
-                    该结果将作为审计信息提交。
+                    The result is submitted as audit information.
     """
 
     # This property defines the json structure of the request data.

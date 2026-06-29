@@ -174,7 +174,9 @@ class File(Base):
 
     def get_latest_task(self):
         """
-        返回最后一个尚未结束（也包括尚未开始）的任务，按起始时间排序。
+        Return the latest task that has not ended, including tasks not yet started.
+
+        Tasks are ordered by their start time.
         """
 
         now = time.time()
@@ -202,7 +204,7 @@ class FileTask(Base):
     file_id: Mapped[str] = mapped_column(
         VARCHAR(255), ForeignKey("files.id", ondelete="CASCADE"), nullable=False
     )
-    # 0: 等待中, 1: 已完成, 2: 已取消
+    # 0: pending, 1: completed, 2: cancelled.
     status: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     mode: Mapped[int] = mapped_column(
         Integer, nullable=False, comment="0: download, 1: upload"
@@ -225,7 +227,7 @@ class FileTask(Base):
 
     # encryption_mode: Mapped[Optional[str]] = mapped_column(
     #     VARCHAR(32), nullable=True, default=None
-    # )  # 加密模式，如 'AES', 'RSA'，未加密则为 None
+    # )  # Encryption mode, such as 'AES' or 'RSA'; None means unencrypted.
 
     file: Mapped["File"] = relationship("File", back_populates="tasks")
 

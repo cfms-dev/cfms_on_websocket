@@ -113,16 +113,16 @@ from include.transport.request_handler import RequestHandler, Result
 logger = log.bind(name="connection_handler")
 
 available_functions: dict[str, type[RequestHandler]] = {
-    # 认证类
+    # Authentication
     "login": RequestLoginHandler,
     "refresh_token": RequestRefreshTokenHandler,
-    # 两步验证类
+    # Two-factor authentication
     "setup_2fa": RequestSetup2FAHandler,
     "cancel_2fa_setup": RequestCancel2FASetupHandler,  # especially for cancelling setup
     "validate_2fa": RequestValidate2FAHandler,
     "disable_2fa": RequestDisable2FAHandler,
     "get_2fa_status": RequestGet2FAStatusHandler,
-    # 文档类
+    # Documents
     "get_document": RequestGetDocumentHandler,
     "create_document": RequestCreateDocumentHandler,
     "upload_document": RequestUploadDocumentHandler,
@@ -135,15 +135,15 @@ available_functions: dict[str, type[RequestHandler]] = {
     "get_document_access_rules": RequestGetDocumentAccessRulesHandler,
     "set_document_rules": RequestSetDocumentRulesHandler,
     "set_document_tags": RequestSetDocumentTagsHandler,
-    # 修订版本类
+    # Revisions
     "list_revisions": RequestListRevisionsHandler,
     "get_revision": RequestGetRevisionHandler,
     "set_current_revision": RequestSetDocumentRevisionHandler,
     "delete_revision": RequestDeleteRevisionHandler,
-    # 文件类
+    # Files
     "download_file": RequestDownloadFileHandler,
     "upload_file": RequestUploadFileHandler,
-    # 目录类
+    # Directories
     "list_directory": RequestListDirectoryHandler,
     "get_directory_info": RequestGetDirectoryInfoHandler,
     "get_directory_access_rules": RequestGetDirectoryAccessRulesHandler,
@@ -172,18 +172,18 @@ available_functions: dict[str, type[RequestHandler]] = {
     "change_user_groups": RequestChangeUserGroupsHandler,
     "change_user_permissions": RequestChangeUserPermissionsHandler,
     "set_passwd": RequestSetPasswdHandler,
-    # 用户组类
+    # Groups
     "list_groups": RequestListGroupsHandler,
     "create_group": RequestCreateGroupHandler,
     "delete_group": RequestDeleteGroupHandler,
     "rename_group": RequestRenameGroupHandler,
     "get_group_info": RequestGetGroupInfoHandler,
     "change_group_permissions": RequestChangeGroupPermissionsHandler,
-    # 访问类
+    # Access
     "grant_access": RequestGrantAccessHandler,
     "revoke_access": RequestRevokeAccessHandler,
     "view_access_entries": RequestViewAccessEntriesHandler,
-    # 系统类
+    # System
     "lockdown": RequestLockdownHandler,
     "view_audit_logs": RequestViewAuditLogsHandler,
     # Keyring
@@ -194,7 +194,7 @@ available_functions: dict[str, type[RequestHandler]] = {
     "list_user_keys": RequestListUserKeysHandler,
 }
 
-# 定义白名单内的请求。这些请求即使在防范禁闭时也对所有用户可用。
+# Requests that remain available to all users during lockdown.
 whitelisted_functions = [
     "server_info",
     "login",
@@ -311,8 +311,8 @@ def handle_request(stream: Stream):
             "timestamp": time.time(),
         }
         stream.send(orjson.dumps(response), frame_type=FrameType.CONCLUSION)
-        # 强制断开 WebSocket 连接
-        # 1008 是 WebSocket 协议定义的 Policy Violation 错误码
+        # Force-close the WebSocket connection.
+        # 1008 is the WebSocket policy violation close code.
         stream.connection.close()
         stream.connection._ws.close(code=1008, reason="IP temporarily blocked")
         return
@@ -426,7 +426,7 @@ def handle_request(stream: Stream):
             return
 
         if callback is None:
-            # 为不适合采用 return 提交审计信息的逻辑预留。
+            # Reserved for flows that should not submit audit data via return.
             return
 
         _log_handler_result(action, callback, this_handler.remote_address)

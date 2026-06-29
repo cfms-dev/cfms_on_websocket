@@ -25,7 +25,7 @@ class RequestListGroupsHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)  # 执行操作的用户
+            user = User.get_existing(session, handler.username)  # Requesting user.
 
             if Permissions.LIST_GROUPS not in user.all_permissions:
                 handler.conclude_request(
@@ -279,7 +279,7 @@ class RequestGetGroupInfoHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)  # 执行操作的用户
+            user = User.get_existing(session, handler.username)  # Requesting user.
 
             if not handler.data["group_name"]:
                 handler.conclude_request(
@@ -413,7 +413,8 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
                 )
                 return
 
-            if set(new_permissions) != group.all_permissions:  # 预判断，减少数据库开销
+            # Avoid unnecessary DB work.
+            if set(new_permissions) != group.all_permissions:
                 group.all_permissions = new_permissions
                 session.commit()
 

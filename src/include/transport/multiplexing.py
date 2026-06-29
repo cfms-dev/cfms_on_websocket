@@ -37,7 +37,7 @@ class _OutboundFrame:
 
 
 class Stream:
-    """代表一个独立的通信流（相当于一个虚拟的连接）"""
+    """Represent an independent communication stream, like a virtual connection."""
 
     def __init__(self, connection: "MultiplexConnection", frame_id: int):
         self.connection = connection
@@ -45,7 +45,7 @@ class Stream:
         self._queue: queue.Queue = queue.Queue(100)
 
     def send(self, data: Data, frame_type: FrameType = FrameType.PROCESS):
-        """在这个流上发送数据"""
+        """Send data on this stream."""
         self.connection._send_frame(self.frame_id, frame_type, data)
 
     def send_nowait(
@@ -57,14 +57,14 @@ class Stream:
         )
 
     def recv(self, timeout: Optional[float] = None) -> Frame:
-        """接收属于这个流的数据，阻塞直到拿到为止"""
+        """Receive data for this stream, blocking until a frame is available."""
         frame = self._queue.get(timeout=timeout)
         if frame is None:
             raise ConnectionError("MultiplexConnection has been closed")
         return frame
 
     def _put_incoming_frame(self, frame: Optional[Frame]):
-        """由 Dispatcher 调用，将属于该流的数据塞入队列"""
+        """Queue a frame for this stream. Called by the dispatcher."""
         self._queue.put(frame)
 
 
@@ -95,10 +95,10 @@ class MultiplexConnection:
         self._writer.start()
 
     def create_stream(self) -> Stream:
-        """主动发起一个新的数据流"""
+        """Initiate a new data stream."""
         with self._id_lock:
             frame_id = self._next_frame_id
-            self._next_frame_id += 2  # 保持奇偶性
+            self._next_frame_id += 2  # Preserve parity.
 
         new_stream = Stream(self, frame_id)
         with self._streams_lock:
@@ -107,7 +107,7 @@ class MultiplexConnection:
         return new_stream
 
     def accept_stream(self) -> Optional[Stream]:
-        """阻塞等待并获取对方创建的新的工作流"""
+        """Wait for and return a new stream created by the peer."""
         return self._new_streams.get()
 
     def _recv_loop(self):
@@ -145,7 +145,7 @@ class MultiplexConnection:
                                 reason="client-initiated streams must use odd ids",
                             )
                             return
-                        # 对方发起的新流，通知本地主线程
+                        # Notify the local main thread about the peer stream.
                         new_stream = Stream(self, frame.frame_id)
                         self._streams[frame.frame_id] = new_stream
                         self._new_streams.put(new_stream)
@@ -154,7 +154,7 @@ class MultiplexConnection:
 
                 target_stream._put_incoming_frame(frame)
 
-                # 如果对方发来了结束帧，回收路由表内存
+                # Reclaim routing table memory when the peer sends an end frame.
                 if frame.frame_type == FrameType.CONCLUSION:
                     with self._streams_lock:
                         self._streams.pop(frame.frame_id, None)
@@ -165,9 +165,9 @@ class MultiplexConnection:
             logger.exception(f"({self.remote_address[0]}): Error in receive loop")
         finally:
             self._is_running = False
-            self._new_streams.put(None)  # 唤醒在 accept_stream 阻塞的线程
+            self._new_streams.put(None)  # Wake threads blocked in accept_stream.
 
-            # 唤醒所有正在 Stream.recv() 阻塞的线程，防止死锁
+            # Wake all threads blocked in Stream.recv() to prevent deadlocks.
             with self._streams_lock:
                 for stream in self._streams.values():
                     stream._put_incoming_frame(None)
