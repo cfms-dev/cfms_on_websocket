@@ -18,7 +18,9 @@ from typing import Any, Dict, Optional
 
 import orjson
 from Crypto.Cipher import AES
+from loguru import logger as log
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.typing import DataLike
 
 from include.transport.multiplexing import (
     Frame,
@@ -26,6 +28,8 @@ from include.transport.multiplexing import (
     decode_frame,
     encode_frame,
 )
+
+logger = log.bind(name="test_client.multiplexer")
 
 
 def calculate_sha256(file_path: str) -> str:
@@ -52,7 +56,9 @@ class AsyncStream:
         self.frame_id = frame_id
         self._queue: queue.Queue = queue.Queue(100)
 
-    async def send(self, data: Any, frame_type: FrameType = FrameType.DATA):
+    async def send(
+        self, data: DataLike, frame_type: FrameType = FrameType.DATA
+    ) -> None:
         await self.connection._send_frame(self.frame_id, frame_type, data)
 
     async def recv(self, timeout: Optional[float] = None) -> Frame:
@@ -104,7 +110,7 @@ class AsyncMultiplexConnection:
         except queue.Empty:
             raise TimeoutError("Server stream accept timeout")
 
-    async def _recv_loop(self):
+    async def _recv_loop(self) -> None:
         try:
             while self._is_running:
                 raw_payload = await self._ws.recv(decode=False)
@@ -131,7 +137,7 @@ class AsyncMultiplexConnection:
                         self._streams.pop(frame.stream_id, None)
 
         except Exception:
-            pass
+            logger.exception("Error in async multiplex receive loop")
         finally:
             self._is_running = False
             self._new_streams.put(None)
@@ -139,7 +145,9 @@ class AsyncMultiplexConnection:
                 for stream in self._streams.values():
                     stream._put_incoming_frame(None)
 
-    async def _send_frame(self, frame_id: int, frame_type: FrameType, data: Any):
+    async def _send_frame(
+        self, frame_id: int, frame_type: FrameType, data: DataLike
+    ) -> None:
         await self._ws.send(encode_frame(frame_id, frame_type, data))
 
         if frame_type == FrameType.CONCLUSION:

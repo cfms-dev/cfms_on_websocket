@@ -1,4 +1,5 @@
 import asyncio
+import queue
 import threading
 import time
 
@@ -7,6 +8,7 @@ import pytest
 from include.domains.operations import broadcast as broadcast_module
 from include.domains.operations.broadcast import on_global_broadcast
 from include.shared import clients, clients_lock
+from include.transport import multiplexing as multiplexing_module
 from include.transport.multiplexing import (
     FRAME_HEADER,
     FRAME_HEADER_SIZE,
@@ -18,6 +20,8 @@ from include.transport.multiplexing import (
     encode_frame,
 )
 from tests.test_client import AsyncMultiplexConnection
+
+_ORIGINAL_QUEUE = queue.Queue
 
 
 class _IdleWebSocket:
@@ -89,6 +93,18 @@ class _SyncWebSocket:
     def close(self, *args, **kwargs):
         self.release_send.set()
         self.closed.set()
+
+
+class _BlockingPutSignalingQueue(_ORIGINAL_QUEUE):
+    def __init__(self, maxsize: int, put_blocked: threading.Event) -> None:
+        super().__init__(maxsize)
+        self.put_blocked = put_blocked
+
+    def put(self, item, block=True, timeout=None):
+        with self.mutex:
+            if block and self.maxsize > 0 and self._qsize() >= self.maxsize:
+                self.put_blocked.set()
+        return super().put(item, block=block, timeout=timeout)
 
 
 def test_stream_send_waits_until_writer_sends():
@@ -236,7 +252,16 @@ def test_stream_send_nowait_returns_false_after_connection_close():
     assert websocket.sent == []
 
 
-def test_close_unblocks_send_waiting_for_outbound_queue_space():
+def test_close_unblocks_send_waiting_for_outbound_queue_space(monkeypatch):
+    outbound_put_blocked = threading.Event()
+
+    def queue_factory(maxsize=0):
+        if maxsize == OUTBOUND_QUEUE_SIZE:
+            return _BlockingPutSignalingQueue(maxsize, outbound_put_blocked)
+        return _ORIGINAL_QUEUE(maxsize)
+
+    monkeypatch.setattr(multiplexing_module.queue, "Queue", queue_factory)
+
     websocket = _SyncWebSocket(block_send=True)
     connection = MultiplexedConnection(websocket)
     done = threading.Event()
@@ -259,7 +284,7 @@ def test_close_unblocks_send_waiting_for_outbound_queue_space():
 
         sender = threading.Thread(target=send_when_queue_is_full)
         sender.start()
-        time.sleep(0.1)
+        assert outbound_put_blocked.wait(timeout=1)
 
         connection.close()
 
