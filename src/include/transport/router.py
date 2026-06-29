@@ -107,7 +107,7 @@ from include.extensions.manager import pm
 from include.shared import clients, clients_lock, lockdown_enabled
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
-from include.transport.multiplexing import FrameType, MultiplexConnection, Stream
+from include.transport.multiplexing import FrameType, MultiplexedConnection, Stream
 from include.transport.request_handler import RequestHandler, Result
 
 logger = log.bind(name="connection_handler")
@@ -268,7 +268,7 @@ def handle_connection(websocket: websockets.sync.server.ServerConnection):
     else:
         logger.info(f"Incoming connection: {websocket.remote_address[0]}")
 
-    multiplexer = MultiplexConnection(websocket)
+    multiplexer = MultiplexedConnection(websocket)
 
     with clients_lock:
         clients.add(multiplexer)

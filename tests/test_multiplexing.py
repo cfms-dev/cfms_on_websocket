@@ -8,11 +8,13 @@ from include.domains.operations import broadcast as broadcast_module
 from include.domains.operations.broadcast import on_global_broadcast
 from include.shared import clients, clients_lock
 from include.transport.multiplexing import (
-    HEADER,
-    HEADER_SIZE,
+    FRAME_HEADER,
+    FRAME_HEADER_SIZE,
     OUTBOUND_QUEUE_SIZE,
+    Frame,
     FrameType,
-    MultiplexConnection,
+    MultiplexedConnection,
+    Stream,
 )
 from tests.test_client import AsyncMultiplexConnection
 
@@ -39,9 +41,9 @@ async def test_test_client_uses_odd_client_stream_ids():
     connection = AsyncMultiplexConnection(websocket)
 
     try:
-        first = connection.create_stream()
-        second = connection.create_stream()
-        third = connection.create_stream()
+        first = connection.open_stream()
+        second = connection.open_stream()
+        third = connection.open_stream()
 
         assert first.frame_id == 1
         assert second.frame_id == 3
@@ -90,12 +92,12 @@ class _SyncWebSocket:
 
 def test_stream_send_waits_until_writer_sends():
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
-    stream = connection.create_stream()
+    connection = MultiplexedConnection(websocket)
+    stream = connection.open_stream()
     done = threading.Event()
 
     sender = threading.Thread(
-        target=lambda: (stream.send(b"payload", FrameType.PROCESS), done.set())
+        target=lambda: (stream.send(b"payload", FrameType.DATA), done.set())
     )
     sender.start()
 
@@ -113,11 +115,11 @@ def test_stream_send_waits_until_writer_sends():
 
 def test_stream_send_nowait_does_not_wait_for_socket_io():
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
-    stream = connection.create_stream()
+    connection = MultiplexedConnection(websocket)
+    stream = connection.open_stream()
 
     try:
-        assert stream.send_nowait(b"payload", FrameType.PROCESS) is True
+        assert stream.send_nowait(b"payload", FrameType.DATA) is True
         assert websocket.send_entered.wait(timeout=1)
         assert websocket.sent == []
 
@@ -132,24 +134,24 @@ def test_stream_send_nowait_does_not_wait_for_socket_io():
 
 def test_stream_send_nowait_returns_false_when_queue_is_full():
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
+    connection = MultiplexedConnection(websocket)
 
     try:
-        assert connection.create_stream().send_nowait(b"blocked") is True
+        assert connection.open_stream().send_nowait(b"blocked") is True
         assert websocket.send_entered.wait(timeout=1)
 
         for _ in range(OUTBOUND_QUEUE_SIZE):
-            assert connection.create_stream().send_nowait(b"queued") is True
+            assert connection.open_stream().send_nowait(b"queued") is True
 
-        assert connection.create_stream().send_nowait(b"overflow") is False
+        assert connection.open_stream().send_nowait(b"overflow") is False
     finally:
         connection.close()
 
 
 def test_stream_send_nowait_conclusion_removes_stream_when_queued():
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
-    stream = connection.create_stream()
+    connection = MultiplexedConnection(websocket)
+    stream = connection.open_stream()
 
     try:
         assert stream.frame_id in connection._streams
@@ -161,16 +163,16 @@ def test_stream_send_nowait_conclusion_removes_stream_when_queued():
 
 def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
+    connection = MultiplexedConnection(websocket)
 
     try:
-        assert connection.create_stream().send_nowait(b"blocked") is True
+        assert connection.open_stream().send_nowait(b"blocked") is True
         assert websocket.send_entered.wait(timeout=1)
 
         for _ in range(OUTBOUND_QUEUE_SIZE):
-            assert connection.create_stream().send_nowait(b"queued") is True
+            assert connection.open_stream().send_nowait(b"queued") is True
 
-        stream = connection.create_stream()
+        stream = connection.open_stream()
         assert stream.send_nowait(b"overflow", FrameType.CONCLUSION) is False
         assert stream.frame_id in connection._streams
     finally:
@@ -187,34 +189,76 @@ def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
     ],
 )
 def test_encode_frame_accepts_supported_payload_types(data, expected):
-    connection = MultiplexConnection.__new__(MultiplexConnection)
+    connection = MultiplexedConnection.__new__(MultiplexedConnection)
 
-    payload = connection._encode_frame(2, FrameType.PROCESS, data)
+    payload = connection._encode_frame(2, FrameType.DATA, data)
 
-    assert HEADER.unpack_from(payload) == (2, FrameType.PROCESS.value)
-    assert payload[HEADER_SIZE:] == expected
+    assert FRAME_HEADER.unpack_from(payload) == (2, FrameType.DATA.value)
+    assert payload[FRAME_HEADER_SIZE:] == expected
+
+
+def test_frame_uses_stream_id_field():
+    frame = Frame(stream_id=3, frame_type=FrameType.DATA, data=b"payload")
+
+    assert frame.stream_id == 3
+
+
+def test_encode_frame_rejects_unsupported_payload_type():
+    connection = MultiplexedConnection.__new__(MultiplexedConnection)
+
+    with pytest.raises(TypeError, match="Frame data must be"):
+        connection._encode_frame(2, FrameType.DATA, None)
+
+
+def test_stream_recv_timeout_raises_timeout_error():
+    connection = MultiplexedConnection.__new__(MultiplexedConnection)
+    stream = Stream(connection, 2)
+
+    with pytest.raises(TimeoutError):
+        stream.recv(timeout=0.01)
+
+
+def test_open_stream_raises_after_connection_close():
+    websocket = _SyncWebSocket()
+    connection = MultiplexedConnection(websocket)
+
+    connection.close()
+
+    with pytest.raises(ConnectionError):
+        connection.open_stream()
+
+
+def test_stream_send_nowait_returns_false_after_connection_close():
+    websocket = _SyncWebSocket()
+    connection = MultiplexedConnection(websocket)
+    stream = connection.open_stream()
+
+    connection.close()
+
+    assert stream.send_nowait(b"payload", FrameType.DATA) is False
+    assert websocket.sent == []
 
 
 def test_close_unblocks_send_waiting_for_outbound_queue_space():
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
+    connection = MultiplexedConnection(websocket)
     done = threading.Event()
     errors = []
 
     def send_when_queue_is_full():
         try:
-            connection.create_stream().send(b"blocked-on-queue", FrameType.PROCESS)
+            connection.open_stream().send(b"blocked-on-queue", FrameType.DATA)
         except Exception as exc:
             errors.append(exc)
         finally:
             done.set()
 
     try:
-        assert connection.create_stream().send_nowait(b"blocked") is True
+        assert connection.open_stream().send_nowait(b"blocked") is True
         assert websocket.send_entered.wait(timeout=1)
 
         for _ in range(OUTBOUND_QUEUE_SIZE):
-            assert connection.create_stream().send_nowait(b"queued") is True
+            assert connection.open_stream().send_nowait(b"queued") is True
 
         sender = threading.Thread(target=send_when_queue_is_full)
         sender.start()
@@ -233,12 +277,12 @@ def test_close_unblocks_send_waiting_for_outbound_queue_space():
 
 def test_stream_send_raises_when_writer_fails():
     websocket = _SyncWebSocket(send_error=OSError("boom"))
-    connection = MultiplexConnection(websocket)
-    stream = connection.create_stream()
+    connection = MultiplexedConnection(websocket)
+    stream = connection.open_stream()
 
     try:
         with pytest.raises(ConnectionError):
-            stream.send(b"payload", FrameType.PROCESS)
+            stream.send(b"payload", FrameType.DATA)
     finally:
         connection.close()
 
@@ -246,13 +290,13 @@ def test_stream_send_raises_when_writer_fails():
 def test_pending_stream_sends_preserve_writer_failure_cause():
     send_error = OSError("boom")
     websocket = _SyncWebSocket(block_send=True, send_error=send_error)
-    connection = MultiplexConnection(websocket)
+    connection = MultiplexedConnection(websocket)
     errors = []
 
     def send_and_capture(index: int):
         try:
-            stream = connection.create_stream()
-            stream.send(f"payload-{index}".encode(), FrameType.PROCESS)
+            stream = connection.open_stream()
+            stream.send(f"payload-{index}".encode(), FrameType.DATA)
         except Exception as exc:
             errors.append(exc)
 
@@ -291,15 +335,15 @@ def test_pending_stream_sends_preserve_writer_failure_cause():
 
 def test_concurrent_stream_sends_are_serialized_by_writer():
     websocket = _SyncWebSocket()
-    connection = MultiplexConnection(websocket)
+    connection = MultiplexedConnection(websocket)
     barrier = threading.Barrier(6)
     errors = []
 
     def send_from_thread(index: int):
         try:
-            stream = connection.create_stream()
+            stream = connection.open_stream()
             barrier.wait(timeout=1)
-            stream.send(f"payload-{index}".encode(), FrameType.PROCESS)
+            stream.send(f"payload-{index}".encode(), FrameType.DATA)
         except Exception as exc:
             errors.append(exc)
 
@@ -324,7 +368,7 @@ def test_concurrent_stream_sends_are_serialized_by_writer():
 
 def test_broadcast_does_not_wait_for_slow_client():
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
+    connection = MultiplexedConnection(websocket)
     done = threading.Event()
 
     with clients_lock:
@@ -348,7 +392,7 @@ def test_broadcast_does_not_wait_for_slow_client():
 
 def test_broadcast_logs_diagnostics_when_dropping_slow_client(monkeypatch):
     websocket = _SyncWebSocket(block_send=True)
-    connection = MultiplexConnection(websocket)
+    connection = MultiplexedConnection(websocket)
     warnings = []
 
     class _Logger:
@@ -358,11 +402,11 @@ def test_broadcast_logs_diagnostics_when_dropping_slow_client(monkeypatch):
     monkeypatch.setattr(broadcast_module, "logger", _Logger())
 
     try:
-        assert connection.create_stream().send_nowait(b"blocked") is True
+        assert connection.open_stream().send_nowait(b"blocked") is True
         assert websocket.send_entered.wait(timeout=1)
 
         for _ in range(OUTBOUND_QUEUE_SIZE):
-            assert connection.create_stream().send_nowait(b"queued") is True
+            assert connection.open_stream().send_nowait(b"queued") is True
 
         with clients_lock:
             clients.add(connection)

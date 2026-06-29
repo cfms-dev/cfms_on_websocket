@@ -11,7 +11,7 @@ def on_global_broadcast(msg: str):
     for conn in clients_copy:
         if conn._ws.protocol.state.name == "OPEN":
             try:
-                stream = conn.create_stream()
+                stream = conn.open_stream()
                 if not stream.send_nowait(encoded_msg, frame_type=FrameType.CONCLUSION):
                     outbound_queue = getattr(conn, "_outbound", None)
                     outbound_queue_size = (
