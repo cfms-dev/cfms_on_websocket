@@ -12,6 +12,8 @@ def on_global_broadcast(msg: str):
         if conn._ws.protocol.state.name == "OPEN":
             try:
                 stream = conn.create_stream()
-                stream.send(encoded_msg, frame_type=FrameType.CONCLUSION)
+                if not stream.send_nowait(encoded_msg, frame_type=FrameType.CONCLUSION):
+                    conn.close()
+                    logger.warning("Dropped slow client during global broadcast")
             except Exception as e:
                 logger.warning(f"Failed to forward global broadcast: {e}")
