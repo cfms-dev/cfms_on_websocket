@@ -113,6 +113,16 @@ class MultiplexConnection:
 
                 with self._streams_lock:
                     if frame.frame_id not in self._streams:
+                        if frame.frame_id % 2 == 0:
+                            logger.warning(
+                                f"({self.remote_address[0]}): Client attempted to "
+                                f"open server-reserved stream id {frame.frame_id}"
+                            )
+                            self._ws.close(
+                                code=1002,
+                                reason="client-initiated streams must use odd ids",
+                            )
+                            return
                         # 对方发起的新流，通知本地主线程
                         new_stream = Stream(self, frame.frame_id)
                         self._streams[frame.frame_id] = new_stream
