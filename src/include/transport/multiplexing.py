@@ -5,10 +5,10 @@ import time
 from dataclasses import dataclass
 from enum import IntEnum
 
-import websockets
 from loguru import logger as log
+from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection
-from websockets.typing import DataLike
+from websockets.typing import Data, DataLike
 
 FRAME_HEADER_FORMAT = "!IB"  # 4 bytes for stream_id, 1 byte for frame_type
 FRAME_HEADER = struct.Struct(FRAME_HEADER_FORMAT)
@@ -36,6 +36,43 @@ class _OutboundFrame:
     payload: bytearray
     done: threading.Event | None = None
     exception: BaseException | None = None
+
+
+def normalize_payload(data: DataLike) -> bytes | bytearray | memoryview:
+    if isinstance(data, str):
+        return data.encode("utf-8")
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        return data
+    raise TypeError("Frame data must be str, bytes, bytearray, or memoryview")
+
+
+def encode_frame(stream_id: int, frame_type: FrameType, data: DataLike) -> bytearray:
+    payload = normalize_payload(data)
+    frame = bytearray(FRAME_HEADER_SIZE + len(payload))
+    FRAME_HEADER.pack_into(frame, 0, stream_id, frame_type.value)
+    frame[FRAME_HEADER_SIZE:] = payload
+
+    return frame
+
+
+def decode_frame(raw_payload: Data) -> Frame | None:
+    if isinstance(raw_payload, str):
+        raw_payload = raw_payload.encode("utf-8")
+
+    if len(raw_payload) < FRAME_HEADER_SIZE:
+        return None
+
+    stream_id, frame_type_val = FRAME_HEADER.unpack_from(raw_payload)
+    try:
+        frame_type = FrameType(frame_type_val)
+    except ValueError:
+        return None
+
+    return Frame(
+        stream_id=stream_id,
+        frame_type=frame_type,
+        data=memoryview(raw_payload)[FRAME_HEADER_SIZE:],
+    )
 
 
 class Stream:
@@ -125,38 +162,26 @@ class MultiplexedConnection:
     def _recv_loop(self) -> None:
         try:
             while self._is_running:
-                raw_payload = self._ws.recv()
-
-                if isinstance(raw_payload, str):
-                    raw_payload = raw_payload.encode("utf-8")
-
-                if len(raw_payload) < FRAME_HEADER_SIZE:
+                raw_payload = self._ws.recv(decode=False)
+                frame = decode_frame(raw_payload)
+                if frame is None:
                     continue
 
-                stream_id, frame_type_val = FRAME_HEADER.unpack_from(raw_payload)
-                data = memoryview(raw_payload)[FRAME_HEADER_SIZE:]
-
-                try:
-                    frame_type = FrameType(frame_type_val)
-                except ValueError:
-                    continue
-
-                frame = Frame(stream_id=stream_id, frame_type=frame_type, data=data)
                 close_for_protocol_error = False
 
                 with self._streams_lock:
-                    target_stream = self._streams.get(stream_id)
+                    target_stream = self._streams.get(frame.stream_id)
                     if target_stream is None:
-                        if stream_id % 2 == 0:
+                        if frame.stream_id % 2 == 0:
                             logger.warning(
                                 f"({self.remote_address[0]}): Client attempted to "
-                                f"open server-reserved stream id {stream_id}"
+                                f"open server-reserved stream id {frame.stream_id}"
                             )
                             close_for_protocol_error = True
                         else:
                             # Notify the local main thread about the peer stream.
-                            new_stream = Stream(self, stream_id)
-                            self._streams[stream_id] = new_stream
+                            new_stream = Stream(self, frame.stream_id)
+                            self._streams[frame.stream_id] = new_stream
                             self._new_streams.put(new_stream)
                             target_stream = new_stream
 
@@ -175,9 +200,9 @@ class MultiplexedConnection:
                 # Reclaim routing table memory when the peer sends an end frame.
                 if frame.frame_type == FrameType.CONCLUSION:
                     with self._streams_lock:
-                        self._streams.pop(stream_id, None)
+                        self._streams.pop(frame.stream_id, None)
 
-        except websockets.exceptions.ConnectionClosed:
+        except ConnectionClosed:
             logger.info(f"({self.remote_address[0]}): WebSocket connection closed")
         except Exception:
             logger.exception(f"({self.remote_address[0]}): Error in receive loop")
@@ -190,24 +215,6 @@ class MultiplexedConnection:
                 for stream in self._streams.values():
                     stream._put_incoming_frame(None)
 
-    @staticmethod
-    def _normalize_payload(data: DataLike) -> bytes | bytearray | memoryview:
-        if isinstance(data, str):
-            return data.encode("utf-8")
-        if isinstance(data, (bytes, bytearray, memoryview)):
-            return data
-        raise TypeError("Frame data must be str, bytes, bytearray, or memoryview")
-
-    def _encode_frame(
-        self, frame_id: int, frame_type: FrameType, data: DataLike
-    ) -> bytearray:
-        payload = self._normalize_payload(data)
-        frame = bytearray(FRAME_HEADER_SIZE + len(payload))
-        FRAME_HEADER.pack_into(frame, 0, frame_id, frame_type.value)
-        frame[FRAME_HEADER_SIZE:] = payload
-
-        return frame
-
     def _enqueue_frame(
         self,
         frame_id: int,
@@ -218,7 +225,7 @@ class MultiplexedConnection:
         timeout: float | None = None,
     ) -> bool:
         item = _OutboundFrame(
-            payload=self._encode_frame(frame_id, frame_type, data),
+            payload=encode_frame(frame_id, frame_type, data),
             done=threading.Event() if wait_for_write else None,
         )
 

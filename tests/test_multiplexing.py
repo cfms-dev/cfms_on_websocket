@@ -15,6 +15,7 @@ from include.transport.multiplexing import (
     FrameType,
     MultiplexedConnection,
     Stream,
+    encode_frame,
 )
 from tests.test_client import AsyncMultiplexConnection
 
@@ -24,7 +25,7 @@ class _IdleWebSocket:
         self.sent = []
         self._closed = asyncio.Event()
 
-    async def recv(self):
+    async def recv(self, decode=None):
         await self._closed.wait()
         return b""
 
@@ -73,7 +74,7 @@ class _SyncWebSocket:
         self.block_send = block_send
         self.send_error = send_error
 
-    def recv(self):
+    def recv(self, timeout=None, decode=None):
         self.closed.wait()
         raise RuntimeError("closed")
 
@@ -189,9 +190,7 @@ def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
     ],
 )
 def test_encode_frame_accepts_supported_payload_types(data, expected):
-    connection = MultiplexedConnection.__new__(MultiplexedConnection)
-
-    payload = connection._encode_frame(2, FrameType.DATA, data)
+    payload = encode_frame(2, FrameType.DATA, data)
 
     assert FRAME_HEADER.unpack_from(payload) == (2, FrameType.DATA.value)
     assert payload[FRAME_HEADER_SIZE:] == expected
@@ -204,10 +203,8 @@ def test_frame_uses_stream_id_field():
 
 
 def test_encode_frame_rejects_unsupported_payload_type():
-    connection = MultiplexedConnection.__new__(MultiplexedConnection)
-
     with pytest.raises(TypeError, match="Frame data must be"):
-        connection._encode_frame(2, FrameType.DATA, None)
+        encode_frame(2, FrameType.DATA, None)
 
 
 def test_stream_recv_timeout_raises_timeout_error():

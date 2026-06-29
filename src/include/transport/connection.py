@@ -6,10 +6,14 @@ from typing import Optional
 
 import jsonschema
 import orjson
-import websockets
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from loguru import logger as log
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+)
 from websockets.typing import Data
 
 from include.config.constants import (
@@ -336,8 +340,8 @@ class ConnectionHandler:
             )
 
         except (
-            websockets.ConnectionClosed,
-            websockets.exceptions.ConnectionClosedError,
+            ConnectionClosed,
+            ConnectionClosedError,
         ):
             self.logger.info("File transmission aborted: Connection closed")
             return
@@ -479,8 +483,8 @@ class ConnectionHandler:
                         if len(data) < chunk_size:
                             break
                 except (
-                    websockets.ConnectionClosed,
-                    websockets.exceptions.ConnectionClosedOK,
+                    ConnectionClosed,
+                    ConnectionClosedOK,
                 ):
                     raise
 

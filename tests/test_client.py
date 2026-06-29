@@ -12,20 +12,20 @@ import os
 import queue
 import secrets
 import ssl
-import struct
 import threading
 import time
-from dataclasses import dataclass
-from enum import IntEnum
 from typing import Any, Dict, Optional
 
 import orjson
 from Crypto.Cipher import AES
 from websockets.asyncio.client import ClientConnection, connect
 
-FRAME_HEADER_FORMAT = "!IB"
-FRAME_HEADER = struct.Struct(FRAME_HEADER_FORMAT)
-FRAME_HEADER_SIZE = FRAME_HEADER.size
+from include.transport.multiplexing import (
+    Frame,
+    FrameType,
+    decode_frame,
+    encode_frame,
+)
 
 
 def calculate_sha256(file_path: str) -> str:
@@ -46,18 +46,6 @@ def calculate_sha256(file_path: str) -> str:
         return hashlib.sha256(mmapped_file).hexdigest()
 
 
-class FrameType(IntEnum):
-    DATA = 0
-    CONCLUSION = 1
-
-
-@dataclass
-class Frame:
-    stream_id: int
-    frame_type: FrameType
-    data: Any
-
-
 class AsyncStream:
     def __init__(self, connection: "AsyncMultiplexConnection", frame_id: int):
         self.connection = connection
@@ -70,13 +58,9 @@ class AsyncStream:
     async def recv(self, timeout: Optional[float] = None) -> Frame:
         try:
             if timeout is None:
-                frame = await asyncio.get_running_loop().run_in_executor(
-                    None, self._queue.get
-                )
+                frame = await asyncio.to_thread(self._queue.get)
             else:
-                frame = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: self._queue.get(timeout=timeout)
-                )
+                frame = await asyncio.to_thread(self._queue.get, True, timeout)
         except queue.Empty:
             raise TimeoutError("Stream recv timeout")
 
@@ -115,46 +99,28 @@ class AsyncMultiplexConnection:
     ) -> Optional[AsyncStream]:
         try:
             if timeout is None:
-                return await asyncio.get_running_loop().run_in_executor(
-                    None, self._new_streams.get
-                )
-            return await asyncio.get_running_loop().run_in_executor(
-                None, lambda: self._new_streams.get(timeout=timeout)
-            )
+                return await asyncio.to_thread(self._new_streams.get)
+            return await asyncio.to_thread(self._new_streams.get, True, timeout)
         except queue.Empty:
             raise TimeoutError("Server stream accept timeout")
 
     async def _recv_loop(self):
         try:
             while self._is_running:
-                raw_payload = await self._ws.recv()
-                if isinstance(raw_payload, str):
-                    raw_payload = raw_payload.encode("utf-8")
-
-                if len(raw_payload) < FRAME_HEADER_SIZE:
+                raw_payload = await self._ws.recv(decode=False)
+                frame = decode_frame(raw_payload)
+                if frame is None:
                     continue
-
-                stream_id, frame_type_val = FRAME_HEADER.unpack_from(raw_payload)
-                data_bytes = raw_payload[FRAME_HEADER_SIZE:]
-
-                try:
-                    frame_type = FrameType(frame_type_val)
-                except ValueError:
-                    continue
-
-                frame = Frame(
-                    stream_id=stream_id, frame_type=frame_type, data=data_bytes
-                )
 
                 with self._streams_lock:
-                    target_stream = self._streams.get(stream_id)
+                    target_stream = self._streams.get(frame.stream_id)
                     if target_stream is None:
-                        if stream_id % 2 != 0:
+                        if frame.stream_id % 2 != 0:
                             self._is_running = False
                             await self._ws.close()
                             return
-                        new_stream = AsyncStream(self, stream_id)
-                        self._streams[stream_id] = new_stream
+                        new_stream = AsyncStream(self, frame.stream_id)
+                        self._streams[frame.stream_id] = new_stream
                         self._new_streams.put(new_stream)
                         target_stream = new_stream
 
@@ -162,7 +128,7 @@ class AsyncMultiplexConnection:
 
                 if frame.frame_type == FrameType.CONCLUSION:
                     with self._streams_lock:
-                        self._streams.pop(stream_id, None)
+                        self._streams.pop(frame.stream_id, None)
 
         except Exception:
             pass
@@ -174,19 +140,7 @@ class AsyncMultiplexConnection:
                     stream._put_incoming_frame(None)
 
     async def _send_frame(self, frame_id: int, frame_type: FrameType, data: Any):
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        elif isinstance(data, memoryview):
-            data = data.tobytes()
-
-        if not isinstance(data, (bytes, bytearray, memoryview)):
-            raise TypeError("Frame data must be str, bytes, bytearray, or memoryview")
-
-        payload = bytearray(FRAME_HEADER_SIZE + len(data))
-        FRAME_HEADER.pack_into(payload, 0, frame_id, frame_type.value)
-        payload[FRAME_HEADER_SIZE:] = data
-
-        await self._ws.send(payload)
+        await self._ws.send(encode_frame(frame_id, frame_type, data))
 
         if frame_type == FrameType.CONCLUSION:
             with self._streams_lock:

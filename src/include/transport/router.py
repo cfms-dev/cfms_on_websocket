@@ -4,9 +4,9 @@ from typing import Optional
 
 import jsonschema
 import orjson
-import websockets
-import websockets.sync.server
 from loguru import logger as log
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+from websockets.sync.server import ServerConnection
 
 from include.config.constants import NONCE_MIN_LENGTH
 from include.database.models.identity import User
@@ -252,7 +252,7 @@ def _validate_replay_protection(
     return None
 
 
-def handle_connection(websocket: websockets.sync.server.ServerConnection):
+def handle_connection(websocket: ServerConnection):
     """
     Handle incoming WebSocket connections.
 
@@ -416,8 +416,8 @@ def handle_request(stream: Stream):
                 time_cost=t2 - t1,
             )
         except (
-            websockets.exceptions.ConnectionClosedOK,
-            websockets.exceptions.ConnectionClosedError,
+            ConnectionClosedOK,
+            ConnectionClosedError,
         ):
             logger.info("WebSocket connection closed during request handling")
             return
