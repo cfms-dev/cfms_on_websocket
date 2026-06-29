@@ -8,6 +8,8 @@ from include.domains.operations import broadcast as broadcast_module
 from include.domains.operations.broadcast import on_global_broadcast
 from include.shared import clients, clients_lock
 from include.transport.multiplexing import (
+    HEADER,
+    HEADER_SIZE,
     OUTBOUND_QUEUE_SIZE,
     FrameType,
     MultiplexConnection,
@@ -172,6 +174,60 @@ def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
         assert stream.send_nowait(b"overflow", FrameType.CONCLUSION) is False
         assert stream.frame_id in connection._streams
     finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (b"payload", b"payload"),
+        ("payload", b"payload"),
+        (bytearray(b"payload"), b"payload"),
+        (memoryview(b"payload"), b"payload"),
+    ],
+)
+def test_encode_frame_accepts_supported_payload_types(data, expected):
+    connection = MultiplexConnection.__new__(MultiplexConnection)
+
+    payload = connection._encode_frame(2, FrameType.PROCESS, data)
+
+    assert HEADER.unpack_from(payload) == (2, FrameType.PROCESS.value)
+    assert payload[HEADER_SIZE:] == expected
+
+
+def test_close_unblocks_send_waiting_for_outbound_queue_space():
+    websocket = _SyncWebSocket(block_send=True)
+    connection = MultiplexConnection(websocket)
+    done = threading.Event()
+    errors = []
+
+    def send_when_queue_is_full():
+        try:
+            connection.create_stream().send(b"blocked-on-queue", FrameType.PROCESS)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            done.set()
+
+    try:
+        assert connection.create_stream().send_nowait(b"blocked") is True
+        assert websocket.send_entered.wait(timeout=1)
+
+        for _ in range(OUTBOUND_QUEUE_SIZE):
+            assert connection.create_stream().send_nowait(b"queued") is True
+
+        sender = threading.Thread(target=send_when_queue_is_full)
+        sender.start()
+        time.sleep(0.1)
+
+        connection.close()
+
+        assert done.wait(timeout=1)
+        sender.join(timeout=1)
+        assert len(errors) == 1
+        assert isinstance(errors[0], ConnectionError)
+    finally:
+        websocket.release_send.set()
         connection.close()
 
 

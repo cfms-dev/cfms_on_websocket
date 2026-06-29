@@ -1,9 +1,9 @@
 import queue
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Optional
 
 import websockets
 from loguru import logger as log
@@ -11,8 +11,10 @@ from websockets.sync.server import ServerConnection
 from websockets.typing import Data
 
 HEADER_FORMAT = "!IB"  # 4 bytes for frame_id, 1 byte for frame_type
-HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+HEADER = struct.Struct(HEADER_FORMAT)
+HEADER_SIZE = HEADER.size
 OUTBOUND_QUEUE_SIZE = 1024
+QUEUE_POLL_INTERVAL = 0.05
 
 logger = log.bind(name="multiplexer")
 
@@ -22,18 +24,18 @@ class FrameType(IntEnum):
     CONCLUSION = 1
 
 
-@dataclass
+@dataclass(slots=True)
 class Frame:
     frame_id: int
     frame_type: FrameType
     data: bytes | memoryview  # can't be str
 
 
-@dataclass
+@dataclass(slots=True)
 class _OutboundFrame:
     payload: bytes
-    done: Optional[threading.Event] = None
-    exception: Optional[BaseException] = None
+    done: threading.Event | None = None
+    exception: BaseException | None = None
 
 
 class Stream:
@@ -56,14 +58,14 @@ class Stream:
             self.frame_id, frame_type, data, wait_for_write=False
         )
 
-    def recv(self, timeout: Optional[float] = None) -> Frame:
+    def recv(self, timeout: float | None = None) -> Frame:
         """Receive data for this stream, blocking until a frame is available."""
         frame = self._queue.get(timeout=timeout)
         if frame is None:
             raise ConnectionError("MultiplexConnection has been closed")
         return frame
 
-    def _put_incoming_frame(self, frame: Optional[Frame]):
+    def _put_incoming_frame(self, frame: Frame | None):
         """Queue a frame for this stream. Called by the dispatcher."""
         self._queue.put(frame)
 
@@ -82,11 +84,11 @@ class MultiplexConnection:
         self._streams: dict[int, Stream] = {}
         self._streams_lock = threading.Lock()
 
-        self._new_streams: queue.Queue[Optional[Stream]] = queue.Queue()
-        self._outbound: queue.Queue[Optional[_OutboundFrame]] = queue.Queue(
+        self._new_streams: queue.Queue[Stream | None] = queue.Queue()
+        self._outbound: queue.Queue[_OutboundFrame | None] = queue.Queue(
             OUTBOUND_QUEUE_SIZE
         )
-        self._send_error: Optional[BaseException] = None
+        self._send_error: BaseException | None = None
 
         self._is_running = True
         self._dispatcher = threading.Thread(target=self._recv_loop, daemon=True)
@@ -106,7 +108,7 @@ class MultiplexConnection:
 
         return new_stream
 
-    def accept_stream(self) -> Optional[Stream]:
+    def accept_stream(self) -> Stream | None:
         """Wait for and return a new stream created by the peer."""
         return self._new_streams.get()
 
@@ -115,15 +117,13 @@ class MultiplexConnection:
             while self._is_running:
                 raw_payload = self._ws.recv()
 
-                if len(raw_payload) < HEADER_SIZE:
-                    continue
-
                 if isinstance(raw_payload, str):
                     raw_payload = raw_payload.encode("utf-8")
 
-                frame_id, frame_type_val = struct.unpack_from(
-                    HEADER_FORMAT, raw_payload
-                )
+                if len(raw_payload) < HEADER_SIZE:
+                    continue
+
+                frame_id, frame_type_val = HEADER.unpack_from(raw_payload)
                 data = memoryview(raw_payload)[HEADER_SIZE:]
 
                 try:
@@ -132,6 +132,7 @@ class MultiplexConnection:
                     continue
 
                 frame = Frame(frame_id=frame_id, frame_type=frame_type, data=data)
+                close_for_protocol_error = False
 
                 with self._streams_lock:
                     if frame.frame_id not in self._streams:
@@ -140,19 +141,24 @@ class MultiplexConnection:
                                 f"({self.remote_address[0]}): Client attempted to "
                                 f"open server-reserved stream id {frame.frame_id}"
                             )
-                            self._ws.close(
-                                code=1002,
-                                reason=(
-                                    "Protocol error: invalid client-initiated stream"
-                                ),
-                            )
-                            return
-                        # Notify the local main thread about the peer stream.
-                        new_stream = Stream(self, frame.frame_id)
-                        self._streams[frame.frame_id] = new_stream
-                        self._new_streams.put(new_stream)
+                            close_for_protocol_error = True
+                        else:
+                            # Notify the local main thread about the peer stream.
+                            new_stream = Stream(self, frame.frame_id)
+                            self._streams[frame.frame_id] = new_stream
+                            self._new_streams.put(new_stream)
 
-                    target_stream = self._streams[frame.frame_id]
+                    target_stream = self._streams.get(frame.frame_id)
+
+                if close_for_protocol_error:
+                    self._ws.close(
+                        code=1002,
+                        reason="Protocol error: invalid client-initiated stream",
+                    )
+                    return
+
+                if target_stream is None:
+                    continue
 
                 target_stream._put_incoming_frame(frame)
 
@@ -177,15 +183,12 @@ class MultiplexConnection:
     def _encode_frame(self, frame_id: int, frame_type: FrameType, data: Data) -> bytes:
         if isinstance(data, str):
             data = data.encode("utf-8")
+        elif isinstance(data, memoryview):
+            data = data.tobytes()
+        elif isinstance(data, bytearray):
+            data = bytes(data)
 
-        data_len = len(data)
-        payload = bytearray(HEADER_SIZE + data_len)
-
-        struct.pack_into(HEADER_FORMAT, payload, 0, frame_id, frame_type.value)
-
-        payload[HEADER_SIZE:] = data
-
-        return bytes(payload)
+        return HEADER.pack(frame_id, frame_type.value) + data
 
     def _enqueue_frame(
         self,
@@ -194,8 +197,34 @@ class MultiplexConnection:
         data: Data,
         *,
         wait_for_write: bool = True,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> bool:
+        if not self._check_send_state(wait_for_write=wait_for_write):
+            return False
+
+        item = _OutboundFrame(
+            payload=self._encode_frame(frame_id, frame_type, data),
+            done=threading.Event() if wait_for_write else None,
+        )
+
+        if wait_for_write:
+            self._put_outbound(item, timeout=timeout)
+        else:
+            try:
+                self._outbound.put_nowait(item)
+            except queue.Full:
+                return False
+
+        if item.done is None:
+            return True
+
+        self._wait_for_write(item)
+        if item.exception is not None:
+            raise ConnectionError("Failed to send WebSocket frame") from item.exception
+
+        return True
+
+    def _check_send_state(self, *, wait_for_write: bool) -> bool:
         if not self._is_running:
             if wait_for_write:
                 raise ConnectionError("MultiplexConnection has been closed")
@@ -208,29 +237,36 @@ class MultiplexConnection:
                 )
             return False
 
-        item = _OutboundFrame(
-            payload=self._encode_frame(frame_id, frame_type, data),
-            done=threading.Event() if wait_for_write else None,
-        )
-
-        try:
-            if wait_for_write:
-                self._outbound.put(item, timeout=timeout)
-            else:
-                self._outbound.put_nowait(item)
-        except queue.Full:
-            if wait_for_write:
-                raise TimeoutError("Timed out while queueing WebSocket frame")
-            return False
-
-        if item.done is None:
-            return True
-
-        item.done.wait()
-        if item.exception is not None:
-            raise ConnectionError("Failed to send WebSocket frame") from item.exception
-
         return True
+
+    def _put_outbound(
+        self, item: _OutboundFrame, *, timeout: float | None = None
+    ) -> None:
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        while True:
+            self._check_send_state(wait_for_write=True)
+            put_timeout = QUEUE_POLL_INTERVAL
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Timed out while queueing WebSocket frame")
+                put_timeout = min(put_timeout, remaining)
+
+            try:
+                self._outbound.put(item, timeout=put_timeout)
+                return
+            except queue.Full:
+                continue
+
+    def _wait_for_write(self, item: _OutboundFrame) -> None:
+        while item.done is not None and not item.done.wait(QUEUE_POLL_INTERVAL):
+            if self._send_error is not None:
+                item.exception = self._send_error
+                return
+            if not self._is_running:
+                item.exception = ConnectionError("MultiplexConnection has been closed")
+                return
 
     def _send_frame(
         self,
