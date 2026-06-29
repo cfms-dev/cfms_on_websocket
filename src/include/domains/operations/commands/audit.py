@@ -12,7 +12,7 @@ def log_audit(
     data: Optional[dict] = None,
     remote_address: Optional[str] = None,
 ) -> None:
-    """创建审计日志。"""
+    """Create an audit log entry."""
     if result == 400:
         return
 

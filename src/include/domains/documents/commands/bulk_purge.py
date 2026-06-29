@@ -19,13 +19,15 @@ from include.domains.documents.queries.revisions import batch_count_other_revisi
 
 def purge_documents_bulk(session: Session, document_ids: List[str]):
     """
-    高度优化的批量粉碎函数。
-    将原本 600+ 次的单个文档删除，转化为针对所有文档的一组批量删除。
+    Purge many documents using batched deletes.
+
+    This converts hundreds of per-document deletes into a small set of bulk
+    operations across all target documents.
     """
     if not document_ids:
         return
 
-    # 1. 批量获取所有受影响的修订版本 ID 和文件 ID（分块查询以避免超出绑定变量限制）
+    # 1. Fetch affected revision IDs and file IDs in chunks to avoid bind limits.
     revision_data = []
     for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
         revision_data.extend(
@@ -35,7 +37,7 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
         )
 
     if not revision_data:
-        # 如果这些文档都没有修订版本，直接删除文档记录即可
+        # If none of these documents have revisions, delete document rows only.
         for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
             session.query(DocumentAccessRule).filter(
                 DocumentAccessRule.document_id.in_(chunk)
@@ -49,17 +51,16 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
     rev_ids = [r[0] for r in revision_data]
     file_ids = {r[1] for r in revision_data if r[1]}
 
-    # 2. 批量引用计数检查
-    # 使用集中计数，排除来自这批文档的引用后若为 0 则可删除
+    # 2. Count references in bulk. Files with no remaining external references
+    # can be deleted.
     other_counts = batch_count_other_revisions(session, list(file_ids), document_ids)
 
-    # 找出仅被这批文档引用、可以物理删除的文件 ID
+    # Find files referenced only by this batch and eligible for physical delete.
     deletable_file_ids = [fid for fid in file_ids if other_counts.get(fid, 0) == 0]
 
-    # 3. 批量删除 (使用 SQL 级别的 delete)
-    # 我们处于 no_autoflush 模式下运行此块
+    # 3. Delete in bulk using SQL-level deletes under no_autoflush.
 
-    # 3a. 先解除文档与修订版本、修订版本之间的外键引用
+    # 3a. Clear document-to-revision and revision-to-revision FK references.
     for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
         session.query(Document).filter(Document.id.in_(chunk)).update(
             {Document.current_revision_id: None}, synchronize_session=False
@@ -70,20 +71,20 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
             {DocumentRevision.parent_revision_id: None}, synchronize_session=False
         )
 
-    # 3b. 清理相关任务
+    # 3b. Clean up related tasks.
     if deletable_file_ids:
         for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
             session.query(FileTask).filter(FileTask.file_id.in_(chunk)).delete(
                 synchronize_session=False
             )
 
-    # 3c. 收集文件路径。File 记录必须等 DocumentRevision 删除后才能删除。
+    # 3c. Collect file paths. File rows must be deleted after revisions.
     deletable_files = []
     if deletable_file_ids:
         for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
             deletable_files.extend(session.query(File).filter(File.id.in_(chunk)).all())
 
-    # 3d. 批量删除修订版本、文件和文档
+    # 3d. Delete revisions, files, and documents in bulk.
     for chunk in batched(rev_ids, QUERY_CHUNK_SIZE):
         session.query(DocumentRevision).filter(DocumentRevision.id.in_(chunk)).delete(
             synchronize_session=False

@@ -14,33 +14,32 @@ from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import Document, Folder
 
 
-# ── 内部辅助：给定起始 folder_id 集合和需要查OAE的目标ID集合，
-#    批量展开祖先链、预加载权限数据 ──────────────────────────────────────────
+# Internal helper: expand ancestor chains and preload permission data for the
+# starting folder IDs and target IDs that require OAE lookup.
 def _fetch_ancestors_and_oae(
     session: Session,
-    seed_folder_ids: list[str],  # CTE 递归的起点文件夹 ID 集合
-    extra_target_ids: list[str],  # 除文件夹外还需要查 OAE 的其他目标ID（如文档ID）
-    exclude_folder_ids: set[
-        str
-    ],  # 已经加载过的文件夹ID，不需要重复查（如命中的文件夹自身）
+    seed_folder_ids: list[str],  # Starting folder IDs for the recursive CTE.
+    extra_target_ids: list[str],  # Non-folder target IDs requiring OAE lookup.
+    exclude_folder_ids: set[str],  # Folder IDs already loaded and not queried again.
     now: float,
 ) -> tuple[list[Folder], dict]:
     """
-    公共内部函数：
-    1. 用递归 CTE 从 seed_folder_ids 出发，展开所有祖先文件夹
-    2. 批量加载这些文件夹（含 access_rules 预加载），排除 exclude_folder_ids
-    3. 批量拉取 extra_target_ids + 所有祖先文件夹 的 ObjectAccessEntry
+    Expand ancestors and preload access data.
 
-    返回：
-        ancestor_folders - 祖先文件夹列表（已排除 exclude_folder_ids）
-        oae_by_target    - Dict[target_id, List[ObjectAccessEntry]]
+    The recursive CTE starts from seed_folder_ids, loads ancestor folders with
+    access_rules preloaded while excluding exclude_folder_ids, and fetches
+    ObjectAccessEntry rows for extra_target_ids plus all ancestor folders.
+
+    Returns:
+        ancestor_folders: Ancestor folders excluding exclude_folder_ids.
+        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
     """
     if not seed_folder_ids:
-        # 没有任何祖先需要查（比如所有文档都在根目录）
+        # No ancestors need lookup, such as when all documents are in root.
         all_target_ids = extra_target_ids
         ancestor_folders = []
     else:
-        # Step A：递归 CTE 展开所有祖先 ID（自动去重）
+        # Step A: Expand all ancestor IDs with a recursive CTE and deduplicate.
         placeholders = ", ".join(f":fid_{i}" for i in range(len(seed_folder_ids)))
         params = {f"fid_{i}": fid for i, fid in enumerate(seed_folder_ids)}
 
@@ -63,7 +62,8 @@ def _fetch_ancestors_and_oae(
             row[0] for row in session.execute(ancestor_sql, params).fetchall()
         ]
 
-        # Step B：排除已加载的，批量加载祖先 Folder（含 access_rules）
+        # Step B: Exclude already loaded IDs and bulk-load ancestor folders with
+        # access_rules.
         pure_ancestor_ids = [
             fid for fid in all_ancestor_ids if fid not in exclude_folder_ids
         ]
@@ -81,7 +81,7 @@ def _fetch_ancestors_and_oae(
 
         all_target_ids = extra_target_ids + all_ancestor_ids
 
-    # Step C：批量拉取 OAE（文档 + 所有文件夹，一次查询）
+    # Step C: Fetch OAE rows in bulk for documents and folders.
     oae_by_target: dict = defaultdict(list)
     if all_target_ids:
         oae_entries = (
@@ -100,24 +100,24 @@ def _fetch_ancestors_and_oae(
     return ancestor_folders, oae_by_target
 
 
-# ── 搜索文档 ────────────────────────────────────────────────────────────────
+# Document search.
 def search_documents_with_access(
     session: Session,
     keyword: str,
     now: Optional[float] = None,
 ) -> tuple[list[Document], list[Folder], dict]:
     """
-    按关键词搜索文档标题，批量预取祖先链权限信息。
+    Search document titles by keyword and preload ancestor access data.
 
-    返回：
-        documents     - 命中的文档列表（access_rules 已预加载）
-        folders       - 所有祖先文件夹列表（access_rules 已预加载）
-        oae_by_target - Dict[target_id, List[ObjectAccessEntry]]
+    Returns:
+        documents: Matched documents with access_rules preloaded.
+        folders: All ancestor folders with access_rules preloaded.
+        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
     """
     if now is None:
         now = time.time()
 
-    # Step 1：搜索文档
+    # Step 1: Search documents.
     documents = (
         session.query(Document)
         .options(joinedload(Document.access_rules))
@@ -127,39 +127,40 @@ def search_documents_with_access(
     if not documents:
         return [], [], {}
 
-    # Step 2：收集起点 folder_id（文档的直接父文件夹，去重）
+    # Step 2: Collect direct parent folder IDs as deduplicated CTE seeds.
     seed_folder_ids = list({doc.folder_id for doc in documents if doc.folder_id})
 
-    # Step 3-5：交给公共函数处理
+    # Steps 3-5: Delegate to the shared helper.
     ancestor_folders, oae_by_target = _fetch_ancestors_and_oae(
         session=session,
         seed_folder_ids=seed_folder_ids,
-        extra_target_ids=[doc.id for doc in documents],  # 文档本身也需要查 OAE
-        exclude_folder_ids=set(),  # 文档搜索时没有预加载过任何文件夹
+        extra_target_ids=[doc.id for doc in documents],  # Documents also need OAE.
+        exclude_folder_ids=set(),  # No folders are preloaded for document search.
         now=now,
     )
 
     return documents, ancestor_folders, oae_by_target
 
 
-# ── 搜索文件夹 ──────────────────────────────────────────────────────────────
+# Folder search.
 def search_folders_with_access(
     session: Session,
     keyword: str,
     now: Optional[float] = None,
 ) -> tuple[list[Folder], list[Folder], dict]:
     """
-    按关键词搜索文件夹名称，批量预取祖先链权限信息。
+    Search folder names by keyword and preload ancestor access data.
 
-    返回：
-        matched_folders  - 命中的文件夹列表（access_rules 已预加载）
-        ancestor_folders - 所有祖先文件夹列表（access_rules 已预加载，不含命中的）
-        oae_by_target    - Dict[target_id, List[ObjectAccessEntry]]
+    Returns:
+        matched_folders: Matched folders with access_rules preloaded.
+        ancestor_folders: Ancestor folders with access_rules preloaded,
+            excluding matched folders.
+        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
     """
     if now is None:
         now = time.time()
 
-    # Step 1：搜索文件夹
+    # Step 1: Search folders.
     matched_folders = (
         session.query(Folder)
         .options(joinedload(Folder.access_rules))
@@ -169,18 +170,18 @@ def search_folders_with_access(
     if not matched_folders:
         return [], [], {}
 
-    # Step 2：收集起点 parent_id（命中文件夹的直接父级，去重）
-    #         注意：命中的文件夹本身已加载，起点从它们的 parent_id 开始向上
+    # Step 2: Collect direct parent IDs as deduplicated seeds. Matched folders
+    # are already loaded, so traversal starts from their parent_id.
     seed_folder_ids = list({f.parent_id for f in matched_folders if f.parent_id})
 
     matched_ids = {f.id for f in matched_folders}
 
-    # Step 3-5：交给公共函数处理
-    #           exclude_folder_ids=matched_ids 避免重复加载命中的文件夹
+    # Steps 3-5: Delegate to the shared helper. Exclude matched_ids to avoid
+    # loading matched folders twice.
     ancestor_folders, oae_by_target = _fetch_ancestors_and_oae(
         session=session,
         seed_folder_ids=seed_folder_ids,
-        extra_target_ids=[f.id for f in matched_folders],  # 命中文件夹本身也需要查 OAE
+        extra_target_ids=[f.id for f in matched_folders],  # Matched folders need OAE.
         exclude_folder_ids=matched_ids,
         now=now,
     )

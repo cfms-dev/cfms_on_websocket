@@ -90,7 +90,7 @@ class AsyncStream:
 class AsyncMultiplexConnection:
     def __init__(self, websocket: ClientConnection):
         self._ws = websocket
-        self._next_frame_id = 2
+        self._next_frame_id = 1
         self._id_lock = threading.Lock()
         self._streams: Dict[int, AsyncStream] = {}
         self._streams_lock = threading.Lock()
@@ -109,10 +109,19 @@ class AsyncMultiplexConnection:
 
         return new_stream
 
-    async def accept_stream(self) -> Optional[AsyncStream]:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self._new_streams.get
-        )
+    async def accept_stream(
+        self, timeout: Optional[float] = None
+    ) -> Optional[AsyncStream]:
+        try:
+            if timeout is None:
+                return await asyncio.get_running_loop().run_in_executor(
+                    None, self._new_streams.get
+                )
+            return await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self._new_streams.get(timeout=timeout)
+            )
+        except queue.Empty:
+            raise TimeoutError("Server stream accept timeout")
 
     async def _recv_loop(self):
         try:
@@ -138,6 +147,10 @@ class AsyncMultiplexConnection:
 
                 with self._streams_lock:
                     if frame.frame_id not in self._streams:
+                        if frame.frame_id % 2 != 0:
+                            self._is_running = False
+                            await self._ws.close()
+                            return
                         new_stream = AsyncStream(self, frame.frame_id)
                         self._streams[frame.frame_id] = new_stream
                         self._new_streams.put(new_stream)
@@ -188,7 +201,7 @@ class AsyncMultiplexConnection:
         except Exception:
             pass
 
-        # 显式取消并回收 _dispatcher_task
+        # Explicitly cancel and await _dispatcher_task.
         if hasattr(self, "_dispatcher_task") and not self._dispatcher_task.done():
             self._dispatcher_task.cancel()
             try:
@@ -402,6 +415,20 @@ class CFMSTestClient:
                 raise RuntimeError(f"Invalid response from server: {e}") from e
 
         raise RuntimeError("Unexpected response format from server")
+
+    async def accept_event(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        if self.multiplexer is None:
+            raise RuntimeError("Not connected to server. Call connect() first.")
+
+        stream = await self.multiplexer.accept_stream(timeout=timeout)
+        if stream is None:
+            raise ConnectionError("Connection closed before receiving server event")
+
+        frame = await stream.recv(timeout=timeout)
+        payload = await self._parse_frame_data(frame)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Unexpected event payload: {payload}")
+        return payload
 
     async def send_raw_request(
         self,

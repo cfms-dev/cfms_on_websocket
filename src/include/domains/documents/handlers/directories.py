@@ -320,7 +320,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
                 return Result(code=403, target=directory_id, username=handler.username)
 
             info_code = 0
-            ### generate access_rules text
+            # Generate access_rules text.
             access_rules = []
             if Permissions.VIEW_ACCESS_RULES in user.all_permissions:
                 for each_rule in directory.access_rules:
@@ -332,7 +332,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
                         }
                     )
             else:
-                info_code = 1  # 无权访问目录
+                info_code = 1  # No permission to view directory access rules.
 
             data = {
                 "directory_id": directory.id,
@@ -1116,7 +1116,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             op_id = folder.status_operation_id
 
             if op_id:
-                # 批量恢复文档
+                # Restore documents in bulk.
                 session.query(Document).execution_options(include_deleted=True).filter(
                     Document.status_operation_id == op_id,
                     Document.status == EntityStatus.DELETED,
@@ -1125,7 +1125,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
                     synchronize_session=False,
                 )
 
-                # 批量恢复文件夹
+                # Restore folders in bulk.
                 session.query(Folder).execution_options(include_deleted=True).filter(
                     Folder.status_operation_id == op_id,
                     Folder.status == EntityStatus.DELETED,

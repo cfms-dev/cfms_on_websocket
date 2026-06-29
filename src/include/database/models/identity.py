@@ -115,8 +115,9 @@ class User(Base):
         Integer, default=UserStatus.ACTIVE.value, nullable=False
     )
 
-    # 这是对应每个用户的 secret_key. 每次更改密码时将重新生成，如果该属性不为空，则在验证 token 时使用此
-    # 密钥，否则，使用从 config.toml 加载的全局密钥。
+    # Per-user secret key. It is regenerated whenever the password changes.
+    # Token verification uses it when present; otherwise it falls back to the
+    # global secret key loaded from config.toml.
     secret_key: Mapped[str] = mapped_column(
         VARCHAR(64), default=lambda: secrets.token_hex(32), nullable=True
     )
@@ -225,8 +226,10 @@ class User(Base):
 
     def is_token_valid(self, token: str) -> bool:
         """
-        验证JWT令牌的有效性。
-        如果令牌有效且未过期，且用户账户处于活跃状态，返回True；否则返回False。
+        Validate a JWT for this user.
+
+        Return True when the token is valid, unexpired, and the user account is
+        active; otherwise return False.
         """
         if self.status != UserStatus.ACTIVE:
             return False
@@ -245,9 +248,7 @@ class User(Base):
             return False
 
     def renew_token(self) -> Token:
-        """
-        重新生成用户的JWT令牌。
-        """
+        """Regenerate this user's JWT."""
 
         secret = (
             global_config["server"]["secret_key"]
@@ -260,9 +261,7 @@ class User(Base):
         return new_token
 
     def set_password(self, plain_password: str, force_update_after_login: bool = False):
-        """
-        修改用户密码，使用 argon2id KDF 生成哈希并保存，写入数据库。
-        """
+        """Update the user's password and persist an Argon2id hash."""
         self.pass_hash = _password_hasher.hash(plain_password)
 
         self.secret_key = secrets.token_hex(
@@ -270,7 +269,7 @@ class User(Base):
         )  # token_hex(32) generates a 64-character hex
         self.passwd_last_modified = time.time() if not force_update_after_login else 0
 
-        # 写入数据库
+        # Write to the database.
         session = object_session(self)
         if session is not None:
             session.add(self)
@@ -385,9 +384,7 @@ class User(Base):
 
     @property
     def all_groups(self):
-        """
-        获取用户所有有效的用户组名称集合。
-        """
+        """Return the set of currently active group names for this user."""
         now = time.time()
         return {
             membership.group_name
@@ -490,7 +487,7 @@ class User(Base):
         return (all_perms - revoked_perms) if (all_perms or revoked_perms) else set()
 
 
-# 用户权限表，支持权限的给予/剥夺及持续时间
+# User permission table with grants, revocations, and validity windows.
 class UserPermission(Base):
     __tablename__ = "user_permissions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -500,13 +497,13 @@ class UserPermission(Base):
     permission: Mapped[Permissions] = mapped_column(VARCHAR(255))
     granted: Mapped[bool] = mapped_column(
         Boolean, default=True
-    )  # True: 给予, False: 剥夺
+    )  # True grants the permission; False revokes it.
     start_time: Mapped[Optional[float]] = mapped_column(
         Float, nullable=False
-    )  # 权限生效时间（时间戳）
+    )  # Permission start timestamp.
     end_time: Mapped[Optional[float]] = mapped_column(
         Float, nullable=True
-    )  # 权限失效时间（时间戳）
+    )  # Permission end timestamp.
     user: Mapped["User"] = relationship("User", back_populates="rights")
 
     def __repr__(self) -> str:
@@ -520,12 +517,12 @@ class UserPermission(Base):
 @event.listens_for(User, "load")
 def filter_permissions_on_load(target, context):
     now = time.time()
-    # 只保留granted=True且未过期的权限
+    # Keep only granted permissions that have not expired.
     valid_permissions = []
     session = object_session(target)
     for perm in list(target.rights):
         if not perm.granted or (perm.end_time is not None and perm.end_time < now):
-            # 从数据库中永久删除过期或被剥夺的权限
+            # Permanently delete expired or revoked permissions from the DB.
             if session is not None:
                 session.delete(perm)
         else:
@@ -533,7 +530,7 @@ def filter_permissions_on_load(target, context):
     target.rights = valid_permissions
 
 
-# 用户所属组，包括在此用户组中的持续时间
+# User group memberships with validity windows.
 class UserMembership(Base):
     __tablename__ = "user_memberships"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -543,10 +540,10 @@ class UserMembership(Base):
     group_name: Mapped[str] = mapped_column(
         ForeignKey("user_groups.group_name", ondelete="CASCADE")
     )
-    start_time: Mapped[float] = mapped_column(Float, nullable=False)  # 加入组的时间戳
+    start_time: Mapped[float] = mapped_column(Float, nullable=False)  # Join timestamp.
     end_time: Mapped[Optional[float]] = mapped_column(
         Float, nullable=True
-    )  # 离开组的时间戳
+    )  # Leave timestamp.
     user: Mapped["User"] = relationship("User", back_populates="groups")
     group: Mapped["UserGroup"] = relationship("UserGroup", back_populates="memberships")
 
@@ -562,7 +559,7 @@ class UserMembership(Base):
 def filter_expired_group(user, group, initiator):
     now = time.time()
     if group.end_time is not None and group.end_time < now:
-        return None  # 不添加
+        return None  # Do not append.
     return group
 
 
@@ -628,7 +625,7 @@ class UserGroup(Base):
         )
 
 
-# 用户组权限表，支持权限的给予/剥夺及持续时间
+# Group permission table with grants, revocations, and validity windows.
 class UserGroupPermission(Base):
     __tablename__ = "group_permissions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -638,13 +635,13 @@ class UserGroupPermission(Base):
     permission: Mapped[str] = mapped_column(VARCHAR(255))
     granted: Mapped[bool] = mapped_column(
         Boolean, default=True
-    )  # True: 给予, False: 剥夺
+    )  # True grants the permission; False revokes it.
     start_time: Mapped[Optional[float]] = mapped_column(
         Float, nullable=False, default=0.0
-    )  # 权限生效时间（时间戳）
+    )  # Permission start timestamp.
     end_time: Mapped[Optional[float]] = mapped_column(
         Float, nullable=True
-    )  # 权限失效时间（时间戳）
+    )  # Permission end timestamp.
     group: Mapped["UserGroup"] = relationship("UserGroup", back_populates="permissions")
 
     def __repr__(self) -> str:

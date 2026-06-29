@@ -33,19 +33,19 @@ def fetch_subtree_for_deletion(
     dict[str, Folder],  # folder_map
 ]:
     """
-    一次性分析 root_folder_id 下整棵子树的可删性。
+    Analyze whether the subtree under root_folder_id can be deleted.
 
-    返回：
-        deletable_folder_ids  - 可以被删除的目录 ID 集合（自身有权删 且 无不可删后代）
-        deletable_doc_ids     - 可以被删除的文档 ID 集合
-        failed_items          - 鉴权失败的条目列表，用于返回给客户端
-        protected_folder_ids  - 因包含不可删后代而必须保留的目录 ID 集合
-        folder_map            - 目录 ID 到 Folder ORM 对象的映射
+    Returns:
+        deletable_folder_ids: Folder IDs that can be deleted, ordered deepest first.
+        deletable_doc_ids: Document IDs that can be deleted.
+        failed_items: Permission-failed items for client responses.
+        protected_folder_ids: Folder IDs kept because of undeletable descendants.
+        folder_map: Mapping from folder ID to Folder ORM object.
     """
     if now is None:
         now = time.time()
 
-    # ── Step 1: 用递归 CTE 捞出整棵子树的所有文件夹 ID ─────────────────────
+    # Step 1: Fetch all folder IDs in the subtree with a recursive CTE.
     exec_opts = {"include_deleted": True} if include_deleted else {}
     status_filter = "" if include_deleted else f"AND f.status = {EntityStatus.OK.value}"
 
@@ -64,18 +64,19 @@ def fetch_subtree_for_deletion(
         )
         SELECT id FROM subtree WHERE id != :root_id
         """)
-    # 注意：root_id 本身的可删性由调用方（handler）已检查，这里只分析"内容"
-    # 如果需要连 root 本身也纳入分析，去掉 WHERE id != :root_id 即可
+    # The caller has already checked whether root_id itself can be deleted.
+    # This function analyzes only its contents. Remove WHERE id != :root_id to
+    # include the root itself.
 
     all_subfolder_ids = [
         row[0]
         for row in session.execute(subtree_sql, {"root_id": root_folder_id}).fetchall()
     ]
 
-    # 将 root 本身也纳入需要加载的范围（用于后续 BFS 推导）
+    # Also load the root itself for the later BFS derivation.
     all_folder_ids_to_load = list(set(all_subfolder_ids + [root_folder_id]))
 
-    # ── Step 2: 批量加载所有文件夹（含 access_rules）────────────────────────
+    # Step 2: Load all folders in bulk, including access_rules.
     # Chunked to avoid SQLite bind-variable limit for large subtrees.
     folders: list[Folder] = []
     for chunk in batched(all_folder_ids_to_load, QUERY_CHUNK_SIZE):
@@ -89,7 +90,8 @@ def fetch_subtree_for_deletion(
     folder_map: dict[str, Folder] = {f.id: f for f in folders}
     actual_folder_ids = list(folder_map.keys())
 
-    # ── Step 3: 批量加载子树内所有文档（含 access_rules、revisions、files）──────────────────
+    # Step 3: Load all subtree documents, including access rules, revisions,
+    # and files.
     # Chunked to avoid SQLite bind-variable limit for large subtrees.
     documents: list[Document] = []
     for chunk in batched(actual_folder_ids, QUERY_CHUNK_SIZE):
@@ -104,7 +106,7 @@ def fetch_subtree_for_deletion(
             .all()
         )
 
-    # ── Step 4: 批量预取 OAE ────────────────────────────────────────────────
+    # Step 4: Prefetch OAE rows in bulk.
     # Chunked to avoid bind-variable limit for large subtrees.
     all_target_ids = actual_folder_ids + [doc.id for doc in documents]
     oae_entries: list[ObjectAccessEntry] = []
@@ -124,13 +126,13 @@ def fetch_subtree_for_deletion(
     for entry in oae_entries:
         oae_by_target[entry.target_identifier].append(entry)
 
-    # ── Step 5: 预取用户 block 状态（一次性，避免后续重复查询）──────────────
+    # Step 5: Prefetch user block state once to avoid repeated queries.
     is_globally_blocked, blocked_write_ids = prefetch_user_blocks(
         session, user, "write", now
     )
 
-    # ── Step 6: 对每个文档鉴权 ──────────────────────────────────────────────
-    # check_access_for_object 接收预加载好的 all_folders 和 oae_by_target，不产生额外 SQL
+    # Step 6: Check permissions for each document. check_access_for_object uses
+    # preloaded all_folders and oae_by_target, so it does not emit extra SQL.
     deletable_doc_ids: set[str] = set()
     failed_items: list[dict] = []
 
@@ -174,15 +176,15 @@ def fetch_subtree_for_deletion(
                     }
                 )
 
-    # ── Step 7: 对每个子文件夹自身鉴权 ─────────────────────────────────────
+    # Step 7: Check each child folder's own permissions.
     has_delete_directory_perm = "delete_directory" in user.all_permissions
 
-    # folder_self_deletable: 仅考虑自身权限，暂不考虑后代
+    # folder_self_deletable considers only the folder itself, not descendants.
     folder_self_deletable: dict[str, bool] = {}
 
     for folder in folders:
         if folder.id == root_folder_id:
-            # root 本身由 handler 层已鉴权，假设可删
+            # The handler already authorized the root itself, so assume deletable.
             folder_self_deletable[folder.id] = True
             continue
 
@@ -220,11 +222,10 @@ def fetch_subtree_for_deletion(
                     }
                 )
 
-    # ── Step 8: 自底向上推导"因包含不可删后代而必须保留的目录" ────────────
-    # 思路：维护一个 folder_has_undeletable_descendant: set[str]
-    # 对子树做拓扑排序（BFS 从叶到根），逐层向上冒泡
+    # Step 8: Derive folders that must be kept because they contain undeletable
+    # descendants. Build a leaf-to-root topological order and bubble state up.
 
-    # 构建父子关系映射
+    # Build parent-child relation maps.
     children_map: dict[str, list[str]] = defaultdict(list)
     parent_map: dict[str, Optional[str]] = {}
     for folder in folders:
@@ -232,12 +233,12 @@ def fetch_subtree_for_deletion(
         if folder.parent_id and folder.parent_id in set(actual_folder_ids):
             children_map[folder.parent_id].append(folder.id)
 
-    # 对每个文件夹：记录它"是否含有不可删内容"
-    # 初始化：自身权限不足 → 视为有不可删内容（对父节点而言）
+    # Record whether each folder contains undeletable content. A folder with
+    # insufficient self permissions is treated as undeletable for its parent.
     has_undeletable_content: dict[str, bool] = {}
 
-    # 按拓扑序从叶到根处理（BFS 反向）
-    # 先找出所有叶节点（在子树中没有子文件夹的节点）
+    # Process nodes in leaf-to-root topological order. Start with leaves, which
+    # have no child folders in the subtree.
 
     in_degree = {fid: len(children_map[fid]) for fid in actual_folder_ids}
     queue = deque([fid for fid in actual_folder_ids if in_degree[fid] == 0])
@@ -255,8 +256,8 @@ def fetch_subtree_for_deletion(
     if len(topo_order) != len(actual_folder_ids):
         raise RuntimeError("Cycle detected in folder hierarchy.")
 
-    # 按拓扑序（叶 → 根）计算 has_undeletable_content
-    # 文档归属到各自 folder 的"不可删内容"
+    # Calculate has_undeletable_content in leaf-to-root order. Documents count
+    # as undeletable content for their containing folder.
     folder_has_undeletable_doc: dict[str, bool] = defaultdict(bool)
     for doc in documents:
         is_active = (
@@ -277,18 +278,19 @@ def fetch_subtree_for_deletion(
             self_undeletable or child_undeletable or doc_undeletable
         )
 
-    # ── Step 9: 最终判定 (基于 topo_order 生成有序列表) ──────────────────────
+    # Step 9: Generate the final ordered result from topo_order.
     deletable_folder_ids: list[str] = []
     protected_folder_ids: set[str] = set()
 
-    # 遍历 topo_order。由于 topo_order 是从叶子到根的，
-    # 填充进 deletable_folder_ids 的顺序也将是“先删子目录，后删父目录”。
+    # Since topo_order runs from leaves to root, deletable_folder_ids will also
+    # delete child folders before parent folders.
     for fid in topo_order:
-        # 跳过 root_folder_id，它的处理由外部逻辑（Handler）决定
+        # Skip root_folder_id; external handler logic decides how to handle it.
         if fid == root_folder_id:
             continue
 
-        # 判断逻辑：自身有权删 且 没有任何不可删后代
+        # A folder is deletable only when it is deletable itself and has no
+        # undeletable descendants.
         can_delete_folder = folder_self_deletable.get(
             fid, False
         ) and not has_undeletable_content.get(fid, False)
@@ -299,7 +301,7 @@ def fetch_subtree_for_deletion(
             protected_folder_ids.add(fid)
 
     return (
-        deletable_folder_ids,  # 这是一个从深到浅的列表
+        deletable_folder_ids,  # Ordered from deepest to shallowest.
         deletable_doc_ids,
         failed_items,
         protected_folder_ids,

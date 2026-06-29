@@ -156,7 +156,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 return Result(code=403, target=document_id, username=handler.username)
 
             info_code = 0
-            ### generate access_rules text
+            # Generate access_rules text.
             access_rules = []
             if Permissions.VIEW_ACCESS_RULES in user.all_permissions:
                 for each_rule in document.access_rules:
@@ -168,7 +168,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                         }
                     )
             else:
-                info_code = 1  # 无权访问文档的权限
+                info_code = 1  # No permission to view document access rules.
 
             data = {
                 "document_id": document.id,
@@ -686,7 +686,7 @@ class RequestDownloadFileHandler(RequestHandler):
                 )
                 return
 
-        ### 服务器还需要发送一次响应
+        # The server still needs to send one more response.
         handler.send_file(task_id, offset)
 
 
@@ -727,7 +727,7 @@ class RequestUploadFileHandler(RequestHandler):
                 )
                 return
 
-        ### 服务器需要发送一次响应
+        # The server needs to send one response.
         handler.receive_file(task_id)
 
 

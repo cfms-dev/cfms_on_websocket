@@ -240,7 +240,7 @@ def server_init():
         ],
     )
 
-    # 将密码输出到根目录下的 admin_password.txt 文件
+    # Write the generated password to admin_password.txt in the project root.
     with open(ROOT_ABSPATH / "admin_password.txt", "w", encoding="utf-8") as pwd_file:
         pwd_file.write(f"{password}\n")
 
@@ -257,12 +257,12 @@ def server_init():
     cert_path = global_config["server"]["ssl_certfile"]
     key_path = global_config["server"]["ssl_keyfile"]
 
-    # 使用python包 cryptography 生成自签名证书和私钥
+    # Generate a self-signed certificate and private key with cryptography.
     if not (os.path.exists(cert_path) and os.path.exists(key_path)):
-        # 生成 ECC 私钥
+        # Generate the ECC private key.
         private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
 
-        # 生成自签名证书
+        # Generate the self-signed certificate.
         subject = issuer = x509.Name(
             [
                 x509.NameAttribute(
@@ -290,7 +290,7 @@ def server_init():
             .sign(private_key, hashes.SHA256(), default_backend())
         )
 
-        # 写入私钥
+        # Write the private key.
         with open(key_path, "wb") as f:
             f.write(
                 private_key.private_bytes(
@@ -300,7 +300,7 @@ def server_init():
                 )
             )
 
-        # 写入证书
+        # Write the certificate.
         with open(cert_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
 

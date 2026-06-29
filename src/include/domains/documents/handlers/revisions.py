@@ -151,7 +151,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
-        ### be careful! this function will change the tree structure of revisions ###
+        # Be careful: this function changes the revision tree structure.
 
         revision_id = handler.data["id"]
 

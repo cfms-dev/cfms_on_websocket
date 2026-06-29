@@ -259,20 +259,20 @@ class DocumentRevisionStatus(IntEnum):
     DELETED = 1
 
 
-class Folder(BaseObject):  # 文档文件夹
+class Folder(BaseObject):  # Document folder.
     __tablename__ = "folders"
     id: Mapped[str] = mapped_column(
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
     )
     name: Mapped[str] = mapped_column(
         VARCHAR(255), nullable=False, index=True
-    )  # 文件夹名称
+    )  # Folder name.
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
     parent_id: Mapped[Optional[str]] = mapped_column(
         VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE")
-    )  # 父文件夹ID
+    )  # Parent folder ID.
     parent: Mapped[Optional["Folder"]] = relationship(
         "Folder", back_populates="children", remote_side=[id]
     )
@@ -328,18 +328,18 @@ class Document(BaseObject):
     )
     title: Mapped[str] = mapped_column(
         VARCHAR(255), nullable=False, default="Untitled Document", index=True
-    )  # 文档名称
+    )  # Document name.
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
     folder_id: Mapped[Optional[str]] = mapped_column(
         VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE"), nullable=True
-    )  # 文档所属文件夹ID
+    )  # Folder ID that owns the document.
     folder: Mapped[Optional["Folder"]] = relationship(
         "Folder", back_populates="documents"
     )
 
-    # 每个文档有多个访问规则（AccessRule对象），以JSON格式存储规则数据
+    # Each document has multiple access rules with rule data stored as JSON.
     access_rules: Mapped[List["DocumentAccessRule"]] = relationship(
         "DocumentAccessRule", back_populates="document", cascade="all, delete-orphan"
     )
@@ -360,14 +360,14 @@ class Document(BaseObject):
         uselist=False,
     )
 
-    # 每个文档有多个修订版本
+    # Each document has multiple revisions.
     revisions: Mapped[List["DocumentRevision"]] = relationship(
         "DocumentRevision",
         back_populates="document",
         foreign_keys="[DocumentRevision.document_id]",
         order_by="DocumentRevision.created_time",
         cascade="all, delete-orphan",
-        overlaps="current_revision",  # 声明与 current_revision 的重叠
+        overlaps="current_revision",  # Declares overlap with current_revision.
     )
     inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     metadata_record: Mapped[Optional["DocumentMetadata"]] = relationship(
@@ -387,12 +387,13 @@ class Document(BaseObject):
 
     def get_latest_revision(self) -> "DocumentRevision":
         """
-        获取最新的活跃修订版本。
+        Return the latest active revision.
 
-        该函数的逻辑如下：
-
-        - 如果 current_revision 不为空，则从指定的 current_revision 开始，寻找从修订版本树末端上溯遇到的第一个活跃修订版本。
-        - 如果 current_revision 为空（这一般仅在从过去的版本升级时发生），则将全体修订版本按`created_time`降序排列，返回第一个`revision.active`为`True`的修订版本。
+        If current_revision is set, walk upward from it and return the first
+        active revision found in that branch. If current_revision is not set,
+        which generally only occurs after upgrading from an older version,
+        sort all revisions by created_time descending and return the first
+        revision whose active property is True.
         """
         current_revision = self.current_revision
         if current_revision is not None:
@@ -413,7 +414,7 @@ class Document(BaseObject):
         if not revisions:
             raise RuntimeError("A document cannot have no revisions.")
 
-        # 过滤出active为True的修订版本
+        # Keep only revisions whose active property is True.
         active_revisions = [rev for rev in revisions if rev.active]
 
         if not active_revisions:
@@ -521,7 +522,7 @@ class DocumentRevision(Base):
         "Document",
         back_populates="revisions",
         foreign_keys=[document_id],
-        overlaps="current_revision",  # 声明重叠
+        overlaps="current_revision",  # Declares overlap.
     )
     file: Mapped["File"] = relationship(
         "File", primaryjoin="DocumentRevision.file_id == File.id"
@@ -590,7 +591,7 @@ class DocumentAccessRule(Base, AccessRuleBase):
     )
     rule_data: Mapped[dict] = mapped_column(
         JSON, nullable=False
-    )  # 存储单个Json格式的规则数据
+    )  # Stores a single JSON rule object.
 
     document: Mapped[Optional["Document"]] = relationship(
         "Document", back_populates="access_rules"
@@ -613,7 +614,7 @@ class FolderAccessRule(Base, AccessRuleBase):
     )
     rule_data: Mapped[dict] = mapped_column(
         JSON, nullable=False
-    )  # 存储单个Json格式的规则数据
+    )  # Stores a single JSON rule object.
 
     folder: Mapped[Optional["Folder"]] = relationship(
         "Folder", back_populates="access_rules"
