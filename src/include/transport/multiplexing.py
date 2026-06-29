@@ -52,7 +52,9 @@ class Stream:
         self, data: Data, frame_type: FrameType = FrameType.PROCESS
     ) -> bool:
         """Queue data for sending without waiting for socket I/O."""
-        return self.connection._send_frame_nowait(self.frame_id, frame_type, data)
+        return self.connection._send_frame(
+            self.frame_id, frame_type, data, wait_for_write=False
+        )
 
     def recv(self, timeout: Optional[float] = None) -> Frame:
         """接收属于这个流的数据，阻塞直到拿到为止"""
@@ -228,19 +230,19 @@ class MultiplexConnection:
 
         return True
 
-    def _send_frame(self, frame_id: int, frame_type: FrameType, data: Data):
-        self._enqueue_frame(frame_id, frame_type, data, wait_for_write=True)
-
-        if frame_type == FrameType.CONCLUSION:
-            with self._streams_lock:
-                self._streams.pop(frame_id, None)
-
-    def _send_frame_nowait(
-        self, frame_id: int, frame_type: FrameType, data: Data
+    def _send_frame(
+        self,
+        frame_id: int,
+        frame_type: FrameType,
+        data: Data,
+        *,
+        wait_for_write: bool = True,
     ) -> bool:
-        queued = self._enqueue_frame(frame_id, frame_type, data, wait_for_write=False)
+        queued = self._enqueue_frame(
+            frame_id, frame_type, data, wait_for_write=wait_for_write
+        )
 
-        if frame_type == FrameType.CONCLUSION:
+        if queued and frame_type == FrameType.CONCLUSION:
             with self._streams_lock:
                 self._streams.pop(frame_id, None)
 

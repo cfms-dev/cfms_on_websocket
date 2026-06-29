@@ -143,6 +143,37 @@ def test_stream_send_nowait_returns_false_when_queue_is_full():
         connection.close()
 
 
+def test_stream_send_nowait_conclusion_removes_stream_when_queued():
+    websocket = _SyncWebSocket(block_send=True)
+    connection = MultiplexConnection(websocket)
+    stream = connection.create_stream()
+
+    try:
+        assert stream.frame_id in connection._streams
+        assert stream.send_nowait(b"done", FrameType.CONCLUSION) is True
+        assert stream.frame_id not in connection._streams
+    finally:
+        connection.close()
+
+
+def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
+    websocket = _SyncWebSocket(block_send=True)
+    connection = MultiplexConnection(websocket)
+
+    try:
+        assert connection.create_stream().send_nowait(b"blocked") is True
+        assert websocket.send_entered.wait(timeout=1)
+
+        for _ in range(OUTBOUND_QUEUE_SIZE):
+            assert connection.create_stream().send_nowait(b"queued") is True
+
+        stream = connection.create_stream()
+        assert stream.send_nowait(b"overflow", FrameType.CONCLUSION) is False
+        assert stream.frame_id in connection._streams
+    finally:
+        connection.close()
+
+
 def test_stream_send_raises_when_writer_fails():
     websocket = _SyncWebSocket(send_error=OSError("boom"))
     connection = MultiplexConnection(websocket)
