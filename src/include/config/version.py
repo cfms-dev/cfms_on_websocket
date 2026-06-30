@@ -4,7 +4,7 @@ from functools import total_ordering
 
 @total_ordering
 class Version:
-    def __init__(self, version_str):
+    def __init__(self, version_str, /):
         self.original = version_str
         # Match: major.minor.patch[.build][_type][type_num]
         version_pattern = (
