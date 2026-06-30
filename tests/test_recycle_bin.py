@@ -116,6 +116,50 @@ class TestRecycleBin:
         assert not any(d["id"] == child_id for d in _folders(deleted_data2))
 
     @pytest.mark.asyncio
+    async def test_list_deleted_items_with_cursor(
+        self, authenticated_client: CFMSTestClient
+    ):
+        parent_resp = await authenticated_client.create_directory(
+            "RecycleBinCursorParent"
+        )
+        parent_id = assert_success(parent_resp)["id"]
+
+        first_child_resp = await authenticated_client.create_directory(
+            "RecycleBinCursorA", parent_id
+        )
+        first_child_id = assert_success(first_child_resp)["id"]
+        second_child_resp = await authenticated_client.create_directory(
+            "RecycleBinCursorB", parent_id
+        )
+        second_child_id = assert_success(second_child_resp)["id"]
+
+        await authenticated_client.delete_directory(first_child_id)
+        await authenticated_client.delete_directory(second_child_id)
+
+        try:
+            first_page_response = await authenticated_client.list_deleted_items(
+                folder_id=parent_id, page_size=1
+            )
+            first_page = assert_success(first_page_response)
+
+            second_page_response = await authenticated_client.list_deleted_items(
+                folder_id=parent_id,
+                page_size=1,
+                cursor=first_page["next_cursor"],
+            )
+            second_page = assert_success(second_page_response)
+
+            assert len(first_page["items"]) == 1
+            assert len(second_page["items"]) == 1
+            assert first_page["has_more"] is True
+            assert first_page["next_cursor"] is not None
+            assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
+        finally:
+            await authenticated_client.purge_directory(first_child_id)
+            await authenticated_client.purge_directory(second_child_id)
+            await authenticated_client.delete_directory(parent_id)
+
+    @pytest.mark.asyncio
     async def test_restore_directory_to_different_parent(
         self, authenticated_client: CFMSTestClient
     ):
