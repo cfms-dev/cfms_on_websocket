@@ -331,6 +331,19 @@ def test_invalid_inbound_frame_closes_connection_with_protocol_error():
         connection.close()
 
 
+def test_open_stream_raises_after_receive_loop_closes_connection():
+    websocket = _InvalidFrameWebSocket()
+    connection = MultiplexedConnection(websocket)
+
+    try:
+        assert websocket.closed.wait(timeout=1)
+
+        with pytest.raises(ConnectionClosedError):
+            connection.open_stream()
+    finally:
+        connection.close()
+
+
 def test_close_unblocks_send_waiting_for_outbound_queue_space(monkeypatch):
     outbound_put_blocked = threading.Event()
 
@@ -519,6 +532,33 @@ def test_broadcast_logs_diagnostics_when_dropping_slow_client(monkeypatch):
             "remote_address=('127.0.0.1', 12345), "
             f"outbound_queue_size={OUTBOUND_QUEUE_SIZE}"
         ]
+    finally:
+        with clients_lock:
+            clients.discard(connection)
+        connection.close()
+
+
+def test_broadcast_ignores_already_closed_connections(monkeypatch):
+    websocket = _SyncWebSocket()
+    connection = MultiplexedConnection(websocket)
+    messages = []
+
+    class _Logger:
+        def warning(self, message):
+            messages.append(message)
+
+        def exception(self, message):
+            messages.append(message)
+
+    try:
+        monkeypatch.setattr(broadcast_module, "logger", _Logger())
+        connection.close()
+        with clients_lock:
+            clients.add(connection)
+
+        on_global_broadcast("hello")
+
+        assert messages == []
     finally:
         with clients_lock:
             clients.discard(connection)

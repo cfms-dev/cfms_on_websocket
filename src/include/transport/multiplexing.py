@@ -264,7 +264,8 @@ class MultiplexedConnection:
         except Exception:
             logger.exception(f"({self.remote_address[0]}): Error in receive loop")
         finally:
-            self._is_running = False
+            with self._send_state_lock:
+                self._is_running = False
             self._pending_inbound_streams.put(
                 None
             )  # Wake threads blocked in accept_stream.
