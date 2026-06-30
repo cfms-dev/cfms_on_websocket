@@ -13,7 +13,7 @@ def on_global_broadcast(msg: str):
             try:
                 stream = conn.open_stream()
                 if not stream.send_nowait(encoded_msg, frame_type=FrameType.CONCLUSION):
-                    outbound_queue = getattr(conn, "_outbound", None)
+                    outbound_queue = getattr(conn, "_pending_outbound_frames", None)
                     outbound_queue_size = (
                         outbound_queue.qsize()
                         if outbound_queue is not None

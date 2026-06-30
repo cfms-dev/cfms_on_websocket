@@ -13,10 +13,15 @@ from include.transport.multiplexing import (
     FRAME_HEADER,
     FRAME_HEADER_SIZE,
     OUTBOUND_QUEUE_SIZE,
+    ConnectionClosedError,
+    CorruptedFrameError,
     Frame,
     FrameType,
+    InvalidFrameError,
+    InvalidFrameTypeError,
     MultiplexedConnection,
     Stream,
+    decode_frame,
     encode_frame,
 )
 from tests.test_client import AsyncMultiplexConnection
@@ -93,6 +98,21 @@ class _SyncWebSocket:
     def close(self, *args, **kwargs):
         self.release_send.set()
         self.closed.set()
+
+
+class _InvalidFrameWebSocket(_SyncWebSocket):
+    def __init__(self):
+        super().__init__()
+        self.close_args = None
+        self.close_kwargs = None
+
+    def recv(self, timeout=None, decode=None):
+        return b"bad"
+
+    def close(self, *args, **kwargs):
+        self.close_args = args
+        self.close_kwargs = kwargs
+        super().close(*args, **kwargs)
 
 
 class _BlockingPutSignalingQueue(_ORIGINAL_QUEUE):
@@ -223,6 +243,37 @@ def test_encode_frame_rejects_unsupported_payload_type():
         encode_frame(2, FrameType.PROCESS, None)
 
 
+def test_decode_frame_rejects_short_payload_with_structured_error():
+    with pytest.raises(CorruptedFrameError) as excinfo:
+        decode_frame(b"bad")
+
+    error = excinfo.value
+    assert isinstance(error, InvalidFrameError)
+    assert error.actual_size == 3
+    assert error.minimum_size == FRAME_HEADER_SIZE
+    assert error.close_code == 1002
+    assert error.close_reason == "Protocol error: invalid frame"
+    assert str(error) == (
+        f"Frame too short: 3 bytes, expected at least {FRAME_HEADER_SIZE} bytes"
+    )
+
+
+def test_decode_frame_rejects_unknown_frame_type_with_structured_error():
+    payload = bytearray(FRAME_HEADER_SIZE)
+    FRAME_HEADER.pack_into(payload, 0, 3, 99)
+
+    with pytest.raises(InvalidFrameTypeError) as excinfo:
+        decode_frame(payload)
+
+    error = excinfo.value
+    assert isinstance(error, InvalidFrameError)
+    assert error.stream_id == 3
+    assert error.frame_type_value == 99
+    assert error.valid_frame_type_values == (0, 1)
+    assert error.__cause__ is not None
+    assert str(error) == "Invalid frame type 99 for stream 3; expected one of 0, 1"
+
+
 def test_stream_recv_timeout_raises_timeout_error():
     connection = MultiplexedConnection.__new__(MultiplexedConnection)
     stream = Stream(connection, 2)
@@ -231,13 +282,26 @@ def test_stream_recv_timeout_raises_timeout_error():
         stream.recv(timeout=0.01)
 
 
+def test_stream_recv_closed_raises_connection_closed_error():
+    connection = MultiplexedConnection.__new__(MultiplexedConnection)
+    stream = Stream(connection, 2)
+    stream._put_incoming_frame(None)
+
+    with pytest.raises(ConnectionClosedError):
+        stream.recv(timeout=0.01)
+
+
+def test_connection_closed_error_has_default_message():
+    assert str(ConnectionClosedError()) == "Connection has been closed"
+
+
 def test_open_stream_raises_after_connection_close():
     websocket = _SyncWebSocket()
     connection = MultiplexedConnection(websocket)
 
     connection.close()
 
-    with pytest.raises(ConnectionError):
+    with pytest.raises(ConnectionClosedError):
         connection.open_stream()
 
 
@@ -250,6 +314,21 @@ def test_stream_send_nowait_returns_false_after_connection_close():
 
     assert stream.send_nowait(b"payload", FrameType.PROCESS) is False
     assert websocket.sent == []
+
+
+def test_invalid_inbound_frame_closes_connection_with_protocol_error():
+    websocket = _InvalidFrameWebSocket()
+    connection = MultiplexedConnection(websocket)
+
+    try:
+        assert websocket.closed.wait(timeout=1)
+        assert websocket.close_kwargs == {
+            "code": 1002,
+            "reason": "Protocol error: invalid frame",
+        }
+        assert connection.accept_stream() is None
+    finally:
+        connection.close()
 
 
 def test_close_unblocks_send_waiting_for_outbound_queue_space(monkeypatch):
@@ -291,7 +370,7 @@ def test_close_unblocks_send_waiting_for_outbound_queue_space(monkeypatch):
         assert done.wait(timeout=1)
         sender.join(timeout=1)
         assert len(errors) == 1
-        assert isinstance(errors[0], ConnectionError)
+        assert isinstance(errors[0], ConnectionClosedError)
     finally:
         websocket.release_send.set()
         connection.close()

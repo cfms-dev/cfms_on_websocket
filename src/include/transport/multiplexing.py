@@ -19,6 +19,50 @@ QUEUE_POLL_INTERVAL = 0.05
 logger = log.bind(name="multiplexer")
 
 
+class ConnectionClosedError(ConnectionError):
+    """Raised when an operation is attempted after the connection closed."""
+
+    def __init__(self, message: str = "Connection has been closed") -> None:
+        super().__init__(message)
+
+
+class InvalidFrameError(Exception):
+    """Raised when a frame is invalid or cannot be decoded."""
+
+    close_code = 1002
+    close_reason = "Protocol error: invalid frame"
+
+
+class InvalidFrameTypeError(InvalidFrameError):
+    """Raised when a frame has an invalid type."""
+
+    def __init__(
+        self,
+        stream_id: int,
+        frame_type_value: int,
+        valid_frame_type_values: tuple[int, ...],
+    ) -> None:
+        self.stream_id = stream_id
+        self.frame_type_value = frame_type_value
+        self.valid_frame_type_values = valid_frame_type_values
+        super().__init__(
+            f"Invalid frame type {frame_type_value} for stream {stream_id}; "
+            f"expected one of {', '.join(map(str, valid_frame_type_values))}"
+        )
+
+
+class CorruptedFrameError(InvalidFrameError):
+    """Raised when a payload cannot contain a complete frame header."""
+
+    def __init__(self, actual_size: int, minimum_size: int) -> None:
+        self.actual_size = actual_size
+        self.minimum_size = minimum_size
+        super().__init__(
+            f"Frame too short: {actual_size} bytes, "
+            f"expected at least {minimum_size} bytes"
+        )
+
+
 class FrameType(IntEnum):
     PROCESS = 0
     CONCLUSION = 1
@@ -55,18 +99,21 @@ def encode_frame(stream_id: int, frame_type: FrameType, data: DataLike) -> bytea
     return frame
 
 
-def decode_frame(raw_payload: Data) -> Frame | None:
+def decode_frame(raw_payload: Data) -> Frame:
     if isinstance(raw_payload, str):
         raw_payload = raw_payload.encode("utf-8")
 
     if len(raw_payload) < FRAME_HEADER_SIZE:
-        return None
+        raise CorruptedFrameError(len(raw_payload), FRAME_HEADER_SIZE)
 
     stream_id, frame_type_val = FRAME_HEADER.unpack_from(raw_payload)
     try:
         frame_type = FrameType(frame_type_val)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        valid_frame_type_values = tuple(frame_type.value for frame_type in FrameType)
+        raise InvalidFrameTypeError(
+            stream_id, frame_type_val, valid_frame_type_values
+        ) from exc
 
     return Frame(
         stream_id=stream_id,
@@ -105,7 +152,7 @@ class Stream:
             ) from exc
 
         if frame is None:
-            raise ConnectionError("Connection has been closed")
+            raise ConnectionClosedError
         return frame
 
     def _put_incoming_frame(self, frame: Frame | None) -> None:
@@ -152,7 +199,7 @@ class MultiplexedConnection:
     def open_stream(self) -> Stream:
         """Initiate a new data stream."""
         with self._send_state_lock:
-            self._check_send_state(wait_for_write=True)
+            self._raise_if_send_unavailable()
 
             with self._id_lock:
                 frame_id = self._next_frame_id
@@ -173,8 +220,6 @@ class MultiplexedConnection:
             while self._is_running:
                 raw_payload = self._ws.recv(decode=False)
                 frame = decode_frame(raw_payload)
-                if frame is None:
-                    continue
 
                 close_for_protocol_error = False
 
@@ -211,6 +256,9 @@ class MultiplexedConnection:
                     with self._streams_lock:
                         self._streams.pop(frame.stream_id, None)
 
+        except InvalidFrameError as exc:
+            logger.warning(f"({self.remote_address[0]}): Invalid frame: {exc}")
+            self._ws.close(code=exc.close_code, reason=exc.close_reason)
         except ConnectionClosed:
             logger.info(f"({self.remote_address[0]}): WebSocket connection closed")
         except Exception:
@@ -244,7 +292,7 @@ class MultiplexedConnection:
             self._put_outbound(item, timeout=timeout)
         else:
             with self._send_state_lock:
-                if not self._check_send_state(wait_for_write=False):
+                if not self._can_send_nowait():
                     return False
 
                 try:
@@ -261,20 +309,15 @@ class MultiplexedConnection:
 
         return True
 
-    def _check_send_state(self, *, wait_for_write: bool) -> bool:
+    def _raise_if_send_unavailable(self) -> None:
         if not self._is_running:
-            if wait_for_write:
-                raise ConnectionError("Connection has been closed")
-            return False
+            raise ConnectionClosedError
 
         if self._writer_error is not None:
-            if wait_for_write:
-                raise ConnectionError("Connection send loop failed") from (
-                    self._writer_error
-                )
-            return False
+            raise ConnectionError("Connection send loop failed") from self._writer_error
 
-        return True
+    def _can_send_nowait(self) -> bool:
+        return self._is_running and self._writer_error is None
 
     def _put_outbound(
         self, item: _OutboundFrame, *, timeout: float | None = None
@@ -290,7 +333,7 @@ class MultiplexedConnection:
                 put_timeout = min(put_timeout, remaining)
 
             with self._send_state_lock:
-                self._check_send_state(wait_for_write=True)
+                self._raise_if_send_unavailable()
                 try:
                     self._pending_outbound_frames.put(item, timeout=put_timeout)
                     return
@@ -303,9 +346,7 @@ class MultiplexedConnection:
                 item.exception = self._writer_error
                 return
             if not self._is_running:
-                item.exception = ConnectionError(
-                    "MultiplexedConnection has been closed"
-                )
+                item.exception = ConnectionClosedError()
                 return
 
     def _send_frame(
@@ -335,7 +376,7 @@ class MultiplexedConnection:
 
                 try:
                     if not self._is_running:
-                        raise ConnectionError("Connection has been closed")
+                        raise ConnectionClosedError
                     self._ws.send(item.payload)
                 except Exception as exc:
                     item.exception = exc
@@ -355,9 +396,7 @@ class MultiplexedConnection:
                 if item.done is not None:
                     item.done.set()
         finally:
-            error = self._writer_error or ConnectionError(
-                "Connection send loop stopped"
-            )
+            error = self._writer_error or ConnectionClosedError()
             self._fail_pending_sends(error)
 
     def _fail_pending_sends(self, exc: Exception) -> None:
@@ -377,7 +416,7 @@ class MultiplexedConnection:
     def close(self) -> None:
         with self._send_state_lock:
             self._is_running = False
-            self._fail_pending_sends(ConnectionError("Closing connection"))
+            self._fail_pending_sends(ConnectionClosedError("Connection is closing"))
             try:
                 self._pending_outbound_frames.put_nowait(None)
             except queue.Full:
