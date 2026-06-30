@@ -20,7 +20,7 @@ logger = log.bind(name="multiplexer")
 
 
 class FrameType(IntEnum):
-    DATA = 0
+    PROCESS = 0
     CONCLUSION = 1
 
 
@@ -35,7 +35,7 @@ class Frame:
 class _OutboundFrame:
     payload: bytearray
     done: threading.Event | None = None
-    exception: BaseException | None = None
+    exception: Exception | None = None
 
 
 def normalize_payload(data: DataLike) -> bytes | bytearray | memoryview:
@@ -83,12 +83,12 @@ class Stream:
         self.frame_id = frame_id
         self._queue: queue.Queue[Frame | None] = queue.Queue(100)
 
-    def send(self, data: DataLike, frame_type: FrameType = FrameType.DATA) -> None:
+    def send(self, data: DataLike, frame_type: FrameType = FrameType.PROCESS) -> None:
         """Send data on this stream."""
         self.connection._send_frame(self.frame_id, frame_type, data)
 
     def send_nowait(
-        self, data: DataLike, frame_type: FrameType = FrameType.DATA
+        self, data: DataLike, frame_type: FrameType = FrameType.PROCESS
     ) -> bool:
         """Queue data for sending without waiting for socket I/O."""
         return self.connection._send_frame(
@@ -105,7 +105,7 @@ class Stream:
             ) from exc
 
         if frame is None:
-            raise ConnectionError("MultiplexedConnection has been closed")
+            raise ConnectionError("Connection has been closed")
         return frame
 
     def _put_incoming_frame(self, frame: Frame | None) -> None:
@@ -127,14 +127,23 @@ class MultiplexedConnection:
         self._streams: dict[int, Stream] = {}
         self._streams_lock = threading.Lock()
 
-        self._new_streams: queue.Queue[Stream | None] = queue.Queue()
-        self._outbound: queue.Queue[_OutboundFrame | None] = queue.Queue(
+        # Pending queue for inbound streams.
+        self._pending_inbound_streams: queue.Queue[Stream | None] = queue.Queue()
+
+        # Pending queue for outbound frames.
+        #
+        # The reason for setting up a queue for outbound frames but not for streams is
+        # that the send loop is responsible for determining which stream to send the
+        # frame to.
+        self._pending_outbound_frames: queue.Queue[_OutboundFrame | None] = queue.Queue(
             OUTBOUND_QUEUE_SIZE
         )
-        self._writer_error: BaseException | None = None
+
+        self._writer_error: Exception | None = None
         self._send_state_lock = threading.Lock()
 
         self._is_running = True
+
         self._dispatcher = threading.Thread(target=self._recv_loop, daemon=True)
         self._dispatcher.start()
         self._writer = threading.Thread(target=self._send_loop, daemon=True)
@@ -157,7 +166,7 @@ class MultiplexedConnection:
 
     def accept_stream(self) -> Stream | None:
         """Wait for and return a new stream created by the peer."""
-        return self._new_streams.get()
+        return self._pending_inbound_streams.get()
 
     def _recv_loop(self) -> None:
         try:
@@ -182,7 +191,7 @@ class MultiplexedConnection:
                             # Notify the local main thread about the peer stream.
                             new_stream = Stream(self, frame.stream_id)
                             self._streams[frame.stream_id] = new_stream
-                            self._new_streams.put(new_stream)
+                            self._pending_inbound_streams.put(new_stream)
                             target_stream = new_stream
 
                 if close_for_protocol_error:
@@ -208,7 +217,9 @@ class MultiplexedConnection:
             logger.exception(f"({self.remote_address[0]}): Error in receive loop")
         finally:
             self._is_running = False
-            self._new_streams.put(None)  # Wake threads blocked in accept_stream.
+            self._pending_inbound_streams.put(
+                None
+            )  # Wake threads blocked in accept_stream.
 
             # Wake all threads blocked in Stream.recv() to prevent deadlocks.
             with self._streams_lock:
@@ -237,7 +248,7 @@ class MultiplexedConnection:
                     return False
 
                 try:
-                    self._outbound.put_nowait(item)
+                    self._pending_outbound_frames.put_nowait(item)
                 except queue.Full:
                     return False
 
@@ -253,12 +264,12 @@ class MultiplexedConnection:
     def _check_send_state(self, *, wait_for_write: bool) -> bool:
         if not self._is_running:
             if wait_for_write:
-                raise ConnectionError("MultiplexedConnection has been closed")
+                raise ConnectionError("Connection has been closed")
             return False
 
         if self._writer_error is not None:
             if wait_for_write:
-                raise ConnectionError("MultiplexedConnection send loop failed") from (
+                raise ConnectionError("Connection send loop failed") from (
                     self._writer_error
                 )
             return False
@@ -281,7 +292,7 @@ class MultiplexedConnection:
             with self._send_state_lock:
                 self._check_send_state(wait_for_write=True)
                 try:
-                    self._outbound.put(item, timeout=put_timeout)
+                    self._pending_outbound_frames.put(item, timeout=put_timeout)
                     return
                 except queue.Full:
                     continue
@@ -318,13 +329,13 @@ class MultiplexedConnection:
     def _send_loop(self) -> None:
         try:
             while True:
-                item = self._outbound.get()
+                item = self._pending_outbound_frames.get()
                 if item is None:
                     return
 
                 try:
                     if not self._is_running:
-                        raise ConnectionError("MultiplexedConnection has been closed")
+                        raise ConnectionError("Connection has been closed")
                     self._ws.send(item.payload)
                 except Exception as exc:
                     item.exception = exc
@@ -345,14 +356,14 @@ class MultiplexedConnection:
                     item.done.set()
         finally:
             error = self._writer_error or ConnectionError(
-                "MultiplexedConnection send loop stopped"
+                "Connection send loop stopped"
             )
             self._fail_pending_sends(error)
 
-    def _fail_pending_sends(self, exc: BaseException) -> None:
+    def _fail_pending_sends(self, exc: Exception) -> None:
         while True:
             try:
-                item = self._outbound.get_nowait()
+                item = self._pending_outbound_frames.get_nowait()
             except queue.Empty:
                 return
 
@@ -364,12 +375,11 @@ class MultiplexedConnection:
                 item.done.set()
 
     def close(self) -> None:
-        close_error = ConnectionError("MultiplexedConnection has been closed")
         with self._send_state_lock:
             self._is_running = False
-            self._fail_pending_sends(close_error)
+            self._fail_pending_sends(ConnectionError("Closing connection"))
             try:
-                self._outbound.put_nowait(None)
+                self._pending_outbound_frames.put_nowait(None)
             except queue.Full:
                 # Pending senders were already failed; closing must not block.
                 pass

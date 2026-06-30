@@ -57,7 +57,7 @@ class AsyncStream:
         self._queue: queue.Queue = queue.Queue(100)
 
     async def send(
-        self, data: DataLike, frame_type: FrameType = FrameType.DATA
+        self, data: DataLike, frame_type: FrameType = FrameType.PROCESS
     ) -> None:
         await self.connection._send_frame(self.frame_id, frame_type, data)
 

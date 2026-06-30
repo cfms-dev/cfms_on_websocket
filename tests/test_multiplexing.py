@@ -114,7 +114,7 @@ def test_stream_send_waits_until_writer_sends():
     done = threading.Event()
 
     sender = threading.Thread(
-        target=lambda: (stream.send(b"payload", FrameType.DATA), done.set())
+        target=lambda: (stream.send(b"payload", FrameType.PROCESS), done.set())
     )
     sender.start()
 
@@ -136,7 +136,7 @@ def test_stream_send_nowait_does_not_wait_for_socket_io():
     stream = connection.open_stream()
 
     try:
-        assert stream.send_nowait(b"payload", FrameType.DATA) is True
+        assert stream.send_nowait(b"payload", FrameType.PROCESS) is True
         assert websocket.send_entered.wait(timeout=1)
         assert websocket.sent == []
 
@@ -206,21 +206,21 @@ def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
     ],
 )
 def test_encode_frame_accepts_supported_payload_types(data, expected):
-    payload = encode_frame(2, FrameType.DATA, data)
+    payload = encode_frame(2, FrameType.PROCESS, data)
 
-    assert FRAME_HEADER.unpack_from(payload) == (2, FrameType.DATA.value)
+    assert FRAME_HEADER.unpack_from(payload) == (2, FrameType.PROCESS.value)
     assert payload[FRAME_HEADER_SIZE:] == expected
 
 
 def test_frame_uses_stream_id_field():
-    frame = Frame(stream_id=3, frame_type=FrameType.DATA, data=b"payload")
+    frame = Frame(stream_id=3, frame_type=FrameType.PROCESS, data=b"payload")
 
     assert frame.stream_id == 3
 
 
 def test_encode_frame_rejects_unsupported_payload_type():
     with pytest.raises(TypeError, match="Frame data must be"):
-        encode_frame(2, FrameType.DATA, None)
+        encode_frame(2, FrameType.PROCESS, None)
 
 
 def test_stream_recv_timeout_raises_timeout_error():
@@ -248,7 +248,7 @@ def test_stream_send_nowait_returns_false_after_connection_close():
 
     connection.close()
 
-    assert stream.send_nowait(b"payload", FrameType.DATA) is False
+    assert stream.send_nowait(b"payload", FrameType.PROCESS) is False
     assert websocket.sent == []
 
 
@@ -269,7 +269,7 @@ def test_close_unblocks_send_waiting_for_outbound_queue_space(monkeypatch):
 
     def send_when_queue_is_full():
         try:
-            connection.open_stream().send(b"blocked-on-queue", FrameType.DATA)
+            connection.open_stream().send(b"blocked-on-queue", FrameType.PROCESS)
         except Exception as exc:
             errors.append(exc)
         finally:
@@ -304,7 +304,7 @@ def test_stream_send_raises_when_writer_fails():
 
     try:
         with pytest.raises(ConnectionError):
-            stream.send(b"payload", FrameType.DATA)
+            stream.send(b"payload", FrameType.PROCESS)
     finally:
         connection.close()
 
@@ -318,7 +318,7 @@ def test_pending_stream_sends_preserve_writer_failure_cause():
     def send_and_capture(index: int):
         try:
             stream = connection.open_stream()
-            stream.send(f"payload-{index}".encode(), FrameType.DATA)
+            stream.send(f"payload-{index}".encode(), FrameType.PROCESS)
         except Exception as exc:
             errors.append(exc)
 
@@ -334,12 +334,12 @@ def test_pending_stream_sends_preserve_writer_failure_cause():
             thread.start()
 
         deadline = time.monotonic() + 1
-        while connection._outbound.qsize() < len(threads) - 1:
+        while connection._pending_outbound_frames.qsize() < len(threads) - 1:
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.01)
 
-        assert connection._outbound.qsize() == len(threads) - 1
+        assert connection._pending_outbound_frames.qsize() == len(threads) - 1
         websocket.release_send.set()
 
         for thread in threads:
@@ -365,7 +365,7 @@ def test_concurrent_stream_sends_are_serialized_by_writer():
         try:
             stream = connection.open_stream()
             barrier.wait(timeout=1)
-            stream.send(f"payload-{index}".encode(), FrameType.DATA)
+            stream.send(f"payload-{index}".encode(), FrameType.PROCESS)
         except Exception as exc:
             errors.append(exc)
 
