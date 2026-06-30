@@ -112,6 +112,39 @@ class TestDirectoryOperations:
                 except Exception:
                     pass
 
+    @pytest.mark.asyncio
+    async def test_list_directory_with_cursor(
+        self, authenticated_client: CFMSTestClient
+    ):
+        parent_response = await authenticated_client.create_directory(
+            "Cursor Directory Parent"
+        )
+        parent_id = parent_response["data"]["id"]
+        first_child = await authenticated_client.create_directory(
+            "Cursor Child A", parent_id=parent_id
+        )
+        second_child = await authenticated_client.create_directory(
+            "Cursor Child B", parent_id=parent_id
+        )
+
+        try:
+            first_page_response = await authenticated_client.list_directory(
+                parent_id, page_size=1
+            )
+            first_page = first_page_response["data"]
+            second_page_response = await authenticated_client.list_directory(
+                parent_id, page_size=1, cursor=first_page["next_cursor"]
+            )
+            second_page = second_page_response["data"]
+
+            assert len(first_page["items"]) == 1
+            assert len(second_page["items"]) == 1
+            assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
+        finally:
+            await authenticated_client.delete_directory(first_child["data"]["id"])
+            await authenticated_client.delete_directory(second_child["data"]["id"])
+            await authenticated_client.delete_directory(parent_id)
+
 
 class TestDirectoryMove:
     """Test directory move operations."""

@@ -78,8 +78,12 @@ class TestKeyringOperations:
 
         list_resp = await authenticated_client.list_keyrings()
         assert list_resp.get("code") == 200, f"Expected 200, got: {list_resp}"
-        keys = list_resp.get("data", {}).get("keys", [])
+        list_data = list_resp.get("data", {})
+        keys = list_data.get("keys", [])
         assert isinstance(keys, list)
+        assert list_data["offset"] == 0
+        assert list_data["total"] >= len(keys)
+        assert list_data["has_more"] == (len(keys) < list_data["total"])
         key_ids = [k["id"] for k in keys]
         assert key_id in key_ids, "Uploaded key should appear in listing"
 

@@ -567,8 +567,18 @@ class CFMSTestClient:
         )
 
     # --- Revisions ---
-    async def list_revisions(self, document_id: str) -> Dict[str, Any]:
-        return await self.send_request("list_revisions", {"document_id": document_id})
+    async def list_revisions(
+        self,
+        document_id: str,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        data: Dict[str, Any] = {"document_id": document_id}
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
+        return await self.send_request("list_revisions", data)
 
     async def get_revision(self, revision_id: str) -> Dict[str, Any]:
         return await self.send_request("get_revision", {"id": revision_id})
@@ -584,7 +594,12 @@ class CFMSTestClient:
     async def delete_revision(self, revision_id: str) -> Dict[str, Any]:
         return await self.send_request("delete_revision", {"id": revision_id})
 
-    async def list_directory(self, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    async def list_directory(
+        self,
+        folder_id: Optional[str] = None,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         List contents of a directory.
 
@@ -596,6 +611,10 @@ class CFMSTestClient:
         """
         data = {}
         data["folder_id"] = folder_id
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
 
         return await self.send_request("list_directory", data)
 
@@ -629,8 +648,18 @@ class CFMSTestClient:
         """
         return await self.send_request("delete_directory", {"folder_id": folder_id})
 
-    async def list_deleted_items(self, folder_id: str) -> Dict[str, Any]:
-        return await self.send_request("list_deleted_items", {"folder_id": folder_id})
+    async def list_deleted_items(
+        self,
+        folder_id: str,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        data: Dict[str, Any] = {"folder_id": folder_id}
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
+        return await self.send_request("list_deleted_items", data)
 
     async def purge_directory(self, folder_id: str) -> Dict[str, Any]:
         return await self.send_request("purge_directory", {"folder_id": folder_id})
@@ -669,7 +698,8 @@ class CFMSTestClient:
     async def search(
         self,
         query: str,
-        limit: Optional[int] = None,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None,
         sort_by: Optional[str] = None,
         sort_order: Optional[str] = None,
         search_documents: Optional[bool] = None,
@@ -680,7 +710,8 @@ class CFMSTestClient:
 
         Args:
             query: Search query string
-            limit: Maximum number of results to return
+            page_size: Maximum number of results to return
+            cursor: Cursor returned by the previous page
             sort_by: Sort field (name, created_time, size, last_modified)
             sort_order: Sort order (asc, desc)
             search_documents: Whether to search documents
@@ -690,8 +721,10 @@ class CFMSTestClient:
             Search results with matching documents and directories
         """
         data: Dict[str, Any] = {"query": query}
-        if limit is not None:
-            data["limit"] = limit
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
         if sort_by is not None:
             data["sort_by"] = sort_by
         if sort_order is not None:
@@ -798,14 +831,21 @@ class CFMSTestClient:
             data["permissions"] = permissions
         return await self.send_request("create_group", data)
 
-    async def list_groups(self) -> Dict[str, Any]:
+    async def list_groups(
+        self, count: Optional[int] = None, offset: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         List all user groups.
 
         Returns:
             List of groups
         """
-        return await self.send_request("list_groups", {})
+        data: Dict[str, Any] = {}
+        if count is not None:
+            data["count"] = count
+        if offset is not None:
+            data["offset"] = offset
+        return await self.send_request("list_groups", data)
 
     async def get_group_info(self, group_name: str) -> Dict[str, Any]:
         """
@@ -1247,7 +1287,11 @@ class CFMSTestClient:
         return await self.send_request("revoke_access", {"entry_id": entry_id})
 
     async def view_access_entries(
-        self, object_type: str, object_identifier: str
+        self,
+        object_type: str,
+        object_identifier: str,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         View access entries for a user, group, document, or directory.
@@ -1259,10 +1303,15 @@ class CFMSTestClient:
         Returns:
             Response with list of access entries
         """
-        return await self.send_request(
-            "view_access_entries",
-            {"object_type": object_type, "object_identifier": object_identifier},
-        )
+        data: Dict[str, Any] = {
+            "object_type": object_type,
+            "object_identifier": object_identifier,
+        }
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
+        return await self.send_request("view_access_entries", data)
 
     # Keyring methods
 
@@ -1300,10 +1349,16 @@ class CFMSTestClient:
     async def list_keyrings(
         self,
         target_username: Optional[str] = None,
+        count: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
         if target_username is not None:
             data["target_username"] = target_username
+        if count is not None:
+            data["count"] = count
+        if offset is not None:
+            data["offset"] = offset
         return await self.send_request("list_user_keys", data)
 
     # ------------------------------------------------------------------------
@@ -1341,8 +1396,17 @@ class CFMSTestClient:
         return await self.send_request("block_user", data)
 
     async def view_audit_logs(
-        self, count: int = 100, offset: int = 0
+        self,
+        page_size: Optional[int] = None,
+        cursor: Optional[str] = None,
+        filters: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
         """View system audit logs."""
-        data = {"count": count, "offset": offset}
+        data: Dict[str, Any] = {}
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
+        if filters is not None:
+            data["filters"] = filters
         return await self.send_request("view_audit_logs", data)

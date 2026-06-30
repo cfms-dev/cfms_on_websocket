@@ -51,9 +51,9 @@ class TestAccessManagement:
         assert view_response["code"] == 200, (
             f"Failed to view access entries: {view_response}"
         )
-        assert "result" in view_response["data"], "Response missing 'result'"
+        assert "items" in view_response["data"], "Response missing 'items'"
 
-        entries = view_response["data"]["result"]
+        entries = view_response["data"]["items"]
         assert len(entries) == 1, f"Expected 1 access entry, got {len(entries)}"
 
         entry = entries[0]
@@ -77,7 +77,7 @@ class TestAccessManagement:
             object_type="user", object_identifier=test_username
         )
         assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["result"]
+        entries_after = view_after_revoke["data"]["items"]
         assert len(entries_after) == 0, (
             f"Expected 0 access entries after revoke, got {len(entries_after)}"
         )
@@ -132,8 +132,23 @@ class TestAccessManagement:
             object_type="user", object_identifier=test_username
         )
         assert view_response["code"] == 200
-        entries = view_response["data"]["result"]
+        entries = view_response["data"]["items"]
         assert len(entries) == 2, f"Expected 2 access entries, got {len(entries)}"
+
+        first_page_response = await authenticated_client.view_access_entries(
+            object_type="user", object_identifier=test_username, page_size=1
+        )
+        first_page = first_page_response["data"]
+        second_page_response = await authenticated_client.view_access_entries(
+            object_type="user",
+            object_identifier=test_username,
+            page_size=1,
+            cursor=first_page["next_cursor"],
+        )
+        second_page = second_page_response["data"]
+        assert len(first_page["items"]) == 1
+        assert len(second_page["items"]) == 1
+        assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
 
         # Revoke one access type
         first_entry_id = entries[0]["id"]
@@ -145,7 +160,7 @@ class TestAccessManagement:
             object_type="user", object_identifier=test_username
         )
         assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["result"]
+        entries_after = view_after_revoke["data"]["items"]
         assert len(entries_after) == 1, (
             f"Expected 1 access entry after revoke, got {len(entries_after)}"
         )
@@ -191,7 +206,7 @@ class TestAccessManagement:
             object_type="group", object_identifier=test_group_name
         )
         assert view_response["code"] == 200
-        entries = view_response["data"]["result"]
+        entries = view_response["data"]["items"]
         assert len(entries) == 1
 
         entry_id = entries[0]["id"]
@@ -205,7 +220,7 @@ class TestAccessManagement:
             object_type="group", object_identifier=test_group_name
         )
         assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["result"]
+        entries_after = view_after_revoke["data"]["items"]
         assert len(entries_after) == 0
 
         # Clean up
@@ -251,7 +266,7 @@ class TestAccessManagement:
             object_type="directory", object_identifier=directory_id
         )
         assert view_response["code"] == 200
-        entries = view_response["data"]["result"]
+        entries = view_response["data"]["items"]
         assert len(entries) == 1
 
         entry_id = entries[0]["id"]
@@ -265,7 +280,7 @@ class TestAccessManagement:
             object_type="directory", object_identifier=directory_id
         )
         assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["result"]
+        entries_after = view_after_revoke["data"]["items"]
         assert len(entries_after) == 0
 
         # Clean up

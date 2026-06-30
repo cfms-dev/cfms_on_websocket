@@ -8,6 +8,7 @@ with permission filtering, result limiting, and sorting capabilities.
 __all__ = ["RequestSearchHandler"]
 
 import time
+from functools import cmp_to_key
 from typing import Any, Dict, List
 
 from include.config.settings import global_config
@@ -23,6 +24,14 @@ from include.domains.access.authorization.searchable_tree import (
     search_folders_with_access,
 )
 from include.domains.access.permissions import Permissions
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_page_size,
+    make_cursor_response,
+    require_cursor_length,
+)
 from include.exceptions.misc import NoActiveRevisionsError
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
@@ -44,7 +53,7 @@ class RequestSearchHandler(RequestHandler):
         "type": "object",
         "properties": {
             "query": {"type": "string", "minLength": 1},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+            **CURSOR_PAGINATION_SCHEMA,
             "sort_by": {
                 "type": "string",
                 "enum": ["name", "created_time", "size", "last_modified"],
@@ -76,11 +85,28 @@ class RequestSearchHandler(RequestHandler):
             )
             return Result(code=400, target=query, username=handler.username)
 
-        limit: int = handler.data.get("limit", 100)
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
         sort_by: str = handler.data.get("sort_by", "name")
         sort_order: str = handler.data.get("sort_order", "asc")
         search_documents: bool = handler.data.get("search_documents", True)
         search_directories: bool = handler.data.get("search_directories", True)
+        filters = {
+            "query": query,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "search_documents": search_documents,
+            "search_directories": search_directories,
+        }
+        sort = f"{sort_by}:{sort_order}"
+        try:
+            last_key = decode_cursor(
+                cursor, action="search", sort=sort, filters=filters
+            )
+            require_cursor_length(last_key, 3)
+        except CursorError as exc:
+            handler.conclude_request(400, {}, str(exc))
+            return Result(code=400, target=query, username=handler.username)
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -203,42 +229,57 @@ class RequestSearchHandler(RequestHandler):
             # Sort results
             all_results = results["documents"] + results["directories"]
 
-            # Sort by the specified field
-            if sort_by == "name":
-                all_results.sort(
-                    key=lambda x: x["name"].lower(), reverse=(sort_order == "desc")
-                )
-            elif sort_by == "created_time":
-                all_results.sort(
-                    key=lambda x: x["created_time"], reverse=(sort_order == "desc")
-                )
-            elif sort_by == "size":
-                all_results.sort(
-                    key=lambda x: x.get("size", 0), reverse=(sort_order == "desc")
-                )
-            elif sort_by == "last_modified":
-                all_results.sort(
-                    key=lambda x: x.get("last_modified", x["created_time"]),
-                    reverse=(sort_order == "desc"),
-                )
+            def primary_value(item: dict[str, Any]):
+                if sort_by == "name":
+                    return item["name"].lower()
+                if sort_by == "size":
+                    return item.get("size", 0)
+                if sort_by == "last_modified":
+                    return item.get("last_modified", item["created_time"])
+                return item["created_time"]
 
-            # Apply limit
-            all_results = all_results[:limit]
+            def cursor_key(item: dict[str, Any]) -> list[Any]:
+                type_rank = 0 if item["type"] == "directory" else 1
+                return [primary_value(item), type_rank, item["id"]]
 
-            # Separate back into documents and directories
-            final_documents = [r for r in all_results if r["type"] == "document"]
-            final_directories = [r for r in all_results if r["type"] == "directory"]
+            def compare_keys(left: list[Any], right: list[Any]) -> int:
+                if left[0] != right[0]:
+                    if sort_order == "desc":
+                        return -1 if left[0] > right[0] else 1
+                    return -1 if left[0] < right[0] else 1
+                if left[1] != right[1]:
+                    return -1 if left[1] < right[1] else 1
+                if left[2] != right[2]:
+                    return -1 if left[2] < right[2] else 1
+                return 0
 
-            response_data = {
-                "documents": final_documents,
-                "directories": final_directories,
-                "total_count": len(all_results),
-                "query": query,
-            }
+            all_results.sort(
+                key=cmp_to_key(
+                    lambda left, right: compare_keys(
+                        cursor_key(left), cursor_key(right)
+                    )
+                )
+            )
+            if last_key is not None:
+                all_results = [
+                    item
+                    for item in all_results
+                    if compare_keys(cursor_key(item), last_key) > 0
+                ]
+
+            response_data = make_cursor_response(
+                all_results[: page_size + 1],
+                page_size=page_size,
+                action="search",
+                sort=sort,
+                filters=filters,
+                cursor_key=cursor_key,
+            )
+            response_data["query"] = query
 
             handler.conclude_request(
                 200,
                 response_data,
-                f"Search completed successfully. Found {len(all_results)} result(s).",
+                f"Search completed successfully. Found {len(response_data['items'])} result(s).",
             )
             return Result(code=0, target=query, username=handler.username)

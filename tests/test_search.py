@@ -4,6 +4,14 @@ from tests.test_client import CFMSTestClient
 from tests.utils import assert_error, assert_success
 
 
+def _documents(data: dict):
+    return [item for item in data["items"] if item["type"] == "document"]
+
+
+def _directories(data: dict):
+    return [item for item in data["items"] if item["type"] == "directory"]
+
+
 class TestSearch:
     @pytest.mark.asyncio
     async def test_search_documents(
@@ -20,11 +28,10 @@ class TestSearch:
         )
         data = assert_success(response)
 
-        assert "documents" in data
-        assert "directories" in data
-        assert len(data["directories"]) == 0
+        assert "items" in data
+        assert len(_directories(data)) == 0
 
-        doc_ids = [doc["id"] for doc in data["documents"]]
+        doc_ids = [doc["id"] for doc in _documents(data)]
         assert doc1["document_id"] in doc_ids
         assert doc2["document_id"] in doc_ids
         assert doc3["document_id"] not in doc_ids
@@ -51,11 +58,10 @@ class TestSearch:
         )
         data = assert_success(response)
 
-        assert "documents" in data
-        assert "directories" in data
-        assert len(data["documents"]) == 0
+        assert "items" in data
+        assert len(_documents(data)) == 0
 
-        dir_ids = [d["id"] for d in data["directories"]]
+        dir_ids = [d["id"] for d in _directories(data)]
         assert dir1["id"] in dir_ids
         assert dir2["id"] in dir_ids
         assert dir3["id"] not in dir_ids
@@ -75,28 +81,41 @@ class TestSearch:
         )
         data = assert_success(response)
 
-        doc_ids = [d["id"] for d in data["documents"]]
-        dir_ids = [d["id"] for d in data["directories"]]
+        doc_ids = [d["id"] for d in _documents(data)]
+        dir_ids = [d["id"] for d in _directories(data)]
 
         assert doc["document_id"] in doc_ids
         assert folder["id"] in dir_ids
 
     @pytest.mark.asyncio
-    async def test_search_with_limit(
+    async def test_search_with_cursor_pagination(
         self, authenticated_client: CFMSTestClient, document_factory
     ):
         for i in range(5):
-            await document_factory(f"LimitTestDoc_{i}")
+            await document_factory(f"CursorTestDoc_{i}")
 
-        response = await authenticated_client.search(
-            query="LimitTestDoc",
-            limit=3,
+        first_response = await authenticated_client.search(
+            query="CursorTestDoc",
+            page_size=3,
             search_documents=True,
             search_directories=False,
         )
-        data = assert_success(response)
+        first_page = assert_success(first_response)
+        second_response = await authenticated_client.search(
+            query="CursorTestDoc",
+            page_size=3,
+            cursor=first_page["next_cursor"],
+            search_documents=True,
+            search_directories=False,
+        )
+        second_page = assert_success(second_response)
 
-        assert len(data["documents"]) == 3
+        assert len(first_page["items"]) == 3
+        assert first_page["has_more"] is True
+        assert second_page["has_more"] is False
+        first_ids = {item["id"] for item in first_page["items"]}
+        second_ids = {item["id"] for item in second_page["items"]}
+        assert first_ids.isdisjoint(second_ids)
 
     @pytest.mark.asyncio
     async def test_search_no_results(self, authenticated_client: CFMSTestClient):
@@ -107,8 +126,7 @@ class TestSearch:
         )
         data = assert_success(response)
 
-        assert len(data["documents"]) == 0
-        assert len(data["directories"]) == 0
+        assert len(data["items"]) == 0
 
     @pytest.mark.asyncio
     async def test_search_sorting(
@@ -129,7 +147,7 @@ class TestSearch:
             search_directories=False,
         )
         data_desc = assert_success(response_desc)
-        names_desc = [doc["name"] for doc in data_desc["documents"]]
+        names_desc = [doc["name"] for doc in _documents(data_desc)]
         assert names_desc == sorted(names_desc, reverse=True)
 
         # Sort asc by name
@@ -141,7 +159,7 @@ class TestSearch:
             search_directories=False,
         )
         data_asc = assert_success(response_asc)
-        names_asc = [doc["name"] for doc in data_asc["documents"]]
+        names_asc = [doc["name"] for doc in _documents(data_asc)]
         assert names_asc == sorted(names_asc)
 
     @pytest.mark.asyncio
@@ -158,9 +176,8 @@ class TestSearch:
         )
         data = assert_success(response)
 
-        assert data["documents"] == []
-        assert data["directories"] == []
-        assert data["total_count"] == 0
+        assert data["items"] == []
+        assert data["has_more"] is False
 
     @pytest.mark.asyncio
     async def test_search_rejects_whitespace_query(

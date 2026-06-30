@@ -12,9 +12,30 @@ class TestGroupOperations:
 
         assert "groups" in data
         assert isinstance(data["groups"], list)
+        assert data["offset"] == 0
+        assert data["total"] >= len(data["groups"])
+        assert data["has_more"] == (len(data["groups"]) < data["total"])
 
         group_names = [group.get("name") for group in data["groups"]]
         assert "sysop" in group_names
+
+    @pytest.mark.asyncio
+    async def test_list_groups_with_pagination(
+        self, authenticated_client: CFMSTestClient, group_factory
+    ):
+        await group_factory("page_group_a")
+        await group_factory("page_group_b")
+
+        first_response = await authenticated_client.list_groups(count=1, offset=0)
+        second_response = await authenticated_client.list_groups(count=1, offset=1)
+        first_page = assert_success(first_response)
+        second_page = assert_success(second_response)
+
+        assert first_page["count"] == 1
+        assert second_page["offset"] == 1
+        assert len(first_page["groups"]) == 1
+        assert len(second_page["groups"]) == 1
+        assert first_page["groups"][0]["name"] != second_page["groups"][0]["name"]
 
     @pytest.mark.asyncio
     async def test_create_group(

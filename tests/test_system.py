@@ -113,14 +113,14 @@ class TestSystemManagement:
         )
 
         # View audit logs
-        logs_resp = await authenticated_client.view_audit_logs(count=10)
+        logs_resp = await authenticated_client.view_audit_logs(page_size=10)
         logs_data = assert_success(logs_resp)
 
-        assert "entries" in logs_data
-        assert isinstance(logs_data["entries"], list)
+        assert "items" in logs_data
+        assert isinstance(logs_data["items"], list)
 
-        if len(logs_data["entries"]) > 0:
-            first_log = logs_data["entries"][0]
+        if len(logs_data["items"]) > 0:
+            first_log = logs_data["items"][0]
             assert "action" in first_log
             assert "username" in first_log
             assert "logged_time" in first_log

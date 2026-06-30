@@ -24,6 +24,14 @@ from include.domains.documents.commands.name_conflicts import (
     handle_name_duplicate,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_page_size,
+    make_cursor_response,
+    require_cursor_length,
+)
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
@@ -180,7 +188,10 @@ class RequestListDirectoryHandler(RequestHandler):
 
     schema = {
         "type": "object",
-        "properties": {"folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+        "properties": {
+            "folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            **CURSOR_PAGINATION_SCHEMA,
+        },
         "required": ["folder_id"],
         "additionalProperties": False,
     }
@@ -191,6 +202,8 @@ class RequestListDirectoryHandler(RequestHandler):
 
         # Parse the directory listing request
         folder_id: Optional[str] = handler.data.get("folder_id")
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -218,6 +231,20 @@ class RequestListDirectoryHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, username=handler.username)
 
+            filters = {"folder_id": folder_id}
+            sort = "type_name_id:asc"
+            try:
+                last_key = decode_cursor(
+                    cursor,
+                    action="list_directory",
+                    sort=sort,
+                    filters=filters,
+                )
+                require_cursor_length(last_key, 3)
+            except CursorError as exc:
+                handler.conclude_request(400, {}, str(exc))
+                return Result(code=400, target=folder_id, username=handler.username)
+
             children = (
                 session.query(Folder)
                 .options(raiseload("*"))
@@ -236,36 +263,51 @@ class RequestListDirectoryHandler(RequestHandler):
 
             parent_id = folder.parent_id
 
+            items = [
+                {
+                    "type": "directory",
+                    "id": child.id,
+                    "name": child.name,
+                    "created_time": child.created_time,
+                }
+                for child in children
+            ]
+            items.extend(
+                {
+                    "type": "document",
+                    "id": document.id,
+                    "title": document.title,
+                    "name": document.title,
+                    "created_time": document.created_time,
+                    "last_modified": last_revision.created_time,
+                    "sha256": last_revision.file.sha256,
+                    "size": last_revision.file.size,
+                }
+                for document in documents
+                if (last_revision := latest_revisions_by_document.get(document.id))
+            )
+
+            def cursor_key(item: dict) -> list:
+                type_rank = 0 if item["type"] == "directory" else 1
+                return [type_rank, item["name"].lower(), item["id"]]
+
+            items.sort(key=cursor_key)
+            if last_key is not None:
+                items = [item for item in items if cursor_key(item) > last_key]
+
+            data = make_cursor_response(
+                items[: page_size + 1],
+                page_size=page_size,
+                action="list_directory",
+                sort=sort,
+                filters=filters,
+                cursor_key=cursor_key,
+            )
+            data["parent_id"] = parent_id
             response = {
                 "code": 200,
                 "message": "Directory listing successful",
-                "data": {
-                    "parent_id": parent_id,
-                    "documents": [
-                        {
-                            "id": document.id,
-                            "title": document.title,
-                            "created_time": document.created_time,
-                            "last_modified": last_revision.created_time,
-                            "sha256": last_revision.file.sha256,
-                            "size": last_revision.file.size,
-                        }
-                        for document in documents
-                        if (
-                            last_revision := latest_revisions_by_document.get(
-                                document.id
-                            )
-                        )
-                    ],
-                    "folders": [
-                        {
-                            "id": child.id,
-                            "name": child.name,
-                            "created_time": child.created_time,
-                        }
-                        for child in children
-                    ],
-                },
+                "data": data,
             }
 
         # Send the response back to the client
@@ -935,6 +977,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
+            **CURSOR_PAGINATION_SCHEMA,
         },
         "required": ["folder_id"],
         "additionalProperties": False,
@@ -1168,6 +1211,8 @@ class RequestListDeletedItemsHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         parent_id = handler.data["folder_id"]
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -1195,6 +1240,20 @@ class RequestListDeletedItemsHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, username=handler.username)
 
+            filters = {"folder_id": db_parent_id}
+            sort = "type_name_id:asc"
+            try:
+                last_key = decode_cursor(
+                    cursor,
+                    action="list_deleted_items",
+                    sort=sort,
+                    filters=filters,
+                )
+                require_cursor_length(last_key, 3)
+            except CursorError as exc:
+                handler.conclude_request(400, {}, str(exc))
+                return Result(code=400, target=parent_id, username=handler.username)
+
             deleted_folders = (
                 session.query(Folder)
                 .execution_options(include_deleted=True)
@@ -1215,27 +1274,45 @@ class RequestListDeletedItemsHandler(RequestHandler):
                 .all()
             )
 
-            result_data = {
-                "folders": [
-                    {
-                        "id": f.id,
-                        "name": f.name,
-                        "created_time": f.created_time,
-                        "status_operation_id": f.status_operation_id,
-                    }
-                    for f in deleted_folders
-                ],
-                "documents": [
-                    {
-                        "id": d.id,
-                        "title": d.title,
-                        "created_time": d.created_time,
-                        "status_operation_id": d.status_operation_id,
-                    }
-                    for d in deleted_documents
-                ],
-                "parent_id": parent_id,
-            }
+            items = [
+                {
+                    "type": "directory",
+                    "id": f.id,
+                    "name": f.name,
+                    "created_time": f.created_time,
+                    "status_operation_id": f.status_operation_id,
+                }
+                for f in deleted_folders
+            ]
+            items.extend(
+                {
+                    "type": "document",
+                    "id": d.id,
+                    "title": d.title,
+                    "name": d.title,
+                    "created_time": d.created_time,
+                    "status_operation_id": d.status_operation_id,
+                }
+                for d in deleted_documents
+            )
+
+            def cursor_key(item: dict) -> list:
+                type_rank = 0 if item["type"] == "directory" else 1
+                return [type_rank, item["name"].lower(), item["id"]]
+
+            items.sort(key=cursor_key)
+            if last_key is not None:
+                items = [item for item in items if cursor_key(item) > last_key]
+
+            result_data = make_cursor_response(
+                items[: page_size + 1],
+                page_size=page_size,
+                action="list_deleted_items",
+                sort=sort,
+                filters=filters,
+                cursor_key=cursor_key,
+            )
+            result_data["parent_id"] = parent_id
 
             handler.conclude_request(200, result_data, "Deleted items retrieved")
             return Result(code=0, target=parent_id, username=handler.username)

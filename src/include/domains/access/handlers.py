@@ -11,6 +11,14 @@ from include.database.models.identity import (
 )
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_page_size,
+    make_cursor_response,
+    require_cursor_length,
+)
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
@@ -139,6 +147,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                 "pattern": "^(user|group|document|directory)$",
             },
             "object_identifier": {"type": "string", "minLength": 1},
+            **CURSOR_PAGINATION_SCHEMA,
         },
         "required": [
             "object_type",
@@ -152,6 +161,8 @@ class RequestViewAccessEntriesHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         object_type: str = handler.data["object_type"]
         object_identifier: str = handler.data["object_identifier"]
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
 
         with Session() as session:
             operator = User.get_existing(session, handler.username)
@@ -164,24 +175,42 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                 )
                 return Result(code=403, target=handler.username)
 
+            filters = {
+                "object_type": object_type,
+                "object_identifier": object_identifier,
+            }
+            sort = "id:asc"
+            try:
+                last_key = decode_cursor(
+                    cursor,
+                    action="view_access_entries",
+                    sort=sort,
+                    filters=filters,
+                )
+                require_cursor_length(last_key, 1)
+            except CursorError as exc:
+                handler.conclude_request(400, {}, str(exc))
+                return Result(code=400, target=handler.username)
+
             if object_type in ["user", "group"]:
-                _query_result = (
-                    session.query(ObjectAccessEntry)
-                    .filter(
-                        ObjectAccessEntry.entity_type == object_type,
-                        ObjectAccessEntry.entity_identifier == object_identifier,
-                    )
-                    .all()
+                access_query = session.query(ObjectAccessEntry).filter(
+                    ObjectAccessEntry.entity_type == object_type,
+                    ObjectAccessEntry.entity_identifier == object_identifier,
                 )
             else:
-                _query_result = (
-                    session.query(ObjectAccessEntry)
-                    .filter(
-                        ObjectAccessEntry.target_type == object_type,
-                        ObjectAccessEntry.target_identifier == object_identifier,
-                    )
-                    .all()
+                access_query = session.query(ObjectAccessEntry).filter(
+                    ObjectAccessEntry.target_type == object_type,
+                    ObjectAccessEntry.target_identifier == object_identifier,
                 )
+
+            if last_key is not None:
+                access_query = access_query.filter(ObjectAccessEntry.id > last_key[0])
+
+            _query_result = (
+                access_query.order_by(ObjectAccessEntry.id.asc())
+                .limit(page_size + 1)
+                .all()
+            )
 
             result = [
                 {
@@ -196,8 +225,16 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                 }
                 for each in _query_result
             ]
+            response_data = make_cursor_response(
+                result,
+                page_size=page_size,
+                action="view_access_entries",
+                sort=sort,
+                filters=filters,
+                cursor_key=lambda item: [item["id"]],
+            )
 
-        handler.conclude_request(200, {"result": result}, smsg.SUCCESS)
+        handler.conclude_request(200, response_data, smsg.SUCCESS)
         return Result(
             code=200,
             target=None,

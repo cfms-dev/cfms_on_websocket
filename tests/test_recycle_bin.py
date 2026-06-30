@@ -4,6 +4,14 @@ from tests.test_client import CFMSTestClient
 from tests.utils import assert_error, assert_success
 
 
+def _documents(data: dict):
+    return [item for item in data["items"] if item["type"] == "document"]
+
+
+def _folders(data: dict):
+    return [item for item in data["items"] if item["type"] == "directory"]
+
+
 class TestRecycleBin:
     @pytest.mark.asyncio
     async def test_document_recycle_bin(
@@ -24,7 +32,7 @@ class TestRecycleBin:
         # The document should no longer show up in normal list_directory
         list_dir = await authenticated_client.list_directory(folder_id)
         dir_data = assert_success(list_dir)
-        assert not any(d["id"] == doc_id for d in dir_data["documents"])
+        assert not any(d["id"] == doc_id for d in _documents(dir_data))
 
         # Get list of deleted items in the folder
         list_deleted = await authenticated_client.list_deleted_items(
@@ -33,7 +41,7 @@ class TestRecycleBin:
         deleted_data = assert_success(list_deleted)
 
         # We should find the document here
-        assert any(d["id"] == doc_id for d in deleted_data["documents"])
+        assert any(d["id"] == doc_id for d in _documents(deleted_data))
 
         # Restore the document
         restore_resp = await authenticated_client.restore_document(doc_id)
@@ -42,7 +50,7 @@ class TestRecycleBin:
         # It should be back in the directory
         list_dir2 = await authenticated_client.list_directory(folder_id)
         dir_data2 = assert_success(list_dir2)
-        assert any(d["id"] == doc_id for d in dir_data2["documents"])
+        assert any(d["id"] == doc_id for d in _documents(dir_data2))
 
         # Delete the document again to test purge
         await authenticated_client.delete_document(doc_id)
@@ -56,7 +64,7 @@ class TestRecycleBin:
             folder_id=folder_id
         )
         deleted_data2 = assert_success(list_deleted2)
-        assert not any(d["id"] == doc_id for d in deleted_data2["documents"])
+        assert not any(d["id"] == doc_id for d in _documents(deleted_data2))
 
     @pytest.mark.asyncio
     async def test_directory_recycle_bin(self, authenticated_client: CFMSTestClient):
@@ -77,14 +85,14 @@ class TestRecycleBin:
         # Normal list_directory shouldn't show it
         list_dir = await authenticated_client.list_directory(parent_id)
         dir_data = assert_success(list_dir)
-        assert not any(d["id"] == child_id for d in dir_data["folders"])
+        assert not any(d["id"] == child_id for d in _folders(dir_data))
 
         # Get list of deleted items in the parent
         list_deleted = await authenticated_client.list_deleted_items(
             folder_id=parent_id
         )
         deleted_data = assert_success(list_deleted)
-        assert any(d["id"] == child_id for d in deleted_data["folders"])
+        assert any(d["id"] == child_id for d in _folders(deleted_data))
 
         # Restore the directory
         restore_resp = await authenticated_client.restore_directory(child_id)
@@ -92,7 +100,7 @@ class TestRecycleBin:
 
         list_dir2 = await authenticated_client.list_directory(parent_id)
         dir_data2 = assert_success(list_dir2)
-        assert any(d["id"] == child_id for d in dir_data2["folders"])
+        assert any(d["id"] == child_id for d in _folders(dir_data2))
 
         # Soft delete again
         await authenticated_client.delete_directory(child_id)
@@ -105,7 +113,7 @@ class TestRecycleBin:
             folder_id=parent_id
         )
         deleted_data2 = assert_success(list_deleted2)
-        assert not any(d["id"] == child_id for d in deleted_data2["folders"])
+        assert not any(d["id"] == child_id for d in _folders(deleted_data2))
 
     @pytest.mark.asyncio
     async def test_restore_directory_to_different_parent(
@@ -138,8 +146,8 @@ class TestRecycleBin:
             await authenticated_client.list_directory(target_id)
         )
 
-        assert not any(d["id"] == child_id for d in source_listing["folders"])
-        assert any(d["id"] == child_id for d in target_listing["folders"])
+        assert not any(d["id"] == child_id for d in _folders(source_listing))
+        assert any(d["id"] == child_id for d in _folders(target_listing))
 
     @pytest.mark.asyncio
     async def test_restore_directory_with_new_name(
@@ -163,7 +171,7 @@ class TestRecycleBin:
         assert restore_data["name"] == "RecycleBinRenamed"
 
         listing = assert_success(await authenticated_client.list_directory(parent_id))
-        restored_folder = next(d for d in listing["folders"] if d["id"] == child_id)
+        restored_folder = next(d for d in _folders(listing) if d["id"] == child_id)
         assert restored_folder["name"] == "RecycleBinRenamed"
 
     @pytest.mark.asyncio

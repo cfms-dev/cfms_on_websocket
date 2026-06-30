@@ -1,13 +1,21 @@
 import time
 
 import orjson
-from sqlalchemy import desc, func, true, update
+from sqlalchemy import and_, desc, or_, true, update
 
 from include.database.models.files import FileTask
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_page_size,
+    make_cursor_response,
+    require_cursor_length,
+)
 from include.messages import Messages as smsg
 from include.shared import lockdown_enabled
 from include.transport.connection import ConnectionHandler
@@ -66,8 +74,7 @@ class RequestViewAuditLogsHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "offset": {"type": "integer", "minimum": 0},
-            "count": {"type": "integer", "minimum": 0, "maximum": 100},
+            **CURSOR_PAGINATION_SCHEMA,
             "filters": {"type": "array", "items": {"type": "string"}},
         },
         "required": [],
@@ -76,9 +83,22 @@ class RequestViewAuditLogsHandler(RequestHandler):
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
-        offset: int = handler.data.get("offset", 0)
-        entries_count: int = handler.data.get("count", 50)
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
         filtered_actions: list[str] = handler.data.get("filters", [])
+        filters = {"filters": sorted(filtered_actions)}
+        sort = "logged_time_id:desc"
+        try:
+            last_key = decode_cursor(
+                cursor,
+                action="view_audit_logs",
+                sort=sort,
+                filters=filters,
+            )
+            require_cursor_length(last_key, 2)
+        except CursorError as exc:
+            handler.conclude_request(400, {}, str(exc))
+            return Result(code=400, target=None, username=handler.username)
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -87,26 +107,25 @@ class RequestViewAuditLogsHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=None, username=handler.username)
 
-            queried_entries = (
-                session.query(AuditEntry)
-                .order_by(desc(AuditEntry.logged_time))
-                .filter(
-                    AuditEntry.action.in_(filtered_actions)
-                    if filtered_actions
-                    else true()
-                )
-                .offset(offset)
-                .limit(entries_count)
-                .all()
+            audit_query = session.query(AuditEntry).filter(
+                AuditEntry.action.in_(filtered_actions) if filtered_actions else true()
             )
-            total_count: int = (
-                session.query(func.count(AuditEntry.id))
-                .filter(
-                    AuditEntry.action.in_(filtered_actions)
-                    if filtered_actions
-                    else true()
+            if last_key is not None:
+                last_logged_time, last_id = last_key
+                audit_query = audit_query.filter(
+                    or_(
+                        AuditEntry.logged_time < last_logged_time,
+                        and_(
+                            AuditEntry.logged_time == last_logged_time,
+                            AuditEntry.id < last_id,
+                        ),
+                    )
                 )
-                .scalar()
+
+            queried_entries = (
+                audit_query.order_by(desc(AuditEntry.logged_time), desc(AuditEntry.id))
+                .limit(page_size + 1)
+                .all()
             )
 
             result = [
@@ -122,13 +141,19 @@ class RequestViewAuditLogsHandler(RequestHandler):
                 }
                 for entry in queried_entries
             ]
+            response_data = make_cursor_response(
+                result,
+                page_size=page_size,
+                action="view_audit_logs",
+                sort=sort,
+                filters=filters,
+                cursor_key=lambda item: [item["logged_time"], item["id"]],
+            )
 
-        handler.conclude_request(
-            200, {"total": total_count, "entries": result}, smsg.SUCCESS
-        )
+        handler.conclude_request(200, response_data, smsg.SUCCESS)
         return Result(
             code=0,
             target=None,
-            data={"offset": offset, "entries_count": entries_count},
+            data={"page_size": page_size},
             username=handler.username,
         )

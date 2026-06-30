@@ -76,3 +76,42 @@ class TestUserBlocksAndStatus:
         assert_error(list_resp_blocked, 403)  # Should be Forbidden
 
         await user_client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_list_user_blocks_with_cursor(
+        self, authenticated_client: CFMSTestClient, user_factory
+    ):
+        test_user = await user_factory()
+        username = test_user["username"]
+
+        first_block = assert_success(
+            await authenticated_client.block_user(username, "all", ["read"])
+        )
+        second_block = assert_success(
+            await authenticated_client.block_user(username, "all", ["write"])
+        )
+
+        first_page_response = await authenticated_client.send_request(
+            "list_user_blocks", {"username": username, "page_size": 1}
+        )
+        first_page = assert_success(first_page_response)
+        second_page_response = await authenticated_client.send_request(
+            "list_user_blocks",
+            {
+                "username": username,
+                "page_size": 1,
+                "cursor": first_page["next_cursor"],
+            },
+        )
+        second_page = assert_success(second_page_response)
+
+        assert len(first_page["items"]) == 1
+        assert len(second_page["items"]) == 1
+        assert first_page["items"][0]["block_id"] != second_page["items"][0]["block_id"]
+
+        await authenticated_client.send_request(
+            "unblock_user", {"block_id": first_block["block_id"]}
+        )
+        await authenticated_client.send_request(
+            "unblock_user", {"block_id": second_block["block_id"]}
+        )

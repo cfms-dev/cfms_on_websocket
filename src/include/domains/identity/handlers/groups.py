@@ -12,17 +12,25 @@ from include.database.models.identity import (
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.identity.commands.groups import create_group
+from include.domains.pagination import OFFSET_PAGINATION_SCHEMA, get_offset_pagination
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
 
 class RequestListGroupsHandler(RequestHandler):
-    schema = {"type": "object", "additionalProperties": False}
+    schema = {
+        "type": "object",
+        "properties": {
+            **OFFSET_PAGINATION_SCHEMA,
+        },
+        "additionalProperties": False,
+    }
 
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
+        offset, count = get_offset_pagination(handler.data)
 
         with Session() as session:
             user = User.get_existing(session, handler.username)  # Requesting user.
@@ -37,7 +45,14 @@ class RequestListGroupsHandler(RequestHandler):
                 )
                 return
 
-            groups = session.query(UserGroup).all()
+            total = session.query(UserGroup).count()
+            groups = (
+                session.query(UserGroup)
+                .order_by(UserGroup.group_name.asc())
+                .offset(offset)
+                .limit(count)
+                .all()
+            )
             response = {
                 "code": 200,
                 "message": "List of groups",
@@ -50,7 +65,11 @@ class RequestListGroupsHandler(RequestHandler):
                             "members": list(group.members),
                         }
                         for group in groups
-                    ]
+                    ],
+                    "total": total,
+                    "offset": offset,
+                    "count": count,
+                    "has_more": offset + len(groups) < total,
                 },
             }
 
