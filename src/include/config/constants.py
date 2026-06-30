@@ -12,6 +12,8 @@ __all__ = [
     "REPLAY_PROTECTION_TIME_WINDOW_SECONDS",
     "NONCE_MIN_LENGTH",
     "ROOT_DIRECTORY_ID",
+    "PAGINATION_DEFAULT_PAGE_SIZE",
+    "PAGINATION_MAX_PAGE_SIZE",
     "MAX_PARAM_SIZE",
     "QUERY_CHUNK_SIZE",
     "TRUSTED_PROXY_IPS",
@@ -21,8 +23,8 @@ from pathlib import Path
 
 from include.config.version import Version
 
-CORE_VERSION = Version("0.3.0.260618_alpha")
-PROTOCOL_VERSION = 14
+CORE_VERSION = Version("0.4.0.260630_alpha")
+PROTOCOL_VERSION = 15
 
 ROOT_ABSPATH = Path(__file__).resolve().parents[2]
 
@@ -46,6 +48,10 @@ NONCE_MIN_LENGTH = 16  # Minimum length of a nonce string
 
 # Root directory virtual folder ID — used to store access rules for the root directory
 ROOT_DIRECTORY_ID = "/"
+
+# Pagination Constants
+PAGINATION_DEFAULT_PAGE_SIZE = 128
+PAGINATION_MAX_PAGE_SIZE = 128
 
 # Database Constants
 MAX_PARAM_SIZE = 950  # Maximum number of parameters in a single SQL query

@@ -21,8 +21,13 @@ from typing import Optional
 import filetype
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+from sqlalchemy import func
 
-from include.config.constants import AVAILABLE_BLOCK_TYPES
+from include.config.constants import (
+    AVAILABLE_BLOCK_TYPES,
+    PAGINATION_DEFAULT_PAGE_SIZE,
+    PAGINATION_MAX_PAGE_SIZE,
+)
 from include.config.settings import global_config
 from include.database.models.access import (
     UserBlockEntry,
@@ -56,12 +61,23 @@ _password_hasher = PasswordHasher()
 class RequestListUsersHandler(RequestHandler):
     schema = {
         "type": "object",
+        "properties": {
+            "offset": {"type": "integer", "minimum": 0},
+            "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": PAGINATION_MAX_PAGE_SIZE,
+            },
+        },
         "additionalProperties": False,
     }
 
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
+        offset = handler.data.get("offset", 0)
+        count = handler.data.get("count", PAGINATION_DEFAULT_PAGE_SIZE)
+
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
 
@@ -71,9 +87,16 @@ class RequestListUsersHandler(RequestHandler):
                     message="You do not have permission to list users",
                     data={},
                 )
-                return
+                return Result(code=403, username=handler.username)
 
-            users = session.query(User).all()
+            total = session.query(func.count(User.username)).scalar()
+            users = (
+                session.query(User)
+                .order_by(User.username.asc())
+                .offset(offset)
+                .limit(count)
+                .all()
+            )
             users_data = [
                 {
                     "username": user.username,
@@ -89,7 +112,18 @@ class RequestListUsersHandler(RequestHandler):
             handler.conclude_request(
                 code=200,
                 message="List of users",
-                data={"users": users_data},
+                data={
+                    "users": users_data,
+                    "total": total,
+                    "offset": offset,
+                    "count": count,
+                    "has_more": offset + len(users_data) < total,
+                },
+            )
+            return Result(
+                code=0,
+                data={"offset": offset, "count": count},
+                username=handler.username,
             )
 
 

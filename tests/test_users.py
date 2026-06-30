@@ -1,5 +1,9 @@
 import pytest
 
+from include.config.constants import (
+    PAGINATION_DEFAULT_PAGE_SIZE,
+    PAGINATION_MAX_PAGE_SIZE,
+)
 from tests.test_client import CFMSTestClient
 from tests.utils import assert_error, assert_success
 
@@ -12,9 +16,52 @@ class TestUserOperations:
 
         assert "users" in data
         assert isinstance(data["users"], list)
+        assert data["offset"] == 0
+        assert data["count"] == PAGINATION_DEFAULT_PAGE_SIZE
+        assert data["total"] >= len(data["users"])
+        assert data["has_more"] == (len(data["users"]) < data["total"])
 
         usernames = [user.get("username") for user in data["users"]]
         assert "admin" in usernames
+
+    @pytest.mark.asyncio
+    async def test_list_users_with_pagination(
+        self, authenticated_client: CFMSTestClient, user_factory
+    ):
+        for suffix in range(3):
+            await user_factory(username=f"page_user_{suffix}")
+
+        first_response = await authenticated_client.list_users(count=2, offset=0)
+        first_page = assert_success(first_response)
+        second_response = await authenticated_client.list_users(count=2, offset=2)
+        second_page = assert_success(second_response)
+
+        assert first_page["offset"] == 0
+        assert first_page["count"] == 2
+        assert len(first_page["users"]) == 2
+        assert second_page["offset"] == 2
+        assert second_page["count"] == 2
+        assert len(second_page["users"]) == 2
+        assert first_page["total"] == second_page["total"]
+        assert first_page["has_more"] == (2 < first_page["total"])
+        assert second_page["has_more"] == (4 < second_page["total"])
+
+        first_usernames = [user["username"] for user in first_page["users"]]
+        second_usernames = [user["username"] for user in second_page["users"]]
+        assert first_usernames == sorted(first_usernames)
+        assert second_usernames == sorted(second_usernames)
+        assert set(first_usernames).isdisjoint(second_usernames)
+
+    @pytest.mark.asyncio
+    async def test_list_users_rejects_invalid_pagination(
+        self, authenticated_client: CFMSTestClient
+    ):
+        assert_error(await authenticated_client.list_users(count=0), 400)
+        assert_error(
+            await authenticated_client.list_users(count=PAGINATION_MAX_PAGE_SIZE + 1),
+            400,
+        )
+        assert_error(await authenticated_client.list_users(offset=-1), 400)
 
     @pytest.mark.asyncio
     async def test_create_user(

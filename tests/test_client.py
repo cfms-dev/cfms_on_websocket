@@ -760,14 +760,25 @@ class CFMSTestClient:
             {"username": username, "permissions": permissions},
         )
 
-    async def list_users(self) -> Dict[str, Any]:
+    async def list_users(
+        self, count: Optional[int] = None, offset: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         List all users.
+
+        Args:
+            count: Optional maximum number of users to return
+            offset: Optional number of users to skip
 
         Returns:
             List of users
         """
-        return await self.send_request("list_users", {})
+        data: dict[str, Any] = {}
+        if count is not None:
+            data["count"] = count
+        if offset is not None:
+            data["offset"] = offset
+        return await self.send_request("list_users", data)
 
     async def create_group(
         self, group_name: str, permissions: Optional[list] = None
