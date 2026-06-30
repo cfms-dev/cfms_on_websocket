@@ -341,7 +341,7 @@ class TestFileTransfer:
 
         fake_stream = FakeStream()
         monkeypatch.setattr(
-            authenticated_client.multiplexer, "create_stream", lambda: fake_stream
+            authenticated_client.multiplexer, "open_stream", lambda: fake_stream
         )
 
         dest = tmp_path / "aborted.bin"

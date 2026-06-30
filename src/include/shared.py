@@ -7,9 +7,9 @@ __all__ = ["clients", "clients_lock", "lockdown_enabled"]
 import threading
 
 from include.providers.manager import ProviderManager
-from include.transport.multiplexing import MultiplexConnection
+from include.transport.multiplexing import MultiplexedConnection
 
-clients: set[MultiplexConnection] = set()
+clients: set[MultiplexedConnection] = set()
 clients_lock = threading.Lock()
 
 

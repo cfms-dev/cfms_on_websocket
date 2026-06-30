@@ -12,19 +12,24 @@ import os
 import queue
 import secrets
 import ssl
-import struct
 import threading
 import time
-from dataclasses import dataclass
-from enum import IntEnum
 from typing import Any, Dict, Optional
 
 import orjson
 from Crypto.Cipher import AES
+from loguru import logger as log
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.typing import DataLike
 
-HEADER_FORMAT = "!IB"
-HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+from include.transport.multiplexing import (
+    Frame,
+    FrameType,
+    decode_frame,
+    encode_frame,
+)
+
+logger = log.bind(name="test_client.multiplexer")
 
 
 def calculate_sha256(file_path: str) -> str:
@@ -45,42 +50,28 @@ def calculate_sha256(file_path: str) -> str:
         return hashlib.sha256(mmapped_file).hexdigest()
 
 
-class FrameType(IntEnum):
-    PROCESS = 0
-    CONCLUSION = 1
-
-
-@dataclass
-class Frame:
-    frame_id: int
-    frame_type: FrameType
-    data: Any
-
-
 class AsyncStream:
     def __init__(self, connection: "AsyncMultiplexConnection", frame_id: int):
         self.connection = connection
         self.frame_id = frame_id
         self._queue: queue.Queue = queue.Queue(100)
 
-    async def send(self, data: Any, frame_type: FrameType = FrameType.PROCESS):
+    async def send(
+        self, data: DataLike, frame_type: FrameType = FrameType.PROCESS
+    ) -> None:
         await self.connection._send_frame(self.frame_id, frame_type, data)
 
     async def recv(self, timeout: Optional[float] = None) -> Frame:
         try:
             if timeout is None:
-                frame = await asyncio.get_running_loop().run_in_executor(
-                    None, self._queue.get
-                )
+                frame = await asyncio.to_thread(self._queue.get)
             else:
-                frame = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: self._queue.get(timeout=timeout)
-                )
+                frame = await asyncio.to_thread(self._queue.get, True, timeout)
         except queue.Empty:
             raise TimeoutError("Stream recv timeout")
 
         if frame is None:
-            raise ConnectionError("MultiplexConnection has been closed")
+            raise ConnectionError("MultiplexedConnection has been closed")
         return frame
 
     def _put_incoming_frame(self, frame: Optional[Frame]):
@@ -98,7 +89,7 @@ class AsyncMultiplexConnection:
         self._is_running = True
         self._dispatcher_task = asyncio.create_task(self._recv_loop())
 
-    def create_stream(self) -> AsyncStream:
+    def open_stream(self) -> AsyncStream:
         with self._id_lock:
             frame_id = self._next_frame_id
             self._next_frame_id += 2
@@ -114,57 +105,39 @@ class AsyncMultiplexConnection:
     ) -> Optional[AsyncStream]:
         try:
             if timeout is None:
-                return await asyncio.get_running_loop().run_in_executor(
-                    None, self._new_streams.get
-                )
-            return await asyncio.get_running_loop().run_in_executor(
-                None, lambda: self._new_streams.get(timeout=timeout)
-            )
+                return await asyncio.to_thread(self._new_streams.get)
+            return await asyncio.to_thread(self._new_streams.get, True, timeout)
         except queue.Empty:
             raise TimeoutError("Server stream accept timeout")
 
-    async def _recv_loop(self):
+    async def _recv_loop(self) -> None:
         try:
             while self._is_running:
-                raw_payload = await self._ws.recv()
-                if isinstance(raw_payload, str):
-                    raw_payload = raw_payload.encode("utf-8")
-
-                if len(raw_payload) < HEADER_SIZE:
+                raw_payload = await self._ws.recv(decode=False)
+                frame = decode_frame(raw_payload)
+                if frame is None:
                     continue
-
-                frame_id, frame_type_val = struct.unpack_from(
-                    HEADER_FORMAT, raw_payload
-                )
-                data_bytes = raw_payload[HEADER_SIZE:]
-
-                try:
-                    frame_type = FrameType(frame_type_val)
-                except ValueError:
-                    continue
-
-                frame = Frame(frame_id=frame_id, frame_type=frame_type, data=data_bytes)
 
                 with self._streams_lock:
-                    if frame.frame_id not in self._streams:
-                        if frame.frame_id % 2 != 0:
+                    target_stream = self._streams.get(frame.stream_id)
+                    if target_stream is None:
+                        if frame.stream_id % 2 != 0:
                             self._is_running = False
                             await self._ws.close()
                             return
-                        new_stream = AsyncStream(self, frame.frame_id)
-                        self._streams[frame.frame_id] = new_stream
+                        new_stream = AsyncStream(self, frame.stream_id)
+                        self._streams[frame.stream_id] = new_stream
                         self._new_streams.put(new_stream)
-
-                    target_stream = self._streams[frame.frame_id]
+                        target_stream = new_stream
 
                 target_stream._put_incoming_frame(frame)
 
                 if frame.frame_type == FrameType.CONCLUSION:
                     with self._streams_lock:
-                        self._streams.pop(frame.frame_id, None)
+                        self._streams.pop(frame.stream_id, None)
 
         except Exception:
-            pass
+            logger.exception("Error in async multiplex receive loop")
         finally:
             self._is_running = False
             self._new_streams.put(None)
@@ -172,23 +145,10 @@ class AsyncMultiplexConnection:
                 for stream in self._streams.values():
                     stream._put_incoming_frame(None)
 
-    async def _send_frame(self, frame_id: int, frame_type: FrameType, data: Any):
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        elif isinstance(data, memoryview):
-            data = data.tobytes()
-
-        if data is None:
-            data = b""
-
-        if not isinstance(data, (bytes, bytearray)):
-            raise TypeError("Frame data must be bytes/string")
-
-        payload = bytearray(HEADER_SIZE + len(data))
-        struct.pack_into(HEADER_FORMAT, payload, 0, frame_id, frame_type.value)
-        payload[HEADER_SIZE:] = data
-
-        await self._ws.send(payload)
+    async def _send_frame(
+        self, frame_id: int, frame_type: FrameType, data: DataLike
+    ) -> None:
+        await self._ws.send(encode_frame(frame_id, frame_type, data))
 
         if frame_type == FrameType.CONCLUSION:
             with self._streams_lock:
@@ -392,7 +352,7 @@ class CFMSTestClient:
         if self.multiplexer is None:
             raise RuntimeError("Not connected to server. Call connect() first.")
 
-        stream = self.multiplexer.create_stream()
+        stream = self.multiplexer.open_stream()
         frame = await self._build_and_send_request(
             stream,
             action,
@@ -438,7 +398,7 @@ class CFMSTestClient:
         if self.multiplexer is None:
             raise RuntimeError("Not connected to server. Call connect() first.")
 
-        stream = self.multiplexer.create_stream()
+        stream = self.multiplexer.open_stream()
         await stream.send(orjson.dumps(request))
 
         frame = await stream.recv()
@@ -852,7 +812,7 @@ class CFMSTestClient:
         if self.multiplexer is None:
             raise RuntimeError("Not connected (multiplexing missing).")
 
-        stream = self.multiplexer.create_stream()
+        stream = self.multiplexer.open_stream()
         frame = await self._build_and_send_request(
             stream,
             "download_file",
@@ -932,7 +892,7 @@ class CFMSTestClient:
         if self.multiplexer is None:
             raise RuntimeError("Not connected (multiplexing missing).")
 
-        stream = self.multiplexer.create_stream()
+        stream = self.multiplexer.open_stream()
         frame = await self._build_and_send_request(
             stream,
             "upload_file",

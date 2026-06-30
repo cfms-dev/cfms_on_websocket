@@ -98,10 +98,11 @@ class TestSystemManagement:
             with pytest.raises(ConnectionClosed) as excinfo:
                 await asyncio.wait_for(websocket.recv(), timeout=5)
 
-            assert excinfo.value.code == 1002
-            assert (
-                excinfo.value.reason
-                == "Protocol error: invalid client-initiated stream"
+            close_frame = excinfo.value.rcvd
+            assert close_frame is not None
+            assert close_frame.code == 1002
+            assert close_frame.reason == (
+                "Protocol error: invalid client-initiated stream"
             )
 
     @pytest.mark.asyncio
