@@ -49,7 +49,7 @@ CURSOR_PAGINATION_SCHEMA = {
 # The schema enforces that the offset is a non-negative integer and that
 # the count is a positive integer within the maximum page size limit.
 #
-# NOTE: Currently the maximum offset is hardcoded to 2^15 - 1 (32767).
+# NOTE: Currently the maximum offset is hard-coded to 2^15 - 1 (32767).
 # If the actual data exceeds this limit, the excess portion will be inaccessible.
 OFFSET_PAGINATION_SCHEMA = {
     "offset": {"type": "integer", "minimum": 0, "maximum": 2**15 - 1},
