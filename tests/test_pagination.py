@@ -60,7 +60,7 @@ def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
             filters={"folder_id": "root"},
             value_types=[int, str, str],
         ) == [0, "alpha", "id-1"]
-        assert "maximum" not in pagination.OFFSET_PAGINATION_SCHEMA["offset"]
+        assert "maximum" in pagination.OFFSET_PAGINATION_SCHEMA["offset"]
 
         with pytest.raises(pagination.CursorError):
             pagination.decode_cursor(
