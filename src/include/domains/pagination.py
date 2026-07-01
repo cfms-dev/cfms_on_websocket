@@ -16,7 +16,8 @@ import base64
 import hashlib
 import hmac
 import json
-from typing import Any, Callable, Iterable, Sequence, TypeVar
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 from include.config.constants import (
     PAGINATION_DEFAULT_PAGE_SIZE,
@@ -59,7 +60,6 @@ OFFSET_PAGINATION_SCHEMA = {
     },
 }
 
-T = TypeVar("T")
 CursorValueType = type | tuple[type, ...]
 
 
@@ -199,7 +199,7 @@ def require_cursor_types(
             raise CursorError("Invalid cursor")
 
 
-def make_cursor_response(
+def make_cursor_response[T](
     items: Iterable[T],
     *,
     page_size: int,
