@@ -8,10 +8,13 @@ with permission filtering, result limiting, and sorting capabilities.
 __all__ = ["RequestSearchHandler"]
 
 import time
-from functools import cmp_to_key
 from typing import Any
 
+from sqlalchemy.orm import joinedload
+
+from include.config.constants import QUERY_CHUNK_SIZE
 from include.config.settings import global_config
+from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import check_access_for_object
@@ -20,10 +23,14 @@ from include.domains.access.authorization.grants import (
     prefetch_user_blocks,
 )
 from include.domains.access.authorization.searchable_tree import (
-    search_documents_with_access,
-    search_folders_with_access,
+    load_document_access_context,
+    load_folder_access_context,
 )
 from include.domains.access.permissions import Permissions
+from include.domains.documents.queries.listing import (
+    fetch_search_candidate_rows,
+    search_cursor_key,
+)
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
@@ -31,7 +38,6 @@ from include.domains.pagination import (
     get_page_size,
     make_cursor_response,
 )
-from include.exceptions.misc import NoActiveRevisionsError
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
@@ -114,168 +120,157 @@ class RequestSearchHandler(RequestHandler):
             user = User.get_existing(session, handler.username)
 
             now = time.time()
-
-            results: dict[str, list[dict[str, Any]]] = {
-                "documents": [],
-                "directories": [],
-            }
+            all_results: list[dict[str, Any]] = []
 
             # Preload block entries
             is_globally_blocked, blocked_ids = prefetch_user_blocks(
                 session, user, "read", now
             )
 
-            # Search documents
-            if search_documents and (
+            can_search = (
                 not is_globally_blocked
                 or Permissions.SUPER_LIST_DIRECTORY in user.all_permissions
+            )
+            candidate_limit = min(QUERY_CHUNK_SIZE, max(page_size * 4, 64))
+            scan_key = last_key
+
+            while (
+                can_search
+                and (search_documents or search_directories)
+                and len(all_results) < page_size + 1
             ):
-                documents, doc_ancestors, doc_oaes = search_documents_with_access(
-                    session, query, now
+                candidate_rows = fetch_search_candidate_rows(
+                    session,
+                    query=query,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    search_documents=search_documents,
+                    search_directories=search_directories,
+                    last_key=scan_key,
+                    limit=candidate_limit,
+                )
+                if not candidate_rows:
+                    break
+
+                scan_key = search_cursor_key(candidate_rows[-1], sort_by)
+                doc_ids = [
+                    row["id"] for row in candidate_rows if row["type"] == "document"
+                ]
+                dir_ids = [
+                    row["id"] for row in candidate_rows if row["type"] == "directory"
+                ]
+
+                documents_by_id = (
+                    {
+                        document.id: document
+                        for document in session.query(Document)
+                        .options(joinedload(Document.access_rules))
+                        .filter(Document.id.in_(doc_ids))
+                        .all()
+                    }
+                    if doc_ids
+                    else {}
+                )
+                directories_by_id = (
+                    {
+                        directory.id: directory
+                        for directory in session.query(Folder)
+                        .options(joinedload(Folder.access_rules))
+                        .filter(Folder.id.in_(dir_ids))
+                        .all()
+                    }
+                    if dir_ids
+                    else {}
                 )
 
-                doc_ids = [doc.id for doc in documents]
+                doc_ancestors, doc_oaes = load_document_access_context(
+                    session, list(documents_by_id.values()), now
+                )
+                dir_ancestors, dir_oaes = load_folder_access_context(
+                    session, list(directories_by_id.values()), now
+                )
                 explicitly_granted_doc_ids = batch_prefetch_granted_ids(
                     session, user, doc_ids, "document", "read", now
                 )
-
-                for document in documents:
-                    if not document.active:
-                        continue
-                    if (
-                        document.id in blocked_ids
-                        and Permissions.SUPER_LIST_DIRECTORY not in user.all_permissions
-                    ):  # This is because people who have `super_list_directory` can still see blocked documents via `list_directory`.
-                        continue
-                    if document.id in explicitly_granted_doc_ids:
-                        pass
-                    else:
-                        if not check_access_for_object(
-                            document,
-                            user,
-                            "read",
-                            doc_ancestors,
-                            doc_oaes,
-                            recursive=global_config["access"][
-                                "enable_access_recursive_check"
-                            ],
-                        ):
-                            continue
-
-                    try:
-                        latest_revision = document.get_latest_revision()
-                        size = latest_revision.file.size if latest_revision.file else 0
-                        last_modified = latest_revision.created_time
-                    except (NoActiveRevisionsError, AttributeError):
-                        size = 0
-                        last_modified = document.created_time
-
-                    results["documents"].append(
-                        {
-                            "id": document.id,
-                            "name": document.title,
-                            "parent_id": document.folder_id,
-                            "created_time": document.created_time,
-                            "last_modified": last_modified,
-                            "size": size,
-                            "type": "document",
-                        }
-                    )
-
-            # Search directories
-            if search_directories and (
-                not is_globally_blocked
-                or Permissions.SUPER_LIST_DIRECTORY in user.all_permissions
-            ):
-                directories, dir_ancestors, dir_oaes = search_folders_with_access(
-                    session, query, now
-                )
-
-                dir_ids = [d.id for d in directories]
                 explicitly_granted_dir_ids = batch_prefetch_granted_ids(
                     session, user, dir_ids, "directory", "read", now
                 )
 
-                for directory in directories:
+                for row in candidate_rows:
                     if (
-                        directory.id in blocked_ids
+                        row["id"] in blocked_ids
                         and Permissions.SUPER_LIST_DIRECTORY not in user.all_permissions
                     ):
                         continue
 
-                    if directory.id in explicitly_granted_dir_ids:
-                        pass
-                    else:
-                        if not check_access_for_object(
-                            directory,
-                            user,
-                            "read",
-                            dir_ancestors,
-                            dir_oaes,
-                            recursive=global_config["access"][
-                                "enable_access_recursive_check"
-                            ],
-                        ):
+                    if row["type"] == "document":
+                        document = documents_by_id.get(row["id"])
+                        if document is None:
                             continue
+                        if row["id"] not in explicitly_granted_doc_ids:
+                            if not check_access_for_object(
+                                document,
+                                user,
+                                "read",
+                                doc_ancestors,
+                                doc_oaes,
+                                recursive=global_config["access"][
+                                    "enable_access_recursive_check"
+                                ],
+                            ):
+                                continue
 
-                    results["directories"].append(
-                        {
-                            "id": directory.id,
-                            "name": directory.name,
-                            "parent_id": directory.parent_id,
-                            "created_time": directory.created_time,
-                            "type": "directory",
-                        }
-                    )
+                        all_results.append(
+                            {
+                                "id": row["id"],
+                                "name": row["name"],
+                                "parent_id": row["parent_id"],
+                                "created_time": row["created_time"],
+                                "last_modified": row["last_modified"],
+                                "size": row.get("size") or 0,
+                                "type": "document",
+                            }
+                        )
+                    else:
+                        directory = directories_by_id.get(row["id"])
+                        if directory is None:
+                            continue
+                        if row["id"] not in explicitly_granted_dir_ids:
+                            if not check_access_for_object(
+                                directory,
+                                user,
+                                "read",
+                                dir_ancestors,
+                                dir_oaes,
+                                recursive=global_config["access"][
+                                    "enable_access_recursive_check"
+                                ],
+                            ):
+                                continue
 
-            # Sort results
-            all_results = results["documents"] + results["directories"]
+                        all_results.append(
+                            {
+                                "id": row["id"],
+                                "name": row["name"],
+                                "parent_id": row["parent_id"],
+                                "created_time": row["created_time"],
+                                "type": "directory",
+                            }
+                        )
 
-            def primary_value(item: dict[str, Any]):
-                if sort_by == "name":
-                    return item["name"].lower()
-                if sort_by == "size":
-                    return item.get("size", 0)
-                if sort_by == "last_modified":
-                    return item.get("last_modified", item["created_time"])
-                return item["created_time"]
+                    if len(all_results) >= page_size + 1:
+                        break
 
-            def cursor_key(item: dict[str, Any]) -> list[Any]:
-                type_rank = 0 if item["type"] == "directory" else 1
-                return [primary_value(item), type_rank, item["id"]]
-
-            def compare_keys(left: list[Any], right: list[Any]) -> int:
-                if left[0] != right[0]:
-                    if sort_order == "desc":
-                        return -1 if left[0] > right[0] else 1
-                    return -1 if left[0] < right[0] else 1
-                if left[1] != right[1]:
-                    return -1 if left[1] < right[1] else 1
-                if left[2] != right[2]:
-                    return -1 if left[2] < right[2] else 1
-                return 0
-
-            all_results.sort(
-                key=cmp_to_key(
-                    lambda left, right: compare_keys(
-                        cursor_key(left), cursor_key(right)
-                    )
-                )
-            )
-            if last_key is not None:
-                all_results = [
-                    item
-                    for item in all_results
-                    if compare_keys(cursor_key(item), last_key) > 0
-                ]
+                if len(candidate_rows) < candidate_limit:
+                    break
 
             response_data = make_cursor_response(
-                all_results[: page_size + 1],
+                all_results,
                 page_size=page_size,
                 action="search",
                 sort=sort,
                 filters=filters,
-                cursor_key=cursor_key,
+                cursor_key=lambda item: search_cursor_key(item, sort_by),
             )
             response_data["query"] = query
 

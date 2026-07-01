@@ -20,11 +20,20 @@ def directory_models(protected_test_config):
         os.chdir(src_path)
         import include.database.models.access as blocking
         import include.database.models.keyrings as keyring
-        from include.database.models.documents import Document, DocumentRevision, Folder
+        from include.database.models.documents import (
+            Document,
+            DocumentRevision,
+            EntityStatus,
+            Folder,
+        )
         from include.database.models.files import File
         from include.database.session import Base
-        from include.domains.documents.handlers.directories import (
-            _fetch_latest_active_revisions_by_document,
+        from include.domains.documents.queries.listing import (
+            fetch_deleted_listing_items,
+            fetch_directory_listing_items,
+            fetch_latest_active_revisions_by_document,
+            fetch_search_candidate_rows,
+            search_cursor_key,
         )
     finally:
         os.chdir(original_cwd)
@@ -35,9 +44,14 @@ def directory_models(protected_test_config):
         Base=Base,
         Document=Document,
         DocumentRevision=DocumentRevision,
+        EntityStatus=EntityStatus,
         File=File,
         Folder=Folder,
-        fetch_latest_active_revisions=_fetch_latest_active_revisions_by_document,
+        fetch_deleted_listing_items=fetch_deleted_listing_items,
+        fetch_latest_active_revisions=fetch_latest_active_revisions_by_document,
+        fetch_directory_listing_items=fetch_directory_listing_items,
+        fetch_search_candidate_rows=fetch_search_candidate_rows,
+        search_cursor_key=search_cursor_key,
     )
 
 
@@ -73,6 +87,31 @@ def _document(models, session, doc_id: str, folder_id: str):
     document = models.Document(id=doc_id, title=doc_id, folder_id=folder_id)
     session.add(document)
     session.flush()
+    return document
+
+
+def _active_document(
+    models,
+    session,
+    doc_id: str,
+    *,
+    title: str,
+    created_time: float,
+    revision_created_time: float,
+    size: int = 1,
+):
+    document = models.Document(id=doc_id, title=title, created_time=created_time)
+    session.add(document)
+    session.flush()
+    revision = _revision(
+        models,
+        session,
+        f"{doc_id}-revision",
+        document.id,
+        _file(models, f"{doc_id}-file", active=True, size=size),
+        created_time=revision_created_time,
+    )
+    document.current_revision_id = revision.id
     return document
 
 
@@ -282,3 +321,234 @@ def test_fetch_latest_active_revisions_batches_without_lazy_revision_loads(
         doc_without_current.id: 80,
     }
     assert len(statements) <= 3
+
+
+def test_directory_listing_query_limits_candidates(
+    directory_models,
+    directory_session,
+):
+    parent = directory_models.Folder(id="parent", name="parent")
+    directory_session.add(parent)
+    for index in range(3):
+        directory_session.add(
+            directory_models.Folder(
+                id=f"child-{index}",
+                name=f"Child {index}",
+                parent_id=parent.id,
+            )
+        )
+    directory_session.commit()
+
+    statements = []
+
+    def collect_statement(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(directory_session.bind, "before_cursor_execute", collect_statement)
+    try:
+        items = directory_models.fetch_directory_listing_items(
+            directory_session, parent.id, None, 2
+        )
+    finally:
+        event.remove(directory_session.bind, "before_cursor_execute", collect_statement)
+
+    assert len(items) == 2
+    folder_selects = [
+        statement
+        for statement in statements
+        if "FROM folders" in statement
+        and "parent_id" in statement
+        and "ORDER BY lower" in statement
+    ]
+    assert folder_selects
+    assert all("LIMIT" in statement.upper() for statement in folder_selects)
+
+    second_page = directory_models.fetch_directory_listing_items(
+        directory_session,
+        parent.id,
+        [0, items[0]["name"].lower(), items[0]["id"]],
+        1,
+    )
+    assert len(second_page) == 1
+    assert second_page[0]["id"] != items[0]["id"]
+
+
+def test_deleted_listing_query_limits_candidates(
+    directory_models,
+    directory_session,
+):
+    parent = directory_models.Folder(id="deleted-parent", name="deleted-parent")
+    directory_session.add(parent)
+    for index in range(3):
+        directory_session.add(
+            directory_models.Folder(
+                id=f"deleted-child-{index}",
+                name=f"Deleted Child {index}",
+                parent_id=parent.id,
+                status=directory_models.EntityStatus.DELETED,
+            )
+        )
+    directory_session.commit()
+
+    statements = []
+
+    def collect_statement(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(directory_session.bind, "before_cursor_execute", collect_statement)
+    try:
+        items = directory_models.fetch_deleted_listing_items(
+            directory_session, parent.id, None, 2
+        )
+    finally:
+        event.remove(directory_session.bind, "before_cursor_execute", collect_statement)
+
+    assert len(items) == 2
+    folder_selects = [
+        statement
+        for statement in statements
+        if "FROM folders" in statement
+        and "status" in statement
+        and "ORDER BY lower" in statement
+    ]
+    assert folder_selects
+    assert all("LIMIT" in statement.upper() for statement in folder_selects)
+
+    second_page = directory_models.fetch_deleted_listing_items(
+        directory_session,
+        parent.id,
+        [0, items[0]["name"].lower(), items[0]["id"]],
+        1,
+    )
+    assert len(second_page) == 1
+    assert second_page[0]["id"] != items[0]["id"]
+
+
+def test_search_candidate_query_limits_directory_candidates(
+    directory_models,
+    directory_session,
+):
+    for index in range(3):
+        directory_session.add(
+            directory_models.Folder(
+                id=f"search-folder-{index}",
+                name=f"Limited Search Folder {index}",
+            )
+        )
+    directory_session.commit()
+
+    statements = []
+
+    def collect_statement(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(directory_session.bind, "before_cursor_execute", collect_statement)
+    try:
+        rows = directory_models.fetch_search_candidate_rows(
+            directory_session,
+            query="Limited Search",
+            sort_by="name",
+            sort_order="asc",
+            search_documents=False,
+            search_directories=True,
+            last_key=None,
+            limit=2,
+        )
+    finally:
+        event.remove(directory_session.bind, "before_cursor_execute", collect_statement)
+
+    assert len(rows) == 2
+    assert all(row["type"] == "directory" for row in rows)
+    candidate_selects = [
+        statement
+        for statement in statements
+        if "FROM folders" in statement and "lower" in statement.lower()
+    ]
+    assert candidate_selects
+    assert all("LIMIT" in statement.upper() for statement in candidate_selects)
+
+
+@pytest.mark.parametrize(
+    ("sort_order", "expected_ids"),
+    [
+        (
+            "asc",
+            [
+                "search-folder-old",
+                "search-doc-mid",
+                "search-folder-new",
+                "search-doc-last",
+            ],
+        ),
+        (
+            "desc",
+            [
+                "search-doc-last",
+                "search-folder-new",
+                "search-doc-mid",
+                "search-folder-old",
+            ],
+        ),
+    ],
+)
+def test_search_last_modified_cursor_pages_mixed_candidates(
+    directory_models,
+    directory_session,
+    sort_order,
+    expected_ids,
+):
+    query = "LastModifiedCursor"
+    directory_session.add_all(
+        [
+            directory_models.Folder(
+                id="search-folder-old",
+                name=f"{query} Folder Old",
+                created_time=10,
+            ),
+            directory_models.Folder(
+                id="search-folder-new",
+                name=f"{query} Folder New",
+                created_time=30,
+            ),
+        ]
+    )
+    _active_document(
+        directory_models,
+        directory_session,
+        "search-doc-mid",
+        title=f"{query} Document Mid",
+        created_time=5,
+        revision_created_time=20,
+    )
+    _active_document(
+        directory_models,
+        directory_session,
+        "search-doc-last",
+        title=f"{query} Document Last",
+        created_time=5,
+        revision_created_time=40,
+    )
+    directory_session.commit()
+
+    last_key = None
+    seen_ids = []
+    while True:
+        rows = directory_models.fetch_search_candidate_rows(
+            directory_session,
+            query=query,
+            sort_by="last_modified",
+            sort_order=sort_order,
+            search_documents=True,
+            search_directories=True,
+            last_key=last_key,
+            limit=1,
+        )
+        if not rows:
+            break
+
+        assert len(rows) == 1
+        seen_ids.append(rows[0]["id"])
+        last_key = directory_models.search_cursor_key(rows[0], "last_modified")
+
+    assert seen_ids == expected_ids
+    assert len(seen_ids) == len(set(seen_ids))

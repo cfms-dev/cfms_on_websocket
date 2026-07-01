@@ -3,17 +3,14 @@ import time
 from itertools import batched
 
 import jsonschema
-from sqlalchemy import func, literal, select
-from sqlalchemy.orm import joinedload, raiseload, selectinload
+from sqlalchemy.orm import selectinload
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.models.documents import (
     Document,
-    DocumentRevision,
     EntityStatus,
     Folder,
 )
-from include.database.models.files import File
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
@@ -23,6 +20,11 @@ from include.domains.documents.commands.name_conflicts import (
     handle_name_duplicate,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
+from include.domains.documents.queries.listing import (
+    directory_cursor_key,
+    fetch_deleted_listing_items,
+    fetch_directory_listing_items,
+)
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
@@ -33,140 +35,6 @@ from include.domains.pagination import (
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
-
-
-def _fetch_latest_active_revisions_by_document(
-    session, document_ids: list[str]
-) -> dict[str, DocumentRevision]:
-    if not document_ids:
-        return {}
-
-    revision_ids_by_document: dict[str, str] = {}
-    document_table = Document.__table__
-    revision_table = DocumentRevision.__table__
-    file_table = File.__table__
-
-    for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-        chunk_ids = list(chunk)
-        current_chain_anchor = (
-            select(
-                document_table.c.id.label("document_id"),
-                revision_table.c.id.label("revision_id"),
-                revision_table.c.created_time.label("created_time"),
-                revision_table.c.file_id.label("file_id"),
-                revision_table.c.parent_revision_id.label("parent_revision_id"),
-                file_table.c.active.label("file_active"),
-                literal(0).label("depth"),
-            )
-            .select_from(
-                document_table.join(
-                    revision_table,
-                    document_table.c.current_revision_id == revision_table.c.id,
-                ).join(file_table, revision_table.c.file_id == file_table.c.id)
-            )
-            .where(document_table.c.id.in_(chunk_ids))
-        )
-        current_chain = current_chain_anchor.cte(
-            "current_revision_chain", recursive=True
-        )
-        parent_revision = revision_table.alias("parent_revision")
-        parent_file = file_table.alias("parent_file")
-        current_chain = current_chain.union_all(
-            select(
-                current_chain.c.document_id,
-                parent_revision.c.id,
-                parent_revision.c.created_time,
-                parent_revision.c.file_id,
-                parent_revision.c.parent_revision_id,
-                parent_file.c.active,
-                (current_chain.c.depth + 1).label("depth"),
-            ).select_from(
-                current_chain.join(
-                    parent_revision,
-                    current_chain.c.parent_revision_id == parent_revision.c.id,
-                ).join(parent_file, parent_revision.c.file_id == parent_file.c.id)
-            )
-        )
-        active_current_chain = (
-            select(
-                current_chain.c.document_id,
-                current_chain.c.revision_id,
-                func.row_number()
-                .over(
-                    partition_by=current_chain.c.document_id,
-                    order_by=current_chain.c.depth,
-                )
-                .label("row_number"),
-            )
-            .where(current_chain.c.file_active.is_(True))
-            .subquery()
-        )
-        current_chain_rows = session.execute(
-            select(
-                active_current_chain.c.document_id,
-                active_current_chain.c.revision_id,
-            ).where(active_current_chain.c.row_number == 1)
-        ).all()
-        for document_id, revision_id in current_chain_rows:
-            revision_ids_by_document[document_id] = revision_id
-
-        fallback_document_ids = [
-            document_id
-            for document_id in chunk_ids
-            if document_id not in revision_ids_by_document
-        ]
-        if not fallback_document_ids:
-            continue
-
-        active_revisions = (
-            select(
-                revision_table.c.document_id,
-                revision_table.c.id.label("revision_id"),
-                func.row_number()
-                .over(
-                    partition_by=revision_table.c.document_id,
-                    order_by=revision_table.c.created_time.desc(),
-                )
-                .label("row_number"),
-            )
-            .select_from(
-                revision_table.join(
-                    file_table, revision_table.c.file_id == file_table.c.id
-                )
-            )
-            .where(
-                revision_table.c.document_id.in_(fallback_document_ids),
-                file_table.c.active.is_(True),
-            )
-            .subquery()
-        )
-        fallback_rows = session.execute(
-            select(
-                active_revisions.c.document_id, active_revisions.c.revision_id
-            ).where(active_revisions.c.row_number == 1)
-        ).all()
-        for document_id, revision_id in fallback_rows:
-            revision_ids_by_document[document_id] = revision_id
-
-    if not revision_ids_by_document:
-        return {}
-
-    revisions: list[DocumentRevision] = []
-    revision_ids = list(revision_ids_by_document.values())
-    for chunk in batched(revision_ids, QUERY_CHUNK_SIZE):
-        revisions.extend(
-            session.query(DocumentRevision)
-            .options(joinedload(DocumentRevision.file), raiseload("*"))
-            .filter(DocumentRevision.id.in_(list(chunk)))
-            .all()
-        )
-
-    revisions_by_id = {revision.id: revision for revision in revisions}
-    return {
-        document_id: revisions_by_id[revision_id]
-        for document_id, revision_id in revision_ids_by_document.items()
-        if revision_id in revisions_by_id
-    }
 
 
 class RequestListDirectoryHandler(RequestHandler):
@@ -243,63 +111,21 @@ class RequestListDirectoryHandler(RequestHandler):
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=folder_id, username=handler.username)
 
-            children = (
-                session.query(Folder)
-                .options(raiseload("*"))
-                .filter(Folder.parent_id == folder_id)
-                .all()
-            )
-            documents = (
-                session.query(Document)
-                .options(raiseload("*"))
-                .filter(Document.folder_id == folder_id)
-                .all()
-            )
-            latest_revisions_by_document = _fetch_latest_active_revisions_by_document(
-                session, [document.id for document in documents]
-            )
-
             parent_id = folder.parent_id
-
-            items = [
-                {
-                    "type": "directory",
-                    "id": child.id,
-                    "name": child.name,
-                    "created_time": child.created_time,
-                }
-                for child in children
-            ]
-            items.extend(
-                {
-                    "type": "document",
-                    "id": document.id,
-                    "title": document.title,
-                    "name": document.title,
-                    "created_time": document.created_time,
-                    "last_modified": last_revision.created_time,
-                    "sha256": last_revision.file.sha256,
-                    "size": last_revision.file.size,
-                }
-                for document in documents
-                if (last_revision := latest_revisions_by_document.get(document.id))
+            items = fetch_directory_listing_items(
+                session,
+                folder_id,
+                last_key,
+                page_size + 1,
             )
-
-            def cursor_key(item: dict) -> list:
-                type_rank = 0 if item["type"] == "directory" else 1
-                return [type_rank, item["name"].lower(), item["id"]]
-
-            items.sort(key=cursor_key)
-            if last_key is not None:
-                items = [item for item in items if cursor_key(item) > last_key]
 
             data = make_cursor_response(
-                items[: page_size + 1],
+                items,
                 page_size=page_size,
                 action="list_directory",
                 sort=sort,
                 filters=filters,
-                cursor_key=cursor_key,
+                cursor_key=directory_cursor_key,
             )
             data["parent_id"] = parent_id
             response = {
@@ -1253,63 +1079,20 @@ class RequestListDeletedItemsHandler(RequestHandler):
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=parent_id, username=handler.username)
 
-            deleted_folders = (
-                session.query(Folder)
-                .execution_options(include_deleted=True)
-                .filter(
-                    Folder.parent_id == db_parent_id,
-                    Folder.status == EntityStatus.DELETED,
-                )
-                .all()
+            items = fetch_deleted_listing_items(
+                session,
+                db_parent_id,
+                last_key,
+                page_size + 1,
             )
-
-            deleted_documents = (
-                session.query(Document)
-                .execution_options(include_deleted=True)
-                .filter(
-                    Document.folder_id == db_parent_id,
-                    Document.status == EntityStatus.DELETED,
-                )
-                .all()
-            )
-
-            items = [
-                {
-                    "type": "directory",
-                    "id": f.id,
-                    "name": f.name,
-                    "created_time": f.created_time,
-                    "status_operation_id": f.status_operation_id,
-                }
-                for f in deleted_folders
-            ]
-            items.extend(
-                {
-                    "type": "document",
-                    "id": d.id,
-                    "title": d.title,
-                    "name": d.title,
-                    "created_time": d.created_time,
-                    "status_operation_id": d.status_operation_id,
-                }
-                for d in deleted_documents
-            )
-
-            def cursor_key(item: dict) -> list:
-                type_rank = 0 if item["type"] == "directory" else 1
-                return [type_rank, item["name"].lower(), item["id"]]
-
-            items.sort(key=cursor_key)
-            if last_key is not None:
-                items = [item for item in items if cursor_key(item) > last_key]
 
             result_data = make_cursor_response(
-                items[: page_size + 1],
+                items,
                 page_size=page_size,
                 action="list_deleted_items",
                 sort=sort,
                 filters=filters,
-                cursor_key=cursor_key,
+                cursor_key=directory_cursor_key,
             )
             result_data["parent_id"] = parent_id
 

@@ -1,4 +1,6 @@
 __all__ = [
+    "load_document_access_context",
+    "load_folder_access_context",
     "search_documents_with_access",
     "search_folders_with_access",
 ]
@@ -141,6 +143,26 @@ def search_documents_with_access(
     return documents, ancestor_folders, oae_by_target
 
 
+def load_document_access_context(
+    session: Session,
+    documents: list[Document],
+    now: float | None = None,
+) -> tuple[list[Folder], dict]:
+    if now is None:
+        now = time.time()
+    if not documents:
+        return [], {}
+
+    seed_folder_ids = list({doc.folder_id for doc in documents if doc.folder_id})
+    return _fetch_ancestors_and_oae(
+        session=session,
+        seed_folder_ids=seed_folder_ids,
+        extra_target_ids=[doc.id for doc in documents],
+        exclude_folder_ids=set(),
+        now=now,
+    )
+
+
 # Folder search.
 def search_folders_with_access(
     session: Session,
@@ -186,3 +208,24 @@ def search_folders_with_access(
     )
 
     return matched_folders, ancestor_folders, oae_by_target
+
+
+def load_folder_access_context(
+    session: Session,
+    folders: list[Folder],
+    now: float | None = None,
+) -> tuple[list[Folder], dict]:
+    if now is None:
+        now = time.time()
+    if not folders:
+        return [], {}
+
+    seed_folder_ids = list({folder.parent_id for folder in folders if folder.parent_id})
+    matched_ids = {folder.id for folder in folders}
+    return _fetch_ancestors_and_oae(
+        session=session,
+        seed_folder_ids=seed_folder_ids,
+        extra_target_ids=[folder.id for folder in folders],
+        exclude_folder_ids=matched_ids,
+        now=now,
+    )
