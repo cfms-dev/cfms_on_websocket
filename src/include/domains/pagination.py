@@ -16,7 +16,7 @@ import base64
 import hashlib
 import hmac
 import json
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from include.config.constants import (
@@ -112,11 +112,11 @@ def encode_cursor(
     last: Sequence[Any],
 ) -> str:
     payload = {
-        "v": 1,
-        "action": action,
-        "sort": sort,
-        "filters": _filters_hash(filters),
-        "last": list(last),
+        "v": 2,
+        "a": action,
+        "s": sort,
+        "f": _filters_hash(filters),
+        "k": list(last),
     }
     payload["sig"] = _sign_payload(payload)
     return _b64_encode(payload)
@@ -146,19 +146,27 @@ def decode_cursor(
         raise CursorError("Invalid cursor")
 
     if (
-        payload.get("v") != 1
-        or payload.get("action") != action
-        or payload.get("sort") != sort
-        or payload.get("filters") != _filters_hash(filters)
+        payload.get("v") != 2
+        or payload.get("a") != action
+        or payload.get("s") != sort
+        or payload.get("f") != _filters_hash(filters)
     ):
         raise CursorError("Cursor does not match this request")
 
-    last = payload.get("last")
+    last = payload.get("k")
     if not isinstance(last, list):
         raise CursorError("Invalid cursor")
     if value_types is not None:
         require_cursor_types(last, value_types)
     return last
+
+
+def _strip_internal_pagination_fields(item: Any) -> Any:
+    if isinstance(item, Mapping):
+        return {
+            key: value for key, value in item.items() if not str(key).startswith("_")
+        }
+    return item
 
 
 def get_page_size(data: dict[str, Any]) -> int:
@@ -221,7 +229,7 @@ def make_cursor_response[T](
         )
 
     return {
-        "items": page_items,
+        "items": [_strip_internal_pagination_fields(item) for item in page_items],
         "page_size": page_size,
         "next_cursor": next_cursor,
         "has_more": has_more,

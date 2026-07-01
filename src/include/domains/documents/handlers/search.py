@@ -229,6 +229,7 @@ class RequestSearchHandler(RequestHandler):
                                 "last_modified": row["last_modified"],
                                 "size": row.get("size") or 0,
                                 "type": "document",
+                                "_cursor_key": search_cursor_key(row, sort_by),
                             }
                         )
                     else:
@@ -255,6 +256,7 @@ class RequestSearchHandler(RequestHandler):
                                 "parent_id": row["parent_id"],
                                 "created_time": row["created_time"],
                                 "type": "directory",
+                                "_cursor_key": search_cursor_key(row, sort_by),
                             }
                         )
 

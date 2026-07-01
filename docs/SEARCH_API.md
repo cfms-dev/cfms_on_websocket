@@ -95,6 +95,10 @@ Document items additionally include `last_modified` and `size`.
 parameters, including query, target type filters, and sorting. Reusing a cursor
 with different parameters returns 400.
 
+The cursor token format is internal and not part of the public protocol. Clients
+must store and replay the complete token as returned, without decoding,
+modifying, or depending on individual fields.
+
 To fetch the next page, repeat the same request data and set `cursor` to the
 previous response's `next_cursor`.
 

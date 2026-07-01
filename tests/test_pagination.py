@@ -52,6 +52,12 @@ def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
             filters={"folder_id": "root"},
             last=[0, "alpha", "id-1"],
         )
+        payload = _decode_token(token)
+        assert payload["v"] == 2
+        assert payload["a"] == "list_directory"
+        assert payload["s"] == "type_name_id:asc"
+        assert payload["k"] == [0, "alpha", "id-1"]
+        assert "last" not in payload
 
         assert pagination.decode_cursor(
             token,
@@ -71,10 +77,26 @@ def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
             )
 
         tampered_payload = _decode_token(token)
-        tampered_payload["last"] = [1, "omega", "id-9"]
+        tampered_payload["k"] = [1, "omega", "id-9"]
         with pytest.raises(pagination.CursorError):
             pagination.decode_cursor(
                 _encode_token(tampered_payload),
+                action="list_directory",
+                sort="type_name_id:asc",
+                filters={"folder_id": "root"},
+            )
+
+        old_shape_payload = {
+            "v": 1,
+            "action": "list_directory",
+            "sort": "type_name_id:asc",
+            "filters": payload["f"],
+            "last": [0, "alpha", "id-1"],
+        }
+        old_shape_payload["sig"] = pagination._sign_payload(old_shape_payload)
+        with pytest.raises(pagination.CursorError):
+            pagination.decode_cursor(
+                _encode_token(old_shape_payload),
                 action="list_directory",
                 sort="type_name_id:asc",
                 filters={"folder_id": "root"},
@@ -102,5 +124,15 @@ def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
                 sort="type_name_id:asc",
                 filters={"folder_id": "root"},
             )
+
+        response = pagination.make_cursor_response(
+            [{"id": "id-1", "_cursor_key": [0, "alpha", "id-1"]}],
+            page_size=1,
+            action="list_directory",
+            sort="type_name_id:asc",
+            filters={"folder_id": "root"},
+            cursor_key=lambda item: item["_cursor_key"],
+        )
+        assert response["items"] == [{"id": "id-1"}]
     finally:
         _restore_modules(pagination, previous_modules)

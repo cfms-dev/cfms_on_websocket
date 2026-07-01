@@ -29,6 +29,7 @@ def directory_models(protected_test_config):
         from include.database.models.files import File
         from include.database.session import Base
         from include.domains.documents.queries.listing import (
+            directory_cursor_key,
             fetch_deleted_listing_items,
             fetch_directory_listing_items,
             fetch_latest_active_revisions_by_document,
@@ -47,6 +48,7 @@ def directory_models(protected_test_config):
         EntityStatus=EntityStatus,
         File=File,
         Folder=Folder,
+        directory_cursor_key=directory_cursor_key,
         fetch_deleted_listing_items=fetch_deleted_listing_items,
         fetch_latest_active_revisions=fetch_latest_active_revisions_by_document,
         fetch_directory_listing_items=fetch_directory_listing_items,
@@ -366,7 +368,7 @@ def test_directory_listing_query_limits_candidates(
     second_page = directory_models.fetch_directory_listing_items(
         directory_session,
         parent.id,
-        [0, items[0]["name"].lower(), items[0]["id"]],
+        directory_models.directory_cursor_key(items[0]),
         1,
     )
     assert len(second_page) == 1
@@ -417,7 +419,7 @@ def test_deleted_listing_query_limits_candidates(
     second_page = directory_models.fetch_deleted_listing_items(
         directory_session,
         parent.id,
-        [0, items[0]["name"].lower(), items[0]["id"]],
+        directory_models.directory_cursor_key(items[0]),
         1,
     )
     assert len(second_page) == 1
@@ -552,3 +554,58 @@ def test_search_last_modified_cursor_pages_mixed_candidates(
 
     assert seen_ids == expected_ids
     assert len(seen_ids) == len(set(seen_ids))
+
+
+def test_search_name_cursor_uses_database_sort_key_for_unicode(
+    directory_models,
+    directory_session,
+):
+    query = "UnicodeCursor"
+    for item_id, suffix in [
+        ("unicode-folder-omega", "\u03a9"),
+        ("unicode-folder-sigma", "\u03a3"),
+        ("unicode-folder-dotted-i", "\u0130"),
+        ("unicode-folder-sharp-s", "\u00df"),
+        ("unicode-folder-z", "Z"),
+        ("unicode-folder-i", "i"),
+        ("unicode-folder-a-upper", "A"),
+        ("unicode-folder-a-lower", "a"),
+    ]:
+        directory_session.add(
+            directory_models.Folder(
+                id=item_id,
+                name=f"{query} {suffix}",
+            )
+        )
+    directory_session.commit()
+
+    last_key = None
+    seen_ids = []
+    while True:
+        rows = directory_models.fetch_search_candidate_rows(
+            directory_session,
+            query=query,
+            sort_by="name",
+            sort_order="desc",
+            search_documents=False,
+            search_directories=True,
+            last_key=last_key,
+            limit=1,
+        )
+        if not rows:
+            break
+
+        assert len(rows) == 1
+        seen_ids.append(rows[0]["id"])
+        last_key = directory_models.search_cursor_key(rows[0], "name")
+
+    assert seen_ids == [
+        "unicode-folder-omega",
+        "unicode-folder-sigma",
+        "unicode-folder-dotted-i",
+        "unicode-folder-sharp-s",
+        "unicode-folder-z",
+        "unicode-folder-i",
+        "unicode-folder-a-lower",
+        "unicode-folder-a-upper",
+    ]

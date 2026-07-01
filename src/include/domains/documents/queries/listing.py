@@ -17,19 +17,27 @@ from include.database.models.documents import (
 )
 from include.database.models.files import File
 
+_CURSOR_KEY = "_cursor_key"
+
 
 def _lowered(value: str) -> str:
     return value.lower()
 
 
 def directory_cursor_key(item: dict[str, Any]) -> list[Any]:
+    if _CURSOR_KEY in item:
+        return list(item[_CURSOR_KEY])
     type_rank = 0 if item["type"] == "directory" else 1
     return [type_rank, _lowered(item["name"]), item["id"]]
 
 
 def search_cursor_key(item: dict[str, Any], sort_by: str) -> list[Any]:
+    if _CURSOR_KEY in item:
+        return list(item[_CURSOR_KEY])
     if sort_by == "name":
-        primary = _lowered(item["name"])
+        primary = item.get("name_sort_key")
+        if primary is None:
+            primary = _lowered(item["name"])
     elif sort_by == "size":
         primary = item.get("size", 0) or 0
     elif sort_by == "last_modified":
@@ -41,6 +49,30 @@ def search_cursor_key(item: dict[str, Any], sort_by: str) -> list[Any]:
 
     type_rank = 0 if item["type"] == "directory" else 1
     return [primary, type_rank, item["id"]]
+
+
+def _directory_item_cursor_key(
+    type_rank: int, name_sort_key: str, item_id: str
+) -> list[Any]:
+    return [type_rank, name_sort_key, item_id]
+
+
+def _search_item_cursor_key(
+    item: dict[str, Any],
+    sort_by: str,
+) -> list[Any]:
+    if sort_by == "name":
+        primary = item["name_sort_key"]
+    elif sort_by == "size":
+        primary = item.get("size", 0) or 0
+    elif sort_by == "last_modified":
+        primary = item.get("last_modified")
+        if primary is None:
+            primary = item["created_time"]
+    else:
+        primary = item["created_time"]
+
+    return [primary, item["type_rank"], item["id"]]
 
 
 def _name_id_after_filter(name_expression, id_column, last_name: str, last_id: str):
@@ -202,6 +234,7 @@ def _fetch_directory_rows(session, folder_id: str, last_key, limit: int):
         Folder.id,
         Folder.name,
         Folder.created_time,
+        name_expression.label("name_sort_key"),
     ).filter(Folder.parent_id == folder_id, Folder.status != EntityStatus.DELETED)
     if last_key is not None:
         _, last_name, last_id = last_key
@@ -229,6 +262,7 @@ def _fetch_document_rows(
         Document.title,
         Document.created_time,
         Document.status_operation_id,
+        name_expression.label("name_sort_key"),
     ).filter(Document.folder_id == folder_id)
     if include_deleted:
         query = query.execution_options(include_deleted=True).filter(
@@ -260,6 +294,7 @@ def fetch_directory_listing_items(
             "id": row.id,
             "name": row.name,
             "created_time": row.created_time,
+            _CURSOR_KEY: _directory_item_cursor_key(0, row.name_sort_key, row.id),
         }
         for row in folder_rows
     )
@@ -282,6 +317,7 @@ def fetch_directory_listing_items(
             "last_modified": latest_revision.created_time,
             "sha256": latest_revision.file.sha256,
             "size": latest_revision.file.size,
+            _CURSOR_KEY: _directory_item_cursor_key(1, row.name_sort_key, row.id),
         }
         for row in document_rows
         if (latest_revision := latest_revisions_by_document.get(row.id))
@@ -293,17 +329,18 @@ def fetch_deleted_listing_items(
     session, folder_id: str, last_key: list[Any] | None, limit: int
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    name_expression = func.lower(Folder.name)
     folder_rows = (
         session.query(
             Folder.id,
             Folder.name,
             Folder.created_time,
             Folder.status_operation_id,
+            name_expression.label("name_sort_key"),
         )
         .execution_options(include_deleted=True)
         .filter(Folder.parent_id == folder_id, Folder.status == EntityStatus.DELETED)
     )
-    name_expression = func.lower(Folder.name)
     if last_key is not None and last_key[0] == 0:
         _, last_name, last_id = last_key
         folder_rows = folder_rows.filter(
@@ -325,6 +362,7 @@ def fetch_deleted_listing_items(
                 "name": row.name,
                 "created_time": row.created_time,
                 "status_operation_id": row.status_operation_id,
+                _CURSOR_KEY: _directory_item_cursor_key(0, row.name_sort_key, row.id),
             }
             for row in rows
         )
@@ -348,6 +386,7 @@ def fetch_deleted_listing_items(
             "name": row.title,
             "created_time": row.created_time,
             "status_operation_id": row.status_operation_id,
+            _CURSOR_KEY: _directory_item_cursor_key(1, row.name_sort_key, row.id),
         }
         for row in document_rows
     )
@@ -478,6 +517,7 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
         select(
             matched_documents.c.id.label("id"),
             matched_documents.c.title.label("name"),
+            func.lower(matched_documents.c.title).label("name_sort_key"),
             matched_documents.c.folder_id.label("parent_id"),
             matched_documents.c.created_time.label("created_time"),
             effective_ranked.c.revision_created_time.label("last_modified"),
@@ -530,7 +570,7 @@ def _search_ordering(selectable, primary_column, sort_order: str):
 
 def _search_primary_column(selectable, sort_by: str):
     if sort_by == "name":
-        return func.lower(selectable.c.name)
+        return selectable.c.name_sort_key
     if sort_by == "size":
         return func.coalesce(selectable.c.size, 0)
     if sort_by == "last_modified":
@@ -557,6 +597,7 @@ def fetch_search_candidate_rows(
             select(
                 Folder.id.label("id"),
                 Folder.name.label("name"),
+                func.lower(Folder.name).label("name_sort_key"),
                 Folder.parent_id.label("parent_id"),
                 Folder.created_time.label("created_time"),
                 literal(None).label("last_modified"),
@@ -580,9 +621,11 @@ def fetch_search_candidate_rows(
         folder_query = folder_query.order_by(
             *_search_ordering(folder_selectable, primary_column, sort_order)
         ).limit(limit)
-        candidate_rows.extend(
-            dict(row) for row in session.execute(folder_query).mappings()
-        )
+        for row in session.execute(folder_query).mappings():
+            item = dict(row)
+            item[_CURSOR_KEY] = _search_item_cursor_key(item, sort_by)
+            item.pop("name_sort_key", None)
+            candidate_rows.append(item)
 
     if search_documents:
         document_details = _effective_active_revision_details_subquery(
@@ -601,9 +644,11 @@ def fetch_search_candidate_rows(
         document_query = document_query.order_by(
             *_search_ordering(document_details, primary_column, sort_order)
         ).limit(limit)
-        candidate_rows.extend(
-            dict(row) for row in session.execute(document_query).mappings()
-        )
+        for row in session.execute(document_query).mappings():
+            item = dict(row)
+            item[_CURSOR_KEY] = _search_item_cursor_key(item, sort_by)
+            item.pop("name_sort_key", None)
+            candidate_rows.append(item)
 
     def compare_rows(left: dict[str, Any], right: dict[str, Any]) -> int:
         left_key = search_cursor_key(left, sort_by)
