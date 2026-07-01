@@ -30,7 +30,6 @@ from include.domains.pagination import (
     decode_cursor,
     get_page_size,
     make_cursor_response,
-    require_cursor_length,
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
@@ -239,8 +238,8 @@ class RequestListDirectoryHandler(RequestHandler):
                     action="list_directory",
                     sort=sort,
                     filters=filters,
+                    value_types=[int, str, str],
                 )
-                require_cursor_length(last_key, 3)
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=folder_id, username=handler.username)
@@ -1249,8 +1248,8 @@ class RequestListDeletedItemsHandler(RequestHandler):
                     action="list_deleted_items",
                     sort=sort,
                     filters=filters,
+                    value_types=[int, str, str],
                 )
-                require_cursor_length(last_key, 3)
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=parent_id, username=handler.username)

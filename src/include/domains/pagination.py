@@ -1,6 +1,7 @@
 __all__ = [
     "CURSOR_PAGINATION_SCHEMA",
     "OFFSET_PAGINATION_SCHEMA",
+    "PAGINATION_CURSOR_MAX_LENGTH",
     "CursorError",
     "decode_cursor",
     "encode_cursor",
@@ -8,10 +9,12 @@ __all__ = [
     "get_offset_pagination",
     "make_cursor_response",
     "require_cursor_length",
+    "require_cursor_types",
 ]
 
 import base64
 import hashlib
+import hmac
 import json
 from typing import Any, Callable, Iterable, Sequence, TypeVar
 
@@ -19,6 +22,9 @@ from include.config.constants import (
     PAGINATION_DEFAULT_PAGE_SIZE,
     PAGINATION_MAX_PAGE_SIZE,
 )
+from include.config.settings import global_config
+
+PAGINATION_CURSOR_MAX_LENGTH = 2048
 
 CURSOR_PAGINATION_SCHEMA = {
     "page_size": {
@@ -26,11 +32,26 @@ CURSOR_PAGINATION_SCHEMA = {
         "minimum": 1,
         "maximum": PAGINATION_MAX_PAGE_SIZE,
     },
-    "cursor": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "cursor": {
+        "anyOf": [
+            {"type": "string", "maxLength": PAGINATION_CURSOR_MAX_LENGTH},
+            {"type": "null"},
+        ]
+    },
 }
 
+# Offset pagination schema is used for endpoints that support offset-based
+# pagination. It defines the structure of the request parameters for offset
+# and count, which are used to retrieve a specific subset of results from a
+# larger dataset.
+#
+# The schema enforces that the offset is a non-negative integer and that
+# the count is a positive integer within the maximum page size limit.
+#
+# NOTE: Currently the maximum offset is hardcoded to 2^15 - 1 (32767).
+# If the actual data exceeds this limit, the excess portion will be inaccessible.
 OFFSET_PAGINATION_SCHEMA = {
-    "offset": {"type": "integer", "minimum": 0},
+    "offset": {"type": "integer", "minimum": 0, "maximum": 2**15 - 1},
     "count": {
         "type": "integer",
         "minimum": 1,
@@ -39,6 +60,7 @@ OFFSET_PAGINATION_SCHEMA = {
 }
 
 T = TypeVar("T")
+CursorValueType = type | tuple[type, ...]
 
 
 class CursorError(ValueError):
@@ -46,12 +68,26 @@ class CursorError(ValueError):
 
 
 def _filters_hash(filters: dict[str, Any]) -> str:
-    encoded = json.dumps(filters, sort_keys=True, separators=(",", ":")).encode()
+    encoded = _canonical_json(filters)
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _canonical_json(payload: Any) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _cursor_secret() -> bytes:
+    return str(global_config["server"]["secret_key"]).encode()
+
+
+def _sign_payload(payload: dict[str, Any]) -> str:
+    return hmac.new(
+        _cursor_secret(), _canonical_json(payload), hashlib.sha256
+    ).hexdigest()
+
+
 def _b64_encode(payload: dict[str, Any]) -> str:
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    raw = _canonical_json(payload)
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
@@ -75,15 +111,15 @@ def encode_cursor(
     filters: dict[str, Any],
     last: Sequence[Any],
 ) -> str:
-    return _b64_encode(
-        {
-            "v": 1,
-            "action": action,
-            "sort": sort,
-            "filters": _filters_hash(filters),
-            "last": list(last),
-        }
-    )
+    payload = {
+        "v": 1,
+        "action": action,
+        "sort": sort,
+        "filters": _filters_hash(filters),
+        "last": list(last),
+    }
+    payload["sig"] = _sign_payload(payload)
+    return _b64_encode(payload)
 
 
 def decode_cursor(
@@ -92,11 +128,23 @@ def decode_cursor(
     action: str,
     sort: str,
     filters: dict[str, Any],
+    value_types: Sequence[CursorValueType] | None = None,
 ) -> list[Any] | None:
     if cursor is None:
         return None
 
+    if len(cursor) > PAGINATION_CURSOR_MAX_LENGTH:
+        raise CursorError("Invalid cursor")
+
     payload = _b64_decode(cursor)
+    signature = payload.get("sig")
+    if not isinstance(signature, str):
+        raise CursorError("Invalid cursor")
+
+    unsigned_payload = {k: v for k, v in payload.items() if k != "sig"}
+    if not hmac.compare_digest(signature, _sign_payload(unsigned_payload)):
+        raise CursorError("Invalid cursor")
+
     if (
         payload.get("v") != 1
         or payload.get("action") != action
@@ -108,6 +156,8 @@ def decode_cursor(
     last = payload.get("last")
     if not isinstance(last, list):
         raise CursorError("Invalid cursor")
+    if value_types is not None:
+        require_cursor_types(last, value_types)
     return last
 
 
@@ -125,6 +175,28 @@ def get_offset_pagination(data: dict[str, Any]) -> tuple[int, int]:
 def require_cursor_length(last: list[Any] | None, length: int) -> None:
     if last is not None and len(last) != length:
         raise CursorError("Invalid cursor")
+
+
+def _matches_cursor_type(value: Any, expected: CursorValueType) -> bool:
+    if isinstance(expected, tuple):
+        return any(_matches_cursor_type(value, option) for option in expected)
+    if expected in (int, float):
+        return isinstance(value, expected) and not isinstance(value, bool)
+    return isinstance(value, expected)
+
+
+def require_cursor_types(
+    last: list[Any] | None, value_types: Sequence[CursorValueType]
+) -> None:
+    if last is None:
+        return
+
+    if len(last) != len(value_types):
+        raise CursorError("Invalid cursor")
+
+    for value, expected in zip(last, value_types):
+        if not _matches_cursor_type(value, expected):
+            raise CursorError("Invalid cursor")
 
 
 def make_cursor_response(

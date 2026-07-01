@@ -24,11 +24,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import selectinload
 
-from include.config.constants import (
-    AVAILABLE_BLOCK_TYPES,
-    PAGINATION_DEFAULT_PAGE_SIZE,
-    PAGINATION_MAX_PAGE_SIZE,
-)
+from include.config.constants import AVAILABLE_BLOCK_TYPES
 from include.config.settings import global_config
 from include.database.models.access import (
     UserBlockEntry,
@@ -52,11 +48,12 @@ from include.domains.identity.validators.passwords import (
 )
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
+    OFFSET_PAGINATION_SCHEMA,
     CursorError,
     decode_cursor,
+    get_offset_pagination,
     get_page_size,
     make_cursor_response,
-    require_cursor_length,
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
@@ -71,12 +68,7 @@ class RequestListUsersHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "offset": {"type": "integer", "minimum": 0},
-            "count": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": PAGINATION_MAX_PAGE_SIZE,
-            },
+            **OFFSET_PAGINATION_SCHEMA,
         },
         "additionalProperties": False,
     }
@@ -84,8 +76,7 @@ class RequestListUsersHandler(RequestHandler):
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
-        offset = handler.data.get("offset", 0)
-        count = handler.data.get("count", PAGINATION_DEFAULT_PAGE_SIZE)
+        offset, count = get_offset_pagination(handler.data)
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -592,8 +583,8 @@ class RequestListUserBlocksHandler(RequestHandler):
                     action="list_user_blocks",
                     sort=sort,
                     filters=filters,
+                    value_types=[(int, float), str],
                 )
-                require_cursor_length(last_key, 2)
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(

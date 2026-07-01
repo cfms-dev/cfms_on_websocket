@@ -30,7 +30,6 @@ from include.domains.pagination import (
     decode_cursor,
     get_page_size,
     make_cursor_response,
-    require_cursor_length,
 )
 from include.exceptions.misc import NoActiveRevisionsError
 from include.transport.connection import ConnectionHandler
@@ -101,9 +100,12 @@ class RequestSearchHandler(RequestHandler):
         sort = f"{sort_by}:{sort_order}"
         try:
             last_key = decode_cursor(
-                cursor, action="search", sort=sort, filters=filters
+                cursor,
+                action="search",
+                sort=sort,
+                filters=filters,
+                value_types=[(int, float, str), int, str],
             )
-            require_cursor_length(last_key, 3)
         except CursorError as exc:
             handler.conclude_request(400, {}, str(exc))
             return Result(code=400, target=query, username=handler.username)
