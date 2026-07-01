@@ -5,7 +5,7 @@ Revises: 4d21b1e591d3
 Create Date: 2026-03-12 13:07:13.043343
 
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 from alembic import op
 import sqlalchemy as sa
@@ -13,9 +13,9 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '5d459d56bf38'
-down_revision: Union[str, Sequence[str], None] = '4d21b1e591d3'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = '4d21b1e591d3'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

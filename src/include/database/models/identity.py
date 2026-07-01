@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import secrets
 import time
+from collections.abc import Callable, Iterable
 from enum import IntEnum
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Iterable, List, Optional, Set, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import jwt
 import orjson
@@ -49,7 +52,7 @@ class UserStatus(IntEnum):
 
 
 def _permission_grants_and_revocations(
-    permission_entries: Iterable[Any], now: Optional[float] = None
+    permission_entries: Iterable[Any], now: float | None = None
 ) -> tuple[set, set]:
     if now is None:
         now = time.time()
@@ -68,7 +71,7 @@ def _permission_grants_and_revocations(
 
 
 def _effective_permissions(
-    permission_entries: Iterable[Any], now: Optional[float] = None
+    permission_entries: Iterable[Any], now: float | None = None
 ) -> set:
     granted_permissions, revoked_permissions = _permission_grants_and_revocations(
         permission_entries, now
@@ -101,15 +104,13 @@ class User(Base):
     passwd_last_modified: Mapped[float] = mapped_column(
         Float, default=0, nullable=False
     )
-    nickname: Mapped[Optional[str]] = mapped_column(VARCHAR(255), nullable=True)
+    nickname: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
-    avatar_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("files.id"), nullable=True
-    )
-    avatar: Mapped[Optional["File"]] = relationship("File")
+    avatar_id: Mapped[str | None] = mapped_column(ForeignKey("files.id"), nullable=True)
+    avatar: Mapped[File | None] = relationship("File")
 
-    last_login: Mapped[Optional[float]] = mapped_column(Float)
-    created_time: Mapped[Optional[float]] = mapped_column(Float, nullable=False)
+    last_login: Mapped[float | None] = mapped_column(Float)
+    created_time: Mapped[float | None] = mapped_column(Float, nullable=False)
 
     status: Mapped[UserStatus] = mapped_column(
         Integer, default=UserStatus.ACTIVE.value, nullable=False
@@ -123,35 +124,35 @@ class User(Base):
     )
 
     # Two-Factor Authentication (TOTP) fields
-    totp_secret: Mapped[Optional[str]] = mapped_column(
+    totp_secret: Mapped[str | None] = mapped_column(
         VARCHAR(32), nullable=True, default=None
     )
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    totp_backup_codes: Mapped[Optional[str]] = mapped_column(
+    totp_backup_codes: Mapped[str | None] = mapped_column(
         Text, nullable=True, default=None
     )  # JSON string of backup codes
 
-    groups: Mapped[List["UserMembership"]] = relationship(
+    groups: Mapped[list[UserMembership]] = relationship(
         "UserMembership", back_populates="user", cascade="all, delete-orphan"
     )
-    rights: Mapped[List["UserPermission"]] = relationship(
+    rights: Mapped[list[UserPermission]] = relationship(
         "UserPermission", back_populates="user", cascade="all, delete-orphan"
     )
 
-    block_entries: Mapped[List["UserBlockEntry"]] = relationship(
+    block_entries: Mapped[list[UserBlockEntry]] = relationship(
         "UserBlockEntry", back_populates="user", cascade="all, delete-orphan"
     )
-    audit_entries: Mapped[List["AuditEntry"]] = relationship(
+    audit_entries: Mapped[list[AuditEntry]] = relationship(
         "AuditEntry", back_populates="user"
     )
-    keyring: Mapped[List["UserKey"]] = relationship(
+    keyring: Mapped[list[UserKey]] = relationship(
         "UserKey",
         back_populates="user",
         foreign_keys="UserKey.username",
         cascade="all, delete-orphan",
     )
 
-    preference_dek_id: Mapped[Optional[str]] = mapped_column(
+    preference_dek_id: Mapped[str | None] = mapped_column(
         VARCHAR(64),
         ForeignKey(
             "keyrings.id",
@@ -162,7 +163,7 @@ class User(Base):
         nullable=True,
         unique=True,
     )
-    preference_dek: Mapped[Optional["UserKey"]] = relationship(
+    preference_dek: Mapped[UserKey | None] = relationship(
         "UserKey",
         uselist=False,
         post_update=True,
@@ -182,9 +183,7 @@ class User(Base):
         except (VerifyMismatchError, VerificationError, InvalidHashError):
             return False
 
-    def authenticate(
-        self, plain_password: str, totp_token: Optional[str] = None
-    ) -> bool:
+    def authenticate(self, plain_password: str, totp_token: str | None = None) -> bool:
         if not self.verify_password(plain_password):
             return False
 
@@ -200,8 +199,8 @@ class User(Base):
         return True
 
     def authenticate_and_create_token(
-        self, plain_password: str, totp_token: Optional[str] = None
-    ) -> Optional[Token]:
+        self, plain_password: str, totp_token: str | None = None
+    ) -> Token | None:
         if not self.authenticate(plain_password, totp_token=totp_token):
             return None  # exceptions should be handled by caller
 
@@ -372,7 +371,7 @@ class User(Base):
         return False
 
     @property
-    def totp_provisioning_uri(self) -> Optional[str]:
+    def totp_provisioning_uri(self) -> str | None:
         """
         Get the TOTP provisioning URI for QR code generation.
         """
@@ -411,7 +410,7 @@ class User(Base):
         # session.commit()
 
     @property
-    def own_permissions(self) -> Set[Permissions]:
+    def own_permissions(self) -> set[Permissions]:
         return _effective_permissions(self.rights)
 
     @own_permissions.setter
@@ -434,7 +433,7 @@ class User(Base):
         )
 
     def _group_permission_grants_and_revocations(
-        self, now: Optional[float] = None
+        self, now: float | None = None
     ) -> tuple[set, set]:
         if now is None:
             now = time.time()
@@ -466,14 +465,14 @@ class User(Base):
         return group_granted_perms, group_revoked_perms
 
     @property
-    def inherited_permissions(self) -> Set[Permissions]:
+    def inherited_permissions(self) -> set[Permissions]:
         group_granted_perms, group_revoked_perms = (
             self._group_permission_grants_and_revocations()
         )
         return group_granted_perms - group_revoked_perms
 
     @cached_property
-    def all_permissions(self) -> Set[Permissions]:
+    def all_permissions(self) -> set[Permissions]:
         now = time.time()
         user_granted_perms, revoked_perms = _permission_grants_and_revocations(
             self.rights, now
@@ -498,13 +497,13 @@ class UserPermission(Base):
     granted: Mapped[bool] = mapped_column(
         Boolean, default=True
     )  # True grants the permission; False revokes it.
-    start_time: Mapped[Optional[float]] = mapped_column(
+    start_time: Mapped[float | None] = mapped_column(
         Float, nullable=False
     )  # Permission start timestamp.
-    end_time: Mapped[Optional[float]] = mapped_column(
+    end_time: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )  # Permission end timestamp.
-    user: Mapped["User"] = relationship("User", back_populates="rights")
+    user: Mapped[User] = relationship("User", back_populates="rights")
 
     def __repr__(self) -> str:
         return (
@@ -541,11 +540,11 @@ class UserMembership(Base):
         ForeignKey("user_groups.group_name", ondelete="CASCADE")
     )
     start_time: Mapped[float] = mapped_column(Float, nullable=False)  # Join timestamp.
-    end_time: Mapped[Optional[float]] = mapped_column(
+    end_time: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )  # Leave timestamp.
-    user: Mapped["User"] = relationship("User", back_populates="groups")
-    group: Mapped["UserGroup"] = relationship("UserGroup", back_populates="memberships")
+    user: Mapped[User] = relationship("User", back_populates="groups")
+    group: Mapped[UserGroup] = relationship("UserGroup", back_populates="memberships")
 
     def __repr__(self) -> str:
         return (
@@ -566,19 +565,17 @@ def filter_expired_group(user, group, initiator):
 class UserGroup(Base):
     __tablename__ = "user_groups"
     group_name: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
-    group_display_name: Mapped[Optional[str]] = mapped_column(
-        VARCHAR(128), nullable=True
-    )
+    group_display_name: Mapped[str | None] = mapped_column(VARCHAR(128), nullable=True)
 
-    permissions: Mapped[List["UserGroupPermission"]] = relationship(
+    permissions: Mapped[list[UserGroupPermission]] = relationship(
         "UserGroupPermission", back_populates="group", cascade="all, delete-orphan"
     )
-    memberships: Mapped[List["UserMembership"]] = relationship(
+    memberships: Mapped[list[UserMembership]] = relationship(
         "UserMembership", back_populates="group", cascade="all, delete"
     )
 
     @property
-    def all_permissions(self) -> Set[str]:
+    def all_permissions(self) -> set[str]:
         return _effective_permissions(self.permissions)
 
     @all_permissions.setter
@@ -636,13 +633,13 @@ class UserGroupPermission(Base):
     granted: Mapped[bool] = mapped_column(
         Boolean, default=True
     )  # True grants the permission; False revokes it.
-    start_time: Mapped[Optional[float]] = mapped_column(
+    start_time: Mapped[float | None] = mapped_column(
         Float, nullable=False, default=0.0
     )  # Permission start timestamp.
-    end_time: Mapped[Optional[float]] = mapped_column(
+    end_time: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )  # Permission end timestamp.
-    group: Mapped["UserGroup"] = relationship("UserGroup", back_populates="permissions")
+    group: Mapped[UserGroup] = relationship("UserGroup", back_populates="permissions")
 
     def __repr__(self) -> str:
         return (

@@ -5,7 +5,6 @@ __all__ = [
 
 import time
 from collections import defaultdict
-from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
@@ -32,7 +31,7 @@ def _fetch_ancestors_and_oae(
 
     Returns:
         ancestor_folders: Ancestor folders excluding exclude_folder_ids.
-        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
+        oae_by_target: dict[target_id, list[ObjectAccessEntry]].
     """
     if not seed_folder_ids:
         # No ancestors need lookup, such as when all documents are in root.
@@ -104,7 +103,7 @@ def _fetch_ancestors_and_oae(
 def search_documents_with_access(
     session: Session,
     keyword: str,
-    now: Optional[float] = None,
+    now: float | None = None,
 ) -> tuple[list[Document], list[Folder], dict]:
     """
     Search document titles by keyword and preload ancestor access data.
@@ -112,7 +111,7 @@ def search_documents_with_access(
     Returns:
         documents: Matched documents with access_rules preloaded.
         folders: All ancestor folders with access_rules preloaded.
-        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
+        oae_by_target: dict[target_id, list[ObjectAccessEntry]].
     """
     if now is None:
         now = time.time()
@@ -146,7 +145,7 @@ def search_documents_with_access(
 def search_folders_with_access(
     session: Session,
     keyword: str,
-    now: Optional[float] = None,
+    now: float | None = None,
 ) -> tuple[list[Folder], list[Folder], dict]:
     """
     Search folder names by keyword and preload ancestor access data.
@@ -155,7 +154,7 @@ def search_folders_with_access(
         matched_folders: Matched folders with access_rules preloaded.
         ancestor_folders: Ancestor folders with access_rules preloaded,
             excluding matched folders.
-        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
+        oae_by_target: dict[target_id, list[ObjectAccessEntry]].
     """
     if now is None:
         now = time.time()

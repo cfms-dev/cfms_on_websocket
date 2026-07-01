@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from types import TracebackType
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, ClassVar
 
 
 class Provider(ABC):
@@ -60,7 +61,7 @@ class FileObject(AbstractContextManager["FileObject"]):
     def tell(self) -> int:
         raise NotImplementedError
 
-    def truncate(self, size: Optional[int] = None, /) -> int:
+    def truncate(self, size: int | None = None, /) -> int:
         raise NotImplementedError
 
 
@@ -125,7 +126,7 @@ class CachingProvider(Provider):
 
     @abstractmethod
     def set(
-        self, key: str, value: Any, ttl: Optional[float] = None, nx: bool = False
+        self, key: str, value: Any, ttl: float | None = None, nx: bool = False
     ) -> bool:
         """Set a value with an optional time-to-live in seconds.
 

@@ -1,6 +1,6 @@
 __all__ = ["RedisCachingProvider"]
 
-from typing import Any, Optional, Union
+from typing import Any
 
 import redis
 
@@ -24,8 +24,8 @@ class RedisCachingProvider(CachingProvider):
     def set(
         self,
         key: str,
-        value: Union[bytes, bytearray, memoryview, str, int, float],
-        ttl: Optional[float] = None,
+        value: bytes | bytearray | memoryview | str | int | float,
+        ttl: float | None = None,
         nx: bool = False,
     ) -> bool:
         # Use millisecond precision when possible to avoid losing fractional seconds

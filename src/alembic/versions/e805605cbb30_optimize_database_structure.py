@@ -5,7 +5,7 @@ Revises: 436b0d3452b6
 Create Date: 2026-02-20 23:05:18.215004
 
 """
-from typing import Optional, Sequence, Union
+from collections.abc import Sequence
 
 from alembic import op
 import sqlalchemy as sa
@@ -14,9 +14,9 @@ from sqlalchemy import MetaData, Table, ForeignKeyConstraint
 
 # revision identifiers, used by Alembic.
 revision: str = 'e805605cbb30'
-down_revision: Union[str, Sequence[str], None] = '436b0d3452b6'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = '436b0d3452b6'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _replace_fk(
@@ -26,7 +26,7 @@ def _replace_fk(
     ref_table: str,
     ref_col: str,
     fk_name: str,
-    ondelete: Optional[str] = None,
+    ondelete: str | None = None,
 ) -> None:
     """
     Replace a FK constraint on *fk_col* with a new one, optionally adding an

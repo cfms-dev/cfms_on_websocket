@@ -1,5 +1,5 @@
 import time
-from typing import Any, Optional
+from typing import Any
 
 from include.config.settings import global_config
 from include.database.models.identity import User
@@ -41,7 +41,7 @@ class RequestLoginHandler(RequestHandler):
 
         ip = get_client_ip(handler.stream.connection._ws)
 
-        def respond(code: int, message: str, data: Optional[dict[str, Any]] = None):
+        def respond(code: int, message: str, data: dict[str, Any] | None = None):
             handler.conclude_request(code=code, data=data or {}, message=message)
             return Result(code=code, target=username)
 

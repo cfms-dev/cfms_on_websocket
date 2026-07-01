@@ -2,7 +2,7 @@ __all__ = ["RequestHandler", "Result"]
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from include.transport.connection import ConnectionHandler
 
@@ -10,9 +10,9 @@ from include.transport.connection import ConnectionHandler
 @dataclass
 class Result:
     code: int
-    target: Optional[str] = None
-    data: Optional[dict[str, Any]] = None
-    username: Optional[str] = None
+    target: str | None = None
+    data: dict[str, Any] | None = None
+    username: str | None = None
 
 
 class RequestHandler(ABC):
@@ -37,5 +37,5 @@ class RequestHandler(ABC):
     require_auth: bool = False
 
     @abstractmethod
-    def handle(self, handler: ConnectionHandler) -> Optional[Result]:
+    def handle(self, handler: ConnectionHandler) -> Result | None:
         pass

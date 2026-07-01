@@ -5,7 +5,8 @@ Revises: a50674184a2c
 Create Date: 2026-06-17 13:06:26.982760
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 from alembic import op
 import sqlalchemy as sa
@@ -17,9 +18,9 @@ from include.providers.storage import LocalStorageProvider
 
 # revision identifiers, used by Alembic.
 revision: str = '259175f08107'
-down_revision: Union[str, Sequence[str], None] = 'a50674184a2c'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = 'a50674184a2c'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _get_storage_provider() -> StorageProvider:

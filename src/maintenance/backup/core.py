@@ -221,11 +221,11 @@ class BackupExportSelection:
     def from_component_values(
         cls,
         values: Iterable[BackupComponent | str],
-    ) -> "BackupExportSelection":
+    ) -> BackupExportSelection:
         return cls(frozenset(_coerce_backup_component(value) for value in values))
 
     @classmethod
-    def full(cls) -> "BackupExportSelection":
+    def full(cls) -> BackupExportSelection:
         return cls(frozenset(BackupComponent))
 
     def resolved_components(self) -> frozenset[BackupComponent]:
@@ -335,7 +335,7 @@ class BackupHeader:
     nonce: str
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> "BackupHeader":
+    def from_mapping(cls, data: dict[str, Any]) -> BackupHeader:
         try:
             return cls(
                 format_version=int(data["format_version"]),

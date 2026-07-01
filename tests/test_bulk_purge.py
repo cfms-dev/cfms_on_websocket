@@ -2,7 +2,6 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
-from typing import Optional
 
 import pytest
 from sqlalchemy import VARCHAR, ForeignKey, Integer, Text, create_engine, event
@@ -28,7 +27,7 @@ class MDocument(_Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
-    current_revision_id: Mapped[Optional[str]] = mapped_column(
+    current_revision_id: Mapped[str | None] = mapped_column(
         VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
     )
 
@@ -41,7 +40,7 @@ class MDocumentRevision(_Base):
         VARCHAR(255), ForeignKey("documents.id"), nullable=False
     )
     file_id: Mapped[str] = mapped_column(ForeignKey("files.id"))
-    parent_revision_id: Mapped[Optional[str]] = mapped_column(
+    parent_revision_id: Mapped[str | None] = mapped_column(
         VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
     )
 

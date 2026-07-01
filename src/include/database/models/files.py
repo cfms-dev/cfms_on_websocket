@@ -2,7 +2,6 @@ import secrets
 import sys
 import time
 from enum import IntEnum
-from typing import List, Optional
 
 from loguru import logger as log
 from sqlalchemy import (
@@ -83,17 +82,17 @@ class File(Base):
     # or mismatch, so don't use it as a must
 
     path: Mapped[str] = mapped_column(Text, nullable=False)
-    _size: Mapped[Optional[int]] = mapped_column("size", BigInteger, nullable=True)
+    _size: Mapped[int | None] = mapped_column("size", BigInteger, nullable=True)
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
-    tasks: Mapped[List["FileTask"]] = relationship(
+    tasks: Mapped[list["FileTask"]] = relationship(
         "FileTask", back_populates="file", cascade="all, delete-orphan"
     )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     @property
-    def size(self) -> Optional[int]:
+    def size(self) -> int | None:
         """File size in bytes.
 
         The file size will be obtained from the database first;
@@ -113,7 +112,7 @@ class File(Base):
             return None
 
     @size.setter
-    def size(self, value: Optional[int]) -> None:
+    def size(self, value: int | None) -> None:
         self._size = value
 
     @property
@@ -210,7 +209,7 @@ class FileTask(Base):
         Integer, nullable=False, comment="0: download, 1: upload"
     )
     start_time: Mapped[float] = mapped_column(Float, nullable=False)
-    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Not adding a username column is by design since we take the possibility
     # that a task ID may be forwarded to someone else by the original user.
@@ -221,11 +220,11 @@ class FileTask(Base):
 
     # Encryption key will be generated when a download task is initiated for
     # the first time.
-    encryption_key: Mapped[Optional[str]] = mapped_column(
+    encryption_key: Mapped[str | None] = mapped_column(
         VARCHAR(256), nullable=True, default=None
     )
 
-    # encryption_mode: Mapped[Optional[str]] = mapped_column(
+    # encryption_mode: Mapped[str | None] = mapped_column(
     #     VARCHAR(32), nullable=True, default=None
     # )  # Encryption mode, such as 'AES' or 'RSA'; None means unencrypted.
 

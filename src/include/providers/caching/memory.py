@@ -3,7 +3,7 @@ __all__ = ["MemoryCachingProvider"]
 import collections
 import threading
 import time
-from typing import Any, Optional, Union
+from typing import Any
 
 from include.providers.base import CachingProvider
 
@@ -12,7 +12,7 @@ class MemoryCachingProvider(CachingProvider):
     def __init__(self, max_size: int = 10000):
         self._max_size = max_size
         self._cache: collections.OrderedDict[
-            str, tuple[Union[bytes, bytearray, memoryview, str, int, float], float]
+            str, tuple[bytes | bytearray | memoryview | str | int | float, float]
         ] = collections.OrderedDict()
         self._lock = threading.RLock()
 
@@ -35,8 +35,8 @@ class MemoryCachingProvider(CachingProvider):
     def set(
         self,
         key: str,
-        value: Union[bytes, bytearray, memoryview, str, int, float],
-        ttl: Optional[float] = None,
+        value: bytes | bytearray | memoryview | str | int | float,
+        ttl: float | None = None,
         nx: bool = False,
     ) -> bool:
         with self._lock:

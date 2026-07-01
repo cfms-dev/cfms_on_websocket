@@ -9,7 +9,7 @@ __all__ = ["RequestSearchHandler"]
 
 import time
 from functools import cmp_to_key
-from typing import Any, Dict, List
+from typing import Any
 
 from include.config.settings import global_config
 from include.database.models.identity import User
@@ -115,7 +115,7 @@ class RequestSearchHandler(RequestHandler):
 
             now = time.time()
 
-            results: Dict[str, List[Dict[str, Any]]] = {
+            results: dict[str, list[dict[str, Any]]] = {
                 "documents": [],
                 "directories": [],
             }

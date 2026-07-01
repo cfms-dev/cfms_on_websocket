@@ -1,7 +1,7 @@
 __all__ = ["RedisEventBusProvider"]
 
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 import redis
 from loguru import logger

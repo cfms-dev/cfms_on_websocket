@@ -6,11 +6,11 @@ import json
 import os
 import random
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
 from subprocess import Popen
-from typing import Awaitable, Callable
 
 from tests.support.server import ServerLogCapture, start_server, stop_server
 from tests.support.test_config import (
@@ -47,7 +47,7 @@ class LoadStats:
         if latency_ms is not None:
             self.latencies_ms.append(latency_ms)
 
-    def merge(self, other: "LoadStats") -> None:
+    def merge(self, other: LoadStats) -> None:
         self.latencies_ms.extend(other.latencies_ms)
         self.requests += other.requests
         self.successes += other.successes
@@ -163,7 +163,7 @@ async def run_worker(
 
 def prepare_managed_server(
     src_dir: Path,
-) -> tuple[ServerTestSettings, ConfigBackup, tuple["Popen", "ServerLogCapture"]]:
+) -> tuple[ServerTestSettings, ConfigBackup, tuple[Popen, ServerLogCapture]]:
     backup = capture_config(src_dir / "config.toml")
     settings = write_test_config(src_dir, reserve_local_port())
     for key, value in {

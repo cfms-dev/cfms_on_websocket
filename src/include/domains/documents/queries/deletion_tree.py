@@ -1,7 +1,6 @@
 import time
 from collections import defaultdict, deque
 from itertools import batched
-from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, joinedload
@@ -23,7 +22,7 @@ def fetch_subtree_for_deletion(
     session: Session,
     root_folder_id: str,
     user: User,
-    now: Optional[float] = None,
+    now: float | None = None,
     include_deleted: bool = False,
 ) -> tuple[
     list[str],  # deletable_folder_ids: ordered
@@ -227,7 +226,7 @@ def fetch_subtree_for_deletion(
 
     # Build parent-child relation maps.
     children_map: dict[str, list[str]] = defaultdict(list)
-    parent_map: dict[str, Optional[str]] = {}
+    parent_map: dict[str, str | None] = {}
     for folder in folders:
         parent_map[folder.id] = folder.parent_id
         if folder.parent_id and folder.parent_id in set(actual_folder_ids):

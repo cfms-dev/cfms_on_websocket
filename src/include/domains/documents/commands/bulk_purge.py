@@ -1,5 +1,4 @@
 from itertools import batched
-from typing import List
 
 from sqlalchemy.orm import Session
 
@@ -17,7 +16,7 @@ from include.database.models.files import (
 from include.domains.documents.queries.revisions import batch_count_other_revisions
 
 
-def purge_documents_bulk(session: Session, document_ids: List[str]):
+def purge_documents_bulk(session: Session, document_ids: list[str]):
     """
     Purge many documents using batched deletes.
 

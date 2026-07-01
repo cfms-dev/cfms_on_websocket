@@ -8,7 +8,6 @@ __all__ = ["NonceStore", "nonce_store"]
 
 import math
 import time
-from typing import Optional
 
 from include.config.constants import REPLAY_PROTECTION_TIME_WINDOW_SECONDS
 from include.providers.manager import ProviderManager
@@ -22,7 +21,7 @@ class NonceStore:
     def __init__(self, time_window: float = REPLAY_PROTECTION_TIME_WINDOW_SECONDS):
         self._time_window = time_window
 
-    def validate_and_store(self, nonce: str, timestamp: float) -> Optional[str]:
+    def validate_and_store(self, nonce: str, timestamp: float) -> str | None:
         if not math.isfinite(timestamp):
             return "Request timestamp is not a finite number"
 

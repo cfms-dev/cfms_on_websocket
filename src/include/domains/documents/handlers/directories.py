@@ -1,7 +1,6 @@
 import secrets
 import time
 from itertools import batched
-from typing import Optional
 
 import jsonschema
 from sqlalchemy import func, literal, select
@@ -200,7 +199,7 @@ class RequestListDirectoryHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         # Parse the directory listing request
-        folder_id: Optional[str] = handler.data.get("folder_id")
+        folder_id: str | None = handler.data.get("folder_id")
         page_size = get_page_size(handler.data)
         cursor = handler.data.get("cursor")
 
@@ -796,7 +795,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         folder_id: str = handler.data["folder_id"]
-        target_folder_id: Optional[str] = handler.data.get("target_folder_id")
+        target_folder_id: str | None = handler.data.get("target_folder_id")
 
         if not target_folder_id:
             target_folder_id = ROOT_DIRECTORY_ID

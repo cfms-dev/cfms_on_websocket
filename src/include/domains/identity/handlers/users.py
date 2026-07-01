@@ -16,7 +16,6 @@ __all__ = [
 ]
 
 import time
-from typing import Optional
 
 import filetype
 from argon2 import PasswordHasher
@@ -431,7 +430,7 @@ class RequestBlockUserHandler(RequestHandler):
         not_after: int | float = handler.data.get("not_after", -1)
 
         target_type: str = handler.data["target"]["type"]
-        target_id: Optional[str] = handler.data["target"].get("id")
+        target_id: str | None = handler.data["target"].get("id")
 
         if not set(block_types).issubset(AVAILABLE_BLOCK_TYPES):
             handler.conclude_request(400, {}, "Unsupported block type(s)")
@@ -804,7 +803,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         target_username: str = handler.data["username"]
-        document_id: Optional[str] = handler.data["document_id"]
+        document_id: str | None = handler.data["document_id"]
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)

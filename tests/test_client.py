@@ -14,7 +14,7 @@ import secrets
 import ssl
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import orjson
 from Crypto.Cipher import AES
@@ -61,7 +61,7 @@ class AsyncStream:
     ) -> None:
         await self.connection._send_frame(self.frame_id, frame_type, data)
 
-    async def recv(self, timeout: Optional[float] = None) -> Frame:
+    async def recv(self, timeout: float | None = None) -> Frame:
         try:
             if timeout is None:
                 frame = await asyncio.to_thread(self._queue.get)
@@ -74,7 +74,7 @@ class AsyncStream:
             raise ConnectionError("MultiplexedConnection has been closed")
         return frame
 
-    def _put_incoming_frame(self, frame: Optional[Frame]):
+    def _put_incoming_frame(self, frame: Frame | None):
         self._queue.put(frame)
 
 
@@ -83,9 +83,9 @@ class AsyncMultiplexConnection:
         self._ws = websocket
         self._next_frame_id = 1
         self._id_lock = threading.Lock()
-        self._streams: Dict[int, AsyncStream] = {}
+        self._streams: dict[int, AsyncStream] = {}
         self._streams_lock = threading.Lock()
-        self._new_streams: queue.Queue[Optional[AsyncStream]] = queue.Queue()
+        self._new_streams: queue.Queue[AsyncStream | None] = queue.Queue()
         self._is_running = True
         self._dispatcher_task = asyncio.create_task(self._recv_loop())
 
@@ -100,9 +100,7 @@ class AsyncMultiplexConnection:
 
         return new_stream
 
-    async def accept_stream(
-        self, timeout: Optional[float] = None
-    ) -> Optional[AsyncStream]:
+    async def accept_stream(self, timeout: float | None = None) -> AsyncStream | None:
         try:
             if timeout is None:
                 return await asyncio.to_thread(self._new_streams.get)
@@ -213,10 +211,10 @@ class CFMSTestClient:
         self.use_ssl = (
             use_ssl if use_ssl is not None else _env_bool("CFMS_TEST_USE_SSL", True)
         )
-        self.websocket: Optional[ClientConnection] = None
-        self.multiplexer: Optional[AsyncMultiplexConnection] = None
-        self.username: Optional[str] = None
-        self.token: Optional[str] = None
+        self.websocket: ClientConnection | None = None
+        self.multiplexer: AsyncMultiplexConnection | None = None
+        self.username: str | None = None
+        self.token: str | None = None
 
     async def connect(self) -> None:
         """
@@ -238,7 +236,7 @@ class CFMSTestClient:
         max_retries = 5
         delay = 0.5
         backoff = 2.0
-        last_exc: Optional[BaseException] = None
+        last_exc: BaseException | None = None
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -302,12 +300,12 @@ class CFMSTestClient:
         self,
         stream: AsyncStream,
         action: str,
-        data: Optional[Dict[str, Any]] = None,
-        username: Optional[str] = None,
-        token: Optional[str] = None,
+        data: dict[str, Any] | None = None,
+        username: str | None = None,
+        token: str | None = None,
         include_auth: bool = True,
     ) -> Frame:
-        request: Dict[str, Any] = {
+        request: dict[str, Any] = {
             "action": action,
             "data": data if data is not None else {},
         }
@@ -331,11 +329,11 @@ class CFMSTestClient:
     async def send_request(
         self,
         action: str,
-        data: Optional[Dict[str, Any]] = None,
-        username: Optional[str] = None,
-        token: Optional[str] = None,
+        data: dict[str, Any] | None = None,
+        username: str | None = None,
+        token: str | None = None,
         include_auth: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Send a request to the server and receive the response.
 
@@ -376,7 +374,7 @@ class CFMSTestClient:
 
         raise RuntimeError("Unexpected response format from server")
 
-    async def accept_event(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+    async def accept_event(self, timeout: float | None = None) -> dict[str, Any]:
         if self.multiplexer is None:
             raise RuntimeError("Not connected to server. Call connect() first.")
 
@@ -392,8 +390,8 @@ class CFMSTestClient:
 
     async def send_raw_request(
         self,
-        request: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
         """Send a raw request object (custom nonce/timestamp) via multiplex stream."""
         if self.multiplexer is None:
             raise RuntimeError("Not connected to server. Call connect() first.")
@@ -415,8 +413,8 @@ class CFMSTestClient:
         raise RuntimeError("Unexpected response format from server")
 
     async def login(
-        self, username: str, password: str, two_fa_token: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, username: str, password: str, two_fa_token: str | None = None
+    ) -> dict[str, Any]:
         """
         Authenticate with the server.
 
@@ -440,7 +438,7 @@ class CFMSTestClient:
 
         return response
 
-    async def server_info(self) -> Dict[str, Any]:
+    async def server_info(self) -> dict[str, Any]:
         """
         Get server information.
 
@@ -449,7 +447,7 @@ class CFMSTestClient:
         """
         return await self.send_request("server_info", include_auth=False)
 
-    async def refresh_token(self) -> Dict[str, Any]:
+    async def refresh_token(self) -> dict[str, Any]:
         """
         Refresh the authentication token.
 
@@ -463,7 +461,7 @@ class CFMSTestClient:
 
         return response
 
-    async def get_document(self, document_id: str) -> Dict[str, Any]:
+    async def get_document(self, document_id: str) -> dict[str, Any]:
         """
         Get a document by ID.
 
@@ -476,8 +474,8 @@ class CFMSTestClient:
         return await self.send_request("get_document", {"document_id": document_id})
 
     async def create_document(
-        self, title: str, folder_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, title: str, folder_id: str | None = None
+    ) -> dict[str, Any]:
         """
         Create a new document.
 
@@ -494,14 +492,14 @@ class CFMSTestClient:
         return await self.send_request("create_document", data)
 
     async def upload_document(
-        self, document_id: str, parent_revision_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, document_id: str, parent_revision_id: str | None = None
+    ) -> dict[str, Any]:
         data = {"document_id": document_id}
         if parent_revision_id:
             data["parent_revision_id"] = parent_revision_id
         return await self.send_request("upload_document", data)
 
-    async def delete_document(self, document_id: str) -> Dict[str, Any]:
+    async def delete_document(self, document_id: str) -> dict[str, Any]:
         """
         Delete a document.
 
@@ -513,15 +511,15 @@ class CFMSTestClient:
         """
         return await self.send_request("delete_document", {"document_id": document_id})
 
-    async def purge_document(self, document_id: str) -> Dict[str, Any]:
+    async def purge_document(self, document_id: str) -> dict[str, Any]:
         return await self.send_request("purge_document", {"document_id": document_id})
 
     async def restore_document(
         self,
         document_id: str,
-        target_folder_id: Optional[str] = None,
-        new_title: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        target_folder_id: str | None = None,
+        new_title: str | None = None,
+    ) -> dict[str, Any]:
         data = {"document_id": document_id}
         if target_folder_id is not None:
             data["target_folder_id"] = target_folder_id
@@ -529,7 +527,7 @@ class CFMSTestClient:
             data["new_title"] = new_title
         return await self.send_request("restore_document", data)
 
-    async def rename_document(self, document_id: str, new_title: str) -> Dict[str, Any]:
+    async def rename_document(self, document_id: str, new_title: str) -> dict[str, Any]:
         """
         Rename a document.
 
@@ -544,7 +542,7 @@ class CFMSTestClient:
             "rename_document", {"document_id": document_id, "new_title": new_title}
         )
 
-    async def get_document_info(self, document_id: str) -> Dict[str, Any]:
+    async def get_document_info(self, document_id: str) -> dict[str, Any]:
         """
         Get information about a document.
 
@@ -560,7 +558,7 @@ class CFMSTestClient:
 
     async def set_document_tags(
         self, document_id: str, tags: list[str]
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await self.send_request(
             "set_document_tags",
             {"document_id": document_id, "tags": tags},
@@ -570,36 +568,36 @@ class CFMSTestClient:
     async def list_revisions(
         self,
         document_id: str,
-        page_size: Optional[int] = None,
-        cursor: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        data: Dict[str, Any] = {"document_id": document_id}
+        page_size: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"document_id": document_id}
         if page_size is not None:
             data["page_size"] = page_size
         if cursor is not None:
             data["cursor"] = cursor
         return await self.send_request("list_revisions", data)
 
-    async def get_revision(self, revision_id: str) -> Dict[str, Any]:
+    async def get_revision(self, revision_id: str) -> dict[str, Any]:
         return await self.send_request("get_revision", {"id": revision_id})
 
     async def set_document_revision(
         self, document_id: str, revision_id: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await self.send_request(
             "set_current_revision",
             {"document_id": document_id, "revision_id": revision_id},
         )
 
-    async def delete_revision(self, revision_id: str) -> Dict[str, Any]:
+    async def delete_revision(self, revision_id: str) -> dict[str, Any]:
         return await self.send_request("delete_revision", {"id": revision_id})
 
     async def list_directory(
         self,
-        folder_id: Optional[str] = None,
-        page_size: Optional[int] = None,
-        cursor: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        folder_id: str | None = None,
+        page_size: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
         """
         List contents of a directory.
 
@@ -619,8 +617,8 @@ class CFMSTestClient:
         return await self.send_request("list_directory", data)
 
     async def create_directory(
-        self, name: str, parent_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, name: str, parent_id: str | None = None
+    ) -> dict[str, Any]:
         """
         Create a new directory.
 
@@ -636,7 +634,7 @@ class CFMSTestClient:
             data["parent_id"] = parent_id
         return await self.send_request("create_directory", data)
 
-    async def delete_directory(self, folder_id: str) -> Dict[str, Any]:
+    async def delete_directory(self, folder_id: str) -> dict[str, Any]:
         """
         Delete a directory.
 
@@ -651,25 +649,25 @@ class CFMSTestClient:
     async def list_deleted_items(
         self,
         folder_id: str,
-        page_size: Optional[int] = None,
-        cursor: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        data: Dict[str, Any] = {"folder_id": folder_id}
+        page_size: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"folder_id": folder_id}
         if page_size is not None:
             data["page_size"] = page_size
         if cursor is not None:
             data["cursor"] = cursor
         return await self.send_request("list_deleted_items", data)
 
-    async def purge_directory(self, folder_id: str) -> Dict[str, Any]:
+    async def purge_directory(self, folder_id: str) -> dict[str, Any]:
         return await self.send_request("purge_directory", {"folder_id": folder_id})
 
     async def restore_directory(
         self,
         folder_id: str,
-        target_parent_id: Optional[str] = None,
-        new_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        target_parent_id: str | None = None,
+        new_name: str | None = None,
+    ) -> dict[str, Any]:
         data = {"folder_id": folder_id}
         if target_parent_id is not None:
             data["target_parent_id"] = target_parent_id
@@ -678,8 +676,8 @@ class CFMSTestClient:
         return await self.send_request("restore_directory", data)
 
     async def move_directory(
-        self, folder_id: str, target_folder_id: Optional[str]
-    ) -> Dict[str, Any]:
+        self, folder_id: str, target_folder_id: str | None
+    ) -> dict[str, Any]:
         """
         Move a directory to a new location.
 
@@ -698,13 +696,13 @@ class CFMSTestClient:
     async def search(
         self,
         query: str,
-        page_size: Optional[int] = None,
-        cursor: Optional[str] = None,
-        sort_by: Optional[str] = None,
-        sort_order: Optional[str] = None,
-        search_documents: Optional[bool] = None,
-        search_directories: Optional[bool] = None,
-    ) -> Dict[str, Any]:
+        page_size: int | None = None,
+        cursor: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        search_documents: bool | None = None,
+        search_directories: bool | None = None,
+    ) -> dict[str, Any]:
         """
         Search for documents and directories by name.
 
@@ -720,7 +718,7 @@ class CFMSTestClient:
         Returns:
             Search results with matching documents and directories
         """
-        data: Dict[str, Any] = {"query": query}
+        data: dict[str, Any] = {"query": query}
         if page_size is not None:
             data["page_size"] = page_size
         if cursor is not None:
@@ -739,9 +737,9 @@ class CFMSTestClient:
         self,
         username: str,
         password: str,
-        nickname: Optional[str] = None,
-        groups: Optional[list] = None,
-    ) -> Dict[str, Any]:
+        nickname: str | None = None,
+        groups: list | None = None,
+    ) -> dict[str, Any]:
         """
         Create a new user.
 
@@ -761,7 +759,7 @@ class CFMSTestClient:
             data["groups"] = groups
         return await self.send_request("create_user", data)
 
-    async def delete_user(self, username: str) -> Dict[str, Any]:
+    async def delete_user(self, username: str) -> dict[str, Any]:
         """
         Delete a user.
 
@@ -773,7 +771,7 @@ class CFMSTestClient:
         """
         return await self.send_request("delete_user", {"username": username})
 
-    async def get_user_info(self, username: str) -> Dict[str, Any]:
+    async def get_user_info(self, username: str) -> dict[str, Any]:
         """
         Get information about a user.
 
@@ -787,15 +785,15 @@ class CFMSTestClient:
 
     async def change_user_permissions(
         self, username: str, permissions: list[str]
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await self.send_request(
             "change_user_permissions",
             {"username": username, "permissions": permissions},
         )
 
     async def list_users(
-        self, count: Optional[int] = None, offset: Optional[int] = None
-    ) -> Dict[str, Any]:
+        self, count: int | None = None, offset: int | None = None
+    ) -> dict[str, Any]:
         """
         List all users.
 
@@ -814,8 +812,8 @@ class CFMSTestClient:
         return await self.send_request("list_users", data)
 
     async def create_group(
-        self, group_name: str, permissions: Optional[list] = None
-    ) -> Dict[str, Any]:
+        self, group_name: str, permissions: list | None = None
+    ) -> dict[str, Any]:
         """
         Create a new user group.
 
@@ -832,22 +830,22 @@ class CFMSTestClient:
         return await self.send_request("create_group", data)
 
     async def list_groups(
-        self, count: Optional[int] = None, offset: Optional[int] = None
-    ) -> Dict[str, Any]:
+        self, count: int | None = None, offset: int | None = None
+    ) -> dict[str, Any]:
         """
         List all user groups.
 
         Returns:
             List of groups
         """
-        data: Dict[str, Any] = {}
+        data: dict[str, Any] = {}
         if count is not None:
             data["count"] = count
         if offset is not None:
             data["offset"] = offset
         return await self.send_request("list_groups", data)
 
-    async def get_group_info(self, group_name: str) -> Dict[str, Any]:
+    async def get_group_info(self, group_name: str) -> dict[str, Any]:
         """
         Get information about a group.
 
@@ -1037,7 +1035,7 @@ class CFMSTestClient:
     #         file_path (str): The path to save the received file.
 
     #     Yields:
-    #         Tuple[int, ...]: Progress updates at various stages.
+    #         tuple[int, ...]: Progress updates at various stages.
 
     #     Raises:
     #         ValueError: If the server response is invalid.
@@ -1186,7 +1184,7 @@ class CFMSTestClient:
 
     # Two-Factor Authentication methods
 
-    async def setup_2fa(self) -> Dict[str, Any]:
+    async def setup_2fa(self) -> dict[str, Any]:
         """
         Setup two-factor authentication for the authenticated user.
 
@@ -1195,7 +1193,7 @@ class CFMSTestClient:
         """
         return await self.send_request("setup_2fa", {})
 
-    async def validate_2fa(self, token: str) -> Dict[str, Any]:
+    async def validate_2fa(self, token: str) -> dict[str, Any]:
         """
         Validate and enable two-factor authentication.
 
@@ -1207,7 +1205,7 @@ class CFMSTestClient:
         """
         return await self.send_request("validate_2fa", {"token": token})
 
-    async def cancel_2fa_setup(self) -> Dict[str, Any]:
+    async def cancel_2fa_setup(self) -> dict[str, Any]:
         """
         Cancel two-factor authentication setup (before validation).
 
@@ -1216,7 +1214,7 @@ class CFMSTestClient:
         """
         return await self.send_request("cancel_2fa_setup", {})
 
-    async def cancel_2fa(self, password: str) -> Dict[str, Any]:
+    async def cancel_2fa(self, password: str) -> dict[str, Any]:
         """
         Cancel two-factor authentication for the authenticated user.
 
@@ -1228,7 +1226,7 @@ class CFMSTestClient:
         """
         return await self.send_request("disable_2fa", {"password": password})
 
-    async def get_2fa_status(self) -> Dict[str, Any]:
+    async def get_2fa_status(self) -> dict[str, Any]:
         """
         Get two-factor authentication status for the authenticated user.
 
@@ -1246,7 +1244,7 @@ class CFMSTestClient:
         access_types: list[str],
         start_time: float,
         end_time: float | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Grant access to a user or group for a document or directory.
 
@@ -1262,7 +1260,7 @@ class CFMSTestClient:
         Returns:
             Response indicating success or failure
         """
-        data: Dict[str, Any] = {
+        data: dict[str, Any] = {
             "entity_type": entity_type,
             "entity_identifier": entity_identifier,
             "target_type": target_type,
@@ -1274,7 +1272,7 @@ class CFMSTestClient:
             data["end_time"] = end_time
         return await self.send_request("grant_access", data)
 
-    async def revoke_access(self, entry_id: int) -> Dict[str, Any]:
+    async def revoke_access(self, entry_id: int) -> dict[str, Any]:
         """
         Revoke access by deleting an access entry.
 
@@ -1290,9 +1288,9 @@ class CFMSTestClient:
         self,
         object_type: str,
         object_identifier: str,
-        page_size: Optional[int] = None,
-        cursor: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        page_size: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
         """
         View access entries for a user, group, document, or directory.
 
@@ -1303,7 +1301,7 @@ class CFMSTestClient:
         Returns:
             Response with list of access entries
         """
-        data: Dict[str, Any] = {
+        data: dict[str, Any] = {
             "object_type": object_type,
             "object_identifier": object_identifier,
         }
@@ -1318,10 +1316,10 @@ class CFMSTestClient:
     async def upload_keyring(
         self,
         key_content: str,
-        label: Optional[str] = None,
-        target_username: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        data: Dict[str, Any] = {"content": key_content}
+        label: str | None = None,
+        target_username: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"content": key_content}
         if label is not None:
             data["label"] = label
         if target_username is not None:
@@ -1331,28 +1329,28 @@ class CFMSTestClient:
     async def get_keyring(
         self,
         key_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await self.send_request("get_user_key", {"id": key_id})
 
     async def delete_keyring(
         self,
         key_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await self.send_request("delete_user_key", {"id": key_id})
 
     async def set_preference_keyring(
         self,
         key_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         return await self.send_request("set_user_preference_dek", {"id": key_id})
 
     async def list_keyrings(
         self,
-        target_username: Optional[str] = None,
-        count: Optional[int] = None,
-        offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        data: Dict[str, Any] = {}
+        target_username: str | None = None,
+        count: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {}
         if target_username is not None:
             data["target_username"] = target_username
         if count is not None:
@@ -1364,11 +1362,11 @@ class CFMSTestClient:
     # ------------------------------------------------------------------------
     # System and Management Functions
     # ------------------------------------------------------------------------
-    async def set_lockdown(self, status: bool) -> Dict[str, Any]:
+    async def set_lockdown(self, status: bool) -> dict[str, Any]:
         """Enable or disable global lockdown."""
         return await self.send_request("lockdown", {"status": status})
 
-    async def update_user_status(self, username: str, status: str) -> Dict[str, Any]:
+    async def update_user_status(self, username: str, status: str) -> dict[str, Any]:
         """Update user status ('active' or 'disabled')."""
         return await self.send_request(
             "manage_user_status", {"username": username, "status": status}
@@ -1379,8 +1377,8 @@ class CFMSTestClient:
         username: str,
         target_type: str,
         block_types: list[str],
-        target_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        target_id: str | None = None,
+    ) -> dict[str, Any]:
         """Block user from accessing certain things.
         target_type: "all", "directory", "document"
         block_types: e.g. ["read", "write"]
@@ -1397,12 +1395,12 @@ class CFMSTestClient:
 
     async def view_audit_logs(
         self,
-        page_size: Optional[int] = None,
-        cursor: Optional[str] = None,
-        filters: Optional[list[str]] = None,
-    ) -> Dict[str, Any]:
+        page_size: int | None = None,
+        cursor: str | None = None,
+        filters: list[str] | None = None,
+    ) -> dict[str, Any]:
         """View system audit logs."""
-        data: Dict[str, Any] = {}
+        data: dict[str, Any] = {}
         if page_size is not None:
             data["page_size"] = page_size
         if cursor is not None:

@@ -1,6 +1,5 @@
 import threading
 import time
-from typing import Optional
 
 import jsonschema
 import orjson
@@ -208,7 +207,7 @@ whitelisted_functions = [
 def _log_handler_result(
     action: str,
     result: Result,
-    remote_address: Optional[str] = None,
+    remote_address: str | None = None,
 ) -> None:
     log_audit(
         action,
@@ -222,7 +221,7 @@ def _log_handler_result(
 
 def _validate_replay_protection(
     handler: ConnectionHandler,
-) -> Optional[str]:
+) -> str | None:
     """
     Validate nonce and timestamp for an authenticated request.
 
@@ -406,7 +405,7 @@ def handle_request(stream: Stream):
                 return
             t1 = time.perf_counter()
 
-            callback: Optional[Result] = _request_handler.handle(this_handler)
+            callback: Result | None = _request_handler.handle(this_handler)
 
             t2 = time.perf_counter()
             pm.hook.ext_post_request(

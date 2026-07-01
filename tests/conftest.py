@@ -6,8 +6,8 @@ import asyncio
 import os
 import secrets
 import subprocess
+from collections.abc import AsyncGenerator, Callable, Generator
 from pathlib import Path
-from typing import AsyncGenerator, Callable, Generator
 
 import pytest
 import pytest_asyncio
@@ -25,7 +25,7 @@ from tests.utils import assert_success
 
 
 @pytest.fixture(scope="session")
-def protected_test_config() -> Generator[ServerTestSettings, None, None]:
+def protected_test_config() -> Generator[ServerTestSettings]:
     """Write test config, then restore the original config at session teardown."""
     src_dir = Path("src").resolve()
     config_backup = capture_config(src_dir / "config.toml")
@@ -70,7 +70,7 @@ def test_server_settings(
 @pytest.fixture(scope="session")
 def server_process(
     test_server_settings: ServerTestSettings,
-) -> Generator[subprocess.Popen, None, None]:
+) -> Generator[subprocess.Popen]:
     """Start the CFMS server subprocess."""
     process, logs = start_server(test_server_settings)
     yield process
@@ -93,7 +93,7 @@ def admin_credentials(server_process) -> dict:
 @pytest_asyncio.fixture
 async def client(
     server_process, test_server_settings: ServerTestSettings
-) -> AsyncGenerator[CFMSTestClient, None]:
+) -> AsyncGenerator[CFMSTestClient]:
     test_client = CFMSTestClient(
         host=test_server_settings.host,
         port=test_server_settings.port,
@@ -128,7 +128,7 @@ async def authenticated_client(
 @pytest_asyncio.fixture
 async def unauthenticated_client(
     server_process, test_server_settings: ServerTestSettings
-) -> AsyncGenerator[CFMSTestClient, None]:
+) -> AsyncGenerator[CFMSTestClient]:
     test_client = CFMSTestClient(
         host=test_server_settings.host,
         port=test_server_settings.port,
@@ -152,7 +152,7 @@ async def unauthenticated_client(
 @pytest_asyncio.fixture
 async def user_factory(
     authenticated_client: CFMSTestClient,
-) -> AsyncGenerator[Callable, None]:
+) -> AsyncGenerator[Callable]:
     created_users = []
 
     async def _creator(
@@ -179,7 +179,7 @@ async def user_factory(
 @pytest_asyncio.fixture
 async def document_factory(
     authenticated_client: CFMSTestClient,
-) -> AsyncGenerator[Callable, None]:
+) -> AsyncGenerator[Callable]:
     created_docs = []
 
     async def _creator(title=None, upload_file="./pyproject.toml", folder_id=None):
@@ -208,7 +208,7 @@ async def document_factory(
 @pytest_asyncio.fixture
 async def group_factory(
     authenticated_client: CFMSTestClient,
-) -> AsyncGenerator[Callable, None]:
+) -> AsyncGenerator[Callable]:
     created_groups = []
 
     async def _creator(group_name=None, permissions=None):

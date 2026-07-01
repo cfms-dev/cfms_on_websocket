@@ -1,7 +1,6 @@
 __all__ = ["BannedSubnet", "LoginThrottle", "TrafficThrottle"]
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -21,7 +20,7 @@ class BannedSubnet(Base):
     __tablename__ = "banned_subnets"
 
     subnet: Mapped[str] = mapped_column(String(128), primary_key=True)
-    reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -37,7 +36,7 @@ class LoginThrottle(Base):
     last_attempt: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now()
     )
-    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def is_locked(self) -> bool:
         if self.locked_until is not None:
@@ -62,7 +61,7 @@ class TrafficThrottle(Base):
     last_attempt: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now()
     )
-    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def is_locked(self) -> bool:
         if self.locked_until is not None:
