@@ -801,7 +801,6 @@ class RequestPurgeDirectoryHandler(RequestHandler):
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
-            **CURSOR_PAGINATION_SCHEMA,
         },
         "required": ["folder_id"],
         "additionalProperties": False,

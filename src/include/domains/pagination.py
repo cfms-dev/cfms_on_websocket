@@ -14,10 +14,13 @@ __all__ = [
 
 import base64
 import hashlib
-import hmac
 import json
+import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from include.config.constants import (
     PAGINATION_DEFAULT_PAGE_SIZE,
@@ -80,28 +83,20 @@ def _cursor_secret() -> bytes:
     return str(global_config["server"]["secret_key"]).encode()
 
 
-def _sign_payload(payload: dict[str, Any]) -> str:
-    return hmac.new(
-        _cursor_secret(), _canonical_json(payload), hashlib.sha256
-    ).hexdigest()
+def _cursor_key() -> bytes:
+    return hashlib.sha256(_cursor_secret()).digest()
 
 
-def _b64_encode(payload: dict[str, Any]) -> str:
-    raw = _canonical_json(payload)
+def _b64_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def _b64_decode(token: str) -> dict[str, Any]:
+def _b64_decode(token: str) -> bytes:
     try:
         padding = "=" * (-len(token) % 4)
-        raw = base64.urlsafe_b64decode((token + padding).encode())
-        payload = json.loads(raw)
+        return base64.urlsafe_b64decode((token + padding).encode())
     except Exception as exc:
         raise CursorError("Invalid cursor") from exc
-
-    if not isinstance(payload, dict):
-        raise CursorError("Invalid cursor")
-    return payload
 
 
 def encode_cursor(
@@ -111,15 +106,24 @@ def encode_cursor(
     filters: dict[str, Any],
     last: Sequence[Any],
 ) -> str:
-    payload = {
-        "v": 2,
+    nonce = os.urandom(12)
+    encrypted_payload = {
         "a": action,
         "s": sort,
         "f": _filters_hash(filters),
         "k": list(last),
     }
-    payload["sig"] = _sign_payload(payload)
-    return _b64_encode(payload)
+    ciphertext = AESGCM(_cursor_key()).encrypt(
+        nonce,
+        _canonical_json(encrypted_payload),
+        b"pagination-cursor-v1",
+    )
+    payload = {
+        "v": 1,
+        "n": _b64_encode(nonce),
+        "c": _b64_encode(ciphertext),
+    }
+    return _b64_encode(_canonical_json(payload))
 
 
 def decode_cursor(
@@ -136,24 +140,44 @@ def decode_cursor(
     if len(cursor) > PAGINATION_CURSOR_MAX_LENGTH:
         raise CursorError("Invalid cursor")
 
-    payload = _b64_decode(cursor)
-    signature = payload.get("sig")
-    if not isinstance(signature, str):
+    try:
+        payload = json.loads(_b64_decode(cursor))
+    except Exception as exc:
+        raise CursorError("Invalid cursor") from exc
+
+    if not isinstance(payload, dict) or payload.get("v") != 1:
         raise CursorError("Invalid cursor")
 
-    unsigned_payload = {k: v for k, v in payload.items() if k != "sig"}
-    if not hmac.compare_digest(signature, _sign_payload(unsigned_payload)):
+    nonce_token = payload.get("n")
+    ciphertext_token = payload.get("c")
+    if not isinstance(nonce_token, str) or not isinstance(ciphertext_token, str):
         raise CursorError("Invalid cursor")
 
-    if (
-        payload.get("v") != 2
-        or payload.get("a") != action
-        or payload.get("s") != sort
-        or payload.get("f") != _filters_hash(filters)
-    ):
+    try:
+        raw_payload = AESGCM(_cursor_key()).decrypt(
+            _b64_decode(nonce_token),
+            _b64_decode(ciphertext_token),
+            b"pagination-cursor-v1",
+        )
+        cursor_data = json.loads(raw_payload)
+    except (
+        InvalidTag,
+        CursorError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise CursorError("Invalid cursor") from exc
+
+    if not isinstance(cursor_data, dict):
+        raise CursorError("Invalid cursor")
+
+    if cursor_data.get("a") != action or cursor_data.get("s") != sort:
+        raise CursorError("Cursor does not match this request")
+    if cursor_data.get("f") != _filters_hash(filters):
         raise CursorError("Cursor does not match this request")
 
-    last = payload.get("k")
+    last = cursor_data.get("k")
     if not isinstance(last, list):
         raise CursorError("Invalid cursor")
     if value_types is not None:

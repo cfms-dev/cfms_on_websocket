@@ -250,3 +250,40 @@ class TestRecycleBin:
 
         purge_resp = await authenticated_client.purge_directory(child_id)
         assert_error(purge_resp, 404)
+
+    @pytest.mark.asyncio
+    async def test_purge_directory_rejects_pagination_fields(
+        self, authenticated_client: CFMSTestClient
+    ):
+        parent_resp = await authenticated_client.create_directory(
+            "RecycleBinPurgeSchema"
+        )
+        parent_id = assert_success(parent_resp)["id"]
+        child_resp = await authenticated_client.create_directory(
+            "RecycleBinPurgeSchemaChild", parent_id
+        )
+        child_id = assert_success(child_resp)["id"]
+        await authenticated_client.delete_directory(child_id)
+
+        try:
+            assert_error(
+                await authenticated_client.send_request(
+                    "purge_directory",
+                    {"folder_id": child_id, "page_size": 1},
+                ),
+                400,
+            )
+            assert_error(
+                await authenticated_client.send_request(
+                    "purge_directory",
+                    {"folder_id": child_id, "cursor": "unused"},
+                ),
+                400,
+            )
+            assert_success(await authenticated_client.purge_directory(child_id))
+        finally:
+            try:
+                await authenticated_client.delete_directory(parent_id)
+                await authenticated_client.purge_directory(parent_id)
+            except Exception:
+                pass

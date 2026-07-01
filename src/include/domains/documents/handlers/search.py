@@ -35,6 +35,7 @@ from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
     decode_cursor,
+    encode_cursor,
     get_page_size,
     make_cursor_response,
 )
@@ -132,13 +133,19 @@ class RequestSearchHandler(RequestHandler):
                 or Permissions.SUPER_LIST_DIRECTORY in user.all_permissions
             )
             candidate_limit = min(QUERY_CHUNK_SIZE, max(page_size * 4, 64))
+            max_scanned_candidates = min(QUERY_CHUNK_SIZE * 4, max(page_size * 16, 256))
+            scanned_candidates = 0
+            scan_limit_reached = False
             scan_key = last_key
 
             while (
                 can_search
                 and (search_documents or search_directories)
                 and len(all_results) < page_size + 1
+                and scanned_candidates < max_scanned_candidates
             ):
+                remaining_scan_budget = max_scanned_candidates - scanned_candidates
+                current_candidate_limit = min(candidate_limit, remaining_scan_budget)
                 candidate_rows = fetch_search_candidate_rows(
                     session,
                     query=query,
@@ -147,11 +154,12 @@ class RequestSearchHandler(RequestHandler):
                     search_documents=search_documents,
                     search_directories=search_directories,
                     last_key=scan_key,
-                    limit=candidate_limit,
+                    limit=current_candidate_limit,
                 )
                 if not candidate_rows:
                     break
 
+                scanned_candidates += len(candidate_rows)
                 scan_key = search_cursor_key(candidate_rows[-1], sort_by)
                 doc_ids = [
                     row["id"] for row in candidate_rows if row["type"] == "document"
@@ -263,7 +271,10 @@ class RequestSearchHandler(RequestHandler):
                     if len(all_results) >= page_size + 1:
                         break
 
-                if len(candidate_rows) < candidate_limit:
+                if len(candidate_rows) < current_candidate_limit:
+                    break
+                if scanned_candidates >= max_scanned_candidates:
+                    scan_limit_reached = len(all_results) < page_size + 1
                     break
 
             response_data = make_cursor_response(
@@ -274,6 +285,14 @@ class RequestSearchHandler(RequestHandler):
                 filters=filters,
                 cursor_key=lambda item: search_cursor_key(item, sort_by),
             )
+            if scan_limit_reached and scan_key is not None:
+                response_data["has_more"] = True
+                response_data["next_cursor"] = encode_cursor(
+                    action="search",
+                    sort=sort,
+                    filters=filters,
+                    last=scan_key,
+                )
             response_data["query"] = query
 
             handler.conclude_request(

@@ -43,7 +43,7 @@ def _encode_token(payload: dict) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
+def test_encrypted_cursor_binding_and_validation(monkeypatch, tmp_path):
     pagination, previous_modules = _load_pagination(monkeypatch, tmp_path)
     try:
         token = pagination.encode_cursor(
@@ -53,11 +53,10 @@ def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
             last=[0, "alpha", "id-1"],
         )
         payload = _decode_token(token)
-        assert payload["v"] == 2
-        assert payload["a"] == "list_directory"
-        assert payload["s"] == "type_name_id:asc"
-        assert payload["k"] == [0, "alpha", "id-1"]
-        assert "last" not in payload
+        assert payload["v"] == 1
+        assert set(payload) == {"v", "n", "c"}
+        assert "list_directory" not in payload.values()
+        assert "alpha" not in payload.values()
 
         assert pagination.decode_cursor(
             token,
@@ -77,7 +76,9 @@ def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
             )
 
         tampered_payload = _decode_token(token)
-        tampered_payload["k"] = [1, "omega", "id-9"]
+        tampered_payload["c"] = tampered_payload["c"][:-1] + (
+            "A" if tampered_payload["c"][-1] != "A" else "B"
+        )
         with pytest.raises(pagination.CursorError):
             pagination.decode_cursor(
                 _encode_token(tampered_payload),
@@ -86,17 +87,15 @@ def test_cursor_signature_binding_and_validation(monkeypatch, tmp_path):
                 filters={"folder_id": "root"},
             )
 
-        old_shape_payload = {
-            "v": 1,
-            "action": "list_directory",
+        old_plaintext_payload = {
+            "v": 2,
+            "a": "list_directory",
             "sort": "type_name_id:asc",
-            "filters": payload["f"],
-            "last": [0, "alpha", "id-1"],
+            "k": [0, "alpha", "id-1"],
         }
-        old_shape_payload["sig"] = pagination._sign_payload(old_shape_payload)
         with pytest.raises(pagination.CursorError):
             pagination.decode_cursor(
-                _encode_token(old_shape_payload),
+                _encode_token(old_plaintext_payload),
                 action="list_directory",
                 sort="type_name_id:asc",
                 filters={"folder_id": "root"},

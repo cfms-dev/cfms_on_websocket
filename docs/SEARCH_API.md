@@ -37,7 +37,7 @@ with cursor pagination.
 |-----------|------|----------|---------|-------------|
 | `query` | string | Yes | - | Case-insensitive partial match term. Whitespace-only queries are rejected. |
 | `page_size` | integer | No | 128 | Maximum number of items to return. Range: 1-128. |
-| `cursor` | string/null | No | null | Cursor returned by the previous page. Omit or use null for the first page. |
+| `cursor` | string/null | No | null | Encrypted cursor returned by the previous page. Omit or use null for the first page. |
 | `sort_by` | string | No | `name` | One of `name`, `created_time`, `size`, `last_modified`. |
 | `sort_order` | string | No | `asc` | `asc` or `desc`. |
 | `search_documents` | boolean | No | true | Include matching documents. |
@@ -82,7 +82,7 @@ with cursor pagination.
 |-------|------|-------------|
 | `items` | array | Matching documents and directories visible to the user. |
 | `page_size` | integer | Page size used for the request. |
-| `next_cursor` | string/null | Cursor for the next page, or null when no next page exists. |
+| `next_cursor` | string/null | Encrypted cursor for the next page, or null when no next page exists. |
 | `has_more` | boolean | Whether another page is available. |
 | `query` | string | Trimmed query that was executed. |
 
@@ -91,9 +91,9 @@ Document items additionally include `last_modified` and `size`.
 
 ## Cursor Rules
 
-`cursor` is an opaque server-generated token. It is bound to the original search
-parameters, including query, target type filters, and sorting. Reusing a cursor
-with different parameters returns 400.
+`cursor` is an encrypted opaque server-generated token. It is bound to the
+original search parameters, including query, target type filters, and sorting.
+Reusing a cursor with different parameters returns 400.
 
 The cursor token format is internal and not part of the public protocol. Clients
 must store and replay the complete token as returned, without decoding,
@@ -112,6 +112,9 @@ previous response's `next_cursor`.
 
 ## Notes
 
-- Permission filtering is applied before pagination.
+- Permission filtering is applied before pagination, but broad queries may stop
+  early at a server-side scan window. In that case the response can contain
+  fewer than `page_size` items while still returning `has_more: true` and a
+  `next_cursor`.
 - Documents without active revisions are excluded.
 - Empty results return `items: []`, `has_more: false`, and `next_cursor: null`.

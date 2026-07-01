@@ -118,6 +118,80 @@ class TestSearch:
         assert first_ids.isdisjoint(second_ids)
 
     @pytest.mark.asyncio
+    async def test_search_scan_limit_returns_continuation_cursor(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        test_user = await user_factory()
+        login_response = await unauthenticated_client.login(
+            test_user["username"], test_user["password"]
+        )
+        assert_success(login_response)
+
+        query = "SearchScanBudget"
+        hidden_folder_ids = []
+        visible_folder_id = None
+        access_rules = {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["sysop"]}}
+                    ],
+                }
+            ]
+        }
+        try:
+            for index in range(256):
+                response = await authenticated_client.send_request(
+                    "create_directory",
+                    {
+                        "name": f"{query}Hidden{index:03d}",
+                        "access_rules": access_rules,
+                    },
+                )
+                hidden_folder_ids.append(assert_success(response)["id"])
+
+            visible_response = await authenticated_client.create_directory(
+                f"{query}Visible"
+            )
+            visible_folder_id = assert_success(visible_response)["id"]
+
+            first_response = await unauthenticated_client.search(
+                query=query,
+                page_size=1,
+                search_documents=False,
+                search_directories=True,
+            )
+            first_page = assert_success(first_response)
+
+            assert first_page["items"] == []
+            assert first_page["has_more"] is True
+            assert first_page["next_cursor"]
+
+            second_response = await unauthenticated_client.search(
+                query=query,
+                page_size=1,
+                cursor=first_page["next_cursor"],
+                search_documents=False,
+                search_directories=True,
+            )
+            second_page = assert_success(second_response)
+
+            assert [item["id"] for item in second_page["items"]] == [visible_folder_id]
+        finally:
+            for folder_id in hidden_folder_ids + (
+                [visible_folder_id] if visible_folder_id else []
+            ):
+                try:
+                    await authenticated_client.delete_directory(folder_id)
+                    await authenticated_client.purge_directory(folder_id)
+                except Exception:
+                    pass
+
+    @pytest.mark.asyncio
     async def test_search_no_results(self, authenticated_client: CFMSTestClient):
         response = await authenticated_client.search(
             query="NonExistentObscureTermThatWillNeverBeFound",
