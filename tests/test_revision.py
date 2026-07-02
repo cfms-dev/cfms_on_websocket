@@ -123,6 +123,7 @@ class TestRevisionOperations:
         data2 = assert_success(list_resp2)
         assert len(data2["items"]) == 1
         assert data2["items"][0]["id"] != rev_id
+        assert data2["items"][0]["is_current"] is True
 
     @pytest.mark.asyncio
     async def test_list_revisions_missing_doc(

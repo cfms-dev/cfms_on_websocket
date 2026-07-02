@@ -233,13 +233,14 @@ class RequestDeleteRevisionHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, username=handler.username)
 
-            # Try to connect parent and child revisions directly
-            for child_rev in revision.child_revisions:
-                child_rev.parent_revision = revision.parent_revision
+            with session.no_autoflush:
+                # Try to connect parent and child revisions directly
+                for child_rev in revision.child_revisions:
+                    child_rev.parent_revision = revision.parent_revision
 
-            revision.before_delete()
-            mark_document_modified(document, user.username)
-            session.delete(revision)
+                revision.before_delete()
+                mark_document_modified(document, user.username)
+                session.delete(revision)
             session.commit()
 
         handler.conclude_request(200, {}, "Revision deleted successfully")
