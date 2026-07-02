@@ -5,10 +5,19 @@ from functools import cmp_to_key
 from itertools import batched
 from typing import Any
 
-from sqlalchemy import and_, exists, func, literal, or_, select, union_all
-from sqlalchemy.orm import joinedload, raiseload
+from sqlalchemy import and_, exists, false, func, literal, not_, or_, select, union_all
+from sqlalchemy.orm import aliased, joinedload, raiseload
 
 from include.config.constants import QUERY_CHUNK_SIZE
+from include.database.models.access import (
+    CompiledAccessRule,
+    CompiledAccessRuleGroup,
+    CompiledAccessRuleMembership,
+    CompiledAccessRuleRight,
+    ObjectAccessEntry,
+    UserBlockEntry,
+    UserBlockSubEntry,
+)
 from include.database.models.documents import (
     Document,
     DocumentRevision,
@@ -16,6 +25,8 @@ from include.database.models.documents import (
     Folder,
 )
 from include.database.models.files import File
+from include.database.models.identity import User
+from include.domains.access.permissions import Permissions
 
 _CURSOR_KEY = "_cursor_key"
 
@@ -405,6 +416,7 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
             document_table.c.folder_id,
             document_table.c.created_time,
             document_table.c.current_revision_id,
+            document_table.c.inherit,
         )
         .where(*document_filters)
         .cte("matched_documents")
@@ -520,6 +532,7 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
             func.lower(matched_documents.c.title).label("name_sort_key"),
             matched_documents.c.folder_id.label("parent_id"),
             matched_documents.c.created_time.label("created_time"),
+            matched_documents.c.inherit.label("inherit"),
             effective_ranked.c.revision_created_time.label("last_modified"),
             file_table.c.size.label("size"),
             literal("document").label("type"),
@@ -576,6 +589,350 @@ def _search_primary_column(selectable, sort_by: str):
     if sort_by == "last_modified":
         return func.coalesce(selectable.c.last_modified, selectable.c.created_time)
     return selectable.c.created_time
+
+
+def _in_values(column, values: Sequence[str]):
+    if not values:
+        return false()
+    return column.in_(list(values))
+
+
+def _active_oae_exists(target_type_column, target_id_column, user: User, now: float):
+    group_names = list(user.all_groups)
+    entity_match = or_(
+        and_(
+            ObjectAccessEntry.entity_type == "user",
+            ObjectAccessEntry.entity_identifier == user.username,
+        ),
+        and_(
+            ObjectAccessEntry.entity_type == "group",
+            _in_values(ObjectAccessEntry.entity_identifier, group_names),
+        ),
+    )
+    return exists(
+        select(1).where(
+            ObjectAccessEntry.target_type == target_type_column,
+            ObjectAccessEntry.target_identifier == target_id_column,
+            ObjectAccessEntry.access_type == "read",
+            ObjectAccessEntry.start_time <= now,
+            or_(
+                ObjectAccessEntry.end_time == None,
+                ObjectAccessEntry.end_time >= now,
+            ),
+            entity_match,
+        )
+    )
+
+
+def _compiled_group_matches(group_alias, user_permissions: Sequence[str], user_groups):
+    missing_right = exists(
+        select(1).where(
+            CompiledAccessRuleRight.group_id == group_alias.id,
+            not_(_in_values(CompiledAccessRuleRight.permission, user_permissions)),
+        )
+    )
+    present_right = exists(
+        select(1).where(
+            CompiledAccessRuleRight.group_id == group_alias.id,
+            _in_values(CompiledAccessRuleRight.permission, user_permissions),
+        )
+    )
+    rights_match = or_(
+        group_alias.rights_empty == True,
+        and_(group_alias.rights_match_mode == "all", not_(missing_right)),
+        and_(group_alias.rights_match_mode == "any", present_right),
+    )
+
+    missing_group = exists(
+        select(1).where(
+            CompiledAccessRuleMembership.group_id == group_alias.id,
+            not_(_in_values(CompiledAccessRuleMembership.group_name, user_groups)),
+        )
+    )
+    present_group = exists(
+        select(1).where(
+            CompiledAccessRuleMembership.group_id == group_alias.id,
+            _in_values(CompiledAccessRuleMembership.group_name, user_groups),
+        )
+    )
+    groups_match = or_(
+        group_alias.groups_empty == True,
+        and_(group_alias.groups_match_mode == "all", not_(missing_group)),
+        and_(group_alias.groups_match_mode == "any", present_group),
+    )
+
+    return or_(
+        and_(group_alias.match_mode == "any", or_(rights_match, groups_match)),
+        and_(group_alias.match_mode == "all", rights_match, groups_match),
+    )
+
+
+def _compiled_rule_matches(rule_alias, user_permissions: Sequence[str], user_groups):
+    matching_group = aliased(CompiledAccessRuleGroup)
+    nonmatching_group = aliased(CompiledAccessRuleGroup)
+    return or_(
+        and_(
+            rule_alias.match_mode == "any",
+            exists(
+                select(1).where(
+                    matching_group.rule_id == rule_alias.id,
+                    _compiled_group_matches(
+                        matching_group, user_permissions, user_groups
+                    ),
+                )
+            ),
+        ),
+        and_(
+            rule_alias.match_mode == "all",
+            not_(
+                exists(
+                    select(1).where(
+                        nonmatching_group.rule_id == rule_alias.id,
+                        not_(
+                            _compiled_group_matches(
+                                nonmatching_group, user_permissions, user_groups
+                            )
+                        ),
+                    )
+                )
+            ),
+        ),
+    )
+
+
+def _node_rules_allow(target_type_column, target_id_column, user: User):
+    user_permissions = [str(permission) for permission in user.all_permissions]
+    user_groups = list(user.all_groups)
+    rule = aliased(CompiledAccessRule)
+    relevant_rule = and_(
+        rule.target_type == target_type_column,
+        rule.target_id == target_id_column,
+        rule.access_type == "read",
+    )
+    no_read_rules = not_(exists(select(1).where(relevant_rule)))
+    failing_rule = exists(
+        select(1).where(
+            relevant_rule,
+            not_(_compiled_rule_matches(rule, user_permissions, user_groups)),
+        )
+    )
+    return or_(no_read_rules, not_(failing_rule))
+
+
+def _target_is_blocked(target_id_column, user: User, now: float):
+    return exists(
+        select(1)
+        .select_from(
+            UserBlockEntry.__table__.join(
+                UserBlockSubEntry.__table__,
+                UserBlockSubEntry.parent_id == UserBlockEntry.block_id,
+            )
+        )
+        .where(
+            UserBlockEntry.username == user.username,
+            UserBlockEntry.not_before <= now,
+            or_(UserBlockEntry.not_after == -1, UserBlockEntry.not_after >= now),
+            UserBlockSubEntry.block_type == "read",
+            UserBlockEntry.target_type != "all",
+            UserBlockEntry.target_id == target_id_column,
+        )
+    )
+
+
+def _user_is_globally_blocked(user: User, now: float):
+    return exists(
+        select(1)
+        .select_from(
+            UserBlockEntry.__table__.join(
+                UserBlockSubEntry.__table__,
+                UserBlockSubEntry.parent_id == UserBlockEntry.block_id,
+            )
+        )
+        .where(
+            UserBlockEntry.username == user.username,
+            UserBlockEntry.not_before <= now,
+            or_(UserBlockEntry.not_after == -1, UserBlockEntry.not_after >= now),
+            UserBlockSubEntry.block_type == "read",
+            UserBlockEntry.target_type == "all",
+        )
+    )
+
+
+def _search_candidate_selectable(
+    *,
+    query: str,
+    search_documents: bool,
+    search_directories: bool,
+):
+    like_pattern = f"%{query}%"
+    selects = []
+
+    if search_directories:
+        name_expression = func.lower(Folder.name)
+        selects.append(
+            select(
+                Folder.id.label("id"),
+                Folder.name.label("name"),
+                name_expression.label("name_sort_key"),
+                Folder.parent_id.label("parent_id"),
+                Folder.created_time.label("created_time"),
+                literal(None).label("last_modified"),
+                literal(0).label("size"),
+                literal("directory").label("type"),
+                literal(0).label("type_rank"),
+                Folder.inherit.label("inherit"),
+            ).where(
+                Folder.status != EntityStatus.DELETED,
+                Folder.name.ilike(like_pattern),
+            )
+        )
+
+    if search_documents:
+        document_details = _effective_active_revision_details_subquery(
+            [
+                Document.__table__.c.status != EntityStatus.DELETED,
+                Document.__table__.c.title.ilike(like_pattern),
+            ]
+        )
+        selects.append(
+            select(
+                document_details.c.id,
+                document_details.c.name,
+                document_details.c.name_sort_key,
+                document_details.c.parent_id,
+                document_details.c.created_time,
+                document_details.c.last_modified,
+                document_details.c.size,
+                document_details.c.type,
+                document_details.c.type_rank,
+                document_details.c.inherit,
+            )
+        )
+
+    if not selects:
+        return None
+    if len(selects) == 1:
+        return selects[0].subquery("search_candidates")
+    return union_all(*selects).subquery("search_candidates")
+
+
+def _search_ancestor_cte(candidates):
+    anchor = (
+        select(
+            candidates.c.type.label("object_type"),
+            candidates.c.id.label("object_id"),
+            Folder.id.label("node_id"),
+            Folder.parent_id.label("parent_id"),
+            Folder.inherit.label("inherit"),
+        )
+        .select_from(
+            Folder.__table__.join(candidates, Folder.id == candidates.c.parent_id)
+        )
+        .where(candidates.c.inherit == True, candidates.c.parent_id != None)
+    )
+    ancestors = anchor.cte("search_visible_ancestors", recursive=True)
+    parent_folder = Folder.__table__.alias("search_visible_parent")
+    ancestors = ancestors.union_all(
+        select(
+            ancestors.c.object_type,
+            ancestors.c.object_id,
+            parent_folder.c.id,
+            parent_folder.c.parent_id,
+            parent_folder.c.inherit,
+        )
+        .select_from(
+            ancestors.join(parent_folder, parent_folder.c.id == ancestors.c.parent_id)
+        )
+        .where(ancestors.c.inherit == True, ancestors.c.parent_id != None)
+    )
+    return ancestors
+
+
+def _visible_search_filter(candidates, user: User, now: float):
+    target_oae = _active_oae_exists(candidates.c.type, candidates.c.id, user, now)
+    target_rules_allow = _node_rules_allow(candidates.c.type, candidates.c.id, user)
+
+    ancestors = _search_ancestor_cte(candidates)
+    blocked_ancestor = exists(
+        select(1).where(
+            ancestors.c.object_type == candidates.c.type,
+            ancestors.c.object_id == candidates.c.id,
+            not_(
+                or_(
+                    _active_oae_exists(
+                        literal("directory"), ancestors.c.node_id, user, now
+                    ),
+                    _node_rules_allow(literal("directory"), ancestors.c.node_id, user),
+                )
+            ),
+        )
+    )
+    visible = or_(target_oae, and_(target_rules_allow, not_(blocked_ancestor)))
+
+    if Permissions.SUPER_LIST_DIRECTORY in user.all_permissions:
+        return visible
+
+    return and_(
+        visible,
+        not_(_user_is_globally_blocked(user, now)),
+        not_(_target_is_blocked(candidates.c.id, user, now)),
+    )
+
+
+def fetch_visible_search_candidate_rows(
+    session,
+    *,
+    user: User,
+    now: float,
+    query: str,
+    sort_by: str,
+    sort_order: str,
+    search_documents: bool,
+    search_directories: bool,
+    last_key: list[Any] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    candidates = _search_candidate_selectable(
+        query=query,
+        search_documents=search_documents,
+        search_directories=search_directories,
+    )
+    if candidates is None:
+        return []
+
+    primary_column = _search_primary_column(candidates, sort_by)
+    search_query = select(
+        candidates.c.id,
+        candidates.c.name,
+        candidates.c.name_sort_key,
+        candidates.c.parent_id,
+        candidates.c.created_time,
+        candidates.c.last_modified,
+        candidates.c.size,
+        candidates.c.type,
+        candidates.c.type_rank,
+        candidates.c.inherit,
+    ).where(_visible_search_filter(candidates, user, now))
+    cursor_filter = _apply_search_cursor_filter(
+        candidates, primary_column, last_key, sort_order
+    )
+    if cursor_filter is not None:
+        search_query = search_query.where(cursor_filter)
+    search_query = search_query.order_by(
+        *_search_ordering(candidates, primary_column, sort_order)
+    ).limit(limit)
+
+    rows: list[dict[str, Any]] = []
+    for row in session.execute(search_query).mappings():
+        item = {str(key): value for key, value in row.items()}
+        item[_CURSOR_KEY] = _search_item_cursor_key(item, sort_by)
+        item.pop("name_sort_key", None)
+        item.pop("inherit", None)
+        if item["type"] == "directory":
+            item.pop("last_modified", None)
+            item.pop("size", None)
+        rows.append(item)
+    return rows
 
 
 def fetch_search_candidate_rows(
@@ -648,6 +1005,7 @@ def fetch_search_candidate_rows(
             item = dict(row)
             item[_CURSOR_KEY] = _search_item_cursor_key(item, sort_by)
             item.pop("name_sort_key", None)
+            item.pop("inherit", None)
             candidate_rows.append(item)
 
     def compare_rows(left: dict[str, Any], right: dict[str, Any]) -> int:

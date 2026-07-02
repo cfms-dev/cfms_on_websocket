@@ -88,11 +88,15 @@ def set_access_rules(
         Folder,
         FolderAccessRule,
     )
+    from include.domains.access.authorization.compiled_rules import (
+        mark_access_rules_for_compilation,
+    )
 
     if not new_access_rules:
         for rule in target.access_rules.copy():
             target.access_rules.remove(rule)  # pyright: ignore[reportArgumentType]
         target.inherit = inherit_parent
+        mark_access_rules_for_compilation(target)
         return
 
     for access_type, this_type_rules in new_access_rules.items():
@@ -130,6 +134,7 @@ def set_access_rules(
                 )
 
     target.inherit = inherit_parent
+    mark_access_rules_for_compilation(target)
 
 
 def apply_access_rules(

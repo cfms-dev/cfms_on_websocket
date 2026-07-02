@@ -1,4 +1,8 @@
 from include.database.models.access import (
+    CompiledAccessRule,
+    CompiledAccessRuleGroup,
+    CompiledAccessRuleMembership,
+    CompiledAccessRuleRight,
     ObjectAccessEntry,
     UserBlockEntry,
     UserBlockSubEntry,
@@ -36,6 +40,10 @@ __all__ = [
     "AuditEntry",
     "BannedSubnet",
     "BaseObject",
+    "CompiledAccessRule",
+    "CompiledAccessRuleGroup",
+    "CompiledAccessRuleMembership",
+    "CompiledAccessRuleRight",
     "Document",
     "DocumentAccessRule",
     "DocumentMetadata",
@@ -61,3 +69,5 @@ __all__ = [
     "UserPermission",
     "UserStatus",
 ]
+
+import include.domains.access.authorization.compiled_rules  # noqa: F401, E402

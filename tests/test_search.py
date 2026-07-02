@@ -1,3 +1,6 @@
+import os
+import time
+
 import pytest
 
 from tests.test_client import CFMSTestClient
@@ -118,7 +121,7 @@ class TestSearch:
         assert first_ids.isdisjoint(second_ids)
 
     @pytest.mark.asyncio
-    async def test_search_scan_limit_returns_continuation_cursor(
+    async def test_search_filters_hidden_candidates_before_pagination(
         self,
         authenticated_client: CFMSTestClient,
         unauthenticated_client: CFMSTestClient,
@@ -167,24 +170,322 @@ class TestSearch:
             )
             first_page = assert_success(first_response)
 
-            assert first_page["items"] == []
-            assert first_page["has_more"] is True
-            assert first_page["next_cursor"]
-
-            second_response = await unauthenticated_client.search(
-                query=query,
-                page_size=1,
-                cursor=first_page["next_cursor"],
-                search_documents=False,
-                search_directories=True,
-            )
-            second_page = assert_success(second_response)
-
-            assert [item["id"] for item in second_page["items"]] == [visible_folder_id]
+            assert [item["id"] for item in first_page["items"]] == [visible_folder_id]
+            assert first_page["has_more"] is False
+            assert first_page["next_cursor"] is None
         finally:
             for folder_id in hidden_folder_ids + (
                 [visible_folder_id] if visible_folder_id else []
             ):
+                try:
+                    await authenticated_client.delete_directory(folder_id)
+                    await authenticated_client.purge_directory(folder_id)
+                except Exception:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_search_visible_query_honors_oae_direct_grant(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        test_user = await user_factory()
+        login_response = await unauthenticated_client.login(
+            test_user["username"], test_user["password"]
+        )
+        assert_success(login_response)
+
+        query = "SearchOAEVisible"
+        folder_id = None
+        access_rules = {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["sysop"]}}
+                    ],
+                }
+            ]
+        }
+        try:
+            create_response = await authenticated_client.send_request(
+                "create_directory",
+                {"name": query, "access_rules": access_rules},
+            )
+            folder_id = assert_success(create_response)["id"]
+            grant_response = await authenticated_client.grant_access(
+                "user",
+                test_user["username"],
+                "directory",
+                folder_id,
+                ["read"],
+                time.time() - 1,
+            )
+            assert_success(grant_response)
+
+            response = await unauthenticated_client.search(
+                query=query,
+                search_documents=False,
+                search_directories=True,
+            )
+            data = assert_success(response)
+
+            assert [item["id"] for item in data["items"]] == [folder_id]
+        finally:
+            if folder_id:
+                try:
+                    await authenticated_client.delete_directory(folder_id)
+                    await authenticated_client.purge_directory(folder_id)
+                except Exception:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_search_visible_query_honors_compiled_rule_match_modes(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        original_cwd = os.getcwd()
+        try:
+            os.chdir("src")
+            from include.database.models.documents import Folder
+            from include.database.models.identity import User
+            from include.database.session import Session
+            from include.domains.access.authorization.evaluation import (
+                check_access_for_object,
+            )
+            from include.domains.access.authorization.searchable_tree import (
+                load_folder_access_context,
+            )
+            from include.domains.documents.queries.listing import (
+                fetch_visible_search_candidate_rows,
+            )
+        finally:
+            os.chdir(original_cwd)
+
+        test_user = await user_factory()
+        permissions_response = await authenticated_client.change_user_permissions(
+            test_user["username"], ["list_users"]
+        )
+        assert_success(permissions_response)
+        login_response = await unauthenticated_client.login(
+            test_user["username"], test_user["password"]
+        )
+        assert_success(login_response)
+
+        query = "SearchCompiledRules"
+        visible_folder_id = None
+        hidden_folder_id = None
+        visible_rules = {
+            "read": [
+                {
+                    "match": "any",
+                    "match_groups": [
+                        {
+                            "match": "any",
+                            "rights": {
+                                "match": "any",
+                                "require": ["debugging", "list_users"],
+                            },
+                            "groups": {
+                                "match": "all",
+                                "require": ["missing_group"],
+                            },
+                        }
+                    ],
+                },
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"rights": {"match": "all", "require": ["list_users"]}}
+                    ],
+                },
+            ]
+        }
+        hidden_rules = {
+            "read": [
+                {
+                    "match": "any",
+                    "match_groups": [
+                        {
+                            "rights": {
+                                "match": "any",
+                                "require": ["list_users"],
+                            }
+                        }
+                    ],
+                },
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["sysop"]}}
+                    ],
+                },
+            ]
+        }
+        try:
+            visible_response = await authenticated_client.send_request(
+                "create_directory",
+                {"name": f"{query}Visible", "access_rules": visible_rules},
+            )
+            visible_folder_id = assert_success(visible_response)["id"]
+            hidden_response = await authenticated_client.send_request(
+                "create_directory",
+                {"name": f"{query}Hidden", "access_rules": hidden_rules},
+            )
+            hidden_folder_id = assert_success(hidden_response)["id"]
+
+            response = await unauthenticated_client.search(
+                query=query,
+                search_documents=False,
+                search_directories=True,
+            )
+            data = assert_success(response)
+
+            assert [item["id"] for item in data["items"]] == [visible_folder_id]
+
+            with Session() as session:
+                user = User.get_existing(session, test_user["username"])
+                folders = (
+                    session.query(Folder)
+                    .filter(Folder.id.in_([visible_folder_id, hidden_folder_id]))
+                    .all()
+                )
+                ancestors, oaes = load_folder_access_context(session, folders)
+                python_visible_ids = {
+                    folder.id
+                    for folder in folders
+                    if check_access_for_object(
+                        folder,
+                        user,
+                        "read",
+                        ancestors,
+                        oaes,
+                        recursive=True,
+                    )
+                }
+                sql_visible_ids = {
+                    item["id"]
+                    for item in fetch_visible_search_candidate_rows(
+                        session,
+                        user=user,
+                        now=time.time(),
+                        query=query,
+                        sort_by="name",
+                        sort_order="asc",
+                        search_documents=False,
+                        search_directories=True,
+                        last_key=None,
+                        limit=10,
+                    )
+                }
+
+            assert sql_visible_ids == python_visible_ids == {visible_folder_id}
+        finally:
+            for folder_id in [visible_folder_id, hidden_folder_id]:
+                if folder_id:
+                    try:
+                        await authenticated_client.delete_directory(folder_id)
+                        await authenticated_client.purge_directory(folder_id)
+                    except Exception:
+                        pass
+
+    @pytest.mark.asyncio
+    async def test_search_visible_query_honors_inherit_false_boundary(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        test_user = await user_factory()
+        login_response = await unauthenticated_client.login(
+            test_user["username"], test_user["password"]
+        )
+        assert_success(login_response)
+
+        query = "SearchInheritBoundary"
+        parent_id = None
+        child_id = None
+        access_rules = {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["sysop"]}}
+                    ],
+                }
+            ]
+        }
+        try:
+            parent_response = await authenticated_client.send_request(
+                "create_directory",
+                {"name": f"{query}Parent", "access_rules": access_rules},
+            )
+            parent_id = assert_success(parent_response)["id"]
+            child_response = await authenticated_client.send_request(
+                "create_directory",
+                {
+                    "name": f"{query}Child",
+                    "parent_id": parent_id,
+                    "inherit_parent": False,
+                },
+            )
+            child_id = assert_success(child_response)["id"]
+
+            response = await unauthenticated_client.search(
+                query=f"{query}Child",
+                search_documents=False,
+                search_directories=True,
+            )
+            data = assert_success(response)
+
+            assert [item["id"] for item in data["items"]] == [child_id]
+        finally:
+            for folder_id in [child_id, parent_id]:
+                if folder_id:
+                    try:
+                        await authenticated_client.delete_directory(folder_id)
+                        await authenticated_client.purge_directory(folder_id)
+                    except Exception:
+                        pass
+
+    @pytest.mark.asyncio
+    async def test_search_visible_query_honors_read_block(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        test_user = await user_factory()
+        login_response = await unauthenticated_client.login(
+            test_user["username"], test_user["password"]
+        )
+        assert_success(login_response)
+
+        query = "SearchBlockedTarget"
+        folder_id = None
+        try:
+            create_response = await authenticated_client.create_directory(query)
+            folder_id = assert_success(create_response)["id"]
+            block_response = await authenticated_client.block_user(
+                test_user["username"], "directory", ["read"], folder_id
+            )
+            assert_success(block_response)
+
+            response = await unauthenticated_client.search(
+                query=query,
+                search_documents=False,
+                search_directories=True,
+            )
+            data = assert_success(response)
+
+            assert data["items"] == []
+            assert data["has_more"] is False
+            assert data["next_cursor"] is None
+        finally:
+            if folder_id:
                 try:
                     await authenticated_client.delete_directory(folder_id)
                     await authenticated_client.purge_directory(folder_id)
