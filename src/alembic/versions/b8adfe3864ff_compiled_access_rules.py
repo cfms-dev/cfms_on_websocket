@@ -207,35 +207,42 @@ def _backfill_one_rule(
 
 def _backfill_compiled_access_rules() -> None:
     conn = op.get_bind()
-    rules_table = sa.table(
+    metadata = sa.MetaData()
+    rules_table = sa.Table(
         "compiled_access_rules",
-        sa.column("id", sa.Integer),
-        sa.column("target_type", sa.String),
-        sa.column("target_id", sa.String),
-        sa.column("source_rule_id", sa.Integer),
-        sa.column("access_type", sa.String),
-        sa.column("match_mode", sa.String),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("target_type", sa.String()),
+        sa.Column("target_id", sa.String()),
+        sa.Column("source_rule_id", sa.Integer()),
+        sa.Column("access_type", sa.String()),
+        sa.Column("match_mode", sa.String()),
     )
-    groups_table = sa.table(
+    groups_table = sa.Table(
         "compiled_access_rule_groups",
-        sa.column("id", sa.Integer),
-        sa.column("rule_id", sa.Integer),
-        sa.column("group_index", sa.Integer),
-        sa.column("match_mode", sa.String),
-        sa.column("rights_match_mode", sa.String),
-        sa.column("rights_empty", sa.Boolean),
-        sa.column("groups_match_mode", sa.String),
-        sa.column("groups_empty", sa.Boolean),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("rule_id", sa.Integer()),
+        sa.Column("group_index", sa.Integer()),
+        sa.Column("match_mode", sa.String()),
+        sa.Column("rights_match_mode", sa.String()),
+        sa.Column("rights_empty", sa.Boolean()),
+        sa.Column("groups_match_mode", sa.String()),
+        sa.Column("groups_empty", sa.Boolean()),
     )
-    rights_table = sa.table(
+    rights_table = sa.Table(
         "compiled_access_rule_rights",
-        sa.column("group_id", sa.Integer),
-        sa.column("permission", sa.String),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("group_id", sa.Integer()),
+        sa.Column("permission", sa.String()),
     )
-    memberships_table = sa.table(
+    memberships_table = sa.Table(
         "compiled_access_rule_memberships",
-        sa.column("group_id", sa.Integer),
-        sa.column("group_name", sa.String),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("group_id", sa.Integer()),
+        sa.Column("group_name", sa.String()),
     )
 
     document_rules = sa.table(

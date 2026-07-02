@@ -23,7 +23,6 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     _clear_compiled_access_rules()
-    _backfill_from_legacy_access_rules()
 
     with op.batch_alter_table("compiled_access_rules", schema=None) as batch_op:
         batch_op.drop_constraint(
@@ -31,6 +30,8 @@ def upgrade() -> None:
             type_="unique",
         )
         batch_op.drop_column("source_rule_id")
+
+    _backfill_from_legacy_access_rules()
 
     op.drop_table("document_access_rules")
     op.drop_table("folder_access_rules")
@@ -105,36 +106,41 @@ def _required_items(group_data: dict[str, Any], key: str) -> list[str]:
 
 
 def _compiled_tables():
-    rules_table = sa.table(
+    metadata = sa.MetaData()
+    rules_table = sa.Table(
         "compiled_access_rules",
-        sa.column("id", sa.Integer),
-        sa.column("target_type", sa.String),
-        sa.column("target_id", sa.String),
-        sa.column("access_type", sa.String),
-        sa.column("match_mode", sa.String),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("target_type", sa.String()),
+        sa.Column("target_id", sa.String()),
+        sa.Column("access_type", sa.String()),
+        sa.Column("match_mode", sa.String()),
     )
-    groups_table = sa.table(
+    groups_table = sa.Table(
         "compiled_access_rule_groups",
-        sa.column("id", sa.Integer),
-        sa.column("rule_id", sa.Integer),
-        sa.column("group_index", sa.Integer),
-        sa.column("match_mode", sa.String),
-        sa.column("rights_match_mode", sa.String),
-        sa.column("rights_empty", sa.Boolean),
-        sa.column("groups_match_mode", sa.String),
-        sa.column("groups_empty", sa.Boolean),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("rule_id", sa.Integer()),
+        sa.Column("group_index", sa.Integer()),
+        sa.Column("match_mode", sa.String()),
+        sa.Column("rights_match_mode", sa.String()),
+        sa.Column("rights_empty", sa.Boolean()),
+        sa.Column("groups_match_mode", sa.String()),
+        sa.Column("groups_empty", sa.Boolean()),
     )
-    rights_table = sa.table(
+    rights_table = sa.Table(
         "compiled_access_rule_rights",
-        sa.column("id", sa.Integer),
-        sa.column("group_id", sa.Integer),
-        sa.column("permission", sa.String),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("group_id", sa.Integer()),
+        sa.Column("permission", sa.String()),
     )
-    memberships_table = sa.table(
+    memberships_table = sa.Table(
         "compiled_access_rule_memberships",
-        sa.column("id", sa.Integer),
-        sa.column("group_id", sa.Integer),
-        sa.column("group_name", sa.String),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("group_id", sa.Integer()),
+        sa.Column("group_name", sa.String()),
     )
     return rules_table, groups_table, rights_table, memberships_table
 
@@ -329,19 +335,22 @@ def _restore_legacy_access_rules_from_compiled() -> None:
         sa.column("match_mode", sa.String),
         sa.column("source_rule_id", sa.Integer),
     )
-    document_rules = sa.table(
+    metadata = sa.MetaData()
+    document_rules = sa.Table(
         "document_access_rules",
-        sa.column("id", sa.Integer),
-        sa.column("document_id", sa.String),
-        sa.column("access_type", sa.String),
-        sa.column("rule_data", sa.JSON),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("document_id", sa.String()),
+        sa.Column("access_type", sa.String()),
+        sa.Column("rule_data", sa.JSON()),
     )
-    folder_rules = sa.table(
+    folder_rules = sa.Table(
         "folder_access_rules",
-        sa.column("id", sa.Integer),
-        sa.column("folder_id", sa.String),
-        sa.column("access_type", sa.String),
-        sa.column("rule_data", sa.JSON),
+        metadata,
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("folder_id", sa.String()),
+        sa.Column("access_type", sa.String()),
+        sa.Column("rule_data", sa.JSON()),
     )
 
     for rule in conn.execute(sa.select(rules_table).order_by(rules_table.c.id)):
