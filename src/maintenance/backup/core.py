@@ -224,6 +224,9 @@ COMPILED_ACCESS_RULE_TABLE_NAMES = frozenset(
         "compiled_access_rule_rights",
     }
 )
+# These table names are accepted only when restoring backups produced before
+# compiled access rules became authoritative. They are not part of the current
+# schema or export format.
 LEGACY_ACCESS_RULE_TABLE_NAMES = frozenset(
     {"document_access_rules", "folder_access_rules"}
 )
@@ -1400,6 +1403,7 @@ def _restore_legacy_access_rules(
     session,
     rows_by_table: dict[str, list[dict[str, Any]]],
 ) -> None:
+    """Convert pre-compiled backup rows into current compiled access rows."""
     for row in rows_by_table.get("document_access_rules", []):
         compiled_rule = compile_access_rule(
             target_type="document",

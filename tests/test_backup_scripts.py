@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import logging
 import sys
 from io import StringIO
@@ -481,6 +482,14 @@ def _normalize(value):
     return value
 
 
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(f"{json.dumps(row, separators=(',', ':'))}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
 def _test_progress() -> Progress:
     return Progress(
         console=Console(file=StringIO(), force_terminal=False, width=120),
@@ -582,6 +591,9 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         )
 
     assert result["created_at"] == header.created_at
+    assert "compiled_access_rules" in result["tables"]
+    assert "document_access_rules" not in result["tables"]
+    assert "folder_access_rules" not in result["tables"]
     assert init_path.exists()
     import_tasks = list(import_progress.tasks)
     assert any(
@@ -663,6 +675,150 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         )
 
         assert visible_rows == []
+
+
+def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
+    backup_context, tmp_path
+):
+    from maintenance.backup.core import (
+        BACKUP_FORMAT_VERSION,
+        _restore_database,
+        _validate_manifest,
+    )
+
+    base = backup_context.Base
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "legacy-payload"
+    tables_dir = extract_dir / "tables"
+
+    folder_rows = [
+        {
+            "id": "folder-legacy",
+            "name": "Legacy Folder",
+            "created_time": 1_700_000_000.0,
+            "parent_id": None,
+            "status": 0,
+            "status_operation_id": None,
+            "inherit": True,
+        }
+    ]
+    document_rows = [
+        {
+            "id": "doc-legacy",
+            "title": "Legacy Document",
+            "created_time": 1_700_000_001.0,
+            "folder_id": "folder-legacy",
+            "current_revision_id": None,
+            "status": 0,
+            "status_operation_id": None,
+            "inherit": True,
+        }
+    ]
+    folder_rule_rows = [
+        {
+            "id": 1,
+            "folder_id": "folder-legacy",
+            "access_type": "read",
+            "rule_data": {
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
+            },
+        }
+    ]
+    document_rule_rows = [
+        {
+            "id": 2,
+            "document_id": "doc-legacy",
+            "access_type": "manage",
+            "rule_data": {
+                "match": "all",
+                "match_groups": [
+                    {"rights": {"match": "all", "require": ["list_users"]}}
+                ],
+            },
+        }
+    ]
+
+    _write_jsonl(tables_dir / "folders.jsonl", folder_rows)
+    _write_jsonl(tables_dir / "documents.jsonl", document_rows)
+    _write_jsonl(tables_dir / "folder_access_rules.jsonl", folder_rule_rows)
+    _write_jsonl(tables_dir / "document_access_rules.jsonl", document_rule_rows)
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["documents"],
+        "tables": {
+            "folders": {"rows": len(folder_rows)},
+            "documents": {"rows": len(document_rows)},
+            "folder_access_rules": {"rows": len(folder_rule_rows)},
+            "document_access_rules": {"rows": len(document_rule_rows)},
+        },
+        "files": [],
+        "configuration": {},
+    }
+
+    _validate_manifest(manifest)
+    _restore_database(extract_dir, manifest, target_session)
+
+    with target_engine.connect() as connection:
+        tables = base.metadata.tables
+        compiled_rules = (
+            connection.execute(
+                select(tables["compiled_access_rules"]).order_by(
+                    tables["compiled_access_rules"].c.target_type
+                )
+            )
+            .mappings()
+            .all()
+        )
+        memberships = (
+            connection.execute(select(tables["compiled_access_rule_memberships"]))
+            .mappings()
+            .all()
+        )
+        rights = (
+            connection.execute(select(tables["compiled_access_rule_rights"]))
+            .mappings()
+            .all()
+        )
+
+    assert [
+        (row["target_type"], row["target_id"], row["access_type"])
+        for row in compiled_rules
+    ] == [
+        ("directory", "folder-legacy", "read"),
+        ("document", "doc-legacy", "manage"),
+    ]
+    assert [row["group_name"] for row in memberships] == ["sysop"]
+    assert [row["permission"] for row in rights] == ["list_users"]
+
+
+def test_current_access_rule_backup_manifest_uses_compiled_tables(
+    backup_context, tmp_path
+):
+    from maintenance.backup.core import _stage_backup_payload
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_storage = tmp_path / "source-storage"
+    staging_dir = tmp_path / "staging"
+    source_storage.mkdir()
+    staging_dir.mkdir()
+    _seed_source(base, source_engine, source_storage)
+
+    manifest = _stage_backup_payload(
+        staging_dir,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+
+    assert "compiled_access_rules" in manifest["tables"]
+    assert "compiled_access_rule_groups" in manifest["tables"]
+    assert "compiled_access_rule_memberships" in manifest["tables"]
+    assert "compiled_access_rule_rights" in manifest["tables"]
+    assert "document_access_rules" not in manifest["tables"]
+    assert "folder_access_rules" not in manifest["tables"]
 
 
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):

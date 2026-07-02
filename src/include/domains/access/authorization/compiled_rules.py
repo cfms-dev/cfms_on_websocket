@@ -18,12 +18,7 @@ from include.database.models.access import (
 
 TargetType = Literal["document", "directory"]
 
-_PENDING_TARGETS_KEY = "compiled_access_rule_pending_targets"
 _DELETED_TARGET_KEYS = "compiled_access_rule_deleted_target_keys"
-
-
-def mark_access_rules_for_compilation(target: Any) -> None:
-    setattr(target, "_compile_access_rules_after_flush", True)
 
 
 def _target_type_and_id(target: Any) -> tuple[TargetType, str] | None:
@@ -297,17 +292,6 @@ def compiled_rules_allow(
     return all(_compiled_rule_matches_user(rule, user) for rule in rules)
 
 
-def rebuild_compiled_access_rules(
-    session: OrmSession,
-    target: Any,
-) -> None:
-    session.flush()
-
-
-def rebuild_all_compiled_access_rules(session: OrmSession) -> None:
-    session.flush()
-
-
 def delete_compiled_access_rules(
     session: OrmSession,
     target_type: TargetType,
@@ -337,11 +321,32 @@ def delete_compiled_access_rules_for_targets(
             )
 
 
+def _compiled_rule_has_invalid_shape(rule: CompiledAccessRule) -> bool:
+    if rule.target_type not in ("document", "directory"):
+        return True
+    if rule.access_type not in AVAILABLE_ACCESS_TYPES:
+        return True
+    if rule.match_mode not in ("all", "any"):
+        return True
+    return any(
+        group.match_mode not in ("all", "any")
+        or group.rights_match_mode not in ("all", "any")
+        or group.groups_match_mode not in ("all", "any")
+        for group in rule.match_groups
+    )
+
+
 def find_compiled_access_rule_mismatches(
     session: OrmSession,
     *,
     include_orphans: bool = True,
 ) -> list[tuple[str, str]]:
+    """
+    Report invalid or orphaned compiled rows.
+
+    Compiled access rules are now the authoritative storage format, so there is
+    no legacy source table to compare against or rebuild from.
+    """
     from include.database.models.documents import Document, Folder
 
     mismatches: list[tuple[str, str]] = []
@@ -359,10 +364,7 @@ def find_compiled_access_rule_mismatches(
             mismatches.append((rule.target_type, str(rule.target_id)))
             continue
         target_key = (rule.target_type, str(rule.target_id))
-        if rule.access_type not in AVAILABLE_ACCESS_TYPES or rule.match_mode not in (
-            "all",
-            "any",
-        ):
+        if _compiled_rule_has_invalid_shape(rule):
             mismatches.append(target_key)
             continue
         if include_orphans:
@@ -378,19 +380,17 @@ def find_compiled_access_rule_mismatches(
             ):
                 mismatches.append(("directory", str(rule.target_id)))
                 continue
-        for group in rule.match_groups:
-            if (
-                group.match_mode not in ("all", "any")
-                or group.rights_match_mode not in ("all", "any")
-                or group.groups_match_mode not in ("all", "any")
-            ):
-                mismatches.append(target_key)
-                break
 
     return sorted(set(mismatches))
 
 
 def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
+    """
+    Delete invalid or orphaned compiled rows, then return remaining mismatches.
+
+    This intentionally does not recreate missing rules because compiled rules
+    are the only current persisted representation.
+    """
     from include.database.models.documents import Document, Folder
 
     valid_document_ids = {row[0] for row in session.query(Document.id).all()}
@@ -403,10 +403,7 @@ def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
             delete_rule = rule.target_id not in valid_folder_ids
         else:
             delete_rule = True
-        if rule.access_type not in AVAILABLE_ACCESS_TYPES or rule.match_mode not in (
-            "all",
-            "any",
-        ):
+        if _compiled_rule_has_invalid_shape(rule):
             delete_rule = True
         if delete_rule:
             session.delete(rule)
@@ -415,13 +412,7 @@ def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
 
 
 @event.listens_for(OrmSession, "before_flush")
-def _collect_access_rule_targets(session: OrmSession, *_args) -> None:
-    pending = session.info.setdefault(_PENDING_TARGETS_KEY, [])
-    for target in list(session.new) + list(session.dirty):
-        if getattr(target, "_compile_access_rules_after_flush", False):
-            pending.append(target)
-            setattr(target, "_compile_access_rules_after_flush", False)
-
+def _collect_deleted_access_rule_targets(session: OrmSession, *_args) -> None:
     deleted_keys = session.info.setdefault(_DELETED_TARGET_KEYS, set())
     for target in session.deleted:
         if _tracked_document_target(target):
@@ -431,16 +422,9 @@ def _collect_access_rule_targets(session: OrmSession, *_args) -> None:
 
 
 @event.listens_for(OrmSession, "after_flush_postexec")
-def _sync_compiled_access_rules(session: OrmSession, *_args) -> None:
+def _delete_compiled_access_rules_for_deleted_targets(
+    session: OrmSession, *_args
+) -> None:
     deleted_keys = session.info.pop(_DELETED_TARGET_KEYS, set())
     for target_type, target_id in deleted_keys:
         delete_compiled_access_rules(session, target_type, target_id)
-
-    pending_targets = session.info.pop(_PENDING_TARGETS_KEY, [])
-    seen: set[tuple[TargetType, str]] = set()
-    for target in pending_targets:
-        target_key = _target_type_and_id(target)
-        if target_key is None or target_key in deleted_keys or target_key in seen:
-            continue
-        seen.add(target_key)
-        rebuild_compiled_access_rules(session, target)

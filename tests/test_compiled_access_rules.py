@@ -1,8 +1,14 @@
+import sys
 import time
+from pathlib import Path
 
 import pytest
+import tomlkit
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_SRC_PATH = _PROJECT_ROOT / "src"
 
 
 def _legacy_rule_data_matches_user(rule_data: dict, user) -> bool:
@@ -83,8 +89,15 @@ def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
 
 
 @pytest.fixture()
-def access_rule_session(protected_test_config, monkeypatch):
-    monkeypatch.chdir(protected_test_config.src_dir)
+def access_rule_session(monkeypatch, tmp_path):
+    if str(_SRC_PATH) not in sys.path:
+        sys.path.insert(0, str(_SRC_PATH))
+
+    config = tomlkit.parse((_SRC_PATH / "config.toml.sample").read_text("utf-8"))
+    config["database"]["type"] = "sqlite"
+    config["database"]["file"] = ":memory:"
+    (tmp_path / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
     import include.database.models as models
     from include.database.session import Base
@@ -268,6 +281,44 @@ def test_compiled_access_rule_mismatch_detector_reports_invalid_rows(
     ]
 
 
+def test_compiled_access_rule_repair_removes_invalid_shape(access_rule_session):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        find_compiled_access_rule_mismatches,
+        repair_compiled_access_rules,
+    )
+
+    document = models.Document(id="doc-invalid-shape", title="Document", inherit=False)
+    session.add(document)
+    session.flush()
+    set_access_rules(
+        document,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    compiled_rule = session.query(models.CompiledAccessRule).one()
+    compiled_rule.match_groups[0].groups_match_mode = "invalid"
+    session.flush()
+
+    assert find_compiled_access_rule_mismatches(session) == [
+        ("document", document.id),
+    ]
+    assert repair_compiled_access_rules(session) == []
+    assert session.query(models.CompiledAccessRule).count() == 0
+
+
 def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
     models, session = access_rule_session
     from include.domains.access.authorization.access_rules import set_access_rules
@@ -424,3 +475,41 @@ def test_compiled_access_rule_maintenance_detects_and_repairs_orphans(
 
     assert repair_compiled_access_rules(session) == []
     assert find_compiled_access_rule_mismatches(session) == []
+
+
+def test_compiled_access_rule_repair_does_not_rebuild_missing_rows(
+    access_rule_session,
+):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        delete_compiled_access_rules_for_targets,
+        find_compiled_access_rule_mismatches,
+        repair_compiled_access_rules,
+    )
+
+    document = models.Document(id="doc-no-rebuild", title="Document", inherit=False)
+    session.add(document)
+    session.flush()
+    set_access_rules(
+        document,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    delete_compiled_access_rules_for_targets(session, [("document", document.id)])
+    session.flush()
+
+    assert find_compiled_access_rule_mismatches(session) == []
+    assert repair_compiled_access_rules(session) == []
+    assert session.query(models.CompiledAccessRule).count() == 0
