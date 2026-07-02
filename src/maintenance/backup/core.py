@@ -1453,12 +1453,14 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         raise BackupFormatError(
             f"Unsupported payload format version: {manifest.get('format_version')}"
         )
-    table_names = set(manifest.get("tables", {}).keys())
-    expected = set(BACKUP_TABLE_NAMES)
-    legacy_expected = (expected - COMPILED_ACCESS_RULE_TABLE_NAMES) | set(
-        LEGACY_ACCESS_RULE_TABLE_NAMES
-    )
-    unknown_tables = table_names - expected - LEGACY_ACCESS_RULE_TABLE_NAMES
+    table_names: set[str] = set(manifest.get("tables", {}).keys())
+    expected: set[str] = set(BACKUP_TABLE_NAMES)
+    compiled_access_rule_tables = set(COMPILED_ACCESS_RULE_TABLE_NAMES)
+    legacy_access_rule_tables = set(LEGACY_ACCESS_RULE_TABLE_NAMES)
+    legacy_expected = (
+        expected - compiled_access_rule_tables
+    ) | legacy_access_rule_tables
+    unknown_tables = table_names - expected - legacy_access_rule_tables
     if unknown_tables:
         raise BackupFormatError(
             f"Backup table set contains unsupported tables: {sorted(unknown_tables)}"
