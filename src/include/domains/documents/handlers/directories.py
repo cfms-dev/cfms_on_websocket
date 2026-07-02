@@ -25,6 +25,7 @@ from include.domains.documents.commands.name_conflicts import (
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
 from include.domains.documents.queries.listing import (
+    count_active_directory_children,
     directory_cursor_key,
     fetch_deleted_listing_items,
     fetch_directory_listing_items,
@@ -197,7 +198,9 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
 
             data = {
                 "directory_id": directory.id,
-                "count_of_child": directory.count_of_child,
+                "count_of_child": count_active_directory_children(
+                    session, directory.id
+                ),
                 "parent_id": directory.parent_id,
                 "name": directory.name,
                 "created_time": directory.created_time,

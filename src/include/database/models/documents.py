@@ -16,6 +16,7 @@ import time
 from enum import IntEnum
 from itertools import batched
 from typing import TYPE_CHECKING, Literal, cast
+from warnings import deprecated
 
 from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -176,6 +177,7 @@ class Folder(BaseObject):  # Document folder.
     inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     @property
+    @deprecated("Use count_active_directory_children instead.")
     def count_of_child(self):
         active_folders_count = sum(
             1 for f in self.children if f.status == EntityStatus.OK

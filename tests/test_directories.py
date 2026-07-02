@@ -145,6 +145,50 @@ class TestDirectoryOperations:
             await authenticated_client.delete_directory(second_child["data"]["id"])
             await authenticated_client.delete_directory(parent_id)
 
+    @pytest.mark.asyncio
+    async def test_get_directory_info_counts_active_direct_children(
+        self, authenticated_client: CFMSTestClient
+    ):
+        parent_response = await authenticated_client.create_directory(
+            "Directory Info Parent"
+        )
+        parent_id = parent_response["data"]["id"]
+        child_response = await authenticated_client.create_directory(
+            "Directory Info Child", parent_id=parent_id
+        )
+        child_id = child_response["data"]["id"]
+        active_doc_response = await authenticated_client.create_document(
+            "Directory Info Active Doc", folder_id=parent_id
+        )
+        active_doc_id = active_doc_response["data"]["document_id"]
+        inactive_doc_response = await authenticated_client.create_document(
+            "Directory Info Inactive Doc", folder_id=parent_id
+        )
+        inactive_doc_id = inactive_doc_response["data"]["document_id"]
+
+        try:
+            await authenticated_client.upload_file_to_server(
+                active_doc_response["data"]["task_data"]["task_id"],
+                "./pytest.ini",
+            )
+            info_response = await authenticated_client.send_request(
+                "get_directory_info", {"directory_id": parent_id}
+            )
+
+            assert info_response["code"] == 200
+            assert info_response["data"]["directory_id"] == parent_id
+            assert info_response["data"]["count_of_child"] == 2
+            assert info_response["data"]["parent_id"] == "/"
+            assert info_response["data"]["name"] == "Directory Info Parent"
+            assert "created_time" in info_response["data"]
+            assert "access_rules" in info_response["data"]
+            assert "info_code" in info_response["data"]
+        finally:
+            await authenticated_client.delete_document(active_doc_id)
+            await authenticated_client.delete_document(inactive_doc_id)
+            await authenticated_client.delete_directory(child_id)
+            await authenticated_client.delete_directory(parent_id)
+
 
 class TestDirectoryMove:
     """Test directory move operations."""

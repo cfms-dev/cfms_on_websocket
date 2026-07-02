@@ -102,6 +102,26 @@ def _active_revision_exists():
     )
 
 
+def count_active_directory_children(session, folder_id: str) -> int:
+    folder_count = (
+        session.query(func.count(Folder.id))
+        .filter(Folder.parent_id == folder_id, Folder.status == EntityStatus.OK)
+        .scalar()
+        or 0
+    )
+    document_count = (
+        session.query(func.count(Document.id))
+        .filter(
+            Document.folder_id == folder_id,
+            Document.status == EntityStatus.OK,
+            _active_revision_exists(),
+        )
+        .scalar()
+        or 0
+    )
+    return int(folder_count) + int(document_count)
+
+
 def fetch_latest_active_revisions_by_document(
     session, document_ids: list[str]
 ) -> dict[str, DocumentRevision]:

@@ -29,6 +29,7 @@ def directory_models(protected_test_config):
         from include.database.models.files import File
         from include.database.session import Base
         from include.domains.documents.queries.listing import (
+            count_active_directory_children,
             directory_cursor_key,
             fetch_deleted_listing_items,
             fetch_directory_listing_items,
@@ -48,6 +49,7 @@ def directory_models(protected_test_config):
         EntityStatus=EntityStatus,
         File=File,
         Folder=Folder,
+        count_active_directory_children=count_active_directory_children,
         directory_cursor_key=directory_cursor_key,
         fetch_deleted_listing_items=fetch_deleted_listing_items,
         fetch_latest_active_revisions=fetch_latest_active_revisions_by_document,
@@ -323,6 +325,111 @@ def test_fetch_latest_active_revisions_batches_without_lazy_revision_loads(
         doc_without_current.id: 80,
     }
     assert len(statements) <= 3
+
+
+def test_count_active_directory_children_uses_aggregate_queries(
+    directory_models,
+    directory_session,
+):
+    parent_id = "count-parent"
+    parent = directory_models.Folder(id=parent_id, name="count-parent")
+    directory_session.add(parent)
+    directory_session.add_all(
+        [
+            directory_models.Folder(
+                id="active-child",
+                name="active-child",
+                parent_id=parent_id,
+                status=directory_models.EntityStatus.OK,
+            ),
+            directory_models.Folder(
+                id="deleted-child",
+                name="deleted-child",
+                parent_id=parent_id,
+                status=directory_models.EntityStatus.DELETED,
+            ),
+            directory_models.Folder(
+                id="locked-child",
+                name="locked-child",
+                parent_id=parent_id,
+                status=directory_models.EntityStatus.LOCKED,
+            ),
+            directory_models.Folder(
+                id="grandchild",
+                name="grandchild",
+                parent_id="active-child",
+                status=directory_models.EntityStatus.OK,
+            ),
+        ]
+    )
+
+    active_doc = _document(directory_models, directory_session, "active-doc", parent_id)
+    active_revision = _revision(
+        directory_models,
+        directory_session,
+        "active-doc-revision",
+        active_doc.id,
+        _file(directory_models, "active-doc-file", active=True),
+        created_time=1,
+    )
+    active_doc.current_revision_id = active_revision.id
+
+    deleted_doc = _document(
+        directory_models, directory_session, "deleted-doc", parent_id
+    )
+    deleted_doc.status = directory_models.EntityStatus.DELETED
+    deleted_revision = _revision(
+        directory_models,
+        directory_session,
+        "deleted-doc-revision",
+        deleted_doc.id,
+        _file(directory_models, "deleted-doc-file", active=True),
+        created_time=2,
+    )
+    deleted_doc.current_revision_id = deleted_revision.id
+
+    locked_doc = _document(directory_models, directory_session, "locked-doc", parent_id)
+    locked_doc.status = directory_models.EntityStatus.LOCKED
+    locked_revision = _revision(
+        directory_models,
+        directory_session,
+        "locked-doc-revision",
+        locked_doc.id,
+        _file(directory_models, "locked-doc-file", active=True),
+        created_time=3,
+    )
+    locked_doc.current_revision_id = locked_revision.id
+
+    inactive_doc = _document(
+        directory_models, directory_session, "inactive-doc", parent_id
+    )
+    inactive_revision = _revision(
+        directory_models,
+        directory_session,
+        "inactive-doc-revision",
+        inactive_doc.id,
+        _file(directory_models, "inactive-doc-file", active=False),
+        created_time=4,
+    )
+    inactive_doc.current_revision_id = inactive_revision.id
+    directory_session.commit()
+
+    statements = []
+
+    def collect_statement(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(directory_session.bind, "before_cursor_execute", collect_statement)
+    try:
+        count = directory_models.count_active_directory_children(
+            directory_session, parent_id
+        )
+    finally:
+        event.remove(directory_session.bind, "before_cursor_execute", collect_statement)
+
+    assert count == 2
+    assert len(statements) == 2
+    assert all("count" in statement.lower() for statement in statements)
 
 
 def test_directory_listing_query_limits_candidates(
