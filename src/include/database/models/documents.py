@@ -23,7 +23,7 @@ from sqlalchemy import JSON, VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
-from include.config.constants import AVAILABLE_ACCESS_TYPES, QUERY_CHUNK_SIZE
+from include.config.constants import QUERY_CHUNK_SIZE
 from include.config.settings import global_config
 from include.database.models.files import (
     File,
@@ -89,85 +89,6 @@ class BaseObject(Base):
 
         _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
 
-        def match_rights(sub_rights_group):
-            if not sub_rights_group:
-                return True
-
-            sub_match_mode = sub_rights_group.get("match", "all")
-            sub_rights_require = sub_rights_group.get("require", [])
-
-            if not sub_rights_require:
-                return True
-
-            if sub_match_mode == "all":
-                return set(sub_rights_require).issubset(user.all_permissions)
-
-            elif sub_match_mode == "any":
-                for right in sub_rights_require:
-                    if right in user.all_permissions:
-                        return True
-                return False
-
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_groups(sub_groups_group):
-            if not sub_groups_group:
-                return True
-
-            sub_match_mode = sub_groups_group.get("match", "all")
-            sub_groups_require = sub_groups_group.get("require", [])
-
-            if not sub_groups_require:
-                return True
-
-            if sub_match_mode == "all":
-                return set(sub_groups_require).issubset(user.all_groups)
-
-            elif sub_match_mode == "any":
-                for group in sub_groups_require:
-                    if group in user.all_groups:
-                        return True
-                return False
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_sub_group(sub_group):
-            sub_match_mode = sub_group.get("match", "all")
-            sub_rights_group = sub_group.get("rights", {})
-            sub_groups_group = sub_group.get("groups", {})
-
-            if not (sub_rights_group.get("require", [])) or (
-                not sub_groups_group.get("require", [])
-            ):
-                sub_match_mode = "all"
-
-            if sub_match_mode == "any":
-                return match_rights(sub_rights_group) or match_groups(sub_groups_group)
-            if sub_match_mode == "all":
-                return match_rights(sub_rights_group) and match_groups(sub_groups_group)
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_primary_sub_group(per_match_group):
-            match_mode = per_match_group.get("match", "all")
-            if match_mode not in ("all", "any"):
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-            for sub_group in per_match_group["match_groups"]:
-                if not sub_group:
-                    continue
-
-                state = match_sub_group(sub_group)
-
-                match (match_mode, state):
-                    case ("any", True):
-                        return True
-                    case ("all", False):
-                        return False
-
-            return match_mode == "all"
-
         _session = object_session(user)
         if not _session:
             raise RuntimeError("No active session found for user")
@@ -215,43 +136,17 @@ class BaseObject(Base):
 
                 parent = parent.parent
 
-        if not self.access_rules:
-            return True
+        from include.domains.access.authorization.compiled_rules import (
+            compiled_rules_allow,
+        )
 
-        for each_rule in self.access_rules:
-            if not each_rule:
-                continue
-
-            each_rule: AccessRuleBase
-
-            if access_type not in AVAILABLE_ACCESS_TYPES:
-                raise ValueError(
-                    f"Invalid access type for {self.__tablename__}: {access_type}"
-                )
-
-            match access_type:
-                case "read":
-                    if each_rule.access_type != "read":
-                        continue
-                case "write":
-                    if each_rule.access_type not in ["read", "write"]:
-                        continue
-                case "move":
-                    if each_rule.access_type != "move":
-                        continue
-                case "manage":
-                    if each_rule.access_type not in ["read", "manage"]:
-                        continue
-                case _:
-                    raise NotImplementedError("Unsupported access type")
-
-            if not each_rule.rule_data:
-                continue
-
-            if not match_primary_sub_group(each_rule.rule_data):
-                return False
-
-        return True
+        return compiled_rules_allow(
+            _session,
+            target_type=self_type,
+            target_id=self.id,
+            user=user,
+            access_type=access_type,
+        )
 
 
 class DocumentRevisionStatus(IntEnum):

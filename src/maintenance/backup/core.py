@@ -57,6 +57,9 @@ from include.database.models.keyrings import UserKey
 from include.database.models.operations import AuditEntry
 from include.database.models.security import BannedSubnet
 from include.database.session import Base, Session, engine
+from include.domains.access.authorization.compiled_rules import (
+    rebuild_all_compiled_access_rules,
+)
 from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
 
@@ -1266,6 +1269,9 @@ def _restore_database(
                         .values(**values)
                     )
             LOGGER.debug("Applied deferred updates for table %s", table_name)
+
+        rebuild_all_compiled_access_rules(session)
+        LOGGER.debug("Rebuilt compiled access rules after database restore")
 
 
 def _restore_config_keys(

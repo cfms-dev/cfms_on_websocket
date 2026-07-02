@@ -440,6 +440,7 @@ class User(Base):
 
         group_granted_perms = set()
         group_revoked_perms = set()
+        session = object_session(self)
 
         for membership in getattr(self, "groups", []):
             membership: UserMembership
@@ -449,14 +450,26 @@ class User(Base):
                 continue
 
             if hasattr(membership, "group_name"):
-                with Session() as session:
+                if session is not None:
                     group = session.get(UserGroup, membership.group_name)
-                    if group:
-                        group_grants, group_revocations = (
-                            _permission_grants_and_revocations(group.permissions, now)
-                        )
-                        group_granted_perms |= group_grants
-                        group_revoked_perms |= group_revocations
+                else:
+                    with Session() as fallback_session:
+                        group = fallback_session.get(UserGroup, membership.group_name)
+                        if group:
+                            group_grants, group_revocations = (
+                                _permission_grants_and_revocations(
+                                    group.permissions, now
+                                )
+                            )
+                            group_granted_perms |= group_grants
+                            group_revoked_perms |= group_revocations
+                    continue
+                if group:
+                    group_grants, group_revocations = (
+                        _permission_grants_and_revocations(group.permissions, now)
+                    )
+                    group_granted_perms |= group_grants
+                    group_revoked_perms |= group_revocations
             else:
                 raise ValueError(
                     f"UserMembership {membership.id} does not have a valid group_name attribute."

@@ -1,10 +1,12 @@
 from enum import IntEnum
 
+from sqlalchemy.orm.session import object_session
+
 from include.config.constants import AVAILABLE_ACCESS_TYPES
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
-from include.domains.access.authorization.access_rules import AccessRuleBase
+from include.domains.access.authorization.compiled_rules import compiled_rules_allow
 
 
 class SingleNodeCheckResult(IntEnum):
@@ -25,6 +27,10 @@ def check_access_for_object(
     if access_type not in AVAILABLE_ACCESS_TYPES:
         raise ValueError(f"Invalid access type: {access_type}")
 
+    session = object_session(user)
+    if session is None:
+        raise RuntimeError("No active session found for user")
+
     folder_map = {f.id: f for f in all_folders}
 
     def _check_single_node(node: Document | Folder) -> SingleNodeCheckResult:
@@ -38,7 +44,7 @@ def check_access_for_object(
         2. **Default Allow Rule**: If no access rules are defined on the node, access is granted by default.
         3. **Access Rules Validation**: Iterates through all access rules defined on the node.
            - Filters rules based on the requested access_type (read, write, move, manage).
-           - Checks if the user matches the primary and sub-group requirements of each rule.
+           - Checks if the user matches the compiled rule requirements.
            - Returns False if any rule fails the matching check.
         Args:
             node: A Document or Folder object to check access permissions for.
@@ -78,37 +84,15 @@ def check_access_for_object(
             ):
                 return SingleNodeCheckResult.ALLOWED_OAE
 
-        # If there are no access rules defined on the node, allow access by default
-        if not node.access_rules:
+        if compiled_rules_allow(
+            session,
+            target_type=target_type,
+            target_id=node.id,
+            user=user,
+            access_type=access_type,
+        ):
             return SingleNodeCheckResult.ALLOWED
-
-        # check access rules
-        for rule in node.access_rules:
-            rule: AccessRuleBase
-            if not rule.rule_data:
-                continue
-
-            # filter by access_type
-            match access_type:
-                case "read":
-                    if rule.access_type != "read":
-                        continue
-                case "write":
-                    if rule.access_type not in ["read", "write"]:
-                        continue
-                case "move":
-                    if rule.access_type != "move":
-                        continue
-                case "manage":
-                    if rule.access_type not in ["read", "manage"]:
-                        continue
-                case _:
-                    raise NotImplementedError(f"Unsupported access type: {access_type}")
-
-            if not _match_primary_sub_group(rule.rule_data, user):
-                return SingleNodeCheckResult.DENIED
-
-        return SingleNodeCheckResult.ALLOWED
+        return SingleNodeCheckResult.DENIED
 
     # check the object itself first
     match _check_single_node(obj):
@@ -155,60 +139,3 @@ def check_access_for_object(
         current_folder_id = current_folder.parent_id
 
     return True
-
-
-def _match_primary_sub_group(rule_data: dict, user: User) -> bool:
-    def match_rights(sub_rights_group):
-        if not sub_rights_group:
-            return True
-        sub_match_mode = sub_rights_group.get("match", "all")
-        sub_rights_require = sub_rights_group.get("require", [])
-        if not sub_rights_require:
-            return True
-        if sub_match_mode == "all":
-            return set(sub_rights_require).issubset(user.all_permissions)
-        elif sub_match_mode == "any":
-            return any(r in user.all_permissions for r in sub_rights_require)
-        else:
-            raise ValueError('the value of "match" must be "all" or "any"')
-
-    def match_groups(sub_groups_group):
-        if not sub_groups_group:
-            return True
-        sub_match_mode = sub_groups_group.get("match", "all")
-        sub_groups_require = sub_groups_group.get("require", [])
-        if not sub_groups_require:
-            return True
-        if sub_match_mode == "all":
-            return set(sub_groups_require).issubset(user.all_groups)
-        elif sub_match_mode == "any":
-            return any(g in user.all_groups for g in sub_groups_require)
-        else:
-            raise ValueError('the value of "match" must be "all" or "any"')
-
-    def match_sub_group(sub_group):
-        sub_match_mode = sub_group.get("match", "all")
-        sub_rights_group = sub_group.get("rights", {})
-        sub_groups_group = sub_group.get("groups", {})
-        if not sub_rights_group.get("require", []) or not sub_groups_group.get(
-            "require", []
-        ):
-            sub_match_mode = "all"
-        if sub_match_mode == "any":
-            return match_rights(sub_rights_group) or match_groups(sub_groups_group)
-        if sub_match_mode == "all":
-            return match_rights(sub_rights_group) and match_groups(sub_groups_group)
-        else:
-            raise ValueError('the value of "match" must be "all" or "any"')
-
-    match_mode = rule_data.get("match", "all")
-    for sub_group in rule_data.get("match_groups", []):
-        if not sub_group:
-            continue
-        state = match_sub_group(sub_group)
-        if match_mode == "any" and state:
-            return True
-        if match_mode == "all" and not state:
-            return False
-
-    return match_mode == "all"

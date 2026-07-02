@@ -250,7 +250,12 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             {
                 "access_type": "read",
                 "folder_id": "folder-1",
-                "rule_data": {"match": "all", "match_groups": []},
+                "rule_data": {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["sysop"]}}
+                    ],
+                },
             },
         )
         connection.execute(
@@ -287,7 +292,12 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             {
                 "access_type": "read",
                 "document_id": "doc-1",
-                "rule_data": {"match": "all", "match_groups": []},
+                "rule_data": {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["sysop"]}}
+                    ],
+                },
             },
         )
         connection.execute(
@@ -410,7 +420,15 @@ def _dump_backup_tables(base, db_engine) -> dict[str, list[dict]]:
 
 
 def _backup_table_names(base) -> set[str]:
-    excluded = {"file_tasks", "login_throttles", "traffic_throttles"}
+    excluded = {
+        "compiled_access_rule_groups",
+        "compiled_access_rule_memberships",
+        "compiled_access_rule_rights",
+        "compiled_access_rules",
+        "file_tasks",
+        "login_throttles",
+        "traffic_throttles",
+    }
     return set(base.metadata.tables) - excluded
 
 
@@ -547,6 +565,9 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
     assert restored_config["server"]["secret_key"] == "source-secret-key"
 
     with target_engine.connect() as connection:
+        compiled_rules = connection.execute(
+            select(base.metadata.tables["compiled_access_rules"])
+        ).all()
         file_tasks = connection.execute(
             select(base.metadata.tables["file_tasks"])
         ).all()
@@ -556,9 +577,49 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         traffic_throttles = connection.execute(
             select(base.metadata.tables["traffic_throttles"])
         ).all()
+        assert len(compiled_rules) == 2
         assert file_tasks == []
         assert login_throttles == []
         assert traffic_throttles == []
+
+    from include.database.models.identity import User
+    from include.domains.documents.queries.listing import (
+        fetch_visible_search_candidate_rows,
+    )
+
+    with target_session() as session:
+        user = User(
+            username="bob",
+            pass_hash="hash",
+            passwd_last_modified=0.0,
+            nickname="Bob",
+            avatar_id=None,
+            last_login=None,
+            created_time=0.0,
+            status=0,
+            secret_key="bob-secret",
+            totp_secret=None,
+            totp_enabled=False,
+            totp_backup_codes=None,
+            preference_dek_id=None,
+        )
+        session.add(user)
+        session.flush()
+
+        visible_rows = fetch_visible_search_candidate_rows(
+            session,
+            user=user,
+            now=1_700_000_001.0,
+            query="Folder",
+            sort_by="name",
+            sort_order="asc",
+            search_documents=False,
+            search_directories=True,
+            last_key=None,
+            limit=10,
+        )
+
+        assert visible_rows == []
 
 
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):

@@ -75,13 +75,12 @@ def fetch_subtree_for_deletion(
     # Also load the root itself for the later BFS derivation.
     all_folder_ids_to_load = list(set(all_subfolder_ids + [root_folder_id]))
 
-    # Step 2: Load all folders in bulk, including access_rules.
+    # Step 2: Load all folders in bulk.
     # Chunked to avoid SQLite bind-variable limit for large subtrees.
     folders: list[Folder] = []
     for chunk in batched(all_folder_ids_to_load, QUERY_CHUNK_SIZE):
         folders.extend(
             session.query(Folder)
-            .options(joinedload(Folder.access_rules))
             .execution_options(**exec_opts)
             .filter(Folder.id.in_(list(chunk)))
             .all()
@@ -89,15 +88,13 @@ def fetch_subtree_for_deletion(
     folder_map: dict[str, Folder] = {f.id: f for f in folders}
     actual_folder_ids = list(folder_map.keys())
 
-    # Step 3: Load all subtree documents, including access rules, revisions,
-    # and files.
+    # Step 3: Load all subtree documents, including revisions and files.
     # Chunked to avoid SQLite bind-variable limit for large subtrees.
     documents: list[Document] = []
     for chunk in batched(actual_folder_ids, QUERY_CHUNK_SIZE):
         documents.extend(
             session.query(Document)
             .options(
-                joinedload(Document.access_rules),
                 joinedload(Document.current_revision).joinedload(DocumentRevision.file),
             )
             .execution_options(**exec_opts)
