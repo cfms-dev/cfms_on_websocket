@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any, Self
 
 from sqlalchemy import URL, create_engine, event
@@ -32,8 +33,12 @@ if not drivername:
 
 if db_type == "sqlite":
     db_file = global_config["database"]["file"]
+    db_path = Path(db_file)
+    if not db_path.is_absolute():
+        config_path = getattr(global_config, "_config_path", Path("config.toml"))
+        db_path = Path(config_path).parent / db_path
     engine = create_engine(
-        f"sqlite:///{db_file}",
+        f"sqlite:///{db_path}",
         connect_args={"timeout": 30},
         echo=debug_enabled,
     )
