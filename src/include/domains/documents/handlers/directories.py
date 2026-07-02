@@ -3,7 +3,6 @@ import time
 from itertools import batched
 
 import jsonschema
-from sqlalchemy.orm import selectinload
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.models.documents import (
@@ -16,6 +15,8 @@ from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
 from include.domains.access.authorization.compiled_rules import (
     delete_compiled_access_rules_for_targets,
+    get_access_rules_json,
+    get_access_rules_list,
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
@@ -81,12 +82,7 @@ class RequestListDirectoryHandler(RequestHandler):
             if not folder_id:
                 folder_id = ROOT_DIRECTORY_ID
 
-            folder = (
-                session.query(Folder)
-                .options(selectinload(Folder.access_rules))
-                .filter(Folder.id == folder_id)
-                .first()
-            )
+            folder = session.query(Folder).filter(Folder.id == folder_id).first()
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, username=handler.username)
@@ -189,17 +185,13 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
                 return Result(code=403, target=directory_id, username=handler.username)
 
             info_code = 0
-            # Generate access_rules text.
             access_rules = []
             if Permissions.VIEW_ACCESS_RULES in user.all_permissions:
-                for each_rule in directory.access_rules:
-                    access_rules.append(
-                        {
-                            "rule_id": each_rule.id,
-                            "rule_data": each_rule.rule_data,
-                            "access_type": each_rule.access_type,
-                        }
-                    )
+                access_rules = get_access_rules_list(
+                    session,
+                    target_type="directory",
+                    target_id=directory.id,
+                )
             else:
                 info_code = 1  # No permission to view directory access rules.
 
@@ -245,17 +237,16 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=directory_id, username=handler.username)
 
-            # generate access_rules
-            access_rules: dict[str, list] = {}
-
-            for each_rule in directory.access_rules:
-                if each_rule.access_type not in access_rules:
-                    access_rules[each_rule.access_type] = []
-                access_rules[each_rule.access_type].append(each_rule.rule_data)
-
             handler.conclude_request(
                 200,
-                {"rules": access_rules, "inherit": directory.inherit},
+                {
+                    "rules": get_access_rules_json(
+                        session,
+                        target_type="directory",
+                        target_id=directory.id,
+                    ),
+                    "inherit": directory.inherit,
+                },
                 "Directory access rules retrieved successfully",
             )
             return Result(code=0, target=directory_id, username=handler.username)
@@ -371,12 +362,12 @@ class RequestCreateDirectoryHandler(RequestHandler):
                     )
 
             folder = Folder(name=name, parent=parent)
+            session.add(folder)
             if not apply_access_rules(folder, access_rules, this_user, inherit_parent):
                 session.rollback()
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, username=handler.username)
 
-            session.add(folder)
             session.commit()
 
             handler.conclude_request(

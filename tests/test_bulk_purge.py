@@ -51,13 +51,6 @@ class MDocumentRevision(_Base):
     )
 
 
-class MDocumentAccessRule(_Base):
-    __tablename__ = "document_access_rules"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), nullable=False)
-
-
 class MCompiledAccessRule(_Base):
     __tablename__ = "compiled_access_rules"
 
@@ -97,7 +90,6 @@ def session():
 def bulk_purge_module(monkeypatch):
     entity_module = types.ModuleType("include.database.models.documents")
     entity_module.Document = MDocument
-    entity_module.DocumentAccessRule = MDocumentAccessRule
     entity_module.DocumentRevision = MDocumentRevision
     entity_module.Folder = MFolder
 
@@ -165,7 +157,6 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
 ):
     _seed_document_with_revision(session, "doc1", "rev1", "file1")
     session.add(MFileTask(id="task1", file_id="file1"))
-    session.add(MDocumentAccessRule(document_id="doc1"))
     session.add(MCompiledAccessRule(target_type="document", target_id="doc1"))
     session.commit()
 
@@ -180,7 +171,6 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
 
     assert session.query(MDocument).count() == 0
     assert session.query(MDocumentRevision).count() == 0
-    assert session.query(MDocumentAccessRule).count() == 0
     assert session.query(MCompiledAccessRule).count() == 0
     assert session.query(MFileTask).count() == 0
     assert session.query(MFile).count() == 0

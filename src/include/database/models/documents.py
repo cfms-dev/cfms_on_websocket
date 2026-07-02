@@ -6,11 +6,9 @@ __all__ = [
     "Document",
     "DocumentRevision",
     "DocumentRevisionStatus",
-    "DocumentAccessRule",
     "DocumentMetadata",
     "DocumentMetadataTag",
     "Folder",
-    "FolderAccessRule",
 ]
 
 import secrets
@@ -19,7 +17,7 @@ from enum import IntEnum
 from itertools import batched
 from typing import TYPE_CHECKING, Literal, cast
 
-from sqlalchemy import JSON, VARCHAR, Boolean, Float, ForeignKey, Integer
+from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
@@ -31,7 +29,6 @@ from include.database.models.files import (
     _queue_deferred_file_deletion,
 )
 from include.database.session import Base
-from include.domains.access.authorization.access_rules import AccessRuleBase
 from include.domains.access.authorization.grants import (
     batch_prefetch_granted_ids,
     prefetch_user_blocks,
@@ -54,7 +51,6 @@ class BaseObject(Base):
     __abstract__ = True
 
     id: Mapped[str]
-    access_rules: Mapped[list]
 
     # Whether to inherit access rules from parent folders.
     # Useful when enabling recursion check.
@@ -174,9 +170,6 @@ class Folder(BaseObject):  # Document folder.
     children: Mapped[list[Folder]] = relationship(
         "Folder", back_populates="parent", cascade="all, delete-orphan"
     )
-    access_rules: Mapped[list[FolderAccessRule]] = relationship(
-        "FolderAccessRule", back_populates="folder", cascade="all, delete-orphan"
-    )
     documents: Mapped[list[Document]] = relationship(
         "Document", back_populates="folder", cascade="all, delete-orphan"
     )
@@ -231,12 +224,6 @@ class Document(BaseObject):
         VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE"), nullable=True
     )  # Folder ID that owns the document.
     folder: Mapped[Folder | None] = relationship("Folder", back_populates="documents")
-
-    # JSON source rules are kept for the public access-rule API; runtime
-    # authorization uses compiled_access_rules.
-    access_rules: Mapped[list[DocumentAccessRule]] = relationship(
-        "DocumentAccessRule", back_populates="document", cascade="all, delete-orphan"
-    )
 
     current_revision_id: Mapped[str | None] = mapped_column(
         VARCHAR(64),
@@ -469,49 +456,6 @@ class DocumentRevision(Base):
             f"DocumentRevision(id={self.id!r}, document_id={self.document_id!r}, "
             f"file={self.file!r}, created_time={self.created_time!r})"
         )
-
-
-class DocumentAccessRule(Base, AccessRuleBase):
-    __tablename__ = "document_access_rules"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    access_type: Mapped[str] = mapped_column(
-        VARCHAR(64),
-        nullable=False,
-        default="read",
-        # comment="0: read, 1: write",  # rename is regarded as write
-    )
-    document_id: Mapped[str | None] = mapped_column(
-        ForeignKey("documents.id"), nullable=False
-    )
-    rule_data: Mapped[dict] = mapped_column(JSON, nullable=False)
-
-    document: Mapped[Document | None] = relationship(
-        "Document", back_populates="access_rules"
-    )
-
-    def __repr__(self) -> str:
-        return f"DocumentAccessRule(id={self.id!r}, document_id={self.document_id!r}, rule_data={self.rule_data!r})"
-
-
-class FolderAccessRule(Base, AccessRuleBase):
-    __tablename__ = "folder_access_rules"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    access_type: Mapped[str] = mapped_column(
-        VARCHAR(64),
-        nullable=False,
-        default="read",
-    )
-    folder_id: Mapped[str | None] = mapped_column(
-        ForeignKey("folders.id"), nullable=True
-    )
-    rule_data: Mapped[dict] = mapped_column(JSON, nullable=False)
-
-    folder: Mapped[Folder | None] = relationship(
-        "Folder", back_populates="access_rules"
-    )
-
-    def __repr__(self) -> str:
-        return f"FolderAccessRule(id={self.id!r}, folder_id={self.folder_id!r}, rule_data={self.rule_data!r})"
 
 
 class DocumentMetadata(Base):

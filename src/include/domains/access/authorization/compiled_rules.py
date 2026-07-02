@@ -125,7 +125,6 @@ def compile_access_rule(
     *,
     target_type: TargetType,
     target_id: str,
-    source_rule_id: int,
     access_type: str,
     rule_data: dict[str, Any],
 ) -> CompiledAccessRule | None:
@@ -135,12 +134,94 @@ def compile_access_rule(
     compiled_rule = CompiledAccessRule(
         target_type=target_type,
         target_id=target_id,
-        source_rule_id=source_rule_id,
         access_type=access_type,
         match_mode=_as_match_mode(rule_data.get("match", "all")),
     )
     compiled_rule.match_groups.extend(_compile_match_groups(rule_data))
     return compiled_rule
+
+
+def serialize_compiled_access_rule(rule: CompiledAccessRule) -> dict[str, Any]:
+    match_groups: list[dict[str, Any]] = []
+    for group in rule.match_groups:
+        group_data: dict[str, Any] = {}
+        if not group.rights_empty:
+            group_data["rights"] = {
+                "match": group.rights_match_mode,
+                "require": [right.permission for right in group.rights],
+            }
+        if not group.groups_empty:
+            group_data["groups"] = {
+                "match": group.groups_match_mode,
+                "require": [membership.group_name for membership in group.groups],
+            }
+        if not group.rights_empty and not group.groups_empty:
+            group_data["match"] = group.match_mode
+        match_groups.append(group_data)
+
+    return {
+        "match": rule.match_mode,
+        "match_groups": match_groups,
+    }
+
+
+def get_compiled_access_rules(
+    session: OrmSession,
+    *,
+    target_type: TargetType,
+    target_id: str,
+) -> list[CompiledAccessRule]:
+    return (
+        session.query(CompiledAccessRule)
+        .options(
+            selectinload(CompiledAccessRule.match_groups).selectinload(
+                CompiledAccessRuleGroup.rights
+            ),
+            selectinload(CompiledAccessRule.match_groups).selectinload(
+                CompiledAccessRuleGroup.groups
+            ),
+        )
+        .filter(
+            CompiledAccessRule.target_type == target_type,
+            CompiledAccessRule.target_id == target_id,
+        )
+        .order_by(CompiledAccessRule.id.asc())
+        .all()
+    )
+
+
+def get_access_rules_json(
+    session: OrmSession,
+    *,
+    target_type: TargetType,
+    target_id: str,
+) -> dict[str, list[dict[str, Any]]]:
+    access_rules: dict[str, list[dict[str, Any]]] = {}
+    for rule in get_compiled_access_rules(
+        session, target_type=target_type, target_id=target_id
+    ):
+        access_rules.setdefault(rule.access_type, []).append(
+            serialize_compiled_access_rule(rule)
+        )
+    return access_rules
+
+
+def get_access_rules_list(
+    session: OrmSession,
+    *,
+    target_type: TargetType,
+    target_id: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "rule_id": rule.id,
+            "rule_data": serialize_compiled_access_rule(rule),
+            "access_type": rule.access_type,
+        }
+        for rule in get_compiled_access_rules(
+            session, target_type=target_type, target_id=target_id
+        )
+    ]
 
 
 def _compiled_group_matches_user(
@@ -220,43 +301,10 @@ def rebuild_compiled_access_rules(
     session: OrmSession,
     target: Any,
 ) -> None:
-    target_key = _target_type_and_id(target)
-    if target_key is None:
-        return
-    target_type, target_id = target_key
-
-    delete_compiled_access_rules(session, target_type, target_id)
-
-    for rule in target.access_rules:
-        compiled_rule = compile_access_rule(
-            target_type=target_type,
-            target_id=target_id,
-            source_rule_id=rule.id,
-            access_type=rule.access_type,
-            rule_data=rule.rule_data,
-        )
-        if compiled_rule is not None:
-            session.add(compiled_rule)
+    session.flush()
 
 
 def rebuild_all_compiled_access_rules(session: OrmSession) -> None:
-    from include.database.models.documents import Document, Folder
-
-    session.execute(delete(CompiledAccessRuleMembership))
-    session.execute(delete(CompiledAccessRuleRight))
-    session.execute(delete(CompiledAccessRuleGroup))
-    session.execute(delete(CompiledAccessRule))
-
-    for document in (
-        session.query(Document).options(selectinload(Document.access_rules)).all()
-    ):
-        rebuild_compiled_access_rules(session, document)
-
-    for folder in (
-        session.query(Folder).options(selectinload(Folder.access_rules)).all()
-    ):
-        rebuild_compiled_access_rules(session, folder)
-
     session.flush()
 
 
@@ -289,99 +337,80 @@ def delete_compiled_access_rules_for_targets(
             )
 
 
-def _compiled_rule_signature(rule: CompiledAccessRule) -> tuple:
-    groups = []
-    for group in sorted(rule.match_groups, key=lambda item: item.group_index):
-        groups.append(
-            (
-                group.group_index,
-                group.match_mode,
-                group.rights_match_mode,
-                group.rights_empty,
-                tuple(sorted(right.permission for right in group.rights)),
-                group.groups_match_mode,
-                group.groups_empty,
-                tuple(sorted(membership.group_name for membership in group.groups)),
-            )
-        )
-    return (rule.source_rule_id, rule.access_type, rule.match_mode, tuple(groups))
-
-
 def find_compiled_access_rule_mismatches(
     session: OrmSession,
     *,
     include_orphans: bool = True,
-) -> list[tuple[TargetType, str]]:
+) -> list[tuple[str, str]]:
     from include.database.models.documents import Document, Folder
 
-    mismatches: list[tuple[TargetType, str]] = []
-    targets: list[tuple[TargetType, Any]] = [
-        ("document", document)
-        for document in session.query(Document)
-        .options(selectinload(Document.access_rules))
+    mismatches: list[tuple[str, str]] = []
+
+    valid_document_ids = {row[0] for row in session.query(Document.id).all()}
+    valid_folder_ids = {row[0] for row in session.query(Folder.id).all()}
+
+    rules = (
+        session.query(CompiledAccessRule)
+        .options(selectinload(CompiledAccessRule.match_groups))
         .all()
-    ]
-    targets.extend(
-        ("directory", folder)
-        for folder in (
-            session.query(Folder).options(selectinload(Folder.access_rules)).all()
-        )
     )
-    source_target_keys: set[tuple[TargetType, str]] = {
-        (target_type, str(target.id)) for target_type, target in targets
-    }
-
-    for target_type, target in targets:
-        expected = []
-        for source_rule in target.access_rules:
-            compiled_rule = compile_access_rule(
-                target_type=target_type,
-                target_id=target.id,
-                source_rule_id=source_rule.id,
-                access_type=source_rule.access_type,
-                rule_data=source_rule.rule_data,
-            )
-            if compiled_rule is not None:
-                expected.append(_compiled_rule_signature(compiled_rule))
-
-        actual_rules = (
-            session.query(CompiledAccessRule)
-            .options(
-                selectinload(CompiledAccessRule.match_groups).selectinload(
-                    CompiledAccessRuleGroup.rights
-                ),
-                selectinload(CompiledAccessRule.match_groups).selectinload(
-                    CompiledAccessRuleGroup.groups
-                ),
-            )
-            .filter(
-                CompiledAccessRule.target_type == target_type,
-                CompiledAccessRule.target_id == target.id,
-            )
-            .all()
-        )
-        actual = [_compiled_rule_signature(rule) for rule in actual_rules]
-        if sorted(expected) != sorted(actual):
-            mismatches.append((target_type, str(target.id)))
-
-    if include_orphans:
-        actual_target_keys: set[tuple[TargetType, str]] = set()
-        for rule in session.query(
-            CompiledAccessRule.target_type,
-            CompiledAccessRule.target_id,
-        ).distinct():
-            if rule.target_type == "document":
-                actual_target_keys.add(("document", rule.target_id))
-            elif rule.target_type == "directory":
-                actual_target_keys.add(("directory", rule.target_id))
-        orphan_keys = actual_target_keys - source_target_keys
-        mismatches.extend(sorted(orphan_keys))
+    for rule in rules:
+        if rule.target_type not in ("document", "directory"):
+            mismatches.append((rule.target_type, str(rule.target_id)))
+            continue
+        target_key = (rule.target_type, str(rule.target_id))
+        if rule.access_type not in AVAILABLE_ACCESS_TYPES or rule.match_mode not in (
+            "all",
+            "any",
+        ):
+            mismatches.append(target_key)
+            continue
+        if include_orphans:
+            if (
+                rule.target_type == "document"
+                and rule.target_id not in valid_document_ids
+            ):
+                mismatches.append(("document", str(rule.target_id)))
+                continue
+            if (
+                rule.target_type == "directory"
+                and rule.target_id not in valid_folder_ids
+            ):
+                mismatches.append(("directory", str(rule.target_id)))
+                continue
+        for group in rule.match_groups:
+            if (
+                group.match_mode not in ("all", "any")
+                or group.rights_match_mode not in ("all", "any")
+                or group.groups_match_mode not in ("all", "any")
+            ):
+                mismatches.append(target_key)
+                break
 
     return sorted(set(mismatches))
 
 
-def repair_compiled_access_rules(session: OrmSession) -> list[tuple[TargetType, str]]:
-    rebuild_all_compiled_access_rules(session)
+def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
+    from include.database.models.documents import Document, Folder
+
+    valid_document_ids = {row[0] for row in session.query(Document.id).all()}
+    valid_folder_ids = {row[0] for row in session.query(Folder.id).all()}
+    for rule in session.query(CompiledAccessRule).all():
+        delete_rule = False
+        if rule.target_type == "document":
+            delete_rule = rule.target_id not in valid_document_ids
+        elif rule.target_type == "directory":
+            delete_rule = rule.target_id not in valid_folder_ids
+        else:
+            delete_rule = True
+        if rule.access_type not in AVAILABLE_ACCESS_TYPES or rule.match_mode not in (
+            "all",
+            "any",
+        ):
+            delete_rule = True
+        if delete_rule:
+            session.delete(rule)
+    session.flush()
     return find_compiled_access_rule_mismatches(session)
 
 

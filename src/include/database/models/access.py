@@ -1,7 +1,7 @@
 import secrets
 from typing import TYPE_CHECKING
 
-from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -75,22 +75,14 @@ class ObjectAccessEntry(Base):
 
 class CompiledAccessRule(Base):
     """
-    Query-friendly representation of document/folder JSON access rules.
+    Persisted representation of document/folder JSON access rules.
     """
 
     __tablename__ = "compiled_access_rules"
-    __table_args__ = (
-        UniqueConstraint(
-            "target_type",
-            "source_rule_id",
-            name="uq_compiled_access_rules_target_source",
-        ),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     target_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False, index=True)
     target_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=False, index=True)
-    source_rule_id: Mapped[int] = mapped_column(Integer, nullable=False)
     access_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
     match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
 
@@ -98,6 +90,7 @@ class CompiledAccessRule(Base):
         "CompiledAccessRuleGroup",
         back_populates="rule",
         cascade="all, delete-orphan",
+        order_by="CompiledAccessRuleGroup.group_index",
     )
 
 
@@ -124,11 +117,13 @@ class CompiledAccessRuleGroup(Base):
         "CompiledAccessRuleRight",
         back_populates="group",
         cascade="all, delete-orphan",
+        order_by="CompiledAccessRuleRight.id",
     )
     groups: Mapped[list["CompiledAccessRuleMembership"]] = relationship(
         "CompiledAccessRuleMembership",
         back_populates="group",
         cascade="all, delete-orphan",
+        order_by="CompiledAccessRuleMembership.id",
     )
 
 

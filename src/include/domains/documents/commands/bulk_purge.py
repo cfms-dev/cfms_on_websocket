@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.models.documents import (
     Document,
-    DocumentAccessRule,
     DocumentRevision,
 )
 from include.database.models.files import (
@@ -45,10 +44,6 @@ def purge_documents_bulk(session: Session, document_ids: list[str]):
 
     if not revision_data:
         # If none of these documents have revisions, delete document rows only.
-        for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-            session.query(DocumentAccessRule).filter(
-                DocumentAccessRule.document_id.in_(chunk)
-            ).delete(synchronize_session=False)
         for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
             session.query(Document).filter(Document.id.in_(chunk)).delete(
                 synchronize_session=False
@@ -108,9 +103,6 @@ def purge_documents_bulk(session: Session, document_ids: list[str]):
             )
 
     for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-        session.query(DocumentAccessRule).filter(
-            DocumentAccessRule.document_id.in_(chunk)
-        ).delete(synchronize_session=False)
         session.query(Document).filter(Document.id.in_(chunk)).delete(
             synchronize_session=False
         )

@@ -120,6 +120,57 @@ def _new_database(base, path: Path):
     return db_engine, sessionmaker(bind=db_engine)
 
 
+def _insert_compiled_rule(
+    connection,
+    tables,
+    *,
+    target_type: str,
+    target_id: str,
+    access_type: str,
+    rule_data: dict,
+) -> None:
+    result = connection.execute(
+        insert(tables["compiled_access_rules"]),
+        {
+            "target_type": target_type,
+            "target_id": target_id,
+            "access_type": access_type,
+            "match_mode": rule_data.get("match", "all"),
+        },
+    )
+    compiled_rule_id = result.inserted_primary_key[0]
+    for index, group_data in enumerate(rule_data.get("match_groups", [])):
+        rights = group_data.get("rights", {})
+        groups = group_data.get("groups", {})
+        required_rights = rights.get("require", [])
+        required_groups = groups.get("require", [])
+        group_result = connection.execute(
+            insert(tables["compiled_access_rule_groups"]),
+            {
+                "rule_id": compiled_rule_id,
+                "group_index": index,
+                "match_mode": "all"
+                if not required_rights or not required_groups
+                else group_data.get("match", "all"),
+                "rights_match_mode": rights.get("match", "all"),
+                "rights_empty": not required_rights,
+                "groups_match_mode": groups.get("match", "all"),
+                "groups_empty": not required_groups,
+            },
+        )
+        compiled_group_id = group_result.inserted_primary_key[0]
+        for permission in required_rights:
+            connection.execute(
+                insert(tables["compiled_access_rule_rights"]),
+                {"group_id": compiled_group_id, "permission": permission},
+            )
+        for group_name in required_groups:
+            connection.execute(
+                insert(tables["compiled_access_rule_memberships"]),
+                {"group_id": compiled_group_id, "group_name": group_name},
+            )
+
+
 def _seed_source(base, db_engine, storage_root: Path) -> None:
     storage = _RootedStorage(storage_root)
     with storage.fopen("content/files/doc.bin", "wb") as f:
@@ -245,17 +296,15 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 },
             ],
         )
-        connection.execute(
-            insert(tables["folder_access_rules"]),
-            {
-                "access_type": "read",
-                "folder_id": "folder-1",
-                "rule_data": {
-                    "match": "all",
-                    "match_groups": [
-                        {"groups": {"match": "all", "require": ["sysop"]}}
-                    ],
-                },
+        _insert_compiled_rule(
+            connection,
+            tables,
+            target_type="directory",
+            target_id="folder-1",
+            access_type="read",
+            rule_data={
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
             },
         )
         connection.execute(
@@ -287,17 +336,15 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             .where(tables["documents"].c.id == "doc-1")
             .values(current_revision_id="rev-1")
         )
-        connection.execute(
-            insert(tables["document_access_rules"]),
-            {
-                "access_type": "read",
-                "document_id": "doc-1",
-                "rule_data": {
-                    "match": "all",
-                    "match_groups": [
-                        {"groups": {"match": "all", "require": ["sysop"]}}
-                    ],
-                },
+        _insert_compiled_rule(
+            connection,
+            tables,
+            target_type="document",
+            target_id="doc-1",
+            access_type="read",
+            rule_data={
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
             },
         )
         connection.execute(
@@ -421,10 +468,6 @@ def _dump_backup_tables(base, db_engine) -> dict[str, list[dict]]:
 
 def _backup_table_names(base) -> set[str]:
     excluded = {
-        "compiled_access_rule_groups",
-        "compiled_access_rule_memberships",
-        "compiled_access_rule_rights",
-        "compiled_access_rules",
         "file_tasks",
         "login_throttles",
         "traffic_throttles",
@@ -659,10 +702,10 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     restored = _dump_backup_tables(base, target_engine)
     assert [row["id"] for row in restored["documents"]] == ["doc-1"]
     assert [row["id"] for row in restored["folders"]] == ["/", "folder-1"]
-    assert [row["document_id"] for row in restored["document_access_rules"]] == [
-        "doc-1"
-    ]
-    assert [row["folder_id"] for row in restored["folder_access_rules"]] == ["folder-1"]
+    assert [
+        (row["target_type"], row["target_id"])
+        for row in restored["compiled_access_rules"]
+    ] == [("directory", "folder-1"), ("document", "doc-1")]
     assert [row["target_identifier"] for row in restored["object_access_entries"]] == [
         "doc-1"
     ]

@@ -68,15 +68,17 @@ def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
     }[access_type]
 
     relevant_rules = [
-        rule for rule in access_rules if rule.access_type in relevant_access_types
+        rule_data
+        for relevant_access_type in relevant_access_types
+        for rule_data in access_rules.get(relevant_access_type, [])
     ]
     if not relevant_rules:
         return True
 
     return all(
-        _legacy_rule_data_matches_user(rule.rule_data, user)
-        for rule in relevant_rules
-        if rule.rule_data
+        _legacy_rule_data_matches_user(rule_data, user)
+        for rule_data in relevant_rules
+        if rule_data
     )
 
 
@@ -100,7 +102,7 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
     from include.domains.access.authorization.compiled_rules import (
         compiled_rules_allow,
         find_compiled_access_rule_mismatches,
-        rebuild_all_compiled_access_rules,
+        get_access_rules_json,
     )
 
     now = time.time()
@@ -141,58 +143,58 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
     session.add_all([user, group, document])
     session.flush()
 
+    rules = {
+        "read": [
+            {
+                "match": "any",
+                "match_groups": [
+                    {
+                        "match": "any",
+                        "rights": {
+                            "match": "any",
+                            "require": ["debugging", "list_users"],
+                        },
+                        "groups": {
+                            "match": "all",
+                            "require": ["missing_group"],
+                        },
+                    }
+                ],
+            }
+        ],
+        "write": [
+            {
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
+            }
+        ],
+        "move": [
+            {
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["staff"]}}],
+            }
+        ],
+        "manage": [
+            {
+                "match": "all",
+                "match_groups": [
+                    {"rights": {"match": "all", "require": ["list_users"]}}
+                ],
+            }
+        ],
+    }
     set_access_rules(
         document,
-        {
-            "read": [
-                {
-                    "match": "any",
-                    "match_groups": [
-                        {
-                            "match": "any",
-                            "rights": {
-                                "match": "any",
-                                "require": ["debugging", "list_users"],
-                            },
-                            "groups": {
-                                "match": "all",
-                                "require": ["missing_group"],
-                            },
-                        }
-                    ],
-                }
-            ],
-            "write": [
-                {
-                    "match": "all",
-                    "match_groups": [
-                        {"groups": {"match": "all", "require": ["sysop"]}}
-                    ],
-                }
-            ],
-            "move": [
-                {
-                    "match": "all",
-                    "match_groups": [
-                        {"groups": {"match": "all", "require": ["staff"]}}
-                    ],
-                }
-            ],
-            "manage": [
-                {
-                    "match": "all",
-                    "match_groups": [
-                        {"rights": {"match": "all", "require": ["list_users"]}}
-                    ],
-                }
-            ],
-        },
+        rules,
         inherit_parent=False,
     )
     session.flush()
-    rebuild_all_compiled_access_rules(session)
 
     assert find_compiled_access_rule_mismatches(session) == []
+    assert (
+        get_access_rules_json(session, target_type="document", target_id=document.id)
+        == rules
+    )
 
     target_type = "document"
     expected = {
@@ -202,10 +204,7 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
         "manage": True,
     }
     for access_type, allowed in expected.items():
-        assert (
-            _legacy_access_rules_allow(document.access_rules, user, access_type)
-            is allowed
-        )
+        assert _legacy_access_rules_allow(rules, user, access_type) is allowed
         assert (
             compiled_rules_allow(
                 session,
@@ -224,14 +223,13 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
         )
 
 
-def test_compiled_access_rule_mismatch_detector_reports_stale_rows(
+def test_compiled_access_rule_mismatch_detector_reports_invalid_rows(
     access_rule_session,
 ):
     models, session = access_rule_session
     from include.domains.access.authorization.access_rules import set_access_rules
     from include.domains.access.authorization.compiled_rules import (
         find_compiled_access_rule_mismatches,
-        rebuild_all_compiled_access_rules,
     )
 
     folder = models.Folder(id="folder-1", name="Folder", inherit=False)
@@ -252,14 +250,22 @@ def test_compiled_access_rule_mismatch_detector_reports_stale_rows(
         inherit_parent=False,
     )
     session.flush()
-    rebuild_all_compiled_access_rules(session)
 
     assert find_compiled_access_rule_mismatches(session) == []
 
-    session.query(models.CompiledAccessRule).delete()
+    session.add(
+        models.CompiledAccessRule(
+            target_type="directory",
+            target_id="missing-folder",
+            access_type="read",
+            match_mode="all",
+        )
+    )
     session.flush()
 
-    assert find_compiled_access_rule_mismatches(session) == [("directory", folder.id)]
+    assert find_compiled_access_rule_mismatches(session) == [
+        ("directory", "missing-folder")
+    ]
 
 
 def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
@@ -405,7 +411,6 @@ def test_compiled_access_rule_maintenance_detects_and_repairs_orphans(
         models.CompiledAccessRule(
             target_type="document",
             target_id="missing-doc",
-            source_rule_id=999,
             access_type="read",
             match_mode="all",
         )
@@ -413,12 +418,9 @@ def test_compiled_access_rule_maintenance_detects_and_repairs_orphans(
     session.flush()
 
     assert find_compiled_access_rule_mismatches(session) == [
-        ("document", "doc-maintenance"),
         ("document", "missing-doc"),
     ]
-    assert find_compiled_access_rule_mismatches(session, include_orphans=False) == [
-        ("document", "doc-maintenance")
-    ]
+    assert find_compiled_access_rule_mismatches(session, include_orphans=False) == []
 
     assert repair_compiled_access_rules(session) == []
     assert find_compiled_access_rule_mismatches(session) == []

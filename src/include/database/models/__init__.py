@@ -10,14 +10,12 @@ from include.database.models.access import (
 from include.database.models.documents import (
     BaseObject,
     Document,
-    DocumentAccessRule,
     DocumentMetadata,
     DocumentMetadataTag,
     DocumentRevision,
     DocumentRevisionStatus,
     EntityStatus,
     Folder,
-    FolderAccessRule,
 )
 from include.database.models.files import File, FileTask, TransferMode
 from include.database.models.identity import (
@@ -45,7 +43,6 @@ __all__ = [
     "CompiledAccessRuleMembership",
     "CompiledAccessRuleRight",
     "Document",
-    "DocumentAccessRule",
     "DocumentMetadata",
     "DocumentMetadataTag",
     "DocumentRevision",
@@ -54,7 +51,6 @@ __all__ = [
     "File",
     "FileTask",
     "Folder",
-    "FolderAccessRule",
     "LoginThrottle",
     "ObjectAccessEntry",
     "TrafficThrottle",
