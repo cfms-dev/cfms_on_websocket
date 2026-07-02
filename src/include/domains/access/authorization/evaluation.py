@@ -6,7 +6,12 @@ from include.config.constants import AVAILABLE_ACCESS_TYPES
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
-from include.domains.access.authorization.compiled_rules import compiled_rules_allow
+from include.domains.access.authorization.compiled_rules import (
+    CompiledRuleMap,
+    TargetType,
+    compiled_rules_allow,
+    compiled_rules_allow_from_map,
+)
 
 
 class SingleNodeCheckResult(IntEnum):
@@ -22,6 +27,8 @@ def check_access_for_object(
     all_folders: list[Folder],
     oae_by_target: dict,
     recursive: bool = True,
+    compiled_rules_by_target: CompiledRuleMap | None = None,
+    folder_map: dict[str, Folder] | None = None,
 ) -> bool:
 
     if access_type not in AVAILABLE_ACCESS_TYPES:
@@ -31,7 +38,8 @@ def check_access_for_object(
     if session is None:
         raise RuntimeError("No active session found for user")
 
-    folder_map = {f.id: f for f in all_folders}
+    if folder_map is None:
+        folder_map = {f.id: f for f in all_folders}
 
     def _check_single_node(node: Document | Folder) -> SingleNodeCheckResult:
         """
@@ -57,7 +65,10 @@ def check_access_for_object(
             and the helper function `_match_primary_sub_group`.
         """
 
-        _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
+        _TARGET_TYPE_MAPPING: dict[str, TargetType] = {
+            "folders": "directory",
+            "documents": "document",
+        }
         target_type = _TARGET_TYPE_MAPPING[node.__tablename__]
 
         # check OAE first (highest priority)
@@ -84,13 +95,24 @@ def check_access_for_object(
             ):
                 return SingleNodeCheckResult.ALLOWED_OAE
 
-        if compiled_rules_allow(
-            session,
-            target_type=target_type,
-            target_id=node.id,
-            user=user,
-            access_type=access_type,
-        ):
+        if compiled_rules_by_target is None:
+            allowed_by_rules = compiled_rules_allow(
+                session,
+                target_type=target_type,
+                target_id=node.id,
+                user=user,
+                access_type=access_type,
+            )
+        else:
+            allowed_by_rules = compiled_rules_allow_from_map(
+                compiled_rules_by_target,
+                target_type=target_type,
+                target_id=node.id,
+                user=user,
+                access_type=access_type,
+            )
+
+        if allowed_by_rules:
             return SingleNodeCheckResult.ALLOWED
         return SingleNodeCheckResult.DENIED
 

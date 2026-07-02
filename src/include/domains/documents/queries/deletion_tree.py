@@ -14,6 +14,9 @@ from include.database.models.documents import (
     Folder,
 )
 from include.database.models.identity import User
+from include.domains.access.authorization.compiled_rules import (
+    fetch_compiled_access_rules_for_targets,
+)
 from include.domains.access.authorization.evaluation import check_access_for_object
 from include.domains.access.authorization.grants import prefetch_user_blocks
 
@@ -87,6 +90,7 @@ def fetch_subtree_for_deletion(
         )
     folder_map: dict[str, Folder] = {f.id: f for f in folders}
     actual_folder_ids = list(folder_map.keys())
+    actual_folder_id_set = set(actual_folder_ids)
 
     # Step 3: Load all subtree documents, including revisions and files.
     # Chunked to avoid SQLite bind-variable limit for large subtrees.
@@ -122,6 +126,14 @@ def fetch_subtree_for_deletion(
     for entry in oae_entries:
         oae_by_target[entry.target_identifier].append(entry)
 
+    compiled_rules_by_target = fetch_compiled_access_rules_for_targets(
+        session,
+        [
+            *(("directory", folder_id) for folder_id in actual_folder_ids),
+            *(("document", doc.id) for doc in documents),
+        ],
+    )
+
     # Step 5: Prefetch user block state once to avoid repeated queries.
     is_globally_blocked, blocked_write_ids = prefetch_user_blocks(
         session, user, "write", now
@@ -148,6 +160,8 @@ def fetch_subtree_for_deletion(
                 "write",
                 all_folders=folders,
                 oae_by_target=oae_by_target,
+                compiled_rules_by_target=compiled_rules_by_target,
+                folder_map=folder_map,
             )
         )
 
@@ -161,6 +175,8 @@ def fetch_subtree_for_deletion(
                 "read",
                 all_folders=folders,
                 oae_by_target=oae_by_target,
+                compiled_rules_by_target=compiled_rules_by_target,
+                folder_map=folder_map,
             ):
                 failed_items.append(
                     {
@@ -194,6 +210,8 @@ def fetch_subtree_for_deletion(
                 "write",
                 all_folders=folders,
                 oae_by_target=oae_by_target,
+                compiled_rules_by_target=compiled_rules_by_target,
+                folder_map=folder_map,
             )
         )
         folder_self_deletable[folder.id] = can_delete
@@ -207,6 +225,8 @@ def fetch_subtree_for_deletion(
                 "read",
                 all_folders=folders,
                 oae_by_target=oae_by_target,
+                compiled_rules_by_target=compiled_rules_by_target,
+                folder_map=folder_map,
             ):
                 failed_items.append(
                     {
@@ -226,7 +246,7 @@ def fetch_subtree_for_deletion(
     parent_map: dict[str, str | None] = {}
     for folder in folders:
         parent_map[folder.id] = folder.parent_id
-        if folder.parent_id and folder.parent_id in set(actual_folder_ids):
+        if folder.parent_id and folder.parent_id in actual_folder_id_set:
             children_map[folder.parent_id].append(folder.id)
 
     # Record whether each folder contains undeletable content. A folder with

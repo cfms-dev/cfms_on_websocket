@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -513,3 +513,181 @@ def test_compiled_access_rule_repair_does_not_rebuild_missing_rows(
     assert find_compiled_access_rule_mismatches(session) == []
     assert repair_compiled_access_rules(session) == []
     assert session.query(models.CompiledAccessRule).count() == 0
+
+
+def _make_access_rule_user(models, session, username="alice"):
+    now = time.time()
+    user = models.User(
+        username=username,
+        pass_hash="hash",
+        passwd_last_modified=now,
+        nickname=username,
+        avatar_id=None,
+        last_login=None,
+        created_time=now,
+        status=0,
+        secret_key=f"{username}-secret",
+        totp_secret=None,
+        totp_enabled=False,
+        totp_backup_codes=None,
+        preference_dek_id=None,
+    )
+    for permission in (
+        "delete_document",
+        "delete_directory",
+        "list_users",
+    ):
+        user.rights.append(
+            models.UserPermission(
+                username=username,
+                permission=permission,
+                granted=True,
+                start_time=0.0,
+                end_time=None,
+            )
+        )
+    session.add(user)
+    session.flush()
+    return user
+
+
+def test_fetch_subtree_deletion_prefetches_compiled_rules_once(
+    access_rule_session,
+):
+    models, session = access_rule_session
+    from include.domains.documents.queries.deletion_tree import (
+        fetch_subtree_for_deletion,
+    )
+
+    user = _make_access_rule_user(models, session)
+    root = models.Folder(id="root-folder", name="Root", inherit=False)
+    session.add(root)
+    session.flush()
+
+    for index in range(250):
+        session.add(
+            models.Document(
+                id=f"doc-{index}",
+                title=f"Document {index}",
+                folder_id=root.id,
+                inherit=True,
+            )
+        )
+    session.commit()
+
+    statements: list[str] = []
+
+    def before_cursor_execute(_conn, _cursor, statement, *_args):
+        if "FROM compiled_access_rules" in " ".join(statement.split()):
+            statements.append(statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", before_cursor_execute)
+    try:
+        _, deletable_doc_ids, failed_items, protected_folder_ids, _ = (
+            fetch_subtree_for_deletion(session, root.id, user)
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", before_cursor_execute)
+
+    assert len(deletable_doc_ids) == 250
+    assert failed_items == []
+    assert protected_folder_ids == set()
+    assert len(statements) <= 2
+
+
+def test_batched_compiled_rules_match_direct_access_checks(access_rule_session):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        fetch_compiled_access_rules_for_targets,
+    )
+    from include.domains.access.authorization.evaluation import check_access_for_object
+
+    user = _make_access_rule_user(models, session)
+    parent = models.Folder(id="parent", name="Parent", inherit=False)
+    inherited_doc = models.Document(
+        id="inherited-doc",
+        title="Inherited",
+        folder=parent,
+        inherit=True,
+    )
+    self_rule_doc = models.Document(
+        id="self-rule-doc",
+        title="Self Rule",
+        folder=parent,
+        inherit=False,
+    )
+    default_doc = models.Document(
+        id="default-doc",
+        title="Default",
+        folder=parent,
+        inherit=False,
+    )
+    session.add_all([parent, inherited_doc, self_rule_doc, default_doc])
+    session.flush()
+
+    set_access_rules(
+        parent,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"rights": {"match": "all", "require": ["list_users"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    set_access_rules(
+        self_rule_doc,
+        {
+            "write": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"rights": {"match": "all", "require": ["debugging"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    rules_by_target = fetch_compiled_access_rules_for_targets(
+        session,
+        [
+            ("directory", parent.id),
+            ("document", inherited_doc.id),
+            ("document", self_rule_doc.id),
+            ("document", default_doc.id),
+        ],
+    )
+    folders = [parent]
+    folder_map = {parent.id: parent}
+
+    for obj, access_type in (
+        (default_doc, "write"),
+        (inherited_doc, "write"),
+        (self_rule_doc, "write"),
+    ):
+        direct = check_access_for_object(
+            obj,
+            user,
+            access_type,
+            all_folders=folders,
+            oae_by_target={},
+        )
+        batched = check_access_for_object(
+            obj,
+            user,
+            access_type,
+            all_folders=folders,
+            oae_by_target={},
+            compiled_rules_by_target=rules_by_target,
+            folder_map=folder_map,
+        )
+        assert batched is direct

@@ -1,7 +1,7 @@
 import secrets
 from typing import TYPE_CHECKING
 
-from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
+from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Index, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -79,6 +79,14 @@ class CompiledAccessRule(Base):
     """
 
     __tablename__ = "compiled_access_rules"
+    __table_args__ = (
+        Index(
+            "ix_compiled_access_rules_target_type_id_access",
+            "target_type",
+            "target_id",
+            "access_type",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     target_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False, index=True)

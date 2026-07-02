@@ -17,6 +17,7 @@ from include.database.models.access import (
 )
 
 TargetType = Literal["document", "directory"]
+CompiledRuleMap = dict[tuple[TargetType, str], list[CompiledAccessRule]]
 
 _DELETED_TARGET_KEYS = "compiled_access_rule_deleted_target_keys"
 
@@ -185,6 +186,45 @@ def get_compiled_access_rules(
     )
 
 
+def fetch_compiled_access_rules_for_targets(
+    session: OrmSession,
+    targets: Iterable[tuple[TargetType, str]],
+) -> CompiledRuleMap:
+    target_ids_by_type: dict[TargetType, set[str]] = defaultdict(set)
+    for target_type, target_id in targets:
+        if target_type not in ("document", "directory"):
+            raise ValueError(f"Invalid compiled access rule target type: {target_type}")
+        if target_id:
+            target_ids_by_type[target_type].add(target_id)
+
+    rules_by_target: CompiledRuleMap = {}
+    for target_type, target_ids in target_ids_by_type.items():
+        for chunk in batched(target_ids, QUERY_CHUNK_SIZE):
+            rules = (
+                session.query(CompiledAccessRule)
+                .options(
+                    selectinload(CompiledAccessRule.match_groups).selectinload(
+                        CompiledAccessRuleGroup.rights
+                    ),
+                    selectinload(CompiledAccessRule.match_groups).selectinload(
+                        CompiledAccessRuleGroup.groups
+                    ),
+                )
+                .filter(
+                    CompiledAccessRule.target_type == target_type,
+                    CompiledAccessRule.target_id.in_(list(chunk)),
+                )
+                .order_by(CompiledAccessRule.id.asc())
+                .all()
+            )
+            for rule in rules:
+                rules_by_target.setdefault((target_type, rule.target_id), []).append(
+                    rule
+                )
+
+    return rules_by_target
+
+
 def get_access_rules_json(
     session: OrmSession,
     *,
@@ -257,6 +297,27 @@ def _compiled_rule_matches_user(rule: CompiledAccessRule, user: Any) -> bool:
             return False
 
     return rule.match_mode == "all"
+
+
+def compiled_rules_allow_from_map(
+    rules_by_target: CompiledRuleMap,
+    *,
+    target_type: TargetType,
+    target_id: str,
+    user: Any,
+    access_type: str,
+) -> bool:
+    relevant_access_types = _access_rule_types_for(access_type)
+    rules = [
+        rule
+        for rule in rules_by_target.get((target_type, target_id), [])
+        if rule.access_type in relevant_access_types
+    ]
+
+    if not rules:
+        return True
+
+    return all(_compiled_rule_matches_user(rule, user) for rule in rules)
 
 
 def compiled_rules_allow(
