@@ -1,8 +1,12 @@
 import os
+import sys
 import time
 
 import pytest
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
+from tests.support.test_config import ServerTestSettings
 from tests.test_client import CFMSTestClient
 from tests.utils import assert_error, assert_success
 
@@ -246,13 +250,16 @@ class TestSearch:
         authenticated_client: CFMSTestClient,
         unauthenticated_client: CFMSTestClient,
         user_factory,
+        protected_test_config: ServerTestSettings,
     ):
         original_cwd = os.getcwd()
         try:
-            os.chdir("src")
+            os.chdir(protected_test_config.src_dir)
+            src_path = str(protected_test_config.src_dir)
+            if src_path not in sys.path:
+                sys.path.insert(0, src_path)
             from include.database.models.documents import Folder
             from include.database.models.identity import User
-            from include.database.session import Session
             from include.domains.access.authorization.evaluation import (
                 check_access_for_object,
             )
@@ -274,6 +281,15 @@ class TestSearch:
             test_user["username"], test_user["password"]
         )
         assert_success(login_response)
+        engine = create_engine(f"sqlite:///{protected_test_config.src_dir / 'app.db'}")
+
+        @event.listens_for(engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        SessionLocal = sessionmaker(bind=engine)
 
         query = "SearchCompiledRules"
         visible_folder_id = None
@@ -346,7 +362,7 @@ class TestSearch:
 
             assert [item["id"] for item in data["items"]] == [visible_folder_id]
 
-            with Session() as session:
+            with SessionLocal() as session:
                 user = User.get_existing(session, test_user["username"])
                 folders = (
                     session.query(Folder)
@@ -384,6 +400,7 @@ class TestSearch:
 
             assert sql_visible_ids == python_visible_ids == {visible_folder_id}
         finally:
+            engine.dispose()
             for folder_id in [visible_folder_id, hidden_folder_id]:
                 if folder_id:
                     try:
