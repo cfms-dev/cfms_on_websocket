@@ -14,6 +14,9 @@ from include.database.models.documents import (
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
+from include.domains.access.authorization.compiled_rules import (
+    delete_compiled_access_rules_for_targets,
+)
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.name_conflicts import (
@@ -863,6 +866,14 @@ class RequestPurgeDirectoryHandler(RequestHandler):
 
                 if all_doc_ids:
                     purge_documents_bulk(session, list(all_doc_ids))
+
+                delete_compiled_access_rules_for_targets(
+                    session,
+                    (
+                        ("directory", target_id)
+                        for target_id in [*all_folder_ids, folder_id]
+                    ),
+                )
 
                 if all_folder_ids:
                     for chunk in batched(all_folder_ids, QUERY_CHUNK_SIZE):

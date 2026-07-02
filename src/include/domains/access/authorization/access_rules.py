@@ -15,13 +15,14 @@ if TYPE_CHECKING:
 __all__ = [
     "AccessRuleBase",
     "apply_access_rules",
-    "legacy_rule_data_matches_user",
     "set_access_rules",
     "validate_access_rules",
 ]
 
 
 class AccessRuleBase:
+    """Base shape for JSON source access rules kept for API compatibility."""
+
     id: Mapped[int]
     access_type: Mapped[str]
     rule_data: Mapped[dict]
@@ -69,60 +70,6 @@ ACCESS_RULE_SCHEMA = {
 
 def validate_access_rules(rules: list[dict[str, Any]]) -> None:
     jsonschema.validate(rules, ACCESS_RULE_SCHEMA)
-
-
-def legacy_rule_data_matches_user(rule_data: dict, user: User) -> bool:
-    def match_rights(sub_rights_group):
-        if not sub_rights_group:
-            return True
-        sub_match_mode = sub_rights_group.get("match", "all")
-        sub_rights_require = sub_rights_group.get("require", [])
-        if not sub_rights_require:
-            return True
-        if sub_match_mode == "all":
-            return set(sub_rights_require).issubset(user.all_permissions)
-        if sub_match_mode == "any":
-            return any(r in user.all_permissions for r in sub_rights_require)
-        raise ValueError('the value of "match" must be "all" or "any"')
-
-    def match_groups(sub_groups_group):
-        if not sub_groups_group:
-            return True
-        sub_match_mode = sub_groups_group.get("match", "all")
-        sub_groups_require = sub_groups_group.get("require", [])
-        if not sub_groups_require:
-            return True
-        if sub_match_mode == "all":
-            return set(sub_groups_require).issubset(user.all_groups)
-        if sub_match_mode == "any":
-            return any(g in user.all_groups for g in sub_groups_require)
-        raise ValueError('the value of "match" must be "all" or "any"')
-
-    def match_sub_group(sub_group):
-        sub_match_mode = sub_group.get("match", "all")
-        sub_rights_group = sub_group.get("rights", {})
-        sub_groups_group = sub_group.get("groups", {})
-        if not sub_rights_group.get("require", []) or not sub_groups_group.get(
-            "require", []
-        ):
-            sub_match_mode = "all"
-        if sub_match_mode == "any":
-            return match_rights(sub_rights_group) or match_groups(sub_groups_group)
-        if sub_match_mode == "all":
-            return match_rights(sub_rights_group) and match_groups(sub_groups_group)
-        raise ValueError('the value of "match" must be "all" or "any"')
-
-    match_mode = rule_data.get("match", "all")
-    for sub_group in rule_data.get("match_groups", []):
-        if not sub_group:
-            continue
-        state = match_sub_group(sub_group)
-        if match_mode == "any" and state:
-            return True
-        if match_mode == "all" and not state:
-            return False
-
-    return match_mode == "all"
 
 
 def set_access_rules(

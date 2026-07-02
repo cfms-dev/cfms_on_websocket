@@ -13,6 +13,9 @@ from include.database.models.files import (
     FileTask,
     _queue_deferred_file_deletion,
 )
+from include.domains.access.authorization.compiled_rules import (
+    delete_compiled_access_rules_for_targets,
+)
 from include.domains.documents.queries.revisions import batch_count_other_revisions
 
 
@@ -25,6 +28,11 @@ def purge_documents_bulk(session: Session, document_ids: list[str]):
     """
     if not document_ids:
         return
+
+    delete_compiled_access_rules_for_targets(
+        session,
+        (("document", document_id) for document_id in document_ids),
+    )
 
     # 1. Fetch affected revision IDs and file IDs in chunks to avoid bind limits.
     revision_data = []

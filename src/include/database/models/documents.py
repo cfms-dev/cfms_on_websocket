@@ -232,7 +232,8 @@ class Document(BaseObject):
     )  # Folder ID that owns the document.
     folder: Mapped[Folder | None] = relationship("Folder", back_populates="documents")
 
-    # Each document has multiple access rules with rule data stored as JSON.
+    # JSON source rules are kept for the public access-rule API; runtime
+    # authorization uses compiled_access_rules.
     access_rules: Mapped[list[DocumentAccessRule]] = relationship(
         "DocumentAccessRule", back_populates="document", cascade="all, delete-orphan"
     )
@@ -482,9 +483,7 @@ class DocumentAccessRule(Base, AccessRuleBase):
     document_id: Mapped[str | None] = mapped_column(
         ForeignKey("documents.id"), nullable=False
     )
-    rule_data: Mapped[dict] = mapped_column(
-        JSON, nullable=False
-    )  # Stores a single JSON rule object.
+    rule_data: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     document: Mapped[Document | None] = relationship(
         "Document", back_populates="access_rules"
@@ -505,9 +504,7 @@ class FolderAccessRule(Base, AccessRuleBase):
     folder_id: Mapped[str | None] = mapped_column(
         ForeignKey("folders.id"), nullable=True
     )
-    rule_data: Mapped[dict] = mapped_column(
-        JSON, nullable=False
-    )  # Stores a single JSON rule object.
+    rule_data: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     folder: Mapped[Folder | None] = relationship(
         "Folder", back_populates="access_rules"

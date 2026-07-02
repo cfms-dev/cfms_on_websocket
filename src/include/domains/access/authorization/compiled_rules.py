@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from itertools import batched
 from typing import Any, Iterable, Literal
 
 from sqlalchemy import delete, event
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import selectinload
 
-from include.config.constants import AVAILABLE_ACCESS_TYPES
+from include.config.constants import AVAILABLE_ACCESS_TYPES, QUERY_CHUNK_SIZE
 from include.database.models.access import (
     CompiledAccessRule,
     CompiledAccessRuleGroup,
     CompiledAccessRuleMembership,
     CompiledAccessRuleRight,
 )
-from include.database.session import Session
 
 TargetType = Literal["document", "directory"]
 
@@ -224,12 +225,7 @@ def rebuild_compiled_access_rules(
         return
     target_type, target_id = target_key
 
-    session.execute(
-        delete(CompiledAccessRule).where(
-            CompiledAccessRule.target_type == target_type,
-            CompiledAccessRule.target_id == target_id,
-        )
-    )
+    delete_compiled_access_rules(session, target_type, target_id)
 
     for rule in target.access_rules:
         compiled_rule = compile_access_rule(
@@ -269,12 +265,28 @@ def delete_compiled_access_rules(
     target_type: TargetType,
     target_id: str,
 ) -> None:
-    session.execute(
-        delete(CompiledAccessRule).where(
-            CompiledAccessRule.target_type == target_type,
-            CompiledAccessRule.target_id == target_id,
-        )
-    )
+    delete_compiled_access_rules_for_targets(session, [(target_type, target_id)])
+
+
+def delete_compiled_access_rules_for_targets(
+    session: OrmSession,
+    targets: Iterable[tuple[TargetType, str]],
+) -> None:
+    target_ids_by_type: dict[TargetType, set[str]] = defaultdict(set)
+    for target_type, target_id in targets:
+        if target_type not in ("document", "directory"):
+            raise ValueError(f"Invalid compiled access rule target type: {target_type}")
+        if target_id:
+            target_ids_by_type[target_type].add(target_id)
+
+    for target_type, target_ids in target_ids_by_type.items():
+        for chunk in batched(target_ids, QUERY_CHUNK_SIZE):
+            session.execute(
+                delete(CompiledAccessRule).where(
+                    CompiledAccessRule.target_type == target_type,
+                    CompiledAccessRule.target_id.in_(list(chunk)),
+                )
+            )
 
 
 def _compiled_rule_signature(rule: CompiledAccessRule) -> tuple:
@@ -292,11 +304,13 @@ def _compiled_rule_signature(rule: CompiledAccessRule) -> tuple:
                 tuple(sorted(membership.group_name for membership in group.groups)),
             )
         )
-    return (rule.access_type, rule.match_mode, tuple(groups))
+    return (rule.source_rule_id, rule.access_type, rule.match_mode, tuple(groups))
 
 
 def find_compiled_access_rule_mismatches(
     session: OrmSession,
+    *,
+    include_orphans: bool = True,
 ) -> list[tuple[TargetType, str]]:
     from include.database.models.documents import Document, Folder
 
@@ -313,6 +327,9 @@ def find_compiled_access_rule_mismatches(
             session.query(Folder).options(selectinload(Folder.access_rules)).all()
         )
     )
+    source_target_keys: set[tuple[TargetType, str]] = {
+        (target_type, str(target.id)) for target_type, target in targets
+    }
 
     for target_type, target in targets:
         expected = []
@@ -345,12 +362,30 @@ def find_compiled_access_rule_mismatches(
         )
         actual = [_compiled_rule_signature(rule) for rule in actual_rules]
         if sorted(expected) != sorted(actual):
-            mismatches.append((target_type, target.id))
+            mismatches.append((target_type, str(target.id)))
 
-    return mismatches
+    if include_orphans:
+        actual_target_keys: set[tuple[TargetType, str]] = set()
+        for rule in session.query(
+            CompiledAccessRule.target_type,
+            CompiledAccessRule.target_id,
+        ).distinct():
+            if rule.target_type == "document":
+                actual_target_keys.add(("document", rule.target_id))
+            elif rule.target_type == "directory":
+                actual_target_keys.add(("directory", rule.target_id))
+        orphan_keys = actual_target_keys - source_target_keys
+        mismatches.extend(sorted(orphan_keys))
+
+    return sorted(set(mismatches))
 
 
-@event.listens_for(Session, "before_flush")
+def repair_compiled_access_rules(session: OrmSession) -> list[tuple[TargetType, str]]:
+    rebuild_all_compiled_access_rules(session)
+    return find_compiled_access_rule_mismatches(session)
+
+
+@event.listens_for(OrmSession, "before_flush")
 def _collect_access_rule_targets(session: OrmSession, *_args) -> None:
     pending = session.info.setdefault(_PENDING_TARGETS_KEY, [])
     for target in list(session.new) + list(session.dirty):
@@ -366,7 +401,7 @@ def _collect_access_rule_targets(session: OrmSession, *_args) -> None:
                 deleted_keys.add(target_key)
 
 
-@event.listens_for(Session, "after_flush_postexec")
+@event.listens_for(OrmSession, "after_flush_postexec")
 def _sync_compiled_access_rules(session: OrmSession, *_args) -> None:
     deleted_keys = session.info.pop(_DELETED_TARGET_KEYS, set())
     for target_type, target_id in deleted_keys:

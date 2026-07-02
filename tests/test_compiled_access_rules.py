@@ -5,11 +5,61 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
-def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
-    from include.domains.access.authorization.access_rules import (
-        legacy_rule_data_matches_user,
-    )
+def _legacy_rule_data_matches_user(rule_data: dict, user) -> bool:
+    def match_rights(sub_rights_group):
+        if not sub_rights_group:
+            return True
+        sub_match_mode = sub_rights_group.get("match", "all")
+        sub_rights_require = sub_rights_group.get("require", [])
+        if not sub_rights_require:
+            return True
+        if sub_match_mode == "all":
+            return set(sub_rights_require).issubset(user.all_permissions)
+        if sub_match_mode == "any":
+            return any(r in user.all_permissions for r in sub_rights_require)
+        raise ValueError('the value of "match" must be "all" or "any"')
 
+    def match_groups(sub_groups_group):
+        if not sub_groups_group:
+            return True
+        sub_match_mode = sub_groups_group.get("match", "all")
+        sub_groups_require = sub_groups_group.get("require", [])
+        if not sub_groups_require:
+            return True
+        if sub_match_mode == "all":
+            return set(sub_groups_require).issubset(user.all_groups)
+        if sub_match_mode == "any":
+            return any(g in user.all_groups for g in sub_groups_require)
+        raise ValueError('the value of "match" must be "all" or "any"')
+
+    def match_sub_group(sub_group):
+        sub_match_mode = sub_group.get("match", "all")
+        sub_rights_group = sub_group.get("rights", {})
+        sub_groups_group = sub_group.get("groups", {})
+        if not sub_rights_group.get("require", []) or not sub_groups_group.get(
+            "require", []
+        ):
+            sub_match_mode = "all"
+        if sub_match_mode == "any":
+            return match_rights(sub_rights_group) or match_groups(sub_groups_group)
+        if sub_match_mode == "all":
+            return match_rights(sub_rights_group) and match_groups(sub_groups_group)
+        raise ValueError('the value of "match" must be "all" or "any"')
+
+    match_mode = rule_data.get("match", "all")
+    for sub_group in rule_data.get("match_groups", []):
+        if not sub_group:
+            continue
+        state = match_sub_group(sub_group)
+        if match_mode == "any" and state:
+            return True
+        if match_mode == "all" and not state:
+            return False
+
+    return match_mode == "all"
+
+
+def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
     relevant_access_types = {
         "read": ("read",),
         "write": ("read", "write"),
@@ -24,7 +74,7 @@ def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
         return True
 
     return all(
-        legacy_rule_data_matches_user(rule.rule_data, user)
+        _legacy_rule_data_matches_user(rule.rule_data, user)
         for rule in relevant_rules
         if rule.rule_data
     )
@@ -210,3 +260,165 @@ def test_compiled_access_rule_mismatch_detector_reports_stale_rows(
     session.flush()
 
     assert find_compiled_access_rule_mismatches(session) == [("directory", folder.id)]
+
+
+def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        find_compiled_access_rule_mismatches,
+    )
+
+    document = models.Document(id="doc-sync", title="Document", inherit=False)
+    session.add(document)
+    session.flush()
+
+    set_access_rules(
+        document,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    assert session.query(models.CompiledAccessRule).count() == 1
+    assert find_compiled_access_rule_mismatches(session) == []
+
+    set_access_rules(
+        document,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"rights": {"match": "all", "require": ["list_users"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    compiled_rule = session.query(models.CompiledAccessRule).one()
+    compiled_group = compiled_rule.match_groups[0]
+    assert [right.permission for right in compiled_group.rights] == ["list_users"]
+    assert find_compiled_access_rule_mismatches(session) == []
+
+    set_access_rules(document, {}, inherit_parent=False)
+    session.flush()
+
+    assert session.query(models.CompiledAccessRule).count() == 0
+    assert find_compiled_access_rule_mismatches(session) == []
+
+
+def test_orm_delete_removes_compiled_access_rules(access_rule_session):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        find_compiled_access_rule_mismatches,
+    )
+
+    folder = models.Folder(id="folder-delete", name="Folder", inherit=False)
+    session.add(folder)
+    session.flush()
+    set_access_rules(
+        folder,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    assert session.query(models.CompiledAccessRule).count() == 1
+
+    session.delete(folder)
+    session.flush()
+
+    assert session.query(models.CompiledAccessRule).count() == 0
+    assert find_compiled_access_rule_mismatches(session) == []
+
+
+def test_compiled_access_rule_maintenance_detects_and_repairs_orphans(
+    access_rule_session,
+):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        delete_compiled_access_rules_for_targets,
+        find_compiled_access_rule_mismatches,
+        repair_compiled_access_rules,
+    )
+
+    document = models.Document(id="doc-maintenance", title="Document", inherit=False)
+    folder = models.Folder(id="folder-maintenance", name="Folder", inherit=False)
+    session.add_all([document, folder])
+    session.flush()
+    set_access_rules(
+        document,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    set_access_rules(
+        folder,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    delete_compiled_access_rules_for_targets(session, [("document", document.id)])
+    session.add(
+        models.CompiledAccessRule(
+            target_type="document",
+            target_id="missing-doc",
+            source_rule_id=999,
+            access_type="read",
+            match_mode="all",
+        )
+    )
+    session.flush()
+
+    assert find_compiled_access_rule_mismatches(session) == [
+        ("document", "doc-maintenance"),
+        ("document", "missing-doc"),
+    ]
+    assert find_compiled_access_rule_mismatches(session, include_orphans=False) == [
+        ("document", "doc-maintenance")
+    ]
+
+    assert repair_compiled_access_rules(session) == []
+    assert find_compiled_access_rule_mismatches(session) == []
