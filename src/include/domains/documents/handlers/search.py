@@ -8,22 +8,20 @@ with permission filtering, result limiting, and sorting capabilities.
 __all__ = ["RequestSearchHandler"]
 
 import time
-from typing import Any, Dict, List
 
-from include.config.settings import global_config
 from include.database.models.identity import User
 from include.database.session import Session
-from include.domains.access.authorization.evaluation import check_access_for_object
-from include.domains.access.authorization.grants import (
-    batch_prefetch_granted_ids,
-    prefetch_user_blocks,
+from include.domains.documents.queries.listing import (
+    fetch_visible_search_candidate_rows,
+    search_cursor_key,
 )
-from include.domains.access.authorization.searchable_tree import (
-    search_documents_with_access,
-    search_folders_with_access,
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_page_size,
+    make_cursor_response,
 )
-from include.domains.access.permissions import Permissions
-from include.exceptions.misc import NoActiveRevisionsError
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
@@ -44,7 +42,7 @@ class RequestSearchHandler(RequestHandler):
         "type": "object",
         "properties": {
             "query": {"type": "string", "minLength": 1},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+            **CURSOR_PAGINATION_SCHEMA,
             "sort_by": {
                 "type": "string",
                 "enum": ["name", "created_time", "size", "last_modified"],
@@ -76,169 +74,62 @@ class RequestSearchHandler(RequestHandler):
             )
             return Result(code=400, target=query, username=handler.username)
 
-        limit: int = handler.data.get("limit", 100)
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
         sort_by: str = handler.data.get("sort_by", "name")
         sort_order: str = handler.data.get("sort_order", "asc")
         search_documents: bool = handler.data.get("search_documents", True)
         search_directories: bool = handler.data.get("search_directories", True)
+        filters = {
+            "query": query,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "search_documents": search_documents,
+            "search_directories": search_directories,
+        }
+        sort = f"{sort_by}:{sort_order}"
+        try:
+            last_key = decode_cursor(
+                cursor,
+                action="search",
+                sort=sort,
+                filters=filters,
+                value_types=[(int, float, str), int, str],
+            )
+        except CursorError as exc:
+            handler.conclude_request(400, {}, str(exc))
+            return Result(code=400, target=query, username=handler.username)
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
 
             now = time.time()
-
-            results: Dict[str, List[Dict[str, Any]]] = {
-                "documents": [],
-                "directories": [],
-            }
-
-            # Preload block entries
-            is_globally_blocked, blocked_ids = prefetch_user_blocks(
-                session, user, "read", now
+            all_results = fetch_visible_search_candidate_rows(
+                session,
+                user=user,
+                now=now,
+                query=query,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                search_documents=search_documents,
+                search_directories=search_directories,
+                last_key=last_key,
+                limit=page_size + 1,
             )
 
-            # Search documents
-            if search_documents and (
-                not is_globally_blocked
-                or Permissions.SUPER_LIST_DIRECTORY in user.all_permissions
-            ):
-                documents, doc_ancestors, doc_oaes = search_documents_with_access(
-                    session, query, now
-                )
-
-                doc_ids = [doc.id for doc in documents]
-                explicitly_granted_doc_ids = batch_prefetch_granted_ids(
-                    session, user, doc_ids, "document", "read", now
-                )
-
-                for document in documents:
-                    if not document.active:
-                        continue
-                    if (
-                        document.id in blocked_ids
-                        and Permissions.SUPER_LIST_DIRECTORY not in user.all_permissions
-                    ):  # This is because people who have `super_list_directory` can still see blocked documents via `list_directory`.
-                        continue
-                    if document.id in explicitly_granted_doc_ids:
-                        pass
-                    else:
-                        if not check_access_for_object(
-                            document,
-                            user,
-                            "read",
-                            doc_ancestors,
-                            doc_oaes,
-                            recursive=global_config["access"][
-                                "enable_access_recursive_check"
-                            ],
-                        ):
-                            continue
-
-                    try:
-                        latest_revision = document.get_latest_revision()
-                        size = latest_revision.file.size if latest_revision.file else 0
-                        last_modified = latest_revision.created_time
-                    except (NoActiveRevisionsError, AttributeError):
-                        size = 0
-                        last_modified = document.created_time
-
-                    results["documents"].append(
-                        {
-                            "id": document.id,
-                            "name": document.title,
-                            "parent_id": document.folder_id,
-                            "created_time": document.created_time,
-                            "last_modified": last_modified,
-                            "size": size,
-                            "type": "document",
-                        }
-                    )
-
-            # Search directories
-            if search_directories and (
-                not is_globally_blocked
-                or Permissions.SUPER_LIST_DIRECTORY in user.all_permissions
-            ):
-                directories, dir_ancestors, dir_oaes = search_folders_with_access(
-                    session, query, now
-                )
-
-                dir_ids = [d.id for d in directories]
-                explicitly_granted_dir_ids = batch_prefetch_granted_ids(
-                    session, user, dir_ids, "directory", "read", now
-                )
-
-                for directory in directories:
-                    if (
-                        directory.id in blocked_ids
-                        and Permissions.SUPER_LIST_DIRECTORY not in user.all_permissions
-                    ):
-                        continue
-
-                    if directory.id in explicitly_granted_dir_ids:
-                        pass
-                    else:
-                        if not check_access_for_object(
-                            directory,
-                            user,
-                            "read",
-                            dir_ancestors,
-                            dir_oaes,
-                            recursive=global_config["access"][
-                                "enable_access_recursive_check"
-                            ],
-                        ):
-                            continue
-
-                    results["directories"].append(
-                        {
-                            "id": directory.id,
-                            "name": directory.name,
-                            "parent_id": directory.parent_id,
-                            "created_time": directory.created_time,
-                            "type": "directory",
-                        }
-                    )
-
-            # Sort results
-            all_results = results["documents"] + results["directories"]
-
-            # Sort by the specified field
-            if sort_by == "name":
-                all_results.sort(
-                    key=lambda x: x["name"].lower(), reverse=(sort_order == "desc")
-                )
-            elif sort_by == "created_time":
-                all_results.sort(
-                    key=lambda x: x["created_time"], reverse=(sort_order == "desc")
-                )
-            elif sort_by == "size":
-                all_results.sort(
-                    key=lambda x: x.get("size", 0), reverse=(sort_order == "desc")
-                )
-            elif sort_by == "last_modified":
-                all_results.sort(
-                    key=lambda x: x.get("last_modified", x["created_time"]),
-                    reverse=(sort_order == "desc"),
-                )
-
-            # Apply limit
-            all_results = all_results[:limit]
-
-            # Separate back into documents and directories
-            final_documents = [r for r in all_results if r["type"] == "document"]
-            final_directories = [r for r in all_results if r["type"] == "directory"]
-
-            response_data = {
-                "documents": final_documents,
-                "directories": final_directories,
-                "total_count": len(all_results),
-                "query": query,
-            }
+            response_data = make_cursor_response(
+                all_results,
+                page_size=page_size,
+                action="search",
+                sort=sort,
+                filters=filters,
+                cursor_key=lambda item: search_cursor_key(item, sort_by),
+            )
+            response_data["query"] = query
 
             handler.conclude_request(
                 200,
                 response_data,
-                f"Search completed successfully. Found {len(all_results)} result(s).",
+                f"Search completed successfully. Found {len(response_data['items'])} result(s).",
             )
             return Result(code=0, target=query, username=handler.username)

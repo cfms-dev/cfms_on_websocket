@@ -16,18 +16,14 @@ __all__ = [
 ]
 
 import time
-from typing import Optional
 
 import filetype
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import selectinload
 
-from include.config.constants import (
-    AVAILABLE_BLOCK_TYPES,
-    PAGINATION_DEFAULT_PAGE_SIZE,
-    PAGINATION_MAX_PAGE_SIZE,
-)
+from include.config.constants import AVAILABLE_BLOCK_TYPES
 from include.config.settings import global_config
 from include.database.models.access import (
     UserBlockEntry,
@@ -49,6 +45,15 @@ from include.domains.identity.validators.passwords import (
     RuleRequirementsNotMetError,
     check_passwd_requirements,
 )
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    OFFSET_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_offset_pagination,
+    get_page_size,
+    make_cursor_response,
+)
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
@@ -62,12 +67,7 @@ class RequestListUsersHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "offset": {"type": "integer", "minimum": 0},
-            "count": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": PAGINATION_MAX_PAGE_SIZE,
-            },
+            **OFFSET_PAGINATION_SCHEMA,
         },
         "additionalProperties": False,
     }
@@ -75,8 +75,7 @@ class RequestListUsersHandler(RequestHandler):
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
-        offset = handler.data.get("offset", 0)
-        count = handler.data.get("count", PAGINATION_DEFAULT_PAGE_SIZE)
+        offset, count = get_offset_pagination(handler.data)
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -431,7 +430,7 @@ class RequestBlockUserHandler(RequestHandler):
         not_after: int | float = handler.data.get("not_after", -1)
 
         target_type: str = handler.data["target"]["type"]
-        target_id: Optional[str] = handler.data["target"].get("id")
+        target_id: str | None = handler.data["target"].get("id")
 
         if not set(block_types).issubset(AVAILABLE_BLOCK_TYPES):
             handler.conclude_request(400, {}, "Unsupported block type(s)")
@@ -543,6 +542,7 @@ class RequestListUserBlocksHandler(RequestHandler):
                 "type": "string",
                 "minLength": 1,
             },
+            **CURSOR_PAGINATION_SCHEMA,
         },
         "required": ["username"],
         "additionalProperties": False,
@@ -553,6 +553,8 @@ class RequestListUserBlocksHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         target_username: str = handler.data["username"]
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -572,19 +574,49 @@ class RequestListUserBlocksHandler(RequestHandler):
                     code=403, target=target_username, username=handler.username
                 )
 
-            block_entries = (
+            filters = {"username": target_username}
+            sort = "timestamp_block_id:desc"
+            try:
+                last_key = decode_cursor(
+                    cursor,
+                    action="list_user_blocks",
+                    sort=sort,
+                    filters=filters,
+                    value_types=[(int, float), str],
+                )
+            except CursorError as exc:
+                handler.conclude_request(400, {}, str(exc))
+                return Result(
+                    code=400, target=target_username, username=handler.username
+                )
+
+            block_query = (
                 session.query(UserBlockEntry)
+                .options(selectinload(UserBlockEntry.sub_entries))
                 .filter(UserBlockEntry.username == target_username)
+            )
+            if last_key is not None:
+                last_timestamp, last_block_id = last_key
+                block_query = block_query.filter(
+                    or_(
+                        UserBlockEntry.timestamp < last_timestamp,
+                        and_(
+                            UserBlockEntry.timestamp == last_timestamp,
+                            UserBlockEntry.block_id < last_block_id,
+                        ),
+                    )
+                )
+
+            block_entries = (
+                block_query.order_by(
+                    UserBlockEntry.timestamp.desc(), UserBlockEntry.block_id.desc()
+                )
+                .limit(page_size + 1)
                 .all()
             )
 
             blocks_data = []
             for entry in block_entries:
-                sub_entries = (
-                    session.query(UserBlockSubEntry)
-                    .filter(UserBlockSubEntry.parent_id == entry.block_id)
-                    .all()
-                )
                 blocks_data.append(
                     {
                         "block_id": entry.block_id,
@@ -594,12 +626,21 @@ class RequestListUserBlocksHandler(RequestHandler):
                         "target_type": entry.target_type,
                         "target_id": entry.target_id,
                         "block_types": [
-                            sub_entry.block_type for sub_entry in sub_entries
+                            sub_entry.block_type for sub_entry in entry.sub_entries
                         ],
                     }
                 )
 
-        handler.conclude_request(200, {"blocks": blocks_data}, "List of user blocks")
+            response_data = make_cursor_response(
+                blocks_data,
+                page_size=page_size,
+                action="list_user_blocks",
+                sort=sort,
+                filters=filters,
+                cursor_key=lambda item: [item["timestamp"], item["block_id"]],
+            )
+
+        handler.conclude_request(200, response_data, "List of user blocks")
         return Result(code=200, target=target_username, username=handler.username)
 
 
@@ -762,7 +803,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         target_username: str = handler.data["username"]
-        document_id: Optional[str] = handler.data["document_id"]
+        document_id: str | None = handler.data["document_id"]
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)

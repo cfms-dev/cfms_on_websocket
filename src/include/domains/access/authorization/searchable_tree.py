@@ -1,14 +1,15 @@
 __all__ = [
+    "load_document_access_context",
+    "load_folder_access_context",
     "search_documents_with_access",
     "search_folders_with_access",
 ]
 
 import time
 from collections import defaultdict
-from typing import Optional
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import Document, Folder
@@ -27,12 +28,12 @@ def _fetch_ancestors_and_oae(
     Expand ancestors and preload access data.
 
     The recursive CTE starts from seed_folder_ids, loads ancestor folders with
-    access_rules preloaded while excluding exclude_folder_ids, and fetches
-    ObjectAccessEntry rows for extra_target_ids plus all ancestor folders.
+    excluding exclude_folder_ids, and fetches ObjectAccessEntry rows for
+    extra_target_ids plus all ancestor folders.
 
     Returns:
         ancestor_folders: Ancestor folders excluding exclude_folder_ids.
-        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
+        oae_by_target: dict[target_id, list[ObjectAccessEntry]].
     """
     if not seed_folder_ids:
         # No ancestors need lookup, such as when all documents are in root.
@@ -62,19 +63,13 @@ def _fetch_ancestors_and_oae(
             row[0] for row in session.execute(ancestor_sql, params).fetchall()
         ]
 
-        # Step B: Exclude already loaded IDs and bulk-load ancestor folders with
-        # access_rules.
+        # Step B: Exclude already loaded IDs and bulk-load ancestor folders.
         pure_ancestor_ids = [
             fid for fid in all_ancestor_ids if fid not in exclude_folder_ids
         ]
 
         ancestor_folders = (
-            (
-                session.query(Folder)
-                .options(joinedload(Folder.access_rules))
-                .filter(Folder.id.in_(pure_ancestor_ids))
-                .all()
-            )
+            (session.query(Folder).filter(Folder.id.in_(pure_ancestor_ids)).all())
             if pure_ancestor_ids
             else []
         )
@@ -104,25 +99,22 @@ def _fetch_ancestors_and_oae(
 def search_documents_with_access(
     session: Session,
     keyword: str,
-    now: Optional[float] = None,
+    now: float | None = None,
 ) -> tuple[list[Document], list[Folder], dict]:
     """
     Search document titles by keyword and preload ancestor access data.
 
     Returns:
-        documents: Matched documents with access_rules preloaded.
-        folders: All ancestor folders with access_rules preloaded.
-        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
+        documents: Matched documents.
+        folders: All ancestor folders.
+        oae_by_target: dict[target_id, list[ObjectAccessEntry]].
     """
     if now is None:
         now = time.time()
 
     # Step 1: Search documents.
     documents = (
-        session.query(Document)
-        .options(joinedload(Document.access_rules))
-        .filter(Document.title.ilike(f"%{keyword}%"))
-        .all()
+        session.query(Document).filter(Document.title.ilike(f"%{keyword}%")).all()
     )
     if not documents:
         return [], [], {}
@@ -142,30 +134,46 @@ def search_documents_with_access(
     return documents, ancestor_folders, oae_by_target
 
 
+def load_document_access_context(
+    session: Session,
+    documents: list[Document],
+    now: float | None = None,
+) -> tuple[list[Folder], dict]:
+    if now is None:
+        now = time.time()
+    if not documents:
+        return [], {}
+
+    seed_folder_ids = list({doc.folder_id for doc in documents if doc.folder_id})
+    return _fetch_ancestors_and_oae(
+        session=session,
+        seed_folder_ids=seed_folder_ids,
+        extra_target_ids=[doc.id for doc in documents],
+        exclude_folder_ids=set(),
+        now=now,
+    )
+
+
 # Folder search.
 def search_folders_with_access(
     session: Session,
     keyword: str,
-    now: Optional[float] = None,
+    now: float | None = None,
 ) -> tuple[list[Folder], list[Folder], dict]:
     """
     Search folder names by keyword and preload ancestor access data.
 
     Returns:
-        matched_folders: Matched folders with access_rules preloaded.
-        ancestor_folders: Ancestor folders with access_rules preloaded,
-            excluding matched folders.
-        oae_by_target: Dict[target_id, List[ObjectAccessEntry]].
+        matched_folders: Matched folders.
+        ancestor_folders: Ancestor folders excluding matched folders.
+        oae_by_target: dict[target_id, list[ObjectAccessEntry]].
     """
     if now is None:
         now = time.time()
 
     # Step 1: Search folders.
     matched_folders = (
-        session.query(Folder)
-        .options(joinedload(Folder.access_rules))
-        .filter(Folder.name.ilike(f"%{keyword}%"))
-        .all()
+        session.query(Folder).filter(Folder.name.ilike(f"%{keyword}%")).all()
     )
     if not matched_folders:
         return [], [], {}
@@ -187,3 +195,24 @@ def search_folders_with_access(
     )
 
     return matched_folders, ancestor_folders, oae_by_target
+
+
+def load_folder_access_context(
+    session: Session,
+    folders: list[Folder],
+    now: float | None = None,
+) -> tuple[list[Folder], dict]:
+    if now is None:
+        now = time.time()
+    if not folders:
+        return [], {}
+
+    seed_folder_ids = list({folder.parent_id for folder in folders if folder.parent_id})
+    matched_ids = {folder.id for folder in folders}
+    return _fetch_ancestors_and_oae(
+        session=session,
+        seed_folder_ids=seed_folder_ids,
+        extra_target_ids=[folder.id for folder in folders],
+        exclude_folder_ids=matched_ids,
+        now=now,
+    )

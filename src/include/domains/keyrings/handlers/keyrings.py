@@ -27,6 +27,7 @@ from include.database.models.identity import User
 from include.database.models.keyrings import UserKey
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.pagination import OFFSET_PAGINATION_SCHEMA, get_offset_pagination
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
@@ -295,6 +296,7 @@ class RequestListUserKeysHandler(RequestHandler):
         "type": "object",
         "properties": {
             "target_username": {"type": "string", "minLength": 1},
+            **OFFSET_PAGINATION_SCHEMA,
         },
         "additionalProperties": False,
     }
@@ -303,6 +305,7 @@ class RequestListUserKeysHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         target_username: str = handler.data.get("target_username") or handler.username
+        offset, count = get_offset_pagination(handler.data)
 
         with Session() as session:
             target_user = session.get(User, target_username)
@@ -321,8 +324,15 @@ class RequestListUserKeysHandler(RequestHandler):
                     code=404, target=target_username, username=handler.username
                 )
 
+            keys_query = session.query(UserKey).filter(
+                UserKey.username == target_username
+            )
+            total = keys_query.count()
             keys = (
-                session.query(UserKey).filter(UserKey.username == target_username).all()
+                keys_query.order_by(UserKey.created_time.desc(), UserKey.id.asc())
+                .offset(offset)
+                .limit(count)
+                .all()
             )
 
             handler.conclude_request(
@@ -336,7 +346,11 @@ class RequestListUserKeysHandler(RequestHandler):
                             "created_time": k.created_time,
                         }
                         for k in keys
-                    ]
+                    ],
+                    "total": total,
+                    "offset": offset,
+                    "count": count,
+                    "has_more": offset + len(keys) < total,
                 },
                 "Keyring listed successfully",
             )

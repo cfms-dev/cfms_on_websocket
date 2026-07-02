@@ -2,7 +2,6 @@ import base64
 import hashlib
 import os
 import time
-from typing import Optional
 
 import jsonschema
 import orjson
@@ -82,7 +81,7 @@ class ConnectionHandler:
         self.conclude_request(403, {}, smsg.ACCESS_DENIED)
 
     def conclude_request(
-        self, code: int, data: Optional[dict] = None, message: str = ""
+        self, code: int, data: dict | None = None, message: str = ""
     ) -> None:
         """
         Conclude the request by sending a response back to the client.
@@ -110,7 +109,7 @@ class ConnectionHandler:
         self,
         exc: Exception,
         code: int = 500,
-        context: Optional[str] = None,
+        context: str | None = None,
         send_to_client: bool = True,
     ) -> str:
         """

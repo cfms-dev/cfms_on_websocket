@@ -282,7 +282,7 @@ class TestFileTransfer:
 
         # 3. Get the latest revision ID
         list_resp = await authenticated_client.list_revisions(doc_id)
-        revisions = assert_success(list_resp)["revisions"]
+        revisions = assert_success(list_resp)["items"]
         current_rev = next((r for r in revisions if r["is_current"]), None)
         assert current_rev is not None
         original_size = os.path.getsize(test_file_path)

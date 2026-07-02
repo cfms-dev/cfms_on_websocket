@@ -5,7 +5,7 @@ __all__ = [
 ]
 
 import re
-from typing import Iterable, Optional, Sequence
+from collections.abc import Iterable, Sequence
 
 
 class RuleRequirementsNotMetError(ValueError):
@@ -34,8 +34,8 @@ class InvalidPasswordLengthError(ValueError):
     def __init__(
         self,
         length: int,
-        min_length: Optional[int] = None,
-        max_length: Optional[int] = None,
+        min_length: int | None = None,
+        max_length: int | None = None,
     ) -> None:
         self.length = length
         self.min_length = min_length
@@ -56,7 +56,7 @@ def check_passwd_requirements(
     passwd: str,
     min_length: int,
     max_length: int,
-    rules: Optional[Sequence[str]] = None,
+    rules: Sequence[str] | None = None,
     min_passed_count: int = 0,
 ) -> None:
     length = len(passwd)

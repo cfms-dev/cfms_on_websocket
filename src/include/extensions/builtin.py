@@ -1,6 +1,6 @@
 import os
 import threading
-from typing import Optional, cast
+from typing import cast
 
 from loguru import logger as log
 from sqlalchemy import update
@@ -81,7 +81,7 @@ def ext_register_handlers():
 def ext_post_request(
     action: str,
     handler: ConnectionHandler,
-    callback: Optional[Result],
+    callback: Result | None,
     time_cost: float,
 ) -> None:
     logger.debug(f"Handled action '{action}' in {time_cost:.3f} seconds")

@@ -1,7 +1,6 @@
 __all__ = ["Token"]
 
 import time
-from typing import Optional
 
 import jwt
 
@@ -10,8 +9,8 @@ class Token:
     def __init__(
         self,
         secret: str,
-        username: Optional[str] = None,
-        raw_token: Optional[str] = None,
+        username: str | None = None,
+        raw_token: str | None = None,
     ):
         self._raw = None
 

@@ -1,4 +1,8 @@
 from include.database.models.access import (
+    CompiledAccessRule,
+    CompiledAccessRuleGroup,
+    CompiledAccessRuleMembership,
+    CompiledAccessRuleRight,
     ObjectAccessEntry,
     UserBlockEntry,
     UserBlockSubEntry,
@@ -6,14 +10,12 @@ from include.database.models.access import (
 from include.database.models.documents import (
     BaseObject,
     Document,
-    DocumentAccessRule,
     DocumentMetadata,
     DocumentMetadataTag,
     DocumentRevision,
     DocumentRevisionStatus,
     EntityStatus,
     Folder,
-    FolderAccessRule,
 )
 from include.database.models.files import File, FileTask, TransferMode
 from include.database.models.identity import (
@@ -36,8 +38,11 @@ __all__ = [
     "AuditEntry",
     "BannedSubnet",
     "BaseObject",
+    "CompiledAccessRule",
+    "CompiledAccessRuleGroup",
+    "CompiledAccessRuleMembership",
+    "CompiledAccessRuleRight",
     "Document",
-    "DocumentAccessRule",
     "DocumentMetadata",
     "DocumentMetadataTag",
     "DocumentRevision",
@@ -46,7 +51,6 @@ __all__ = [
     "File",
     "FileTask",
     "Folder",
-    "FolderAccessRule",
     "LoginThrottle",
     "ObjectAccessEntry",
     "TrafficThrottle",
@@ -61,3 +65,5 @@ __all__ = [
     "UserPermission",
     "UserStatus",
 ]
+
+import include.domains.access.authorization.compiled_rules  # noqa: F401, E402

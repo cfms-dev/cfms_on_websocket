@@ -15,7 +15,7 @@ __all__ = [
 import datetime
 import secrets
 import time
-from typing import Any, Optional
+from typing import Any
 
 import jsonschema
 
@@ -35,6 +35,10 @@ from include.database.models.files import File, FileTask, TransferMode
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
+from include.domains.access.authorization.compiled_rules import (
+    get_access_rules_json,
+    get_access_rules_list,
+)
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
@@ -156,17 +160,13 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 return Result(code=403, target=document_id, username=handler.username)
 
             info_code = 0
-            # Generate access_rules text.
             access_rules = []
             if Permissions.VIEW_ACCESS_RULES in user.all_permissions:
-                for each_rule in document.access_rules:
-                    access_rules.append(
-                        {
-                            "rule_id": each_rule.id,
-                            "rule_data": each_rule.rule_data,
-                            "access_type": each_rule.access_type,
-                        }
-                    )
+                access_rules = get_access_rules_list(
+                    session,
+                    target_type="document",
+                    target_id=document.id,
+                )
             else:
                 info_code = 1  # No permission to view document access rules.
 
@@ -216,17 +216,16 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, username=handler.username)
 
-            # generate access_rules
-            access_rules: dict[str, list] = {}
-
-            for each_rule in document.access_rules:
-                if each_rule.access_type not in access_rules:
-                    access_rules[each_rule.access_type] = []
-                access_rules[each_rule.access_type].append(each_rule.rule_data)
-
             handler.conclude_request(
                 200,
-                {"rules": access_rules, "inherit": document.inherit},
+                {
+                    "rules": get_access_rules_json(
+                        session,
+                        target_type="document",
+                        target_id=document.id,
+                    ),
+                    "inherit": document.inherit,
+                },
                 "Document access rules retrieved successfully",
             )
             return Result(code=0, target=document_id, username=handler.username)
@@ -366,6 +365,9 @@ class RequestCreateDocumentHandler(RequestHandler):
             )
             new_revision = DocumentRevision(file_id=new_file.id)
             new_document.revisions.append(new_revision)
+            session.add(new_file)
+            session.add(new_document)
+            session.add(new_revision)
 
             try:
                 if not apply_access_rules(
@@ -379,10 +381,6 @@ class RequestCreateDocumentHandler(RequestHandler):
                         data={"title": title},
                         username=handler.username,
                     )
-
-                session.add(new_file)
-                session.add(new_document)
-                session.add(new_revision)
 
                 new_document.current_revision = new_revision
                 session.commit()
@@ -824,7 +822,7 @@ class RequestMoveDocumentHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         document_id: str = handler.data["document_id"]
-        target_folder_id: Optional[str] = handler.data.get("target_folder_id")
+        target_folder_id: str | None = handler.data.get("target_folder_id")
 
         if not target_folder_id:
             target_folder_id = ROOT_DIRECTORY_ID
@@ -1024,7 +1022,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
         doc_id = handler.data["document_id"]
 
         target_folder_provided = "target_folder_id" in handler.data
-        target_folder_id: Optional[str] = handler.data.get("target_folder_id")
+        target_folder_id: str | None = handler.data.get("target_folder_id")
         new_title = handler.data.get("new_title")
 
         with Session() as session:

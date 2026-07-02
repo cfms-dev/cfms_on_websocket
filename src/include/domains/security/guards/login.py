@@ -6,7 +6,6 @@ import ipaddress
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Optional, Union
 
 from loguru import logger as log
 
@@ -22,13 +21,13 @@ logger = log.bind(name="login_guard")
 
 
 class LoginGuard:
-    _banned_networks: list[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]] = []
+    _banned_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     _networks_loaded: bool = False
     _network_lock = threading.Lock()
 
     @classmethod
     def reload_networks(cls) -> None:
-        networks: list[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]] = []
+        networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
         with Session() as session:
             rows = session.query(BannedSubnet).all()
             for row in rows:
@@ -54,7 +53,7 @@ class LoginGuard:
         return any(addr in network for network in networks)
 
     @classmethod
-    def check_access(cls, ip_address: str, username: Optional[str] = None) -> bool:
+    def check_access(cls, ip_address: str, username: str | None = None) -> bool:
         if not cls._networks_loaded:
             cls.reload_networks()
         if ip_address and cls._is_ip_banned_by_subnet(ip_address):
@@ -107,7 +106,7 @@ class LoginGuard:
     def report_failure(
         cls,
         ip_address: str,
-        username: Optional[str] = None,
+        username: str | None = None,
         max_attempts: int = 5,
         lock_minutes: int = 15,
         ip_max_attempts: int = 20,
@@ -172,7 +171,7 @@ class LoginGuard:
             session.commit()
 
     @classmethod
-    def report_success(cls, ip_address: str, username: Optional[str] = None):
+    def report_success(cls, ip_address: str, username: str | None = None):
         with Session() as session:
             keys_to_clear = []
 

@@ -1,6 +1,6 @@
 import secrets
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from sqlalchemy import VARCHAR, Float, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -33,7 +33,7 @@ class UserKey(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
     # label is reserved for future use and is currently optional.
-    label: Mapped[Optional[str]] = mapped_column(VARCHAR(255), nullable=True)
+    label: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=time.time
     )

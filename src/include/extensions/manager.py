@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 __all__ = ["pm", "load_extensions_from_directory"]
 
 import importlib.util
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional, Set, Type
+from typing import TYPE_CHECKING
 
 import pluggy
 import websockets.sync.server
@@ -25,7 +27,7 @@ class ServerHookSpecs:
     """Hook specifications for server extensions."""
 
     @hookspec
-    def ext_register_handlers(self) -> Dict[str, Type["RequestHandler"]]:
+    def ext_register_handlers(self) -> dict[str, type[RequestHandler]]:
         """
         Register handlers for specific actions.
 
@@ -35,7 +37,7 @@ class ServerHookSpecs:
         ...
 
     @hookspec
-    def ext_unregister_handlers(self) -> Set[str]:
+    def ext_unregister_handlers(self) -> set[str]:
         """
         Unregister handlers for specific actions.
 
@@ -45,7 +47,7 @@ class ServerHookSpecs:
         ...
 
     @hookspec
-    def ext_register_whitelisted_actions(self) -> Set[str]:
+    def ext_register_whitelisted_actions(self) -> set[str]:
         """
         Register actions that should be whitelisted (allowed even
         during lockdown).
@@ -71,7 +73,7 @@ class ServerHookSpecs:
     @hookspec(firstresult=True)
     def ext_pre_request(
         self, request_handler: "RequestHandler", connection_handler: "ConnectionHandler"
-    ) -> Optional[bool]:
+    ) -> bool | None:
         """
         Triggered before processing a request.
 
@@ -84,7 +86,7 @@ class ServerHookSpecs:
         self,
         action: str,
         handler: "ConnectionHandler",
-        callback: Optional["Result"],
+        callback: Result | None,
         time_cost: float,
     ) -> None: ...
 

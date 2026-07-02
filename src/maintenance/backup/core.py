@@ -32,18 +32,20 @@ from sqlalchemy.orm import sessionmaker
 from include.config.constants import CORE_VERSION, ROOT_ABSPATH
 from include.config.settings import global_config
 from include.database.models.access import (
+    CompiledAccessRule,
+    CompiledAccessRuleGroup,
+    CompiledAccessRuleMembership,
+    CompiledAccessRuleRight,
     ObjectAccessEntry,
     UserBlockEntry,
     UserBlockSubEntry,
 )
 from include.database.models.documents import (
     Document,
-    DocumentAccessRule,
     DocumentMetadata,
     DocumentMetadataTag,
     DocumentRevision,
     Folder,
-    FolderAccessRule,
 )
 from include.database.models.files import File
 from include.database.models.identity import (
@@ -57,6 +59,9 @@ from include.database.models.keyrings import UserKey
 from include.database.models.operations import AuditEntry
 from include.database.models.security import BannedSubnet
 from include.database.session import Base, Session, engine
+from include.domains.access.authorization.compiled_rules import (
+    compile_access_rule,
+)
 from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
 
@@ -65,18 +70,20 @@ _MODEL_IMPORTS = (
     UserBlockSubEntry,
     AuditEntry,
     ObjectAccessEntry,
+    CompiledAccessRule,
+    CompiledAccessRuleGroup,
+    CompiledAccessRuleMembership,
+    CompiledAccessRuleRight,
     User,
     UserGroup,
     UserGroupPermission,
     UserMembership,
     UserPermission,
     Document,
-    DocumentAccessRule,
     DocumentMetadata,
     DocumentMetadataTag,
     DocumentRevision,
     Folder,
-    FolderAccessRule,
     File,
     UserKey,
     BannedSubnet,
@@ -107,13 +114,15 @@ BACKUP_TABLE_NAMES = (
     "user_permissions",
     "keyrings",
     "folders",
-    "folder_access_rules",
     "documents",
     "document_revisions",
-    "document_access_rules",
     "document_metadata",
     "document_metadata_tags",
     "object_access_entries",
+    "compiled_access_rules",
+    "compiled_access_rule_groups",
+    "compiled_access_rule_memberships",
+    "compiled_access_rule_rights",
     "audit_entries",
     "userblock_entries",
     "userblock_sub_entries",
@@ -137,13 +146,15 @@ INSERT_ORDER = (
     "user_permissions",
     "keyrings",
     "folders",
-    "folder_access_rules",
     "documents",
     "document_revisions",
-    "document_access_rules",
     "document_metadata",
     "document_metadata_tags",
     "object_access_entries",
+    "compiled_access_rules",
+    "compiled_access_rule_groups",
+    "compiled_access_rule_memberships",
+    "compiled_access_rule_rights",
     "audit_entries",
     "userblock_entries",
     "userblock_sub_entries",
@@ -186,13 +197,15 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
     ),
     BackupComponent.DOCUMENT_LIBRARY: (
         "folders",
-        "folder_access_rules",
         "documents",
         "document_revisions",
-        "document_access_rules",
         "document_metadata",
         "document_metadata_tags",
         "object_access_entries",
+        "compiled_access_rules",
+        "compiled_access_rule_groups",
+        "compiled_access_rule_memberships",
+        "compiled_access_rule_rights",
     ),
     BackupComponent.AUDIT_LOG: ("audit_entries",),
     BackupComponent.BANNED_SUBNETS: ("banned_subnets",),
@@ -203,6 +216,20 @@ BACKUP_COMPONENT_DEPENDENCIES: dict[BackupComponent, tuple[BackupComponent, ...]
     BackupComponent.AUDIT_LOG: (BackupComponent.ACCOUNTS,),
 }
 DOCUMENT_ACCESS_TARGET_TYPES = frozenset({"document", "directory"})
+COMPILED_ACCESS_RULE_TABLE_NAMES = frozenset(
+    {
+        "compiled_access_rules",
+        "compiled_access_rule_groups",
+        "compiled_access_rule_memberships",
+        "compiled_access_rule_rights",
+    }
+)
+# These table names are accepted only when restoring backups produced before
+# compiled access rules became authoritative. They are not part of the current
+# schema or export format.
+LEGACY_ACCESS_RULE_TABLE_NAMES = frozenset(
+    {"document_access_rules", "folder_access_rules"}
+)
 
 
 @dataclass(frozen=True)
@@ -221,11 +248,11 @@ class BackupExportSelection:
     def from_component_values(
         cls,
         values: Iterable[BackupComponent | str],
-    ) -> "BackupExportSelection":
+    ) -> BackupExportSelection:
         return cls(frozenset(_coerce_backup_component(value) for value in values))
 
     @classmethod
-    def full(cls) -> "BackupExportSelection":
+    def full(cls) -> BackupExportSelection:
         return cls(frozenset(BackupComponent))
 
     def resolved_components(self) -> frozenset[BackupComponent]:
@@ -335,7 +362,7 @@ class BackupHeader:
     nonce: str
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> "BackupHeader":
+    def from_mapping(cls, data: dict[str, Any]) -> BackupHeader:
         try:
             return cls(
                 format_version=int(data["format_version"]),
@@ -1210,6 +1237,7 @@ def _restore_database(
 ) -> None:
     tables = _backup_tables()
     table_names = _manifest_table_names(manifest)
+    legacy_access_rule_rows = _load_legacy_access_rule_rows(extract_dir, manifest)
     deferred_updates: dict[str, list[dict[str, Any]]] = {
         table_name: [] for table_name in DEFERRED_COLUMNS if table_name in table_names
     }
@@ -1266,6 +1294,12 @@ def _restore_database(
                         .values(**values)
                     )
             LOGGER.debug("Applied deferred updates for table %s", table_name)
+
+        if legacy_access_rule_rows and "compiled_access_rules" not in manifest.get(
+            "tables", {}
+        ):
+            _restore_legacy_access_rules(session, legacy_access_rule_rows)
+            LOGGER.debug("Converted legacy JSON access rules during database restore")
 
 
 def _restore_config_keys(
@@ -1335,6 +1369,71 @@ def _load_table_rows(
     return rows
 
 
+def _load_legacy_access_rule_rows(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    rows_by_table: dict[str, list[dict[str, Any]]] = {}
+    for table_name in LEGACY_ACCESS_RULE_TABLE_NAMES:
+        if table_name not in manifest.get("tables", {}):
+            continue
+        table_manifest = manifest["tables"][table_name]
+        path = _safe_payload_path(extract_dir, f"tables/{table_name}.jsonl")
+        rows = []
+        with path.open("rb") as f:
+            for line_number, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(orjson.loads(line))
+                except orjson.JSONDecodeError as exc:
+                    raise BackupFormatError(
+                        f"Invalid JSON row in {path} at line {line_number}"
+                    ) from exc
+        if len(rows) != table_manifest["rows"]:
+            raise BackupFormatError(
+                f"Row count mismatch for table {table_name!r}: "
+                f"manifest says {table_manifest['rows']}, payload has {len(rows)}"
+            )
+        rows_by_table[table_name] = rows
+    return rows_by_table
+
+
+def _restore_legacy_access_rules(
+    session,
+    rows_by_table: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Convert pre-compiled backup rows into current compiled access rows."""
+    for row in rows_by_table.get("document_access_rules", []):
+        compiled_rule = compile_access_rule(
+            target_type="document",
+            target_id=str(row["document_id"]),
+            access_type=str(row["access_type"]),
+            rule_data=_coerce_legacy_rule_data(row.get("rule_data")),
+        )
+        if compiled_rule is not None:
+            session.add(compiled_rule)
+
+    for row in rows_by_table.get("folder_access_rules", []):
+        compiled_rule = compile_access_rule(
+            target_type="directory",
+            target_id=str(row["folder_id"]),
+            access_type=str(row["access_type"]),
+            rule_data=_coerce_legacy_rule_data(row.get("rule_data")),
+        )
+        if compiled_rule is not None:
+            session.add(compiled_rule)
+
+
+def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
     decoded = {}
     for column in table.columns:
@@ -1354,14 +1453,23 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         raise BackupFormatError(
             f"Unsupported payload format version: {manifest.get('format_version')}"
         )
-    table_names = set(manifest.get("tables", {}).keys())
-    expected = set(BACKUP_TABLE_NAMES)
-    unknown_tables = table_names - expected
+    table_names: set[str] = set(manifest.get("tables", {}).keys())
+    expected: set[str] = set(BACKUP_TABLE_NAMES)
+    compiled_access_rule_tables = set(COMPILED_ACCESS_RULE_TABLE_NAMES)
+    legacy_access_rule_tables = set(LEGACY_ACCESS_RULE_TABLE_NAMES)
+    legacy_expected = (
+        expected - compiled_access_rule_tables
+    ) | legacy_access_rule_tables
+    unknown_tables = table_names - expected - legacy_access_rule_tables
     if unknown_tables:
         raise BackupFormatError(
             f"Backup table set contains unsupported tables: {sorted(unknown_tables)}"
         )
-    if "components" not in manifest and table_names != expected:
+    if (
+        "components" not in manifest
+        and table_names != expected
+        and table_names != legacy_expected
+    ):
         raise BackupFormatError(
             "Backup table set does not match this server version: "
             f"expected {sorted(expected)}, got {sorted(table_names)}"

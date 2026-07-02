@@ -1,5 +1,3 @@
-from typing import Optional, Tuple
-
 from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
@@ -10,8 +8,8 @@ from include.messages import Messages as smsg
 
 
 def get_target_folder_and_check_write(
-    session: Session, user: User, target_folder_id: Optional[str], super_permission: str
-) -> Tuple[Optional[Folder], int, str]:
+    session: Session, user: User, target_folder_id: str | None, super_permission: str
+) -> tuple[Folder | None, int, str]:
     """
     Looks up the target folder, locks it, and checks write access.
     Returns (folder_object, error_code, error_message).
@@ -38,8 +36,8 @@ def get_target_folder_and_check_write(
 
 
 def handle_name_duplicate(
-    session: Session, user: User, folder_id: Optional[str], title: str
-) -> Tuple[bool, int, dict, str]:
+    session: Session, user: User, folder_id: str | None, title: str
+) -> tuple[bool, int, dict, str]:
     """
     Checks if a document or folder with `title` exists under `folder_id`.
     If yes, safely deletes deleted documents or returns conflict details.

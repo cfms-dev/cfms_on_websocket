@@ -421,6 +421,15 @@ def main():
             "Password_Storage_Cheat_Sheet.html#peppering"
         )
 
+    if sys.version_info < (3, 14):
+        logger.warning(
+            "Support for Python 3.13 in CFMS 0.4 is set to end in early "
+            "October 2026. To continue running the latest version of CFMS, "
+            "it is recommended that you upgrade to Python 3.14 as soon as "
+            "possible, and subsequently upgrade to Python 3.15 promptly "
+            "after its release."
+        )
+
     if ssl.OPENSSL_VERSION_INFO < (3, 5):
         logger.warning(
             "The version of OpenSSL bundled with Python is too low "

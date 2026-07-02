@@ -16,9 +16,9 @@ class TestRevisionOperations:
         response = await authenticated_client.list_revisions(doc_id)
         data = assert_success(response)
 
-        assert "revisions" in data
-        assert len(data["revisions"]) == 1
-        assert data["revisions"][0]["is_current"] is True
+        assert "items" in data
+        assert len(data["items"]) == 1
+        assert data["items"][0]["is_current"] is True
 
         # Now let's upload a second revision
         upload_resp = await authenticated_client.upload_document(doc_id)
@@ -31,10 +31,22 @@ class TestRevisionOperations:
         response2 = await authenticated_client.list_revisions(doc_id)
         data2 = assert_success(response2)
 
-        assert len(data2["revisions"]) == 2
+        assert len(data2["items"]) == 2
 
-        current_revs = [r for r in data2["revisions"] if r["is_current"]]
+        current_revs = [r for r in data2["items"] if r["is_current"]]
         assert len(current_revs) == 1
+
+        first_page_response = await authenticated_client.list_revisions(
+            doc_id, page_size=1
+        )
+        first_page = assert_success(first_page_response)
+        second_page_response = await authenticated_client.list_revisions(
+            doc_id, page_size=1, cursor=first_page["next_cursor"]
+        )
+        second_page = assert_success(second_page_response)
+        assert len(first_page["items"]) == 1
+        assert len(second_page["items"]) == 1
+        assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
 
     @pytest.mark.asyncio
     async def test_get_revision(
@@ -45,7 +57,7 @@ class TestRevisionOperations:
 
         list_resp = await authenticated_client.list_revisions(doc_id)
         data = assert_success(list_resp)
-        rev_id = data["revisions"][0]["id"]
+        rev_id = data["items"][0]["id"]
 
         # Request get_revision
         get_resp = await authenticated_client.get_revision(rev_id)
@@ -63,7 +75,7 @@ class TestRevisionOperations:
 
         # First revision ID
         list_resp = await authenticated_client.list_revisions(doc_id)
-        rev1_id = assert_success(list_resp)["revisions"][0]["id"]
+        rev1_id = assert_success(list_resp)["items"][0]["id"]
 
         # Upload second revision
         upload_resp = await authenticated_client.upload_document(doc_id)
@@ -72,7 +84,7 @@ class TestRevisionOperations:
 
         list_resp2 = await authenticated_client.list_revisions(doc_id)
         data2 = assert_success(list_resp2)
-        rev2 = next(r for r in data2["revisions"] if r["is_current"])
+        rev2 = next(r for r in data2["items"] if r["is_current"])
         rev2_id = rev2["id"]
 
         assert rev1_id != rev2_id
@@ -83,7 +95,7 @@ class TestRevisionOperations:
 
         list_resp3 = await authenticated_client.list_revisions(doc_id)
         data3 = assert_success(list_resp3)
-        check_rev1 = next(r for r in data3["revisions"] if r["id"] == rev1_id)
+        check_rev1 = next(r for r in data3["items"] if r["id"] == rev1_id)
         assert check_rev1["is_current"] is True
 
     @pytest.mark.asyncio
@@ -101,7 +113,7 @@ class TestRevisionOperations:
         list_resp = await authenticated_client.list_revisions(doc_id)
         data = assert_success(list_resp)
         # Find the non-current revision
-        rev_to_delete = next(r for r in data["revisions"] if not r["is_current"])
+        rev_to_delete = next(r for r in data["items"] if not r["is_current"])
         rev_id = rev_to_delete["id"]
 
         del_resp = await authenticated_client.delete_revision(rev_id)
@@ -109,8 +121,8 @@ class TestRevisionOperations:
 
         list_resp2 = await authenticated_client.list_revisions(doc_id)
         data2 = assert_success(list_resp2)
-        assert len(data2["revisions"]) == 1
-        assert data2["revisions"][0]["id"] != rev_id
+        assert len(data2["items"]) == 1
+        assert data2["items"][0]["id"] != rev_id
 
     @pytest.mark.asyncio
     async def test_list_revisions_missing_doc(

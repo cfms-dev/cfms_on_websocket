@@ -1,5 +1,3 @@
-from typing import Optional
-
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 
@@ -7,10 +5,10 @@ from include.database.session import Session
 def log_audit(
     action: str,
     result: int,
-    username: Optional[str] = None,
-    target: Optional[str] = None,
-    data: Optional[dict] = None,
-    remote_address: Optional[str] = None,
+    username: str | None = None,
+    target: str | None = None,
+    data: dict | None = None,
+    remote_address: str | None = None,
 ) -> None:
     """Create an audit log entry."""
     if result == 400:

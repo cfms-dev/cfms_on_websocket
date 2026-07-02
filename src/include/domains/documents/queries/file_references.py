@@ -1,7 +1,8 @@
 __all__ = ["count_file_references", "_clear_file_references_cache"]
 
+from collections.abc import Sequence
 from itertools import islice
-from typing import Any, Sequence, cast
+from typing import Any, cast
 
 from sqlalchemy import MetaData, Table, func, select, union_all
 from sqlalchemy.engine import Engine

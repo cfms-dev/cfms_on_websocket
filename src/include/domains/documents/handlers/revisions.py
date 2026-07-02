@@ -1,3 +1,5 @@
+from sqlalchemy import and_, or_
+
 from include.database.models.documents import Document, DocumentRevision
 from include.database.models.identity import User
 from include.database.session import Session
@@ -5,6 +7,13 @@ from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import (
     create_file_task,
     mark_document_modified,
+)
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_page_size,
+    make_cursor_response,
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
@@ -16,6 +25,7 @@ class RequestListRevisionsHandler(RequestHandler):
         "type": "object",
         "properties": {
             "document_id": {"type": "string", "minLength": 1},
+            **CURSOR_PAGINATION_SCHEMA,
         },
         "required": ["document_id"],
         "additionalProperties": False,
@@ -25,6 +35,8 @@ class RequestListRevisionsHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -41,6 +53,42 @@ class RequestListRevisionsHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, username=handler.username)
 
+            filters = {"document_id": document_id}
+            sort = "created_time_id:asc"
+            try:
+                last_key = decode_cursor(
+                    cursor,
+                    action="list_revisions",
+                    sort=sort,
+                    filters=filters,
+                    value_types=[(int, float), str],
+                )
+            except CursorError as exc:
+                handler.conclude_request(400, {}, str(exc))
+                return Result(code=400, target=document_id, username=handler.username)
+
+            revisions_query = session.query(DocumentRevision).filter(
+                DocumentRevision.document_id == document_id
+            )
+            if last_key is not None:
+                last_created_time, last_id = last_key
+                revisions_query = revisions_query.filter(
+                    or_(
+                        DocumentRevision.created_time > last_created_time,
+                        and_(
+                            DocumentRevision.created_time == last_created_time,
+                            DocumentRevision.id > last_id,
+                        ),
+                    )
+                )
+
+            queried_revisions = (
+                revisions_query.order_by(
+                    DocumentRevision.created_time.asc(), DocumentRevision.id.asc()
+                )
+                .limit(page_size + 1)
+                .all()
+            )
             revisions = [
                 {
                     "id": rev.id,
@@ -48,12 +96,19 @@ class RequestListRevisionsHandler(RequestHandler):
                     "created_time": rev.created_time,
                     "is_current": rev.id == document.current_revision_id,
                 }
-                for rev in document.revisions
+                for rev in queried_revisions
             ]
 
-        handler.conclude_request(
-            200, {"revisions": revisions}, "Revisions listed successfully"
-        )
+            response_data = make_cursor_response(
+                revisions,
+                page_size=page_size,
+                action="list_revisions",
+                sort=sort,
+                filters=filters,
+                cursor_key=lambda item: [item["created_time"], item["id"]],
+            )
+
+        handler.conclude_request(200, response_data, "Revisions listed successfully")
         return Result(code=200, target=document_id, username=handler.username)
 
 

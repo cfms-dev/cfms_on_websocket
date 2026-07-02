@@ -23,7 +23,7 @@ being counted were committed in earlier transactions.
 import sys
 from itertools import batched
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 import pytest
 from sqlalchemy import (
@@ -100,9 +100,7 @@ class MUser(_Base):
 
     __tablename__ = "users"
     username: Mapped[str] = mapped_column(VARCHAR(64), primary_key=True)
-    avatar_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("files.id"), nullable=True
-    )
+    avatar_id: Mapped[str | None] = mapped_column(ForeignKey("files.id"), nullable=True)
 
 
 class MFileTask(_Base):
@@ -165,7 +163,7 @@ def _rev(doc_id: str, file_id: str) -> MDocumentRevision:
     return MDocumentRevision(document_id=doc_id, file_id=file_id)
 
 
-def _user(name: str, avatar_id: Optional[str] = None) -> MUser:
+def _user(name: str, avatar_id: str | None = None) -> MUser:
     return MUser(username=name, avatar_id=avatar_id)
 
 
@@ -407,8 +405,8 @@ class TestBatchCountOtherRevisionsPattern:
     @staticmethod
     def _count_other_refs(
         session: Session,
-        file_ids: List[str],
-        exclude_doc_ids: List[str],
+        file_ids: list[str],
+        exclude_doc_ids: list[str],
     ) -> dict:
         """Local reimplementation of _batch_count_other_revisions's algorithm.
 

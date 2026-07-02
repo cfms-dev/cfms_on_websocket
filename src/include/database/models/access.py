@@ -1,7 +1,7 @@
 import secrets
 from typing import TYPE_CHECKING
 
-from sqlalchemy import VARCHAR, Float, ForeignKey, Integer
+from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -71,3 +71,89 @@ class ObjectAccessEntry(Base):
 
     start_time: Mapped[float] = mapped_column(Float, nullable=False)
     end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CompiledAccessRule(Base):
+    """
+    Persisted representation of document/folder JSON access rules.
+    """
+
+    __tablename__ = "compiled_access_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False, index=True)
+    target_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=False, index=True)
+    access_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
+    match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+
+    match_groups: Mapped[list["CompiledAccessRuleGroup"]] = relationship(
+        "CompiledAccessRuleGroup",
+        back_populates="rule",
+        cascade="all, delete-orphan",
+        order_by="CompiledAccessRuleGroup.group_index",
+    )
+
+
+class CompiledAccessRuleGroup(Base):
+    __tablename__ = "compiled_access_rule_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("compiled_access_rules.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    group_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+    rights_match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+    rights_empty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    groups_match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+    groups_empty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    rule: Mapped[CompiledAccessRule] = relationship(
+        "CompiledAccessRule", back_populates="match_groups"
+    )
+    rights: Mapped[list["CompiledAccessRuleRight"]] = relationship(
+        "CompiledAccessRuleRight",
+        back_populates="group",
+        cascade="all, delete-orphan",
+        order_by="CompiledAccessRuleRight.id",
+    )
+    groups: Mapped[list["CompiledAccessRuleMembership"]] = relationship(
+        "CompiledAccessRuleMembership",
+        back_populates="group",
+        cascade="all, delete-orphan",
+        order_by="CompiledAccessRuleMembership.id",
+    )
+
+
+class CompiledAccessRuleRight(Base):
+    __tablename__ = "compiled_access_rule_rights"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("compiled_access_rule_groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    permission: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
+
+    group: Mapped[CompiledAccessRuleGroup] = relationship(
+        "CompiledAccessRuleGroup", back_populates="rights"
+    )
+
+
+class CompiledAccessRuleMembership(Base):
+    __tablename__ = "compiled_access_rule_memberships"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("compiled_access_rule_groups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    group_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False, index=True)
+
+    group: Mapped[CompiledAccessRuleGroup] = relationship(
+        "CompiledAccessRuleGroup", back_populates="groups"
+    )

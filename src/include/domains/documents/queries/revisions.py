@@ -1,5 +1,5 @@
+from collections.abc import Iterable
 from itertools import batched
-from typing import Iterable, Union
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ from include.domains.documents.queries.file_references import count_file_referen
 def batch_count_other_revisions(
     session: Session,
     file_ids: Iterable[str],
-    exclude_doc_ids: Union[str, Iterable[str]],
+    exclude_doc_ids: str | Iterable[str],
 ) -> dict[str, int]:
     """
     Return total references to each file EXCLUDING references from exclude_doc_ids.

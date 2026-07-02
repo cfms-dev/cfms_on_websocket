@@ -1,12 +1,10 @@
 from itertools import batched
-from typing import List
 
 from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.models.documents import (
     Document,
-    DocumentAccessRule,
     DocumentRevision,
 )
 from include.database.models.files import (
@@ -14,10 +12,13 @@ from include.database.models.files import (
     FileTask,
     _queue_deferred_file_deletion,
 )
+from include.domains.access.authorization.compiled_rules import (
+    delete_compiled_access_rules_for_targets,
+)
 from include.domains.documents.queries.revisions import batch_count_other_revisions
 
 
-def purge_documents_bulk(session: Session, document_ids: List[str]):
+def purge_documents_bulk(session: Session, document_ids: list[str]):
     """
     Purge many documents using batched deletes.
 
@@ -26,6 +27,11 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
     """
     if not document_ids:
         return
+
+    delete_compiled_access_rules_for_targets(
+        session,
+        (("document", document_id) for document_id in document_ids),
+    )
 
     # 1. Fetch affected revision IDs and file IDs in chunks to avoid bind limits.
     revision_data = []
@@ -38,10 +44,6 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
 
     if not revision_data:
         # If none of these documents have revisions, delete document rows only.
-        for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-            session.query(DocumentAccessRule).filter(
-                DocumentAccessRule.document_id.in_(chunk)
-            ).delete(synchronize_session=False)
         for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
             session.query(Document).filter(Document.id.in_(chunk)).delete(
                 synchronize_session=False
@@ -101,9 +103,6 @@ def purge_documents_bulk(session: Session, document_ids: List[str]):
             )
 
     for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-        session.query(DocumentAccessRule).filter(
-            DocumentAccessRule.document_id.in_(chunk)
-        ).delete(synchronize_session=False)
         session.query(Document).filter(Document.id.in_(chunk)).delete(
             synchronize_session=False
         )

@@ -1,166 +1,44 @@
 import secrets
 import time
 from itertools import batched
-from typing import Optional
 
 import jsonschema
-from sqlalchemy import func, literal, select
-from sqlalchemy.orm import joinedload, raiseload, selectinload
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.models.documents import (
     Document,
-    DocumentRevision,
     EntityStatus,
     Folder,
 )
-from include.database.models.files import File
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
+from include.domains.access.authorization.compiled_rules import (
+    delete_compiled_access_rules_for_targets,
+    get_access_rules_json,
+    get_access_rules_list,
+)
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.name_conflicts import (
     handle_name_duplicate,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
+from include.domains.documents.queries.listing import (
+    directory_cursor_key,
+    fetch_deleted_listing_items,
+    fetch_directory_listing_items,
+)
+from include.domains.pagination import (
+    CURSOR_PAGINATION_SCHEMA,
+    CursorError,
+    decode_cursor,
+    get_page_size,
+    make_cursor_response,
+)
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
-
-
-def _fetch_latest_active_revisions_by_document(
-    session, document_ids: list[str]
-) -> dict[str, DocumentRevision]:
-    if not document_ids:
-        return {}
-
-    revision_ids_by_document: dict[str, str] = {}
-    document_table = Document.__table__
-    revision_table = DocumentRevision.__table__
-    file_table = File.__table__
-
-    for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-        chunk_ids = list(chunk)
-        current_chain_anchor = (
-            select(
-                document_table.c.id.label("document_id"),
-                revision_table.c.id.label("revision_id"),
-                revision_table.c.created_time.label("created_time"),
-                revision_table.c.file_id.label("file_id"),
-                revision_table.c.parent_revision_id.label("parent_revision_id"),
-                file_table.c.active.label("file_active"),
-                literal(0).label("depth"),
-            )
-            .select_from(
-                document_table.join(
-                    revision_table,
-                    document_table.c.current_revision_id == revision_table.c.id,
-                ).join(file_table, revision_table.c.file_id == file_table.c.id)
-            )
-            .where(document_table.c.id.in_(chunk_ids))
-        )
-        current_chain = current_chain_anchor.cte(
-            "current_revision_chain", recursive=True
-        )
-        parent_revision = revision_table.alias("parent_revision")
-        parent_file = file_table.alias("parent_file")
-        current_chain = current_chain.union_all(
-            select(
-                current_chain.c.document_id,
-                parent_revision.c.id,
-                parent_revision.c.created_time,
-                parent_revision.c.file_id,
-                parent_revision.c.parent_revision_id,
-                parent_file.c.active,
-                (current_chain.c.depth + 1).label("depth"),
-            ).select_from(
-                current_chain.join(
-                    parent_revision,
-                    current_chain.c.parent_revision_id == parent_revision.c.id,
-                ).join(parent_file, parent_revision.c.file_id == parent_file.c.id)
-            )
-        )
-        active_current_chain = (
-            select(
-                current_chain.c.document_id,
-                current_chain.c.revision_id,
-                func.row_number()
-                .over(
-                    partition_by=current_chain.c.document_id,
-                    order_by=current_chain.c.depth,
-                )
-                .label("row_number"),
-            )
-            .where(current_chain.c.file_active.is_(True))
-            .subquery()
-        )
-        current_chain_rows = session.execute(
-            select(
-                active_current_chain.c.document_id,
-                active_current_chain.c.revision_id,
-            ).where(active_current_chain.c.row_number == 1)
-        ).all()
-        for document_id, revision_id in current_chain_rows:
-            revision_ids_by_document[document_id] = revision_id
-
-        fallback_document_ids = [
-            document_id
-            for document_id in chunk_ids
-            if document_id not in revision_ids_by_document
-        ]
-        if not fallback_document_ids:
-            continue
-
-        active_revisions = (
-            select(
-                revision_table.c.document_id,
-                revision_table.c.id.label("revision_id"),
-                func.row_number()
-                .over(
-                    partition_by=revision_table.c.document_id,
-                    order_by=revision_table.c.created_time.desc(),
-                )
-                .label("row_number"),
-            )
-            .select_from(
-                revision_table.join(
-                    file_table, revision_table.c.file_id == file_table.c.id
-                )
-            )
-            .where(
-                revision_table.c.document_id.in_(fallback_document_ids),
-                file_table.c.active.is_(True),
-            )
-            .subquery()
-        )
-        fallback_rows = session.execute(
-            select(
-                active_revisions.c.document_id, active_revisions.c.revision_id
-            ).where(active_revisions.c.row_number == 1)
-        ).all()
-        for document_id, revision_id in fallback_rows:
-            revision_ids_by_document[document_id] = revision_id
-
-    if not revision_ids_by_document:
-        return {}
-
-    revisions: list[DocumentRevision] = []
-    revision_ids = list(revision_ids_by_document.values())
-    for chunk in batched(revision_ids, QUERY_CHUNK_SIZE):
-        revisions.extend(
-            session.query(DocumentRevision)
-            .options(joinedload(DocumentRevision.file), raiseload("*"))
-            .filter(DocumentRevision.id.in_(list(chunk)))
-            .all()
-        )
-
-    revisions_by_id = {revision.id: revision for revision in revisions}
-    return {
-        document_id: revisions_by_id[revision_id]
-        for document_id, revision_id in revision_ids_by_document.items()
-        if revision_id in revisions_by_id
-    }
 
 
 class RequestListDirectoryHandler(RequestHandler):
@@ -180,7 +58,10 @@ class RequestListDirectoryHandler(RequestHandler):
 
     schema = {
         "type": "object",
-        "properties": {"folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+        "properties": {
+            "folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            **CURSOR_PAGINATION_SCHEMA,
+        },
         "required": ["folder_id"],
         "additionalProperties": False,
     }
@@ -190,7 +71,9 @@ class RequestListDirectoryHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         # Parse the directory listing request
-        folder_id: Optional[str] = handler.data.get("folder_id")
+        folder_id: str | None = handler.data.get("folder_id")
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -199,12 +82,7 @@ class RequestListDirectoryHandler(RequestHandler):
             if not folder_id:
                 folder_id = ROOT_DIRECTORY_ID
 
-            folder = (
-                session.query(Folder)
-                .options(selectinload(Folder.access_rules))
-                .filter(Folder.id == folder_id)
-                .first()
-            )
+            folder = session.query(Folder).filter(Folder.id == folder_id).first()
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, username=handler.username)
@@ -218,54 +96,41 @@ class RequestListDirectoryHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, username=handler.username)
 
-            children = (
-                session.query(Folder)
-                .options(raiseload("*"))
-                .filter(Folder.parent_id == folder_id)
-                .all()
-            )
-            documents = (
-                session.query(Document)
-                .options(raiseload("*"))
-                .filter(Document.folder_id == folder_id)
-                .all()
-            )
-            latest_revisions_by_document = _fetch_latest_active_revisions_by_document(
-                session, [document.id for document in documents]
-            )
+            filters = {"folder_id": folder_id}
+            sort = "type_name_id:asc"
+            try:
+                last_key = decode_cursor(
+                    cursor,
+                    action="list_directory",
+                    sort=sort,
+                    filters=filters,
+                    value_types=[int, str, str],
+                )
+            except CursorError as exc:
+                handler.conclude_request(400, {}, str(exc))
+                return Result(code=400, target=folder_id, username=handler.username)
 
             parent_id = folder.parent_id
+            items = fetch_directory_listing_items(
+                session,
+                folder_id,
+                last_key,
+                page_size + 1,
+            )
 
+            data = make_cursor_response(
+                items,
+                page_size=page_size,
+                action="list_directory",
+                sort=sort,
+                filters=filters,
+                cursor_key=directory_cursor_key,
+            )
+            data["parent_id"] = parent_id
             response = {
                 "code": 200,
                 "message": "Directory listing successful",
-                "data": {
-                    "parent_id": parent_id,
-                    "documents": [
-                        {
-                            "id": document.id,
-                            "title": document.title,
-                            "created_time": document.created_time,
-                            "last_modified": last_revision.created_time,
-                            "sha256": last_revision.file.sha256,
-                            "size": last_revision.file.size,
-                        }
-                        for document in documents
-                        if (
-                            last_revision := latest_revisions_by_document.get(
-                                document.id
-                            )
-                        )
-                    ],
-                    "folders": [
-                        {
-                            "id": child.id,
-                            "name": child.name,
-                            "created_time": child.created_time,
-                        }
-                        for child in children
-                    ],
-                },
+                "data": data,
             }
 
         # Send the response back to the client
@@ -320,17 +185,13 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
                 return Result(code=403, target=directory_id, username=handler.username)
 
             info_code = 0
-            # Generate access_rules text.
             access_rules = []
             if Permissions.VIEW_ACCESS_RULES in user.all_permissions:
-                for each_rule in directory.access_rules:
-                    access_rules.append(
-                        {
-                            "rule_id": each_rule.id,
-                            "rule_data": each_rule.rule_data,
-                            "access_type": each_rule.access_type,
-                        }
-                    )
+                access_rules = get_access_rules_list(
+                    session,
+                    target_type="directory",
+                    target_id=directory.id,
+                )
             else:
                 info_code = 1  # No permission to view directory access rules.
 
@@ -376,17 +237,16 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=directory_id, username=handler.username)
 
-            # generate access_rules
-            access_rules: dict[str, list] = {}
-
-            for each_rule in directory.access_rules:
-                if each_rule.access_type not in access_rules:
-                    access_rules[each_rule.access_type] = []
-                access_rules[each_rule.access_type].append(each_rule.rule_data)
-
             handler.conclude_request(
                 200,
-                {"rules": access_rules, "inherit": directory.inherit},
+                {
+                    "rules": get_access_rules_json(
+                        session,
+                        target_type="directory",
+                        target_id=directory.id,
+                    ),
+                    "inherit": directory.inherit,
+                },
                 "Directory access rules retrieved successfully",
             )
             return Result(code=0, target=directory_id, username=handler.username)
@@ -502,12 +362,12 @@ class RequestCreateDirectoryHandler(RequestHandler):
                     )
 
             folder = Folder(name=name, parent=parent)
+            session.add(folder)
             if not apply_access_rules(folder, access_rules, this_user, inherit_parent):
                 session.rollback()
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, username=handler.username)
 
-            session.add(folder)
             session.commit()
 
             handler.conclude_request(
@@ -755,7 +615,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         folder_id: str = handler.data["folder_id"]
-        target_folder_id: Optional[str] = handler.data.get("target_folder_id")
+        target_folder_id: str | None = handler.data.get("target_folder_id")
 
         if not target_folder_id:
             target_folder_id = ROOT_DIRECTORY_ID
@@ -998,6 +858,14 @@ class RequestPurgeDirectoryHandler(RequestHandler):
                 if all_doc_ids:
                     purge_documents_bulk(session, list(all_doc_ids))
 
+                delete_compiled_access_rules_for_targets(
+                    session,
+                    (
+                        ("directory", target_id)
+                        for target_id in [*all_folder_ids, folder_id]
+                    ),
+                )
+
                 if all_folder_ids:
                     for chunk in batched(all_folder_ids, QUERY_CHUNK_SIZE):
                         session.query(Folder).filter(Folder.id.in_(chunk)).delete(
@@ -1159,6 +1027,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
         "type": "object",
         "properties": {
             "folder_id": {"type": "string", "minLength": 1},
+            **CURSOR_PAGINATION_SCHEMA,
         },
         "required": ["folder_id"],
         "additionalProperties": False,
@@ -1168,6 +1037,8 @@ class RequestListDeletedItemsHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         parent_id = handler.data["folder_id"]
+        page_size = get_page_size(handler.data)
+        cursor = handler.data.get("cursor")
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -1195,47 +1066,36 @@ class RequestListDeletedItemsHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, username=handler.username)
 
-            deleted_folders = (
-                session.query(Folder)
-                .execution_options(include_deleted=True)
-                .filter(
-                    Folder.parent_id == db_parent_id,
-                    Folder.status == EntityStatus.DELETED,
+            filters = {"folder_id": db_parent_id}
+            sort = "type_name_id:asc"
+            try:
+                last_key = decode_cursor(
+                    cursor,
+                    action="list_deleted_items",
+                    sort=sort,
+                    filters=filters,
+                    value_types=[int, str, str],
                 )
-                .all()
+            except CursorError as exc:
+                handler.conclude_request(400, {}, str(exc))
+                return Result(code=400, target=parent_id, username=handler.username)
+
+            items = fetch_deleted_listing_items(
+                session,
+                db_parent_id,
+                last_key,
+                page_size + 1,
             )
 
-            deleted_documents = (
-                session.query(Document)
-                .execution_options(include_deleted=True)
-                .filter(
-                    Document.folder_id == db_parent_id,
-                    Document.status == EntityStatus.DELETED,
-                )
-                .all()
+            result_data = make_cursor_response(
+                items,
+                page_size=page_size,
+                action="list_deleted_items",
+                sort=sort,
+                filters=filters,
+                cursor_key=directory_cursor_key,
             )
-
-            result_data = {
-                "folders": [
-                    {
-                        "id": f.id,
-                        "name": f.name,
-                        "created_time": f.created_time,
-                        "status_operation_id": f.status_operation_id,
-                    }
-                    for f in deleted_folders
-                ],
-                "documents": [
-                    {
-                        "id": d.id,
-                        "title": d.title,
-                        "created_time": d.created_time,
-                        "status_operation_id": d.status_operation_id,
-                    }
-                    for d in deleted_documents
-                ],
-                "parent_id": parent_id,
-            }
+            result_data["parent_id"] = parent_id
 
             handler.conclude_request(200, result_data, "Deleted items retrieved")
             return Result(code=0, target=parent_id, username=handler.username)

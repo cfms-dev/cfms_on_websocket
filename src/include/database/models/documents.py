@@ -6,24 +6,22 @@ __all__ = [
     "Document",
     "DocumentRevision",
     "DocumentRevisionStatus",
-    "DocumentAccessRule",
     "DocumentMetadata",
     "DocumentMetadataTag",
     "Folder",
-    "FolderAccessRule",
 ]
 
 import secrets
 import time
 from enum import IntEnum
 from itertools import batched
-from typing import TYPE_CHECKING, List, Literal, Optional, cast
+from typing import TYPE_CHECKING, Literal, cast
 
-from sqlalchemy import JSON, VARCHAR, Boolean, Float, ForeignKey, Integer
+from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
-from include.config.constants import AVAILABLE_ACCESS_TYPES, QUERY_CHUNK_SIZE
+from include.config.constants import QUERY_CHUNK_SIZE
 from include.config.settings import global_config
 from include.database.models.files import (
     File,
@@ -31,7 +29,6 @@ from include.database.models.files import (
     _queue_deferred_file_deletion,
 )
 from include.database.session import Base
-from include.domains.access.authorization.access_rules import AccessRuleBase
 from include.domains.access.authorization.grants import (
     batch_prefetch_granted_ids,
     prefetch_user_blocks,
@@ -54,7 +51,6 @@ class BaseObject(Base):
     __abstract__ = True
 
     id: Mapped[str]
-    access_rules: Mapped[List]
 
     # Whether to inherit access rules from parent folders.
     # Useful when enabling recursion check.
@@ -63,7 +59,7 @@ class BaseObject(Base):
     status: Mapped[EntityStatus] = mapped_column(
         Integer, nullable=False, default=EntityStatus.OK
     )
-    status_operation_id: Mapped[Optional[str]] = mapped_column(
+    status_operation_id: Mapped[str | None] = mapped_column(
         VARCHAR(255), nullable=True, index=True
     )
 
@@ -88,85 +84,6 @@ class BaseObject(Base):
         """
 
         _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
-
-        def match_rights(sub_rights_group):
-            if not sub_rights_group:
-                return True
-
-            sub_match_mode = sub_rights_group.get("match", "all")
-            sub_rights_require = sub_rights_group.get("require", [])
-
-            if not sub_rights_require:
-                return True
-
-            if sub_match_mode == "all":
-                return set(sub_rights_require).issubset(user.all_permissions)
-
-            elif sub_match_mode == "any":
-                for right in sub_rights_require:
-                    if right in user.all_permissions:
-                        return True
-                return False
-
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_groups(sub_groups_group):
-            if not sub_groups_group:
-                return True
-
-            sub_match_mode = sub_groups_group.get("match", "all")
-            sub_groups_require = sub_groups_group.get("require", [])
-
-            if not sub_groups_require:
-                return True
-
-            if sub_match_mode == "all":
-                return set(sub_groups_require).issubset(user.all_groups)
-
-            elif sub_match_mode == "any":
-                for group in sub_groups_require:
-                    if group in user.all_groups:
-                        return True
-                return False
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_sub_group(sub_group):
-            sub_match_mode = sub_group.get("match", "all")
-            sub_rights_group = sub_group.get("rights", {})
-            sub_groups_group = sub_group.get("groups", {})
-
-            if not (sub_rights_group.get("require", [])) or (
-                not sub_groups_group.get("require", [])
-            ):
-                sub_match_mode = "all"
-
-            if sub_match_mode == "any":
-                return match_rights(sub_rights_group) or match_groups(sub_groups_group)
-            if sub_match_mode == "all":
-                return match_rights(sub_rights_group) and match_groups(sub_groups_group)
-            else:
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-        def match_primary_sub_group(per_match_group):
-            match_mode = per_match_group.get("match", "all")
-            if match_mode not in ("all", "any"):
-                raise ValueError('the value of "match" must be "all" or "any"')
-
-            for sub_group in per_match_group["match_groups"]:
-                if not sub_group:
-                    continue
-
-                state = match_sub_group(sub_group)
-
-                match (match_mode, state):
-                    case ("any", True):
-                        return True
-                    case ("all", False):
-                        return False
-
-            return match_mode == "all"
 
         _session = object_session(user)
         if not _session:
@@ -215,43 +132,17 @@ class BaseObject(Base):
 
                 parent = parent.parent
 
-        if not self.access_rules:
-            return True
+        from include.domains.access.authorization.compiled_rules import (
+            compiled_rules_allow,
+        )
 
-        for each_rule in self.access_rules:
-            if not each_rule:
-                continue
-
-            each_rule: AccessRuleBase
-
-            if access_type not in AVAILABLE_ACCESS_TYPES:
-                raise ValueError(
-                    f"Invalid access type for {self.__tablename__}: {access_type}"
-                )
-
-            match access_type:
-                case "read":
-                    if each_rule.access_type != "read":
-                        continue
-                case "write":
-                    if each_rule.access_type not in ["read", "write"]:
-                        continue
-                case "move":
-                    if each_rule.access_type != "move":
-                        continue
-                case "manage":
-                    if each_rule.access_type not in ["read", "manage"]:
-                        continue
-                case _:
-                    raise NotImplementedError("Unsupported access type")
-
-            if not each_rule.rule_data:
-                continue
-
-            if not match_primary_sub_group(each_rule.rule_data):
-                return False
-
-        return True
+        return compiled_rules_allow(
+            _session,
+            target_type=self_type,
+            target_id=self.id,
+            user=user,
+            access_type=access_type,
+        )
 
 
 class DocumentRevisionStatus(IntEnum):
@@ -270,19 +161,16 @@ class Folder(BaseObject):  # Document folder.
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
-    parent_id: Mapped[Optional[str]] = mapped_column(
+    parent_id: Mapped[str | None] = mapped_column(
         VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE")
     )  # Parent folder ID.
-    parent: Mapped[Optional["Folder"]] = relationship(
+    parent: Mapped[Folder | None] = relationship(
         "Folder", back_populates="children", remote_side=[id]
     )
-    children: Mapped[List["Folder"]] = relationship(
+    children: Mapped[list[Folder]] = relationship(
         "Folder", back_populates="parent", cascade="all, delete-orphan"
     )
-    access_rules: Mapped[List["FolderAccessRule"]] = relationship(
-        "FolderAccessRule", back_populates="folder", cascade="all, delete-orphan"
-    )
-    documents: Mapped[List["Document"]] = relationship(
+    documents: Mapped[list[Document]] = relationship(
         "Document", back_populates="folder", cascade="all, delete-orphan"
     )
     inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -297,7 +185,7 @@ class Folder(BaseObject):  # Document folder.
         )
         return active_folders_count + active_docs_count
 
-    def is_descendant_of(self, potential_ancestor: "Folder") -> bool:
+    def is_descendant_of(self, potential_ancestor: Folder) -> bool:
         """
         Check if this folder is a descendant of the given potential ancestor folder.
 
@@ -332,19 +220,12 @@ class Document(BaseObject):
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
-    folder_id: Mapped[Optional[str]] = mapped_column(
+    folder_id: Mapped[str | None] = mapped_column(
         VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE"), nullable=True
     )  # Folder ID that owns the document.
-    folder: Mapped[Optional["Folder"]] = relationship(
-        "Folder", back_populates="documents"
-    )
+    folder: Mapped[Folder | None] = relationship("Folder", back_populates="documents")
 
-    # Each document has multiple access rules with rule data stored as JSON.
-    access_rules: Mapped[List["DocumentAccessRule"]] = relationship(
-        "DocumentAccessRule", back_populates="document", cascade="all, delete-orphan"
-    )
-
-    current_revision_id: Mapped[Optional[str]] = mapped_column(
+    current_revision_id: Mapped[str | None] = mapped_column(
         VARCHAR(64),
         ForeignKey(
             "document_revisions.id",
@@ -353,7 +234,7 @@ class Document(BaseObject):
         ),
         nullable=True,
     )
-    current_revision: Mapped[Optional["DocumentRevision"]] = relationship(
+    current_revision: Mapped[DocumentRevision | None] = relationship(
         "DocumentRevision",
         foreign_keys=[current_revision_id],
         post_update=True,
@@ -361,7 +242,7 @@ class Document(BaseObject):
     )
 
     # Each document has multiple revisions.
-    revisions: Mapped[List["DocumentRevision"]] = relationship(
+    revisions: Mapped[list[DocumentRevision]] = relationship(
         "DocumentRevision",
         back_populates="document",
         foreign_keys="[DocumentRevision.document_id]",
@@ -370,7 +251,7 @@ class Document(BaseObject):
         overlaps="current_revision",  # Declares overlap with current_revision.
     )
     inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    metadata_record: Mapped[Optional["DocumentMetadata"]] = relationship(
+    metadata_record: Mapped[DocumentMetadata | None] = relationship(
         "DocumentMetadata",
         back_populates="document",
         cascade="all, delete-orphan",
@@ -385,7 +266,7 @@ class Document(BaseObject):
             return False
         return latest_revision is not None
 
-    def get_latest_revision(self) -> "DocumentRevision":
+    def get_latest_revision(self) -> DocumentRevision:
         """
         Return the latest active revision.
 
@@ -518,26 +399,26 @@ class DocumentRevision(Base):
         Float, nullable=False, default=lambda: time.time()
     )
 
-    document: Mapped["Document"] = relationship(
+    document: Mapped[Document] = relationship(
         "Document",
         back_populates="revisions",
         foreign_keys=[document_id],
         overlaps="current_revision",  # Declares overlap.
     )
-    file: Mapped["File"] = relationship(
+    file: Mapped[File] = relationship(
         "File", primaryjoin="DocumentRevision.file_id == File.id"
     )
 
-    parent_revision_id: Mapped[Optional[str]] = mapped_column(
+    parent_revision_id: Mapped[str | None] = mapped_column(
         VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
     )
-    parent_revision: Mapped[Optional["DocumentRevision"]] = relationship(
+    parent_revision: Mapped[DocumentRevision | None] = relationship(
         "DocumentRevision",
         remote_side=[id],
         back_populates="child_revisions",
     )
 
-    child_revisions: Mapped[List["DocumentRevision"]] = relationship(
+    child_revisions: Mapped[list[DocumentRevision]] = relationship(
         "DocumentRevision",
         back_populates="parent_revision",
         foreign_keys="[DocumentRevision.parent_revision_id]",
@@ -577,84 +458,35 @@ class DocumentRevision(Base):
         )
 
 
-class DocumentAccessRule(Base, AccessRuleBase):
-    __tablename__ = "document_access_rules"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    access_type: Mapped[str] = mapped_column(
-        VARCHAR(64),
-        nullable=False,
-        default="read",
-        # comment="0: read, 1: write",  # rename is regarded as write
-    )
-    document_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("documents.id"), nullable=False
-    )
-    rule_data: Mapped[dict] = mapped_column(
-        JSON, nullable=False
-    )  # Stores a single JSON rule object.
-
-    document: Mapped[Optional["Document"]] = relationship(
-        "Document", back_populates="access_rules"
-    )
-
-    def __repr__(self) -> str:
-        return f"DocumentAccessRule(id={self.id!r}, document_id={self.document_id!r}, rule_data={self.rule_data!r})"
-
-
-class FolderAccessRule(Base, AccessRuleBase):
-    __tablename__ = "folder_access_rules"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    access_type: Mapped[str] = mapped_column(
-        VARCHAR(64),
-        nullable=False,
-        default="read",
-    )
-    folder_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("folders.id"), nullable=True
-    )
-    rule_data: Mapped[dict] = mapped_column(
-        JSON, nullable=False
-    )  # Stores a single JSON rule object.
-
-    folder: Mapped[Optional["Folder"]] = relationship(
-        "Folder", back_populates="access_rules"
-    )
-
-    def __repr__(self) -> str:
-        return f"FolderAccessRule(id={self.id!r}, folder_id={self.folder_id!r}, rule_data={self.rule_data!r})"
-
-
 class DocumentMetadata(Base):
     __tablename__ = "document_metadata"
 
     document_id: Mapped[str] = mapped_column(
         VARCHAR(255), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
     )
-    creator_username: Mapped[Optional[str]] = mapped_column(
+    creator_username: Mapped[str | None] = mapped_column(
         VARCHAR(64),
         ForeignKey("users.username", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    last_modified_by_username: Mapped[Optional[str]] = mapped_column(
+    last_modified_by_username: Mapped[str | None] = mapped_column(
         VARCHAR(64),
         ForeignKey("users.username", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
 
-    document: Mapped["Document"] = relationship(
+    document: Mapped[Document] = relationship(
         "Document",
         back_populates="metadata_record",
         foreign_keys=[document_id],
     )
-    creator: Mapped[Optional["User"]] = relationship(
-        "User", foreign_keys=[creator_username]
-    )
-    last_modified_by: Mapped[Optional["User"]] = relationship(
+    creator: Mapped[User | None] = relationship("User", foreign_keys=[creator_username])
+    last_modified_by: Mapped[User | None] = relationship(
         "User", foreign_keys=[last_modified_by_username]
     )
-    tags: Mapped[List["DocumentMetadataTag"]] = relationship(
+    tags: Mapped[list[DocumentMetadataTag]] = relationship(
         "DocumentMetadataTag",
         back_populates="metadata_record",
         cascade="all, delete-orphan",
@@ -673,7 +505,7 @@ class DocumentMetadataTag(Base):
     tag: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True, index=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    metadata_record: Mapped["DocumentMetadata"] = relationship(
+    metadata_record: Mapped[DocumentMetadata] = relationship(
         "DocumentMetadata",
         back_populates="tags",
         foreign_keys=[document_id],

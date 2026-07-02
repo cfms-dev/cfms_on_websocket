@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import logging
 import sys
 from io import StringIO
@@ -118,6 +119,57 @@ def _new_database(base, path: Path):
 
     base.metadata.create_all(db_engine)
     return db_engine, sessionmaker(bind=db_engine)
+
+
+def _insert_compiled_rule(
+    connection,
+    tables,
+    *,
+    target_type: str,
+    target_id: str,
+    access_type: str,
+    rule_data: dict,
+) -> None:
+    result = connection.execute(
+        insert(tables["compiled_access_rules"]),
+        {
+            "target_type": target_type,
+            "target_id": target_id,
+            "access_type": access_type,
+            "match_mode": rule_data.get("match", "all"),
+        },
+    )
+    compiled_rule_id = result.inserted_primary_key[0]
+    for index, group_data in enumerate(rule_data.get("match_groups", [])):
+        rights = group_data.get("rights", {})
+        groups = group_data.get("groups", {})
+        required_rights = rights.get("require", [])
+        required_groups = groups.get("require", [])
+        group_result = connection.execute(
+            insert(tables["compiled_access_rule_groups"]),
+            {
+                "rule_id": compiled_rule_id,
+                "group_index": index,
+                "match_mode": "all"
+                if not required_rights or not required_groups
+                else group_data.get("match", "all"),
+                "rights_match_mode": rights.get("match", "all"),
+                "rights_empty": not required_rights,
+                "groups_match_mode": groups.get("match", "all"),
+                "groups_empty": not required_groups,
+            },
+        )
+        compiled_group_id = group_result.inserted_primary_key[0]
+        for permission in required_rights:
+            connection.execute(
+                insert(tables["compiled_access_rule_rights"]),
+                {"group_id": compiled_group_id, "permission": permission},
+            )
+        for group_name in required_groups:
+            connection.execute(
+                insert(tables["compiled_access_rule_memberships"]),
+                {"group_id": compiled_group_id, "group_name": group_name},
+            )
 
 
 def _seed_source(base, db_engine, storage_root: Path) -> None:
@@ -245,12 +297,15 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 },
             ],
         )
-        connection.execute(
-            insert(tables["folder_access_rules"]),
-            {
-                "access_type": "read",
-                "folder_id": "folder-1",
-                "rule_data": {"match": "all", "match_groups": []},
+        _insert_compiled_rule(
+            connection,
+            tables,
+            target_type="directory",
+            target_id="folder-1",
+            access_type="read",
+            rule_data={
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
             },
         )
         connection.execute(
@@ -282,12 +337,15 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             .where(tables["documents"].c.id == "doc-1")
             .values(current_revision_id="rev-1")
         )
-        connection.execute(
-            insert(tables["document_access_rules"]),
-            {
-                "access_type": "read",
-                "document_id": "doc-1",
-                "rule_data": {"match": "all", "match_groups": []},
+        _insert_compiled_rule(
+            connection,
+            tables,
+            target_type="document",
+            target_id="doc-1",
+            access_type="read",
+            rule_data={
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
             },
         )
         connection.execute(
@@ -410,7 +468,11 @@ def _dump_backup_tables(base, db_engine) -> dict[str, list[dict]]:
 
 
 def _backup_table_names(base) -> set[str]:
-    excluded = {"file_tasks", "login_throttles", "traffic_throttles"}
+    excluded = {
+        "file_tasks",
+        "login_throttles",
+        "traffic_throttles",
+    }
     return set(base.metadata.tables) - excluded
 
 
@@ -418,6 +480,14 @@ def _normalize(value):
     if isinstance(value, dt.datetime):
         return value.isoformat()
     return value
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(f"{json.dumps(row, separators=(',', ':'))}\n" for row in rows),
+        encoding="utf-8",
+    )
 
 
 def _test_progress() -> Progress:
@@ -521,6 +591,9 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         )
 
     assert result["created_at"] == header.created_at
+    assert "compiled_access_rules" in result["tables"]
+    assert "document_access_rules" not in result["tables"]
+    assert "folder_access_rules" not in result["tables"]
     assert init_path.exists()
     import_tasks = list(import_progress.tasks)
     assert any(
@@ -547,6 +620,9 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
     assert restored_config["server"]["secret_key"] == "source-secret-key"
 
     with target_engine.connect() as connection:
+        compiled_rules = connection.execute(
+            select(base.metadata.tables["compiled_access_rules"])
+        ).all()
         file_tasks = connection.execute(
             select(base.metadata.tables["file_tasks"])
         ).all()
@@ -556,9 +632,193 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         traffic_throttles = connection.execute(
             select(base.metadata.tables["traffic_throttles"])
         ).all()
+        assert len(compiled_rules) == 2
         assert file_tasks == []
         assert login_throttles == []
         assert traffic_throttles == []
+
+    from include.database.models.identity import User
+    from include.domains.documents.queries.listing import (
+        fetch_visible_search_candidate_rows,
+    )
+
+    with target_session() as session:
+        user = User(
+            username="bob",
+            pass_hash="hash",
+            passwd_last_modified=0.0,
+            nickname="Bob",
+            avatar_id=None,
+            last_login=None,
+            created_time=0.0,
+            status=0,
+            secret_key="bob-secret",
+            totp_secret=None,
+            totp_enabled=False,
+            totp_backup_codes=None,
+            preference_dek_id=None,
+        )
+        session.add(user)
+        session.flush()
+
+        visible_rows = fetch_visible_search_candidate_rows(
+            session,
+            user=user,
+            now=1_700_000_001.0,
+            query="Folder",
+            sort_by="name",
+            sort_order="asc",
+            search_documents=False,
+            search_directories=True,
+            last_key=None,
+            limit=10,
+        )
+
+        assert visible_rows == []
+
+
+def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
+    backup_context, tmp_path
+):
+    from maintenance.backup.core import (
+        BACKUP_FORMAT_VERSION,
+        _restore_database,
+        _validate_manifest,
+    )
+
+    base = backup_context.Base
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "legacy-payload"
+    tables_dir = extract_dir / "tables"
+
+    folder_rows = [
+        {
+            "id": "folder-legacy",
+            "name": "Legacy Folder",
+            "created_time": 1_700_000_000.0,
+            "parent_id": None,
+            "status": 0,
+            "status_operation_id": None,
+            "inherit": True,
+        }
+    ]
+    document_rows = [
+        {
+            "id": "doc-legacy",
+            "title": "Legacy Document",
+            "created_time": 1_700_000_001.0,
+            "folder_id": "folder-legacy",
+            "current_revision_id": None,
+            "status": 0,
+            "status_operation_id": None,
+            "inherit": True,
+        }
+    ]
+    folder_rule_rows = [
+        {
+            "id": 1,
+            "folder_id": "folder-legacy",
+            "access_type": "read",
+            "rule_data": {
+                "match": "all",
+                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
+            },
+        }
+    ]
+    document_rule_rows = [
+        {
+            "id": 2,
+            "document_id": "doc-legacy",
+            "access_type": "manage",
+            "rule_data": {
+                "match": "all",
+                "match_groups": [
+                    {"rights": {"match": "all", "require": ["list_users"]}}
+                ],
+            },
+        }
+    ]
+
+    _write_jsonl(tables_dir / "folders.jsonl", folder_rows)
+    _write_jsonl(tables_dir / "documents.jsonl", document_rows)
+    _write_jsonl(tables_dir / "folder_access_rules.jsonl", folder_rule_rows)
+    _write_jsonl(tables_dir / "document_access_rules.jsonl", document_rule_rows)
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["documents"],
+        "tables": {
+            "folders": {"rows": len(folder_rows)},
+            "documents": {"rows": len(document_rows)},
+            "folder_access_rules": {"rows": len(folder_rule_rows)},
+            "document_access_rules": {"rows": len(document_rule_rows)},
+        },
+        "files": [],
+        "configuration": {},
+    }
+
+    _validate_manifest(manifest)
+    _restore_database(extract_dir, manifest, target_session)
+
+    with target_engine.connect() as connection:
+        tables = base.metadata.tables
+        compiled_rules = (
+            connection.execute(
+                select(tables["compiled_access_rules"]).order_by(
+                    tables["compiled_access_rules"].c.target_type
+                )
+            )
+            .mappings()
+            .all()
+        )
+        memberships = (
+            connection.execute(select(tables["compiled_access_rule_memberships"]))
+            .mappings()
+            .all()
+        )
+        rights = (
+            connection.execute(select(tables["compiled_access_rule_rights"]))
+            .mappings()
+            .all()
+        )
+
+    assert [
+        (row["target_type"], row["target_id"], row["access_type"])
+        for row in compiled_rules
+    ] == [
+        ("directory", "folder-legacy", "read"),
+        ("document", "doc-legacy", "manage"),
+    ]
+    assert [row["group_name"] for row in memberships] == ["sysop"]
+    assert [row["permission"] for row in rights] == ["list_users"]
+
+
+def test_current_access_rule_backup_manifest_uses_compiled_tables(
+    backup_context, tmp_path
+):
+    from maintenance.backup.core import _stage_backup_payload
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_storage = tmp_path / "source-storage"
+    staging_dir = tmp_path / "staging"
+    source_storage.mkdir()
+    staging_dir.mkdir()
+    _seed_source(base, source_engine, source_storage)
+
+    manifest = _stage_backup_payload(
+        staging_dir,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+
+    assert "compiled_access_rules" in manifest["tables"]
+    assert "compiled_access_rule_groups" in manifest["tables"]
+    assert "compiled_access_rule_memberships" in manifest["tables"]
+    assert "compiled_access_rule_rights" in manifest["tables"]
+    assert "document_access_rules" not in manifest["tables"]
+    assert "folder_access_rules" not in manifest["tables"]
 
 
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):
@@ -598,10 +858,10 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     restored = _dump_backup_tables(base, target_engine)
     assert [row["id"] for row in restored["documents"]] == ["doc-1"]
     assert [row["id"] for row in restored["folders"]] == ["/", "folder-1"]
-    assert [row["document_id"] for row in restored["document_access_rules"]] == [
-        "doc-1"
-    ]
-    assert [row["folder_id"] for row in restored["folder_access_rules"]] == ["folder-1"]
+    assert [
+        (row["target_type"], row["target_id"])
+        for row in restored["compiled_access_rules"]
+    ] == [("directory", "folder-1"), ("document", "doc-1")]
     assert [row["target_identifier"] for row in restored["object_access_entries"]] == [
         "doc-1"
     ]
