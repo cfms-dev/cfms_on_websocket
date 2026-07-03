@@ -21,8 +21,8 @@ from include.domains.access.authorization.compiled_rules import (
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.name_conflicts import (
-    normalize_object_name,
     release_name_write_lock,
+    require_object_name,
     reserve_name_for_write,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
@@ -293,13 +293,19 @@ class RequestCreateDirectoryHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         data = handler.data
         parent_id = data.get("parent_id")
-        name = normalize_object_name(data["name"])
+        name, validation_error = require_object_name(
+            data["name"], smsg.DIRECTORY_NAME_REQUIRED
+        )
         access_rules = data.get("access_rules", {})
         exists_ok = data.get("exists_ok", False)
         inherit_parent = data.get("inherit_parent", True)
 
-        if not name:
-            handler.conclude_request(400, {}, "Directory name is required")
+        if validation_error is not None:
+            handler.conclude_request(
+                validation_error.code,
+                validation_error.public_data(),
+                validation_error.message,
+            )
             return Result(code=400, target=parent_id, username=handler.username)
 
         if not parent_id:
@@ -536,13 +542,19 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
         # Parse the directory renaming request
         folder_id = handler.data["folder_id"]
-        new_name = normalize_object_name(handler.data["new_name"])
+        new_name, validation_error = require_object_name(
+            handler.data["new_name"], smsg.DIRECTORY_NAME_REQUIRED
+        )
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
             return Result(code=404, target=folder_id, username=handler.username)
-        if not new_name:
-            handler.conclude_request(400, {}, "Directory name is required")
+        if validation_error is not None:
+            handler.conclude_request(
+                validation_error.code,
+                validation_error.public_data(),
+                validation_error.message,
+            )
             return Result(code=400, target=folder_id, username=handler.username)
 
         with Session() as session:
@@ -958,9 +970,15 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             else:
                 db_parent_id = folder.parent_id or ROOT_DIRECTORY_ID
 
-            final_name = normalize_object_name(new_name if new_name else folder.name)
-            if not final_name:
-                handler.conclude_request(400, {}, "Directory name is required")
+            final_name, validation_error = require_object_name(
+                new_name if new_name else folder.name, smsg.DIRECTORY_NAME_REQUIRED
+            )
+            if validation_error is not None:
+                handler.conclude_request(
+                    validation_error.code,
+                    validation_error.public_data(),
+                    validation_error.message,
+                )
                 return Result(code=400, target=folder_id, username=handler.username)
 
             target_parent = (

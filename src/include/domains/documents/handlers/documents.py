@@ -42,8 +42,8 @@ from include.domains.access.authorization.compiled_rules import (
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
-    normalize_object_name,
     release_name_write_lock,
+    require_object_name,
     reserve_name_for_write,
 )
 from include.exceptions.misc import NoActiveRevisionsError
@@ -301,12 +301,18 @@ class RequestCreateDocumentHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         folder_id = handler.data.get("folder_id") or ROOT_DIRECTORY_ID
-        title = normalize_object_name(handler.data.get("title") or "")
+        title, validation_error = require_object_name(
+            handler.data.get("title") or "", smsg.DOCUMENT_TITLE_REQUIRED
+        )
         access_rules = handler.data.get("access_rules") or {}
         inherit_parent = handler.data.get("inherit_parent", True)
 
-        if not title:
-            handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
+        if validation_error is not None:
+            handler.conclude_request(
+                validation_error.code,
+                validation_error.public_data(),
+                validation_error.message,
+            )
             return
 
         with Session() as session:
@@ -587,10 +593,16 @@ class RequestRenameDocumentHandler(RequestHandler):
 
         # Parse the directory renaming request
         document_id: str = handler.data["document_id"]
-        new_title: str = normalize_object_name(handler.data["new_title"])
+        new_title, validation_error = require_object_name(
+            handler.data["new_title"], smsg.DOCUMENT_TITLE_REQUIRED
+        )
 
-        if not new_title:
-            handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
+        if validation_error is not None:
+            handler.conclude_request(
+                validation_error.code,
+                validation_error.public_data(),
+                validation_error.message,
+            )
             return Result(code=400, target=document_id, username=handler.username)
 
         with Session() as session:
@@ -1069,11 +1081,16 @@ class RequestRestoreDocumentHandler(RequestHandler):
             else:
                 db_folder_id = document.folder_id or ROOT_DIRECTORY_ID
 
-            final_title = normalize_object_name(
-                new_title if new_title else document.title
+            final_title, validation_error = require_object_name(
+                new_title if new_title else document.title,
+                smsg.DOCUMENT_TITLE_REQUIRED,
             )
-            if not final_title:
-                handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
+            if validation_error is not None:
+                handler.conclude_request(
+                    validation_error.code,
+                    validation_error.public_data(),
+                    validation_error.message,
+                )
                 return Result(code=400, target=doc_id, username=handler.username)
 
             target_folder = session.get(

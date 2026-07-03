@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
 from include.config.settings import global_config
-from include.database.models.documents import DirectoryNameLock, Document, Folder
+from include.database.models.documents import (
+    DirectoryNameLock,
+    Document,
+    EntityStatus,
+    Folder,
+)
 from include.database.models.identity import User
 from include.messages import Messages as smsg
 
@@ -23,6 +28,15 @@ class NameConflict:
 
 def normalize_object_name(name: str) -> str:
     return name.strip()
+
+
+def require_object_name(
+    name: str, required_message: str
+) -> tuple[str, NameConflict | None]:
+    normalized_name = normalize_object_name(name)
+    if not normalized_name:
+        return normalized_name, NameConflict(code=400, message=required_message)
+    return normalized_name, None
 
 
 def normalize_parent_id(folder_id: str | None) -> str:
@@ -91,13 +105,13 @@ def find_name_conflict(
     existing_folder = (
         session.query(Folder)
         .with_for_update()
-        .filter_by(parent_id=folder_id, name=title)
+        .filter_by(parent_id=folder_id, name=title, status=EntityStatus.OK)
         .first()
     )
     existing_docs = (
         session.query(Document)
         .with_for_update()
-        .filter_by(folder_id=folder_id, title=title)
+        .filter_by(folder_id=folder_id, title=title, status=EntityStatus.OK)
         .all()
     )
 

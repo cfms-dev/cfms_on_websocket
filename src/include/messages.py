@@ -38,6 +38,7 @@ class Messages(StrEnum):
     DOCUMENT_DOES_NOT_EXIST = _("Document does not exist")
 
     DIRECTORY_ID_REQUIRED = _("Directory ID is required")
+    DIRECTORY_NAME_REQUIRED = _("Directory name is required")
     DOCUMENT_ID_REQUIRED = _("Document ID is required")
     DOCUMENT_TITLE_REQUIRED = _("Document title is required")
 

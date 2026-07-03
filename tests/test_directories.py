@@ -3,7 +3,6 @@ Tests for directory management operations.
 """
 
 import secrets
-import sqlite3
 import time
 
 import pytest
@@ -450,6 +449,71 @@ class TestDirectoryMove:
 
 
 class TestDocumentDirectoryNameConflicts:
+    @staticmethod
+    def _create_inactive_document(
+        stale_doc_id: str,
+        stale_file_id: str,
+        stale_revision_id: str,
+        name: str,
+        parent_id: str,
+    ) -> None:
+        from include.database.models.documents import (
+            Document,
+            DocumentRevision,
+            DocumentRevisionStatus,
+            EntityStatus,
+        )
+        from include.database.models.files import File
+        from include.database.session import Session
+
+        now = time.time()
+        with Session() as session:
+            stale_file = File(
+                id=stale_file_id,
+                path=f"content/files/test/{stale_file_id}",
+                created_time=now,
+                active=False,
+            )
+            stale_doc = Document(
+                id=stale_doc_id,
+                title=name,
+                created_time=now,
+                folder_id=parent_id,
+                inherit=True,
+                status=EntityStatus.OK,
+            )
+            stale_revision = DocumentRevision(
+                id=stale_revision_id,
+                document=stale_doc,
+                file=stale_file,
+                created_time=now,
+                status=DocumentRevisionStatus.OK,
+            )
+            stale_doc.current_revision = stale_revision
+            session.add(stale_doc)
+            session.commit()
+
+    @staticmethod
+    def _delete_inactive_document(stale_doc_id: str, stale_file_id: str) -> None:
+        from include.database.models.documents import Document
+        from include.database.models.files import File
+        from include.database.session import Session
+
+        with Session() as session:
+            stale_doc = session.get(
+                Document, stale_doc_id, execution_options={"include_deleted": True}
+            )
+            if stale_doc:
+                stale_doc.current_revision = None
+                session.flush()
+                session.delete(stale_doc)
+
+            stale_file = session.get(File, stale_file_id)
+            if stale_file:
+                session.delete(stale_file)
+
+            session.commit()
+
     @pytest.mark.asyncio
     async def test_directory_and_document_names_share_namespace(
         self, authenticated_client: CFMSTestClient, document_factory
@@ -483,8 +547,9 @@ class TestDocumentDirectoryNameConflicts:
 
     @pytest.mark.asyncio
     async def test_inactive_document_does_not_hide_directory_conflict(
-        self, authenticated_client: CFMSTestClient
+        self, authenticated_client: CFMSTestClient, monkeypatch, protected_test_config
     ):
+        monkeypatch.chdir(protected_test_config.src_dir)
         suffix = secrets.token_hex(4)
         parent = await authenticated_client.create_directory(
             f"Inactive Conflict Parent {suffix}"
@@ -497,39 +562,9 @@ class TestDocumentDirectoryNameConflicts:
         stale_file_id = secrets.token_hex(32)
 
         stale_revision_id = secrets.token_hex(32)
-        now = time.time()
-        with sqlite3.connect("src/app.db") as connection:
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute(
-                """
-                INSERT INTO files (id, path, created_time, active)
-                VALUES (?, ?, ?, ?)
-                """,
-                (stale_file_id, f"content/files/test/{stale_file_id}", now, 0),
-            )
-            connection.execute(
-                """
-                INSERT INTO documents (
-                    id, title, created_time, folder_id, current_revision_id,
-                    inherit, status
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (stale_doc_id, name, now, parent_id, None, 1, 0),
-            )
-            connection.execute(
-                """
-                INSERT INTO document_revisions (
-                    id, document_id, file_id, created_time, status
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (stale_revision_id, stale_doc_id, stale_file_id, now, 0),
-            )
-            connection.execute(
-                "UPDATE documents SET current_revision_id = ? WHERE id = ?",
-                (stale_revision_id, stale_doc_id),
-            )
+        self._create_inactive_document(
+            stale_doc_id, stale_file_id, stale_revision_id, name, parent_id
+        )
 
         try:
             doc_conflict = await authenticated_client.create_document(
@@ -542,19 +577,7 @@ class TestDocumentDirectoryNameConflicts:
             )
             assert folder_conflict["code"] == 409
         finally:
-            with sqlite3.connect("src/app.db") as connection:
-                connection.execute("PRAGMA foreign_keys=ON")
-                connection.execute(
-                    "UPDATE documents SET current_revision_id = NULL WHERE id = ?",
-                    (stale_doc_id,),
-                )
-                connection.execute(
-                    "DELETE FROM document_revisions WHERE id = ?", (stale_revision_id,)
-                )
-                connection.execute(
-                    "DELETE FROM documents WHERE id = ?", (stale_doc_id,)
-                )
-                connection.execute("DELETE FROM files WHERE id = ?", (stale_file_id,))
+            self._delete_inactive_document(stale_doc_id, stale_file_id)
             await authenticated_client.delete_directory(folder_id)
             await authenticated_client.delete_directory(parent_id)
 
@@ -624,6 +647,97 @@ class TestDocumentDirectoryNameConflicts:
                         await authenticated_client.delete_directory(folder_to_delete)
                     except Exception:
                         pass
+
+    @pytest.mark.asyncio
+    async def test_restore_document_ignores_deleted_self_conflict(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        suffix = secrets.token_hex(4)
+        parent = await authenticated_client.create_directory(
+            f"Document Restore Parent {suffix}"
+        )
+        parent_id = assert_success(parent)["id"]
+        doc = await document_factory(
+            f"Document Restore Self {suffix}", folder_id=parent_id
+        )
+
+        try:
+            delete_response = await authenticated_client.delete_document(
+                doc["document_id"]
+            )
+            assert_success(delete_response)
+
+            restore_response = await authenticated_client.restore_document(
+                doc["document_id"], target_folder_id=parent_id
+            )
+            assert_success(restore_response)
+        finally:
+            try:
+                await authenticated_client.delete_document(doc["document_id"])
+            except Exception:
+                pass
+            await authenticated_client.delete_directory(parent_id)
+
+    @pytest.mark.asyncio
+    async def test_restore_inactive_document_ignores_deleted_self_conflict(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        suffix = secrets.token_hex(4)
+        parent = await authenticated_client.create_directory(
+            f"Inactive Document Restore Parent {suffix}"
+        )
+        parent_id = assert_success(parent)["id"]
+        doc = await document_factory(
+            f"Inactive Document Restore Self {suffix}",
+            upload_file=None,
+            folder_id=parent_id,
+        )
+
+        try:
+            delete_response = await authenticated_client.delete_document(
+                doc["document_id"]
+            )
+            assert_success(delete_response)
+
+            restore_response = await authenticated_client.restore_document(
+                doc["document_id"], target_folder_id=parent_id
+            )
+            assert_success(restore_response)
+        finally:
+            try:
+                await authenticated_client.delete_document(doc["document_id"])
+            except Exception:
+                pass
+            await authenticated_client.delete_directory(parent_id)
+
+    @pytest.mark.asyncio
+    async def test_restore_directory_ignores_deleted_self_conflict(
+        self, authenticated_client: CFMSTestClient
+    ):
+        suffix = secrets.token_hex(4)
+        parent = await authenticated_client.create_directory(
+            f"Directory Restore Parent {suffix}"
+        )
+        parent_id = assert_success(parent)["id"]
+        folder = await authenticated_client.create_directory(
+            f"Directory Restore Self {suffix}", parent_id
+        )
+        folder_id = assert_success(folder)["id"]
+
+        try:
+            delete_response = await authenticated_client.delete_directory(folder_id)
+            assert_success(delete_response)
+
+            restore_response = await authenticated_client.restore_directory(
+                folder_id, target_parent_id=parent_id
+            )
+            assert_success(restore_response)
+        finally:
+            try:
+                await authenticated_client.delete_directory(folder_id)
+            except Exception:
+                pass
+            await authenticated_client.delete_directory(parent_id)
 
 
 class TestDirectoryWithoutAuth:
