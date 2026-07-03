@@ -41,8 +41,10 @@ from include.domains.access.authorization.compiled_rules import (
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.name_conflicts import (
+    acquire_name_write_lock,
     get_target_folder_and_check_write,
     handle_name_duplicate,
+    normalize_object_name,
 )
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
@@ -299,7 +301,7 @@ class RequestCreateDocumentHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         folder_id = handler.data.get("folder_id") or ROOT_DIRECTORY_ID
-        title = (handler.data.get("title") or "").strip()
+        title = normalize_object_name(handler.data.get("title") or "")
         access_rules = handler.data.get("access_rules") or {}
         inherit_parent = handler.data.get("inherit_parent", True)
 
@@ -331,17 +333,22 @@ class RequestCreateDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, user, folder_id, title
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, folder_id, title
             )
-            if has_conflict:
-                handler.conclude_request(err_code, err_data, err_msg)
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, user, folder_id, title
+                )
+            else:
+                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
+                handler.conclude_request(err_code, err_data_filtered, err_msg)
                 return Result(
                     code=err_code,
                     target=folder_id,
                     data={
                         "title": title,
-                        "duplicate_id": err_data.get("duplicate_id"),
+                        "duplicate_id": err_data_filtered.get("duplicate_id"),
                     },
                     username=handler.username,
                 )
@@ -581,7 +588,11 @@ class RequestRenameDocumentHandler(RequestHandler):
 
         # Parse the directory renaming request
         document_id: str = handler.data["document_id"]
-        new_title: str = handler.data["new_title"]
+        new_title: str = normalize_object_name(handler.data["new_title"])
+
+        if not new_title:
+            handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
+            return Result(code=400, target=document_id, username=handler.username)
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -611,9 +622,13 @@ class RequestRenameDocumentHandler(RequestHandler):
                 )
                 return
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, this_user, document.folder_id, new_title
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, document.folder_id, new_title
             )
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, this_user, document.folder_id, new_title
+                )
             if has_conflict:
                 err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
                 handler.conclude_request(err_code, err_data_filtered, err_msg)
@@ -911,9 +926,13 @@ class RequestMoveDocumentHandler(RequestHandler):
                         username=handler.username,
                     )
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, user, target_folder_id, document.title
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, target_folder_id, document.title
             )
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, user, target_folder_id, document.title
+                )
             if has_conflict:
                 err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
                 handler.conclude_request(err_code, err_data_filtered, err_msg)
@@ -1049,7 +1068,12 @@ class RequestRestoreDocumentHandler(RequestHandler):
             else:
                 db_folder_id = document.folder_id or ROOT_DIRECTORY_ID
 
-            final_title = new_title if new_title else document.title
+            final_title = normalize_object_name(
+                new_title if new_title else document.title
+            )
+            if not final_title:
+                handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
+                return Result(code=400, target=doc_id, username=handler.username)
 
             target_folder = session.get(
                 Folder, db_folder_id, execution_options={"include_deleted": True}
@@ -1070,32 +1094,21 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 )
                 return Result(code=409, target=doc_id, username=handler.username)
 
-            existing_conflict = (
-                session.query(Document)
-                .with_for_update()
-                .filter(
-                    Document.folder_id == db_folder_id,
-                    Document.title == final_title,
-                    Document.status == EntityStatus.OK,
-                )
-                .first()
-                or session.query(Folder)
-                .with_for_update()
-                .filter(
-                    Folder.parent_id == db_folder_id,
-                    Folder.name == final_title,
-                    Folder.status == EntityStatus.OK,
-                )
-                .first()
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, db_folder_id, final_title
             )
-
-            if existing_conflict:
-                handler.conclude_request(
-                    409,
-                    {"conflict_id": existing_conflict.id},
-                    f"Conflict: An active item named '{final_title}' already exists in the destination.",
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, user, db_folder_id, final_title
                 )
-                return Result(code=409, target=doc_id, username=handler.username)
+
+            if has_conflict:
+                handler.conclude_request(
+                    err_code,
+                    {"conflict_id": err_data.get("duplicate_id")},
+                    err_msg,
+                )
+                return Result(code=err_code, target=doc_id, username=handler.username)
 
             document.status = EntityStatus.OK
             document.status_operation_id = None

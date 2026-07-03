@@ -21,7 +21,9 @@ from include.domains.access.authorization.compiled_rules import (
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.name_conflicts import (
+    acquire_name_write_lock,
     handle_name_duplicate,
+    normalize_object_name,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
 from include.domains.documents.queries.listing import (
@@ -291,10 +293,14 @@ class RequestCreateDirectoryHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         data = handler.data
         parent_id = data.get("parent_id")
-        name = data["name"]
+        name = normalize_object_name(data["name"])
         access_rules = data.get("access_rules", {})
         exists_ok = data.get("exists_ok", False)
         inherit_parent = data.get("inherit_parent", True)
+
+        if not name:
+            handler.conclude_request(400, {}, "Directory name is required")
+            return Result(code=400, target=parent_id, username=handler.username)
 
         if not parent_id:
             parent_id = ROOT_DIRECTORY_ID
@@ -325,9 +331,13 @@ class RequestCreateDirectoryHandler(RequestHandler):
                     handler.conclude_access_denial()
                     return Result(code=403, target=parent_id, username=handler.username)
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, this_user, parent_id, name
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, parent_id, name
             )
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, this_user, parent_id, name
+                )
             if has_conflict:
                 if (
                     exists_ok
@@ -529,11 +539,14 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
         # Parse the directory renaming request
         folder_id = handler.data["folder_id"]
-        new_name = handler.data["new_name"]
+        new_name = normalize_object_name(handler.data["new_name"])
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
             return Result(code=404, target=folder_id, username=handler.username)
+        if not new_name:
+            handler.conclude_request(400, {}, "Directory name is required")
+            return Result(code=400, target=folder_id, username=handler.username)
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -569,9 +582,13 @@ class RequestRenameDirectoryHandler(RequestHandler):
                 )
                 return
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, this_user, folder.parent_id, new_name
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, folder.parent_id, new_name
             )
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, this_user, folder.parent_id, new_name
+                )
             if has_conflict:
                 err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
                 handler.conclude_request(err_code, err_data_filtered, err_msg)
@@ -685,9 +702,13 @@ class RequestMoveDirectoryHandler(RequestHandler):
                 )
                 return Result(code=400, target=folder_id, username=handler.username)
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, user, target_folder_id, folder.name
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, target_folder_id, folder.name
             )
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, user, target_folder_id, folder.name
+                )
             if has_conflict:
                 err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
                 handler.conclude_request(err_code, err_data_filtered, err_msg)
@@ -942,7 +963,10 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             else:
                 db_parent_id = folder.parent_id or ROOT_DIRECTORY_ID
 
-            final_name = new_name if new_name else folder.name
+            final_name = normalize_object_name(new_name if new_name else folder.name)
+            if not final_name:
+                handler.conclude_request(400, {}, "Directory name is required")
+                return Result(code=400, target=folder_id, username=handler.username)
 
             target_parent = (
                 session.query(Folder)
@@ -959,30 +983,21 @@ class RequestRestoreDirectoryHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=db_parent_id, username=handler.username)
 
-            existing_conflict = (
-                session.query(Folder)
-                .with_for_update()
-                .filter(
-                    Folder.parent_id == db_parent_id,
-                    Folder.name == final_name,
-                    Folder.status == EntityStatus.OK,
-                )
-                .first()
-                or session.query(Document)
-                .with_for_update()
-                .filter(
-                    Document.folder_id == db_parent_id,
-                    Document.title == final_name,
-                    Document.status == EntityStatus.OK,
-                )
-                .first()
+            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
+                session, db_parent_id, final_name
             )
-
-            if existing_conflict:
-                handler.conclude_request(
-                    409, {"conflict_id": existing_conflict.id}, "Name conflict"
+            if not has_conflict:
+                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
+                    session, user, db_parent_id, final_name
                 )
-                return Result(code=409, target=folder_id, username=handler.username)
+
+            if has_conflict:
+                handler.conclude_request(
+                    err_code, {"conflict_id": err_data.get("duplicate_id")}, err_msg
+                )
+                return Result(
+                    code=err_code, target=folder_id, username=handler.username
+                )
 
             op_id = folder.status_operation_id
 

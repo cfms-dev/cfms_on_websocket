@@ -9,6 +9,7 @@ __all__ = [
     "DocumentMetadata",
     "DocumentMetadataTag",
     "Folder",
+    "DirectoryNameLock",
 ]
 
 import secrets
@@ -209,6 +210,12 @@ class Folder(BaseObject):  # Document folder.
             visited_ids.add(current.id)
             current = current.parent
         return False
+
+
+class DirectoryNameLock(Base):
+    __tablename__ = "directory_name_locks"
+    parent_id: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
+    name: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
 
 
 class Document(BaseObject):

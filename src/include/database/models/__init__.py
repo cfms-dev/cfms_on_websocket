@@ -9,6 +9,7 @@ from include.database.models.access import (
 )
 from include.database.models.documents import (
     BaseObject,
+    DirectoryNameLock,
     Document,
     DocumentMetadata,
     DocumentMetadataTag,
@@ -47,6 +48,7 @@ __all__ = [
     "DocumentMetadataTag",
     "DocumentRevision",
     "DocumentRevisionStatus",
+    "DirectoryNameLock",
     "EntityStatus",
     "File",
     "FileTask",

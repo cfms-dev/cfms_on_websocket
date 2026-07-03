@@ -2,9 +2,14 @@
 Tests for directory management operations.
 """
 
+import secrets
+import sqlite3
+import time
+
 import pytest
 
 from tests.test_client import CFMSTestClient
+from tests.utils import assert_success
 
 
 class TestDirectoryOperations:
@@ -399,6 +404,183 @@ class TestDirectoryMove:
                     await authenticated_client.delete_directory(parent_id)
                 except Exception:
                     pass
+
+
+class TestDocumentDirectoryNameConflicts:
+    @pytest.mark.asyncio
+    async def test_directory_and_document_names_share_namespace(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        suffix = secrets.token_hex(4)
+        parent = await authenticated_client.create_directory(
+            f"Conflict Parent {suffix}"
+        )
+        parent_id = assert_success(parent)["id"]
+        folder_name = f"Shared Name {suffix}"
+        doc_name = f"Shared Doc Name {suffix}"
+
+        folder = await authenticated_client.create_directory(folder_name, parent_id)
+        folder_id = assert_success(folder)["id"]
+        doc = await document_factory(doc_name, folder_id=parent_id)
+
+        try:
+            doc_conflict = await authenticated_client.create_document(
+                folder_name, folder_id=parent_id
+            )
+            assert doc_conflict["code"] == 409
+
+            folder_conflict = await authenticated_client.create_directory(
+                doc_name, parent_id
+            )
+            assert folder_conflict["code"] == 409
+        finally:
+            await authenticated_client.delete_document(doc["document_id"])
+            await authenticated_client.delete_directory(folder_id)
+            await authenticated_client.delete_directory(parent_id)
+
+    @pytest.mark.asyncio
+    async def test_inactive_document_does_not_hide_directory_conflict(
+        self, authenticated_client: CFMSTestClient
+    ):
+        suffix = secrets.token_hex(4)
+        parent = await authenticated_client.create_directory(
+            f"Inactive Conflict Parent {suffix}"
+        )
+        parent_id = assert_success(parent)["id"]
+        name = f"Inactive Shared {suffix}"
+        folder = await authenticated_client.create_directory(name, parent_id)
+        folder_id = assert_success(folder)["id"]
+        stale_doc_id = secrets.token_hex(32)
+        stale_file_id = secrets.token_hex(32)
+
+        stale_revision_id = secrets.token_hex(32)
+        now = time.time()
+        with sqlite3.connect("src/app.db") as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(
+                """
+                INSERT INTO files (id, path, created_time, active)
+                VALUES (?, ?, ?, ?)
+                """,
+                (stale_file_id, f"content/files/test/{stale_file_id}", now, 0),
+            )
+            connection.execute(
+                """
+                INSERT INTO documents (
+                    id, title, created_time, folder_id, current_revision_id,
+                    inherit, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (stale_doc_id, name, now, parent_id, None, 1, 0),
+            )
+            connection.execute(
+                """
+                INSERT INTO document_revisions (
+                    id, document_id, file_id, created_time, status
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (stale_revision_id, stale_doc_id, stale_file_id, now, 0),
+            )
+            connection.execute(
+                "UPDATE documents SET current_revision_id = ? WHERE id = ?",
+                (stale_revision_id, stale_doc_id),
+            )
+
+        try:
+            doc_conflict = await authenticated_client.create_document(
+                name, folder_id=parent_id
+            )
+            assert doc_conflict["code"] == 409
+
+            folder_conflict = await authenticated_client.create_directory(
+                name, parent_id
+            )
+            assert folder_conflict["code"] == 409
+        finally:
+            with sqlite3.connect("src/app.db") as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute(
+                    "UPDATE documents SET current_revision_id = NULL WHERE id = ?",
+                    (stale_doc_id,),
+                )
+                connection.execute(
+                    "DELETE FROM document_revisions WHERE id = ?", (stale_revision_id,)
+                )
+                connection.execute(
+                    "DELETE FROM documents WHERE id = ?", (stale_doc_id,)
+                )
+                connection.execute("DELETE FROM files WHERE id = ?", (stale_file_id,))
+            await authenticated_client.delete_directory(folder_id)
+            await authenticated_client.delete_directory(parent_id)
+
+    @pytest.mark.asyncio
+    async def test_rename_move_and_restore_respect_name_conflicts(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        suffix = secrets.token_hex(4)
+        parent = await authenticated_client.create_directory(
+            f"Mutation Conflict Parent {suffix}"
+        )
+        parent_id = assert_success(parent)["id"]
+        target = await authenticated_client.create_directory(
+            f"Mutation Conflict Target {suffix}"
+        )
+        target_id = assert_success(target)["id"]
+        folder_name = f"Mutation Folder {suffix}"
+        doc_name = f"Mutation Doc {suffix}"
+        folder = await authenticated_client.create_directory(folder_name, parent_id)
+        folder_id = assert_success(folder)["id"]
+        target_folder = await authenticated_client.create_directory(doc_name, target_id)
+        target_folder_id = assert_success(target_folder)["id"]
+        doc = await document_factory(doc_name, folder_id=parent_id)
+        restore_doc = await document_factory(
+            f"Restore Conflict {suffix}", folder_id=parent_id
+        )
+
+        try:
+            rename_conflict = await authenticated_client.rename_document(
+                doc["document_id"], folder_name
+            )
+            assert rename_conflict["code"] == 409
+
+            move_conflict = await authenticated_client.send_request(
+                "move_document",
+                {"document_id": doc["document_id"], "target_folder_id": target_id},
+            )
+            assert move_conflict["code"] == 409
+
+            delete_response = await authenticated_client.delete_document(
+                restore_doc["document_id"]
+            )
+            assert_success(delete_response)
+            restore_folder = await authenticated_client.create_directory(
+                restore_doc["title"], parent_id
+            )
+            restore_folder_id = assert_success(restore_folder)["id"]
+            restore_conflict = await authenticated_client.restore_document(
+                restore_doc["document_id"], target_folder_id=parent_id
+            )
+            assert restore_conflict["code"] == 409
+        finally:
+            for doc_id in (doc["document_id"], restore_doc["document_id"]):
+                try:
+                    await authenticated_client.delete_document(doc_id)
+                except Exception:
+                    pass
+            for folder_to_delete in (
+                locals().get("restore_folder_id"),
+                target_folder_id,
+                folder_id,
+                target_id,
+                parent_id,
+            ):
+                if folder_to_delete:
+                    try:
+                        await authenticated_client.delete_directory(folder_to_delete)
+                    except Exception:
+                        pass
 
 
 class TestDirectoryWithoutAuth:
