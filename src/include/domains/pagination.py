@@ -94,9 +94,12 @@ def _b64_encode(raw: bytes) -> str:
 def _b64_decode(token: str) -> bytes:
     try:
         padding = "=" * (-len(token) % 4)
-        return base64.urlsafe_b64decode((token + padding).encode())
+        decoded = base64.urlsafe_b64decode((token + padding).encode())
     except Exception as exc:
         raise CursorError("Invalid cursor") from exc
+    if _b64_encode(decoded) != token:
+        raise CursorError("Invalid cursor")
+    return decoded
 
 
 def encode_cursor(

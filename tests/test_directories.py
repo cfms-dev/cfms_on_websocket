@@ -4,6 +4,7 @@ Tests for directory management operations.
 
 import secrets
 import time
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -450,12 +451,17 @@ class TestDirectoryMove:
 
 class TestDocumentDirectoryNameConflicts:
     @staticmethod
+    def _session_factory(db_path: Path):
+        return sessionmaker(bind=create_engine(f"sqlite:///{db_path.as_posix()}"))
+
+    @staticmethod
     def _create_inactive_document(
         stale_doc_id: str,
         stale_file_id: str,
         stale_revision_id: str,
         name: str,
         parent_id: str,
+        db_path: Path,
     ) -> None:
         from include.database.models.documents import (
             Document,
@@ -464,10 +470,9 @@ class TestDocumentDirectoryNameConflicts:
             EntityStatus,
         )
         from include.database.models.files import File
-        from include.database.session import Session
 
         now = time.time()
-        with Session() as session:
+        with TestDocumentDirectoryNameConflicts._session_factory(db_path)() as session:
             stale_file = File(
                 id=stale_file_id,
                 path=f"content/files/test/{stale_file_id}",
@@ -494,12 +499,13 @@ class TestDocumentDirectoryNameConflicts:
             session.commit()
 
     @staticmethod
-    def _delete_inactive_document(stale_doc_id: str, stale_file_id: str) -> None:
+    def _delete_inactive_document(
+        stale_doc_id: str, stale_file_id: str, db_path: Path
+    ) -> None:
         from include.database.models.documents import Document
         from include.database.models.files import File
-        from include.database.session import Session
 
-        with Session() as session:
+        with TestDocumentDirectoryNameConflicts._session_factory(db_path)() as session:
             stale_doc = session.get(
                 Document, stale_doc_id, execution_options={"include_deleted": True}
             )
@@ -562,8 +568,9 @@ class TestDocumentDirectoryNameConflicts:
         stale_file_id = secrets.token_hex(32)
 
         stale_revision_id = secrets.token_hex(32)
+        db_path = protected_test_config.src_dir / "app.db"
         self._create_inactive_document(
-            stale_doc_id, stale_file_id, stale_revision_id, name, parent_id
+            stale_doc_id, stale_file_id, stale_revision_id, name, parent_id, db_path
         )
 
         try:
@@ -577,7 +584,7 @@ class TestDocumentDirectoryNameConflicts:
             )
             assert folder_conflict["code"] == 409
         finally:
-            self._delete_inactive_document(stale_doc_id, stale_file_id)
+            self._delete_inactive_document(stale_doc_id, stale_file_id, db_path)
             await authenticated_client.delete_directory(folder_id)
             await authenticated_client.delete_directory(parent_id)
 
