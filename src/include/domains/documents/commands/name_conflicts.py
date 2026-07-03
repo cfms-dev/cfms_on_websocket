@@ -154,9 +154,10 @@ def acquire_name_write_lock(
     title = normalize_object_name(title)
 
     lock = DirectoryNameLock(parent_id=folder_id, name=title)
-    session.add(lock)
     try:
-        session.flush()
+        with session.begin_nested():
+            session.add(lock)
+            session.flush()
     except IntegrityError:
         session.rollback()
         return True, 409, {}, smsg.DOCUMENT_OR_DIRECTORY_NAME_DUPLICATE
