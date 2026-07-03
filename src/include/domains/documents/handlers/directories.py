@@ -21,9 +21,9 @@ from include.domains.access.authorization.compiled_rules import (
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.name_conflicts import (
-    acquire_name_write_lock,
-    handle_name_duplicate,
     normalize_object_name,
+    release_name_write_lock,
+    reserve_name_for_write,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
 from include.domains.documents.queries.listing import (
@@ -331,20 +331,16 @@ class RequestCreateDirectoryHandler(RequestHandler):
                     handler.conclude_access_denial()
                     return Result(code=403, target=parent_id, username=handler.username)
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, parent_id, name
+            name_lock, conflict = reserve_name_for_write(
+                session, this_user, parent_id, name
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, this_user, parent_id, name
-                )
-            if has_conflict:
+            if conflict is not None:
                 if (
                     exists_ok
-                    and err_data.get("type") == "directory"
-                    and err_data.get("entity")
+                    and conflict.data.get("type") == "directory"
+                    and conflict.data.get("entity")
                 ):
-                    existing_folder = err_data["entity"]
+                    existing_folder = conflict.data["entity"]
                     handler.conclude_request(
                         200,
                         {
@@ -356,13 +352,13 @@ class RequestCreateDirectoryHandler(RequestHandler):
                     )
                     return Result(code=0, target=parent_id, username=handler.username)
                 else:
-                    err_data_filtered = {
-                        k: v for k, v in err_data.items() if k != "entity"
-                    }
-                    handler.conclude_request(err_code, err_data_filtered, err_msg)
+                    err_data_filtered = conflict.public_data()
+                    handler.conclude_request(
+                        conflict.code, err_data_filtered, conflict.message
+                    )
                     if "duplicate_id" in err_data_filtered:
                         return Result(
-                            code=err_code,
+                            code=conflict.code,
                             target=parent_id,
                             data={
                                 "name": name,
@@ -371,7 +367,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
                             username=handler.username,
                         )
                     return Result(
-                        code=err_code, target=parent_id, username=handler.username
+                        code=conflict.code, target=parent_id, username=handler.username
                     )
 
             folder = Folder(name=name, parent=parent)
@@ -381,6 +377,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, username=handler.username)
 
+            release_name_write_lock(session, name_lock)
             session.commit()
 
             handler.conclude_request(
@@ -582,19 +579,17 @@ class RequestRenameDirectoryHandler(RequestHandler):
                 )
                 return
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, folder.parent_id, new_name
+            name_lock, conflict = reserve_name_for_write(
+                session, this_user, folder.parent_id, new_name
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, this_user, folder.parent_id, new_name
+            if conflict is not None:
+                err_data_filtered = conflict.public_data()
+                handler.conclude_request(
+                    conflict.code, err_data_filtered, conflict.message
                 )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
                 if "duplicate_id" in err_data_filtered:
                     return Result(
-                        code=err_code,
+                        code=conflict.code,
                         target=folder_id,
                         data={
                             "title": new_name,
@@ -603,10 +598,11 @@ class RequestRenameDirectoryHandler(RequestHandler):
                         username=handler.username,
                     )
                 return Result(
-                    code=err_code, target=folder_id, username=handler.username
+                    code=conflict.code, target=folder_id, username=handler.username
                 )
 
             folder.name = new_name
+            release_name_write_lock(session, name_lock)
             session.commit()
 
             handler.conclude_request(
@@ -702,19 +698,17 @@ class RequestMoveDirectoryHandler(RequestHandler):
                 )
                 return Result(code=400, target=folder_id, username=handler.username)
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, target_folder_id, folder.name
+            name_lock, conflict = reserve_name_for_write(
+                session, user, target_folder_id, folder.name
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, user, target_folder_id, folder.name
+            if conflict is not None:
+                err_data_filtered = conflict.public_data()
+                handler.conclude_request(
+                    conflict.code, err_data_filtered, conflict.message
                 )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
                 if "duplicate_id" in err_data_filtered:
                     return Result(
-                        code=err_code,
+                        code=conflict.code,
                         target=folder_id,
                         data={
                             "title": folder.name,
@@ -723,11 +717,12 @@ class RequestMoveDirectoryHandler(RequestHandler):
                         username=handler.username,
                     )
                 return Result(
-                    code=err_code, target=folder_id, username=handler.username
+                    code=conflict.code, target=folder_id, username=handler.username
                 )
 
             folder.parent = target_folder
 
+            release_name_write_lock(session, name_lock)
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
@@ -983,20 +978,17 @@ class RequestRestoreDirectoryHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=db_parent_id, username=handler.username)
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, db_parent_id, final_name
+            name_lock, conflict = reserve_name_for_write(
+                session, user, db_parent_id, final_name
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, user, db_parent_id, final_name
-                )
-
-            if has_conflict:
+            if conflict is not None:
                 handler.conclude_request(
-                    err_code, {"conflict_id": err_data.get("duplicate_id")}, err_msg
+                    conflict.code,
+                    {"conflict_id": conflict.data.get("duplicate_id")},
+                    conflict.message,
                 )
                 return Result(
-                    code=err_code, target=folder_id, username=handler.username
+                    code=conflict.code, target=folder_id, username=handler.username
                 )
 
             op_id = folder.status_operation_id
@@ -1026,6 +1018,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             folder.name = final_name
             folder.parent_id = db_parent_id
 
+            release_name_write_lock(session, name_lock)
             session.commit()
 
             handler.conclude_request(

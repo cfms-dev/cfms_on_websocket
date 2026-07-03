@@ -41,10 +41,10 @@ from include.domains.access.authorization.compiled_rules import (
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.name_conflicts import (
-    acquire_name_write_lock,
     get_target_folder_and_check_write,
-    handle_name_duplicate,
     normalize_object_name,
+    release_name_write_lock,
+    reserve_name_for_write,
 )
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
@@ -333,18 +333,16 @@ class RequestCreateDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, folder_id, title
+            name_lock, conflict = reserve_name_for_write(
+                session, user, folder_id, title
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, user, folder_id, title
+            if conflict is not None:
+                err_data_filtered = conflict.public_data()
+                handler.conclude_request(
+                    conflict.code, err_data_filtered, conflict.message
                 )
-            else:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
                 return Result(
-                    code=err_code,
+                    code=conflict.code,
                     target=folder_id,
                     data={
                         "title": title,
@@ -390,6 +388,7 @@ class RequestCreateDocumentHandler(RequestHandler):
                     )
 
                 new_document.current_revision = new_revision
+                release_name_write_lock(session, name_lock)
                 session.commit()
 
                 task_data = create_file_task(
@@ -622,19 +621,17 @@ class RequestRenameDocumentHandler(RequestHandler):
                 )
                 return
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, document.folder_id, new_title
+            name_lock, conflict = reserve_name_for_write(
+                session, this_user, document.folder_id, new_title
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, this_user, document.folder_id, new_title
+            if conflict is not None:
+                err_data_filtered = conflict.public_data()
+                handler.conclude_request(
+                    conflict.code, err_data_filtered, conflict.message
                 )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
                 if "duplicate_id" in err_data_filtered:
                     return Result(
-                        code=err_code,
+                        code=conflict.code,
                         target=document.folder_id,
                         data={
                             "title": document.title,
@@ -643,11 +640,14 @@ class RequestRenameDocumentHandler(RequestHandler):
                         username=handler.username,
                     )
                 return Result(
-                    code=err_code, target=document.folder_id, username=handler.username
+                    code=conflict.code,
+                    target=document.folder_id,
+                    username=handler.username,
                 )
 
             document.title = new_title
             mark_document_modified(document, this_user.username)
+            release_name_write_lock(session, name_lock)
             session.commit()
 
             handler.conclude_request(
@@ -926,19 +926,17 @@ class RequestMoveDocumentHandler(RequestHandler):
                         username=handler.username,
                     )
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, target_folder_id, document.title
+            name_lock, conflict = reserve_name_for_write(
+                session, user, target_folder_id, document.title
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, user, target_folder_id, document.title
+            if conflict is not None:
+                err_data_filtered = conflict.public_data()
+                handler.conclude_request(
+                    conflict.code, err_data_filtered, conflict.message
                 )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
                 if "duplicate_id" in err_data_filtered:
                     return Result(
-                        code=err_code,
+                        code=conflict.code,
                         target=document.folder_id,
                         data={
                             "title": document.title,
@@ -947,12 +945,15 @@ class RequestMoveDocumentHandler(RequestHandler):
                         username=handler.username,
                     )
                 return Result(
-                    code=err_code, target=document.folder_id, username=handler.username
+                    code=conflict.code,
+                    target=document.folder_id,
+                    username=handler.username,
                 )
 
             document.folder = target_folder
             mark_document_modified(document, user.username)
 
+            release_name_write_lock(session, name_lock)
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
@@ -1094,21 +1095,18 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 )
                 return Result(code=409, target=doc_id, username=handler.username)
 
-            has_conflict, err_code, err_data, err_msg = acquire_name_write_lock(
-                session, db_folder_id, final_title
+            name_lock, conflict = reserve_name_for_write(
+                session, user, db_folder_id, final_title
             )
-            if not has_conflict:
-                has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                    session, user, db_folder_id, final_title
-                )
-
-            if has_conflict:
+            if conflict is not None:
                 handler.conclude_request(
-                    err_code,
-                    {"conflict_id": err_data.get("duplicate_id")},
-                    err_msg,
+                    conflict.code,
+                    {"conflict_id": conflict.data.get("duplicate_id")},
+                    conflict.message,
                 )
-                return Result(code=err_code, target=doc_id, username=handler.username)
+                return Result(
+                    code=conflict.code, target=doc_id, username=handler.username
+                )
 
             document.status = EntityStatus.OK
             document.status_operation_id = None
@@ -1116,6 +1114,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
             document.folder_id = db_folder_id
             mark_document_modified(document, user.username)
 
+            release_name_write_lock(session, name_lock)
             session.commit()
 
             handler.conclude_request(

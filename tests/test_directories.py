@@ -7,9 +7,52 @@ import sqlite3
 import time
 
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 from tests.test_client import CFMSTestClient
 from tests.utils import assert_success
+
+
+def test_name_write_lock_lives_until_explicit_release(
+    monkeypatch, protected_test_config
+):
+    monkeypatch.chdir(protected_test_config.src_dir)
+
+    from include.config.settings import global_config
+    from include.database.models.documents import DirectoryNameLock
+    from include.domains.documents.commands.name_conflicts import (
+        NameConflict,
+        acquire_name_write_lock,
+        release_name_write_lock,
+    )
+
+    monkeypatch.setitem(global_config["document"], "allow_name_duplicate", False)
+
+    engine = create_engine("sqlite:///:memory:")
+    DirectoryNameLock.__table__.create(engine)
+    session_factory = sessionmaker(bind=engine)
+
+    with session_factory() as session:
+        lock = acquire_name_write_lock(session, "parent", "Shared Name")
+
+        assert isinstance(lock, DirectoryNameLock)
+        assert session.scalar(select(DirectoryNameLock)) is lock
+        session.expunge(lock)
+        assert isinstance(
+            acquire_name_write_lock(session, "parent", "Shared Name"),
+            NameConflict,
+        )
+
+        lock = session.get(
+            DirectoryNameLock,
+            {"parent_id": "parent", "name": "Shared Name"},
+        )
+        release_name_write_lock(session, lock)
+        session.commit()
+
+    with session_factory() as session:
+        assert session.scalar(select(DirectoryNameLock)) is None
 
 
 class TestDirectoryOperations:

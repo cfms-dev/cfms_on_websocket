@@ -1,3 +1,6 @@
+from dataclasses import dataclass, field
+from typing import Any
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -8,8 +11,22 @@ from include.database.models.identity import User
 from include.messages import Messages as smsg
 
 
+@dataclass(slots=True)
+class NameConflict:
+    code: int
+    message: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+    def public_data(self) -> dict[str, Any]:
+        return {key: value for key, value in self.data.items() if key != "entity"}
+
+
 def normalize_object_name(name: str) -> str:
     return name.strip()
+
+
+def normalize_parent_id(folder_id: str | None) -> str:
+    return folder_id or ROOT_DIRECTORY_ID
 
 
 def get_target_folder_and_check_write(
@@ -20,8 +37,7 @@ def get_target_folder_and_check_write(
     Returns (folder_object, error_code, error_message).
     If valid, error_code is 0.
     """
-    if not target_folder_id:
-        target_folder_id = ROOT_DIRECTORY_ID
+    target_folder_id = normalize_parent_id(target_folder_id)
 
     target_folder = (
         session.query(Folder).with_for_update().filter_by(id=target_folder_id).first()
@@ -40,20 +56,36 @@ def get_target_folder_and_check_write(
     return target_folder, 0, ""
 
 
-def handle_name_duplicate(
+def _duplicate_payload(
+    entity: Document | Folder,
+    user: User,
+    entity_type: str,
+    *,
+    include_entity: bool = False,
+) -> dict[str, Any]:
+    readable_id = entity.id if entity.check_access_requirements(user, "read") else None
+    payload: dict[str, Any] = {"type": entity_type, "id": readable_id}
+    if readable_id is not None:
+        payload["duplicate_id"] = readable_id
+    if include_entity:
+        payload["entity"] = entity
+    return payload
+
+
+def find_name_conflict(
     session: Session, user: User, folder_id: str | None, title: str
-) -> tuple[bool, int, dict, str]:
+) -> NameConflict | None:
     """
     Checks if a document or folder with `title` exists under `folder_id`.
     If yes, safely deletes deleted documents or returns conflict details.
-    Returns: (has_conflict, error_code, error_data, error_message).
-    If no conflict, returns (False, 0, {}, "").
+    Returns a conflict when a live sibling folder/document already owns the name.
+    Inactive documents are removed when the caller can write them, otherwise they
+    still block reuse to avoid hiding objects the caller cannot safely replace.
     """
     if global_config["document"]["allow_name_duplicate"]:
-        return False, 0, {}, ""
+        return None
 
-    if not folder_id:
-        folder_id = ROOT_DIRECTORY_ID
+    folder_id = normalize_parent_id(folder_id)
     title = normalize_object_name(title)
 
     existing_folder = (
@@ -70,87 +102,77 @@ def handle_name_duplicate(
     )
 
     if existing_folder:
-        resp_id = (
-            existing_folder.id
-            if existing_folder.check_access_requirements(user, "read")
-            else None
-        )
-        payload = {"type": "directory", "id": resp_id, "entity": existing_folder}
-        if resp_id is not None:
-            payload["duplicate_id"] = resp_id
-
-        return (
-            True,
-            409,
-            payload,
-            smsg.DIRECTORY_NAME_DUPLICATE,
+        return NameConflict(
+            code=409,
+            message=smsg.DIRECTORY_NAME_DUPLICATE,
+            data=_duplicate_payload(
+                existing_folder, user, "directory", include_entity=True
+            ),
         )
 
     inactive_docs: list[Document] = []
     for existing_doc in existing_docs:
         if existing_doc.active:
-            resp_id = (
-                existing_doc.id
-                if existing_doc.check_access_requirements(user, "read")
-                else None
-            )
-            payload = {"type": "document", "id": resp_id}
-            if resp_id is not None:
-                payload["duplicate_id"] = resp_id
-
-            return (
-                True,
-                409,
-                payload,
-                smsg.DOCUMENT_NAME_DUPLICATE,
+            return NameConflict(
+                code=409,
+                message=smsg.DOCUMENT_NAME_DUPLICATE,
+                data=_duplicate_payload(existing_doc, user, "document"),
             )
         inactive_docs.append(existing_doc)
 
     for existing_doc in inactive_docs:
         if not existing_doc.check_access_requirements(user, "write"):
-            resp_id = (
-                existing_doc.id
-                if existing_doc.check_access_requirements(user, "read")
-                else None
-            )
-            payload = {"type": "document", "id": resp_id}
-            if resp_id is not None:
-                payload["duplicate_id"] = resp_id
-
-            return (
-                True,
-                409,
-                payload,
-                getattr(
+            return NameConflict(
+                code=409,
+                message=getattr(
                     smsg,
                     "DENIED_FOR_DOC_NAME_DUPLICATE",
                     smsg.DOCUMENT_NAME_DUPLICATE,
                 ),
+                data=_duplicate_payload(existing_doc, user, "document"),
             )
 
     for existing_doc in inactive_docs:
         try:
             existing_doc.delete_all_revisions(do_commit=False)
         except PermissionError:
-            return (
-                True,
-                500,
-                {},
-                "Failed to delete revisions. Perhaps a file task is in progress?",
+            return NameConflict(
+                code=500,
+                message="Failed to delete revisions. Perhaps a file task is in progress?",
             )
         session.delete(existing_doc)
 
-    return False, 0, {}, ""
+    return None
+
+
+def reserve_name_for_write(
+    session: Session, user: User, folder_id: str | None, title: str
+) -> tuple[DirectoryNameLock | None, NameConflict | None]:
+    """
+    Reserve a parent/name pair until the caller finishes its write.
+
+    The returned lock must be released immediately before commit. Keeping it in
+    the transaction until then serializes concurrent writers for names that do
+    not yet exist in either the folders or documents table.
+    """
+    lock = acquire_name_write_lock(session, folder_id, title)
+    if isinstance(lock, NameConflict):
+        return None, lock
+
+    conflict = find_name_conflict(session, user, folder_id, title)
+    if conflict is not None:
+        return None, conflict
+
+    return lock, None
 
 
 def acquire_name_write_lock(
     session: Session, folder_id: str | None, title: str
-) -> tuple[bool, int, dict, str]:
+) -> DirectoryNameLock | NameConflict | None:
     if global_config["document"]["allow_name_duplicate"]:
-        return False, 0, {}, ""
+        return None
 
-    if not folder_id:
-        folder_id = ROOT_DIRECTORY_ID
+    folder_id = normalize_parent_id(folder_id)
     title = normalize_object_name(title)
 
     lock = DirectoryNameLock(parent_id=folder_id, name=title)
@@ -159,7 +181,13 @@ def acquire_name_write_lock(
             session.add(lock)
             session.flush()
     except IntegrityError:
-        session.rollback()
-        return True, 409, {}, smsg.DOCUMENT_OR_DIRECTORY_NAME_DUPLICATE
-    session.delete(lock)
-    return False, 0, {}, ""
+        return NameConflict(
+            code=409,
+            message=smsg.DOCUMENT_OR_DIRECTORY_NAME_DUPLICATE,
+        )
+    return lock
+
+
+def release_name_write_lock(session: Session, lock: DirectoryNameLock | None) -> None:
+    if lock is not None:
+        session.delete(lock)
