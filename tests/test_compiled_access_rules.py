@@ -103,6 +103,13 @@ def access_rule_session(monkeypatch, tmp_path):
     from include.database.session import Base
 
     engine = create_engine("sqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     with SessionLocal() as session:
@@ -368,12 +375,18 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
     compiled_rule = session.query(models.CompiledAccessRule).one()
     compiled_group = compiled_rule.match_groups[0]
     assert [right.permission for right in compiled_group.rights] == ["list_users"]
+    assert session.query(models.CompiledAccessRuleGroup).count() == 1
+    assert session.query(models.CompiledAccessRuleMembership).count() == 0
+    assert session.query(models.CompiledAccessRuleRight).count() == 1
     assert find_compiled_access_rule_mismatches(session) == []
 
     set_access_rules(document, {}, inherit_parent=False)
     session.flush()
 
     assert session.query(models.CompiledAccessRule).count() == 0
+    assert session.query(models.CompiledAccessRuleGroup).count() == 0
+    assert session.query(models.CompiledAccessRuleMembership).count() == 0
+    assert session.query(models.CompiledAccessRuleRight).count() == 0
     assert find_compiled_access_rule_mismatches(session) == []
 
 
