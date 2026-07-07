@@ -11,7 +11,7 @@ from include.domains.documents.handlers.documents import (
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
-    decode_cursor,
+    PaginationCursor,
     get_page_size,
     make_cursor_response,
 )
@@ -56,13 +56,14 @@ class RequestListRevisionsHandler(RequestHandler):
             filters = {"document_id": document_id}
             sort = "created_time_id:asc"
             try:
-                last_key = decode_cursor(
+                decoded_cursor = PaginationCursor.decode(
                     cursor,
                     action="list_revisions",
                     sort=sort,
                     filters=filters,
                     value_types=[(int, float), str],
                 )
+                last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=document_id, username=handler.username)

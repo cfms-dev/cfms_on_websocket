@@ -49,7 +49,7 @@ from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     OFFSET_PAGINATION_SCHEMA,
     CursorError,
-    decode_cursor,
+    PaginationCursor,
     get_offset_pagination,
     get_page_size,
     make_cursor_response,
@@ -577,13 +577,14 @@ class RequestListUserBlocksHandler(RequestHandler):
             filters = {"username": target_username}
             sort = "timestamp_block_id:desc"
             try:
-                last_key = decode_cursor(
+                decoded_cursor = PaginationCursor.decode(
                     cursor,
                     action="list_user_blocks",
                     sort=sort,
                     filters=filters,
                     value_types=[(int, float), str],
                 )
+                last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(

@@ -3,24 +3,23 @@ __all__ = [
     "OFFSET_PAGINATION_SCHEMA",
     "PAGINATION_CURSOR_MAX_LENGTH",
     "CursorError",
-    "decode_cursor",
-    "encode_cursor",
+    "PaginationCursor",
     "get_page_size",
     "get_offset_pagination",
     "make_cursor_response",
-    "require_cursor_length",
     "require_cursor_types",
 ]
 
 import base64
 import hashlib
 import json
-import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from include.config.constants import (
     PAGINATION_DEFAULT_PAGE_SIZE,
@@ -29,6 +28,8 @@ from include.config.constants import (
 from include.config.settings import global_config
 
 PAGINATION_CURSOR_MAX_LENGTH = 2048
+_CURSOR_AAD = "pagination-cursor-v2"
+_CURSOR_KDF_INFO = b"cfms-pagination-cursor-fernet-v2"
 
 CURSOR_PAGINATION_SCHEMA = {
     "page_size": {
@@ -84,105 +85,87 @@ def _cursor_secret() -> bytes:
 
 
 def _cursor_key() -> bytes:
-    return hashlib.sha256(_cursor_secret()).digest()
+    key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=_CURSOR_KDF_INFO,
+    ).derive(_cursor_secret())
+    return base64.urlsafe_b64encode(key)
 
 
-def _b64_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+def _cursor_fernet() -> Fernet:
+    return Fernet(_cursor_key())
 
 
-def _b64_decode(token: str) -> bytes:
-    try:
-        padding = "=" * (-len(token) % 4)
-        return base64.urlsafe_b64decode((token + padding).encode())
-    except Exception as exc:
-        raise CursorError("Invalid cursor") from exc
+@dataclass(frozen=True, slots=True)
+class PaginationCursor:
+    action: str
+    sort: str
+    filters: dict[str, Any]
+    last: list[Any]
 
+    def encode(self) -> str:
+        payload = {
+            "aad": _CURSOR_AAD,
+            "a": self.action,
+            "s": self.sort,
+            "f": _filters_hash(self.filters),
+            "k": self.last,
+        }
+        return _cursor_fernet().encrypt(_canonical_json(payload)).decode()
 
-def encode_cursor(
-    *,
-    action: str,
-    sort: str,
-    filters: dict[str, Any],
-    last: Sequence[Any],
-) -> str:
-    nonce = os.urandom(12)
-    encrypted_payload = {
-        "a": action,
-        "s": sort,
-        "f": _filters_hash(filters),
-        "k": list(last),
-    }
-    ciphertext = AESGCM(_cursor_key()).encrypt(
-        nonce,
-        _canonical_json(encrypted_payload),
-        b"pagination-cursor-v1",
-    )
-    payload = {
-        "v": 1,
-        "n": _b64_encode(nonce),
-        "c": _b64_encode(ciphertext),
-    }
-    return _b64_encode(_canonical_json(payload))
+    @classmethod
+    def decode(
+        cls,
+        token: str | None,
+        *,
+        action: str,
+        sort: str,
+        filters: dict[str, Any],
+        ttl: int | None = None,
+        value_types: Sequence[CursorValueType] | None = None,
+    ) -> "PaginationCursor | None":
+        if token is None:
+            return None
 
+        if len(token) > PAGINATION_CURSOR_MAX_LENGTH:
+            raise CursorError("Invalid cursor")
 
-def decode_cursor(
-    cursor: str | None,
-    *,
-    action: str,
-    sort: str,
-    filters: dict[str, Any],
-    value_types: Sequence[CursorValueType] | None = None,
-) -> list[Any] | None:
-    if cursor is None:
-        return None
+        try:
+            raw_payload = _cursor_fernet().decrypt(token, ttl=ttl)
+            cursor_data = json.loads(raw_payload)
+        except (
+            InvalidToken,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise CursorError("Invalid cursor") from exc
 
-    if len(cursor) > PAGINATION_CURSOR_MAX_LENGTH:
-        raise CursorError("Invalid cursor")
+        if not isinstance(cursor_data, dict):
+            raise CursorError("Invalid cursor")
 
-    try:
-        payload = json.loads(_b64_decode(cursor))
-    except Exception as exc:
-        raise CursorError("Invalid cursor") from exc
+        if cursor_data.get("aad") != _CURSOR_AAD:
+            raise CursorError("Invalid cursor")
 
-    if not isinstance(payload, dict) or payload.get("v") != 1:
-        raise CursorError("Invalid cursor")
+        if cursor_data.get("a") != action or cursor_data.get("s") != sort:
+            raise CursorError("Cursor does not match this request")
+        if cursor_data.get("f") != _filters_hash(filters):
+            raise CursorError("Cursor does not match this request")
 
-    nonce_token = payload.get("n")
-    ciphertext_token = payload.get("c")
-    if not isinstance(nonce_token, str) or not isinstance(ciphertext_token, str):
-        raise CursorError("Invalid cursor")
+        last = cursor_data.get("k")
+        if not isinstance(last, list):
+            raise CursorError("Invalid cursor")
+        if value_types is not None:
+            require_cursor_types(last, value_types)
 
-    try:
-        raw_payload = AESGCM(_cursor_key()).decrypt(
-            _b64_decode(nonce_token),
-            _b64_decode(ciphertext_token),
-            b"pagination-cursor-v1",
+        return cls(
+            action=action,
+            sort=sort,
+            filters=filters,
+            last=last,
         )
-        cursor_data = json.loads(raw_payload)
-    except (
-        InvalidTag,
-        CursorError,
-        json.JSONDecodeError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        raise CursorError("Invalid cursor") from exc
-
-    if not isinstance(cursor_data, dict):
-        raise CursorError("Invalid cursor")
-
-    if cursor_data.get("a") != action or cursor_data.get("s") != sort:
-        raise CursorError("Cursor does not match this request")
-    if cursor_data.get("f") != _filters_hash(filters):
-        raise CursorError("Cursor does not match this request")
-
-    last = cursor_data.get("k")
-    if not isinstance(last, list):
-        raise CursorError("Invalid cursor")
-    if value_types is not None:
-        require_cursor_types(last, value_types)
-    return last
 
 
 def _strip_internal_pagination_fields(item: Any) -> Any:
@@ -202,11 +185,6 @@ def get_offset_pagination(data: dict[str, Any]) -> tuple[int, int]:
         data.get("offset", 0),
         data.get("count", PAGINATION_DEFAULT_PAGE_SIZE),
     )
-
-
-def require_cursor_length(last: list[Any] | None, length: int) -> None:
-    if last is not None and len(last) != length:
-        raise CursorError("Invalid cursor")
 
 
 def _matches_cursor_type(value: Any, expected: CursorValueType) -> bool:
@@ -245,12 +223,12 @@ def make_cursor_response[T](
     page_items = page_items[:page_size]
     next_cursor = None
     if has_more and page_items:
-        next_cursor = encode_cursor(
+        next_cursor = PaginationCursor(
             action=action,
             sort=sort,
             filters=filters,
-            last=cursor_key(page_items[-1]),
-        )
+            last=list(cursor_key(page_items[-1])),
+        ).encode()
 
     return {
         "items": [_strip_internal_pagination_fields(item) for item in page_items],

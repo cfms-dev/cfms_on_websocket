@@ -33,7 +33,7 @@ from include.domains.documents.queries.listing import (
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
-    decode_cursor,
+    PaginationCursor,
     get_page_size,
     make_cursor_response,
 )
@@ -100,13 +100,14 @@ class RequestListDirectoryHandler(RequestHandler):
             filters = {"folder_id": folder_id}
             sort = "type_name_id:asc"
             try:
-                last_key = decode_cursor(
+                decoded_cursor = PaginationCursor.decode(
                     cursor,
                     action="list_directory",
                     sort=sort,
                     filters=filters,
                     value_types=[int, str, str],
                 )
+                last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=folder_id, username=handler.username)
@@ -1072,13 +1073,14 @@ class RequestListDeletedItemsHandler(RequestHandler):
             filters = {"folder_id": db_parent_id}
             sort = "type_name_id:asc"
             try:
-                last_key = decode_cursor(
+                decoded_cursor = PaginationCursor.decode(
                     cursor,
                     action="list_deleted_items",
                     sort=sort,
                     filters=filters,
                     value_types=[int, str, str],
                 )
+                last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=parent_id, username=handler.username)

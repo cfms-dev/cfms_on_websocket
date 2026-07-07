@@ -14,7 +14,7 @@ from include.domains.access.permissions import Permissions
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
-    decode_cursor,
+    PaginationCursor,
     get_page_size,
     make_cursor_response,
 )
@@ -180,13 +180,14 @@ class RequestViewAccessEntriesHandler(RequestHandler):
             }
             sort = "id:asc"
             try:
-                last_key = decode_cursor(
+                decoded_cursor = PaginationCursor.decode(
                     cursor,
                     action="view_access_entries",
                     sort=sort,
                     filters=filters,
                     value_types=[int],
                 )
+                last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=handler.username)

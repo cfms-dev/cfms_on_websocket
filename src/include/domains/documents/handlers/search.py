@@ -18,7 +18,7 @@ from include.domains.documents.queries.listing import (
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
-    decode_cursor,
+    PaginationCursor,
     get_page_size,
     make_cursor_response,
 )
@@ -89,13 +89,14 @@ class RequestSearchHandler(RequestHandler):
         }
         sort = f"{sort_by}:{sort_order}"
         try:
-            last_key = decode_cursor(
+            decoded_cursor = PaginationCursor.decode(
                 cursor,
                 action="search",
                 sort=sort,
                 filters=filters,
                 value_types=[(int, float, str), int, str],
             )
+            last_key = None if decoded_cursor is None else decoded_cursor.last
         except CursorError as exc:
             handler.conclude_request(400, {}, str(exc))
             return Result(code=400, target=query, username=handler.username)
