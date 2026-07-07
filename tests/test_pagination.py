@@ -33,9 +33,9 @@ def _restore_modules(pagination, previous_modules):
 
 
 def _tamper_token(token: str) -> str:
-    index = -2 if token.endswith("=") else -1
-    replacement = "A" if token[index] != "A" else "B"
-    return token[:index] + replacement + token[index + 1 :]
+    raw_token = bytearray(base64.urlsafe_b64decode(token))
+    raw_token[-1] ^= 1
+    return base64.urlsafe_b64encode(raw_token).decode()
 
 
 def _encode_cursor(
