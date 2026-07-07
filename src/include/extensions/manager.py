@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__all__ = ["pm", "load_extensions_from_directory"]
+__all__ = ["pm", "load_builtin_extension", "load_extensions_from_directory"]
 
 import importlib.util
 import os
@@ -109,6 +109,53 @@ class ServerHookSpecs:
         """
 
 
+def _load_extension(
+    extension_dir: str | Path,
+    ext_name: str,
+    *,
+    quiet: bool = False,
+) -> bool:
+    extension_path = Path(extension_dir) / ext_name
+    entrypoint = extension_path / "_extension.py"
+
+    if not entrypoint.is_file():
+        return False
+
+    try:
+        spec = importlib.util.spec_from_file_location(ext_name, entrypoint)
+        if spec is None or spec.loader is None:
+            logger.error(f"Failed to load spec for extension: {ext_name}")
+            return False
+
+        spec.submodule_search_locations = [str(extension_path)]
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[ext_name] = module
+
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            del sys.modules[ext_name]
+            raise
+
+        pm.register(module, name=ext_name)
+
+        if not quiet:
+            logger.info(f"Loaded extension: {ext_name}")
+        return True
+
+    except Exception as e:
+        logger.exception(f"Failed to load extension '{ext_name}': {e}")
+        return False
+
+
+def load_builtin_extension(extension_dir: str | Path):
+    if pm.has_plugin("builtin"):
+        return
+
+    _load_extension(extension_dir, "builtin", quiet=True)
+
+
 def load_extensions_from_directory(extension_dir: str | Path):
 
     if not os.path.isdir(extension_dir):
@@ -124,52 +171,23 @@ def load_extensions_from_directory(extension_dir: str | Path):
             continue
 
         ext_path = os.path.join(extension_dir, filename)
-        is_package = False
-
-        if os.path.isfile(ext_path) and filename.endswith(".py"):
-            ext_name = filename[:-3]  # remove .py extension
-        elif os.path.isdir(ext_path):
-            ext_name = filename
-            ext_path = os.path.join(ext_path, "_extension.py")
-            if not os.path.isfile(ext_path):
-                continue
-            is_package = True
-        else:
+        if not os.path.isdir(ext_path):
             continue
 
+        ext_name = filename
         if ext_name in loaded_extensions:
             logger.warning(
                 f"Skipping: Found a duplicate {filename} for extension '{ext_name}'"
             )
             continue
 
-        try:
-            spec = importlib.util.spec_from_file_location(ext_name, ext_path)
-            if spec is None or spec.loader is None:
-                logger.error(f"Failed to load spec for extension: {ext_name}")
-                continue
+        if pm.has_plugin(ext_name):
+            continue
 
-            if is_package:
-                spec.submodule_search_locations = [
-                    os.path.join(extension_dir, filename)
-                ]
+        if not _load_extension(extension_dir, ext_name):
+            continue
 
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[ext_name] = module
-
-            try:
-                spec.loader.exec_module(module)
-            except Exception:
-                del sys.modules[ext_name]
-                raise
-
-            pm.register(module, name=ext_name)
-            loaded_extensions.add(ext_name)
-
-            logger.info(f"Loaded extension: {ext_name}")
-
-        except Exception as e:
-            logger.exception(f"Failed to load extension '{ext_name}': {e}")
+        loaded_extensions.add(ext_name)
 
 
 pm = pluggy.PluginManager("cfms")

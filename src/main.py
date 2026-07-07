@@ -37,7 +37,11 @@ from include.domains.access.permissions import Permissions
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
-from include.extensions.manager import load_extensions_from_directory, pm
+from include.extensions.manager import (
+    load_builtin_extension,
+    load_extensions_from_directory,
+    pm,
+)
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
 from include.transport.client_address import is_v6_address
@@ -453,7 +457,9 @@ def main():
     ProviderManager().event_bus.subscribe("system:broadcast", on_global_broadcast)
 
     # Register plugins after database initialization
-    load_extensions_from_directory(ROOT_ABSPATH / "include" / "extensions")
+    extension_root = ROOT_ABSPATH / "include" / "extensions"
+    load_builtin_extension(extension_root)
+    load_extensions_from_directory(extension_root)
 
     # Initialize available request handlers
     prepare_handlers()
