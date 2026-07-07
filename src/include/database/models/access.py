@@ -105,7 +105,9 @@ class CompiledAccessRule(Base):
 class CompiledAccessRuleGroup(Base):
     __tablename__ = "compiled_access_rule_groups"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(
+        VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
+    )
     rule_id: Mapped[int] = mapped_column(
         ForeignKey("compiled_access_rules.id", ondelete="CASCADE"),
         nullable=False,
@@ -139,7 +141,7 @@ class CompiledAccessRuleRight(Base):
     __tablename__ = "compiled_access_rule_rights"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    group_id: Mapped[int] = mapped_column(
+    group_id: Mapped[str] = mapped_column(
         ForeignKey("compiled_access_rule_groups.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -155,7 +157,7 @@ class CompiledAccessRuleMembership(Base):
     __tablename__ = "compiled_access_rule_memberships"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    group_id: Mapped[int] = mapped_column(
+    group_id: Mapped[str] = mapped_column(
         ForeignKey("compiled_access_rule_groups.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

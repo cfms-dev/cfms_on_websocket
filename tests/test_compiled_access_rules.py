@@ -1,10 +1,12 @@
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import pytest
 import tomlkit
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import SAWarning
 from sqlalchemy.orm import sessionmaker
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -370,11 +372,20 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
         },
         inherit_parent=False,
     )
-    session.flush()
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "error",
+            message="Identity map already had an identity.*",
+            category=SAWarning,
+        )
+        session.flush()
 
     compiled_rule = session.query(models.CompiledAccessRule).one()
     compiled_group = compiled_rule.match_groups[0]
+    assert isinstance(compiled_group.id, str)
+    assert len(compiled_group.id) == 32
     assert [right.permission for right in compiled_group.rights] == ["list_users"]
+    assert [right.group_id for right in compiled_group.rights] == [compiled_group.id]
     assert session.query(models.CompiledAccessRuleGroup).count() == 1
     assert session.query(models.CompiledAccessRuleMembership).count() == 0
     assert session.query(models.CompiledAccessRuleRight).count() == 1
