@@ -7,7 +7,7 @@ import pytest
 import tomlkit
 from sqlalchemy import create_engine, event
 from sqlalchemy.exc import SAWarning
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Query, sessionmaker
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _SRC_PATH = _PROJECT_ROOT / "src"
@@ -354,7 +354,7 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
 
     assert session.query(models.CompiledAccessRule).count() == 1
     assert session.query(models.CompiledAccessRuleSet).count() == 1
-    assert document.active_access_rule_set is not None
+    assert document.access_rule_set is not None
     assert find_compiled_access_rule_mismatches(session) == []
 
     set_access_rules(
@@ -382,7 +382,7 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
     compiled_rule = session.query(models.CompiledAccessRule).one()
     compiled_group = compiled_rule.match_groups[0]
     assert session.query(models.CompiledAccessRuleSet).count() == 1
-    assert document.active_access_rule_set_id == compiled_rule.rule_set_id
+    assert document.access_rule_set_id == compiled_rule.rule_set_id
     assert isinstance(compiled_group.id, str)
     assert len(compiled_group.id) == 32
     assert [right.permission for right in compiled_group.rights] == ["list_users"]
@@ -397,11 +397,34 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
 
     assert session.query(models.CompiledAccessRule).count() == 0
     assert session.query(models.CompiledAccessRuleSet).count() == 1
-    assert document.active_access_rule_set is not None
+    assert document.access_rule_set is not None
     assert session.query(models.CompiledAccessRuleGroup).count() == 0
     assert session.query(models.CompiledAccessRuleMembership).count() == 0
     assert session.query(models.CompiledAccessRuleRight).count() == 0
     assert find_compiled_access_rule_mismatches(session) == []
+
+
+def test_set_access_rules_locks_target_node(access_rule_session, monkeypatch):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+
+    lock_calls = []
+    original_with_for_update = Query.with_for_update
+
+    def tracking_with_for_update(self, *args, **kwargs):
+        lock_calls.append(self)
+        return original_with_for_update(self, *args, **kwargs)
+
+    monkeypatch.setattr(Query, "with_for_update", tracking_with_for_update)
+
+    document = models.Document(id="doc-lock", title="Document", inherit=False)
+    session.add(document)
+    session.flush()
+
+    set_access_rules(document, {}, inherit_parent=False)
+
+    assert lock_calls
+    assert document.access_rule_set is not None
 
 
 def test_orm_delete_removes_compiled_access_rules(access_rule_session):
@@ -574,13 +597,13 @@ def test_delete_compiled_access_rules_validates_target_type(access_rule_session)
     with pytest.raises(ValueError):
         delete_compiled_access_rules_for_targets(session, [("document", folder.id)])
 
-    assert session.get(models.Folder, folder.id).active_access_rule_set_id is not None
+    assert session.get(models.Folder, folder.id).access_rule_set_id is not None
     assert session.query(models.CompiledAccessRuleSet).count() == 1
 
     delete_compiled_access_rules_for_targets(session, [("directory", folder.id)])
     session.flush()
 
-    assert session.get(models.Folder, folder.id).active_access_rule_set_id is None
+    assert session.get(models.Folder, folder.id).access_rule_set_id is None
     assert session.query(models.CompiledAccessRuleSet).count() == 0
     assert session.query(models.CompiledAccessRule).count() == 0
 

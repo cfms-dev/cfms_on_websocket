@@ -7,6 +7,7 @@ from sqlalchemy.orm.session import object_session
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
 from include.database.models.access import CompiledAccessRuleSet
+from include.database.models.documents import Node
 from include.database.models.identity import User
 
 if TYPE_CHECKING:
@@ -93,6 +94,22 @@ def set_access_rules(
         raise TypeError("Unsupported Object Type")
     target_type, target_id = target_key
 
+    node_for_update = (
+        session.query(Node)
+        .filter(Node.id == target_id, Node.type == target_type)
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
+    if node_for_update is None:
+        raise RuntimeError("Target node no longer exists while setting access rules")
+
+    old_rule_set = (
+        session.get(CompiledAccessRuleSet, node_for_update.access_rule_set_id)
+        if node_for_update.access_rule_set_id is not None
+        else None
+    )
+
     compiled_rules = []
 
     for access_type, this_type_rules in new_access_rules.items():
@@ -115,12 +132,13 @@ def set_access_rules(
             if compiled_rule is not None:
                 compiled_rules.append(compiled_rule)
 
-    old_rule_set = target.access_rule_set
     new_rule_set = CompiledAccessRuleSet(node_id=target_id)
     new_rule_set.rules.extend(compiled_rules)
     session.add(new_rule_set)
     session.flush()
 
+    node_for_update.access_rule_set = new_rule_set
+    node_for_update.access_rule_set_id = new_rule_set.id
     target.access_rule_set = new_rule_set
     target.access_rule_set_id = new_rule_set.id
     session.flush()
