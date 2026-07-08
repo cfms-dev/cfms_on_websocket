@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 __all__ = [
-    "BaseObject",
     "EntityStatus",
     "Node",
     "Document",
@@ -161,9 +160,6 @@ class Node(Base):
             user=user,
             access_type=access_type,
         )
-
-
-BaseObject = Node
 
 
 class DocumentRevisionStatus(IntEnum):

@@ -8,7 +8,6 @@ from include.database.models.access import (
     UserBlockSubEntry,
 )
 from include.database.models.documents import (
-    BaseObject,
     Document,
     DocumentMetadata,
     DocumentMetadataTag,
@@ -38,7 +37,6 @@ from include.database.models.security import (
 __all__ = [
     "AuditEntry",
     "BannedSubnet",
-    "BaseObject",
     "CompiledAccessRule",
     "CompiledAccessRuleGroup",
     "CompiledAccessRuleMembership",
