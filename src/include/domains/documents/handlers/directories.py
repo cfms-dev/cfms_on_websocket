@@ -43,6 +43,17 @@ from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
 
+def _mark_nodes_deleted(session, node_ids, operation_id: str) -> None:
+    for chunk in batched(list(node_ids), QUERY_CHUNK_SIZE):
+        session.query(Node).filter(Node.id.in_(list(chunk))).update(
+            {
+                Node.status: EntityStatus.DELETED,
+                Node.status_operation_id: operation_id,
+            },
+            synchronize_session=False,
+        )
+
+
 class RequestListDirectoryHandler(RequestHandler):
     """
     Handles directory listing requests.
@@ -450,27 +461,14 @@ class RequestDeleteDirectoryHandler(RequestHandler):
 
             # execute batch deletion in a transaction
 
-            # 2a. mark documents for deletion in DB; failures are logged.
-            for chunk in batched(list(deletable_doc_ids), QUERY_CHUNK_SIZE):
-                session.query(Document).filter(Document.id.in_(list(chunk))).update(
-                    {
-                        "status": EntityStatus.DELETED,
-                        "status_operation_id": operation_id,
-                    },
-                    synchronize_session=False,
-                )
+            # 2a. Mark documents and folders as DELETED
+            _mark_nodes_deleted(
+                session,
+                set(deletable_doc_ids) | set(deletable_folder_ids),
+                operation_id,
+            )
 
-            # 2b. Mark folders as DELETED
-            for chunk in batched(list(deletable_folder_ids), QUERY_CHUNK_SIZE):
-                session.query(Folder).filter(Folder.id.in_(list(chunk))).update(
-                    {
-                        "status": EntityStatus.DELETED,
-                        "status_operation_id": operation_id,
-                    },
-                    synchronize_session=False,
-                )
-
-            # 2c. Mark the root folder as DELETED
+            # 2b. Mark the root folder as DELETED
             root_fully_deletable = (
                 len(protected_folder_ids) == 0 and len(failed_items) == 0
             )
