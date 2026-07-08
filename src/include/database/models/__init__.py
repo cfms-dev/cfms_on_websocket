@@ -16,6 +16,7 @@ from include.database.models.documents import (
     DocumentRevisionStatus,
     EntityStatus,
     Folder,
+    Node,
 )
 from include.database.models.files import File, FileTask, TransferMode
 from include.database.models.identity import (
@@ -52,6 +53,7 @@ __all__ = [
     "FileTask",
     "Folder",
     "LoginThrottle",
+    "Node",
     "ObjectAccessEntry",
     "TrafficThrottle",
     "TransferMode",

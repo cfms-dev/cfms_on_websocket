@@ -25,6 +25,7 @@ def directory_models(protected_test_config):
             DocumentRevision,
             EntityStatus,
             Folder,
+            Node,
         )
         from include.database.models.files import File
         from include.database.session import Base
@@ -49,6 +50,7 @@ def directory_models(protected_test_config):
         EntityStatus=EntityStatus,
         File=File,
         Folder=Folder,
+        Node=Node,
         count_active_directory_children=count_active_directory_children,
         directory_cursor_key=directory_cursor_key,
         fetch_deleted_listing_items=fetch_deleted_listing_items,
@@ -66,6 +68,7 @@ def directory_session(directory_models):
         engine,
         tables=[
             directory_models.File.__table__,
+            directory_models.Node.__table__,
             directory_models.Folder.__table__,
             directory_models.Document.__table__,
             directory_models.DocumentRevision.__table__,
@@ -465,7 +468,7 @@ def test_directory_listing_query_limits_candidates(
     folder_selects = [
         statement
         for statement in statements
-        if "FROM folders" in statement
+        if "folders" in statement
         and "parent_id" in statement
         and "ORDER BY lower" in statement
     ]
@@ -516,7 +519,7 @@ def test_deleted_listing_query_limits_candidates(
     folder_selects = [
         statement
         for statement in statements
-        if "FROM folders" in statement
+        if "folders" in statement
         and "status" in statement
         and "ORDER BY lower" in statement
     ]
@@ -571,7 +574,7 @@ def test_search_candidate_query_limits_directory_candidates(
     candidate_selects = [
         statement
         for statement in statements
-        if "FROM folders" in statement and "lower" in statement.lower()
+        if "folders" in statement and "lower" in statement.lower()
     ]
     assert candidate_selects
     assert all("LIMIT" in statement.upper() for statement in candidate_selects)

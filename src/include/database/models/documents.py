@@ -3,6 +3,7 @@ from __future__ import annotations
 __all__ = [
     "BaseObject",
     "EntityStatus",
+    "Node",
     "Document",
     "DocumentRevision",
     "DocumentRevisionStatus",
@@ -39,6 +40,7 @@ from include.domains.documents.queries.revisions import batch_count_other_revisi
 from include.exceptions.misc import NoActiveRevisionsError
 
 if TYPE_CHECKING:
+    from include.database.models.access import CompiledAccessRule
     from include.database.models.identity import User
 
 
@@ -48,14 +50,17 @@ class EntityStatus(IntEnum):
     LOCKED = 2
 
 
-class BaseObject(Base):
-    __abstract__ = True
+class Node(Base):
+    __tablename__ = "nodes"
 
-    id: Mapped[str]
+    id: Mapped[str] = mapped_column(
+        VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
+    )
+    type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False, index=True)
 
     # Whether to inherit access rules from parent folders.
     # Useful when enabling recursion check.
-    inherit: Mapped[bool]
+    inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     status: Mapped[EntityStatus] = mapped_column(
         Integer, nullable=False, default=EntityStatus.OK
@@ -63,6 +68,18 @@ class BaseObject(Base):
     status_operation_id: Mapped[str | None] = mapped_column(
         VARCHAR(255), nullable=True, index=True
     )
+    compiled_access_rules: Mapped[list["CompiledAccessRule"]] = relationship(
+        "CompiledAccessRule",
+        back_populates="node",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="CompiledAccessRule.id",
+    )
+
+    __mapper_args__ = {
+        "polymorphic_on": type,
+        "polymorphic_identity": "node",
+    }
 
     def check_access_requirements(
         self, user: User, access_type: str = "read", _no_recursive_check=False
@@ -146,15 +163,20 @@ class BaseObject(Base):
         )
 
 
+BaseObject = Node
+
+
 class DocumentRevisionStatus(IntEnum):
     OK = 0
     DELETED = 1
 
 
-class Folder(BaseObject):  # Document folder.
+class Folder(Node):  # Document folder.
     __tablename__ = "folders"
     id: Mapped[str] = mapped_column(
-        VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
+        VARCHAR(255),
+        ForeignKey("nodes.id", ondelete="CASCADE"),
+        primary_key=True,
     )
     name: Mapped[str] = mapped_column(
         VARCHAR(255), nullable=False, index=True
@@ -166,15 +188,25 @@ class Folder(BaseObject):  # Document folder.
         VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE")
     )  # Parent folder ID.
     parent: Mapped[Folder | None] = relationship(
-        "Folder", back_populates="children", remote_side=[id]
+        "Folder",
+        back_populates="children",
+        remote_side=[id],
+        foreign_keys=[parent_id],
     )
     children: Mapped[list[Folder]] = relationship(
-        "Folder", back_populates="parent", cascade="all, delete-orphan"
+        "Folder",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        foreign_keys=[parent_id],
     )
     documents: Mapped[list[Document]] = relationship(
-        "Document", back_populates="folder", cascade="all, delete-orphan"
+        "Document",
+        back_populates="folder",
+        cascade="all, delete-orphan",
+        foreign_keys="[Document.folder_id]",
     )
-    inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __mapper_args__ = {"polymorphic_identity": "directory"}
 
     @property
     @deprecated("Use count_active_directory_children instead.")
@@ -211,10 +243,12 @@ class Folder(BaseObject):  # Document folder.
         return False
 
 
-class Document(BaseObject):
+class Document(Node):
     __tablename__ = "documents"
     id: Mapped[str] = mapped_column(
-        VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
+        VARCHAR(255),
+        ForeignKey("nodes.id", ondelete="CASCADE"),
+        primary_key=True,
     )
     title: Mapped[str] = mapped_column(
         VARCHAR(255), nullable=False, default="Untitled Document", index=True
@@ -225,7 +259,11 @@ class Document(BaseObject):
     folder_id: Mapped[str | None] = mapped_column(
         VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE"), nullable=True
     )  # Folder ID that owns the document.
-    folder: Mapped[Folder | None] = relationship("Folder", back_populates="documents")
+    folder: Mapped[Folder | None] = relationship(
+        "Folder",
+        back_populates="documents",
+        foreign_keys=[folder_id],
+    )
 
     current_revision_id: Mapped[str | None] = mapped_column(
         VARCHAR(64),
@@ -252,7 +290,6 @@ class Document(BaseObject):
         cascade="all, delete-orphan",
         overlaps="current_revision",  # Declares overlap with current_revision.
     )
-    inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     metadata_record: Mapped[DocumentMetadata | None] = relationship(
         "DocumentMetadata",
         back_populates="document",
@@ -267,6 +304,8 @@ class Document(BaseObject):
         except (RuntimeError, NoActiveRevisionsError):
             return False
         return latest_revision is not None
+
+    __mapper_args__ = {"polymorphic_identity": "document"}
 
     def get_latest_revision(self) -> DocumentRevision:
         """

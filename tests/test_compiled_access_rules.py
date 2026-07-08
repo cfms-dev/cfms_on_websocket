@@ -277,17 +277,14 @@ def test_compiled_access_rule_mismatch_detector_reports_invalid_rows(
 
     session.add(
         models.CompiledAccessRule(
-            target_type="directory",
-            target_id="missing-folder",
-            access_type="read",
+            node_id=folder.id,
+            access_type="invalid",
             match_mode="all",
         )
     )
     session.flush()
 
-    assert find_compiled_access_rule_mismatches(session) == [
-        ("directory", "missing-folder")
-    ]
+    assert find_compiled_access_rule_mismatches(session) == [("directory", folder.id)]
 
 
 def test_compiled_access_rule_repair_removes_invalid_shape(access_rule_session):
@@ -436,13 +433,12 @@ def test_orm_delete_removes_compiled_access_rules(access_rule_session):
     assert find_compiled_access_rule_mismatches(session) == []
 
 
-def test_compiled_access_rule_maintenance_detects_and_repairs_orphans(
+def test_compiled_access_rule_maintenance_detects_and_repairs_invalid_rows(
     access_rule_session,
 ):
     models, session = access_rule_session
     from include.domains.access.authorization.access_rules import set_access_rules
     from include.domains.access.authorization.compiled_rules import (
-        delete_compiled_access_rules_for_targets,
         find_compiled_access_rule_mismatches,
         repair_compiled_access_rules,
     )
@@ -481,21 +477,21 @@ def test_compiled_access_rule_maintenance_detects_and_repairs_orphans(
     )
     session.flush()
 
-    delete_compiled_access_rules_for_targets(session, [("document", document.id)])
     session.add(
         models.CompiledAccessRule(
-            target_type="document",
-            target_id="missing-doc",
-            access_type="read",
+            node_id=document.id,
+            access_type="invalid",
             match_mode="all",
         )
     )
     session.flush()
 
     assert find_compiled_access_rule_mismatches(session) == [
-        ("document", "missing-doc"),
+        ("document", document.id),
     ]
-    assert find_compiled_access_rule_mismatches(session, include_orphans=False) == []
+    assert find_compiled_access_rule_mismatches(session, include_orphans=False) == [
+        ("document", document.id),
+    ]
 
     assert repair_compiled_access_rules(session) == []
     assert find_compiled_access_rule_mismatches(session) == []

@@ -46,14 +46,16 @@ def _fetch_ancestors_and_oae(
 
         ancestor_sql = text(f"""
             WITH RECURSIVE anc(id, parent_id, inherit) AS (
-                SELECT id, parent_id, inherit
-                FROM folders
-                WHERE id IN ({placeholders})
+                SELECT f.id, f.parent_id, n.inherit
+                FROM folders f
+                INNER JOIN nodes n ON n.id = f.id
+                WHERE f.id IN ({placeholders})
 
                 UNION
 
-                SELECT f.id, f.parent_id, f.inherit
+                SELECT f.id, f.parent_id, n.inherit
                 FROM folders f
+                INNER JOIN nodes n ON n.id = f.id
                 INNER JOIN anc ON f.id = anc.parent_id
             )
             SELECT DISTINCT id FROM anc

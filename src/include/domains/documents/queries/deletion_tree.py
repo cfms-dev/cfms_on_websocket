@@ -49,18 +49,20 @@ def fetch_subtree_for_deletion(
 
     # Step 1: Fetch all folder IDs in the subtree with a recursive CTE.
     exec_opts = {"include_deleted": True} if include_deleted else {}
-    status_filter = "" if include_deleted else f"AND f.status = {EntityStatus.OK.value}"
+    status_filter = "" if include_deleted else f"AND n.status = {EntityStatus.OK.value}"
 
     subtree_sql = text(f"""
         WITH RECURSIVE subtree(id, parent_id, status) AS (
-            SELECT id, parent_id, status
-            FROM folders
-            WHERE id = :root_id
+            SELECT f.id, f.parent_id, n.status
+            FROM folders f
+            INNER JOIN nodes n ON n.id = f.id
+            WHERE f.id = :root_id
 
             UNION ALL
 
-            SELECT f.id, f.parent_id, f.status
+            SELECT f.id, f.parent_id, n.status
             FROM folders f
+            INNER JOIN nodes n ON n.id = f.id
             INNER JOIN subtree s ON f.parent_id = s.id
             WHERE 1=1 {status_filter}
         )

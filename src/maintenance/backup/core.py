@@ -15,7 +15,7 @@ import shutil
 import tarfile
 import tempfile
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -113,6 +113,7 @@ BACKUP_TABLE_NAMES = (
     "user_memberships",
     "user_permissions",
     "keyrings",
+    "nodes",
     "folders",
     "documents",
     "document_revisions",
@@ -145,6 +146,7 @@ INSERT_ORDER = (
     "user_memberships",
     "user_permissions",
     "keyrings",
+    "nodes",
     "folders",
     "documents",
     "document_revisions",
@@ -196,6 +198,7 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
         "userblock_sub_entries",
     ),
     BackupComponent.DOCUMENT_LIBRARY: (
+        "nodes",
         "folders",
         "documents",
         "document_revisions",
@@ -1244,6 +1247,7 @@ def _restore_database(
 
     with session_factory.begin() as session:
         connection = session.connection()
+        _restore_legacy_nodes_if_needed(connection, extract_dir, manifest, tables)
         for table_index, table_name in enumerate(table_names, start=1):
             LOGGER.debug(
                 "Restoring table %s (%d/%d)",
@@ -1300,6 +1304,46 @@ def _restore_database(
         ):
             _restore_legacy_access_rules(session, legacy_access_rule_rows)
             LOGGER.debug("Converted legacy JSON access rules during database restore")
+
+
+def _restore_legacy_nodes_if_needed(
+    connection,
+    extract_dir: Path,
+    manifest: dict[str, Any],
+    tables: Mapping[str, Table],
+) -> None:
+    if "nodes" in manifest.get("tables", {}):
+        return
+
+    node_rows: dict[str, dict[str, Any]] = {}
+    for table_name, node_type in (("folders", "directory"), ("documents", "document")):
+        if table_name not in manifest.get("tables", {}):
+            continue
+        table_manifest = manifest["tables"][table_name]
+        path = _safe_payload_path(extract_dir, f"tables/{table_name}.jsonl")
+        with path.open("rb") as f:
+            rows = [orjson.loads(line) for line in f if line.strip()]
+        if len(rows) != table_manifest["rows"]:
+            raise BackupFormatError(
+                f"Row count mismatch for table {table_name!r}: "
+                f"manifest says {table_manifest['rows']}, payload has {len(rows)}"
+            )
+        for row in rows:
+            node_id = str(row["id"])
+            if node_id in node_rows:
+                raise BackupFormatError(
+                    f"Duplicate document/folder node id in backup: {node_id!r}"
+                )
+            node_rows[node_id] = {
+                "id": node_id,
+                "type": node_type,
+                "inherit": row.get("inherit", True),
+                "status": row.get("status", 0),
+                "status_operation_id": row.get("status_operation_id"),
+            }
+
+    if node_rows:
+        connection.execute(insert(tables["nodes"]), list(node_rows.values()))
 
 
 def _restore_config_keys(
@@ -1435,6 +1479,9 @@ def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
+    if table.name == "compiled_access_rules" and "node_id" not in row:
+        row = {**row, "node_id": row.get("target_id")}
+
     decoded = {}
     for column in table.columns:
         if column.name not in row:

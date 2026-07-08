@@ -11,6 +11,7 @@ def test_database_models_register_core_tables(monkeypatch, protected_test_config
         "documents",
         "files",
         "keyrings",
+        "nodes",
         "users",
     }
     assert expected_tables <= set(Base.metadata.tables)

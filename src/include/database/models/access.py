@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from include.database.session import Base
 
 if TYPE_CHECKING:
+    from include.database.models.documents import Node
     from include.database.models.identity import User
 
 
@@ -81,19 +82,23 @@ class CompiledAccessRule(Base):
     __tablename__ = "compiled_access_rules"
     __table_args__ = (
         Index(
-            "ix_compiled_access_rules_target_type_id_access",
-            "target_type",
-            "target_id",
+            "ix_compiled_access_rules_node_id_access",
+            "node_id",
             "access_type",
         ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    target_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False, index=True)
-    target_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(
+        VARCHAR(255),
+        ForeignKey("nodes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     access_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
     match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
 
+    node: Mapped["Node"] = relationship("Node", back_populates="compiled_access_rules")
     match_groups: Mapped[list["CompiledAccessRuleGroup"]] = relationship(
         "CompiledAccessRuleGroup",
         back_populates="rule",

@@ -55,8 +55,7 @@ class MCompiledAccessRule(_Base):
     __tablename__ = "compiled_access_rules"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    target_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
-    target_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    node_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
 
 
 class MFileTask(_Base):
@@ -107,8 +106,7 @@ def bulk_purge_module(monkeypatch):
     def delete_compiled_access_rules_for_targets(session, targets):
         for target_type, target_id in targets:
             session.query(MCompiledAccessRule).filter(
-                MCompiledAccessRule.target_type == target_type,
-                MCompiledAccessRule.target_id == target_id,
+                MCompiledAccessRule.node_id == target_id,
             ).delete(synchronize_session=False)
 
     compiled_rules_module.delete_compiled_access_rules_for_targets = (
@@ -157,7 +155,7 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
 ):
     _seed_document_with_revision(session, "doc1", "rev1", "file1")
     session.add(MFileTask(id="task1", file_id="file1"))
-    session.add(MCompiledAccessRule(target_type="document", target_id="doc1"))
+    session.add(MCompiledAccessRule(node_id="doc1"))
     session.commit()
 
     monkeypatch.setattr(
@@ -183,7 +181,7 @@ def test_purge_documents_bulk_keeps_shared_files(
     session.add(MFile(id="shared", path="/tmp/shared"))
     session.add_all([MDocument(id="doc1"), MDocument(id="doc2")])
     session.flush()
-    session.add(MCompiledAccessRule(target_type="document", target_id="doc1"))
+    session.add(MCompiledAccessRule(node_id="doc1"))
     session.add_all(
         [
             MDocumentRevision(id="rev1", document_id="doc1", file_id="shared"),

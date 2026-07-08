@@ -23,6 +23,7 @@ from include.database.models.documents import (
     DocumentRevision,
     EntityStatus,
     Folder,
+    Node,
 )
 from include.database.models.files import File
 from include.database.models.identity import User
@@ -426,6 +427,7 @@ def fetch_deleted_listing_items(
 
 def _effective_active_revision_details_subquery(document_filters: Sequence[Any]):
     document_table = Document.__table__
+    node_table = Node.__table__
     revision_table = DocumentRevision.__table__
     file_table = File.__table__
 
@@ -436,7 +438,10 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
             document_table.c.folder_id,
             document_table.c.created_time,
             document_table.c.current_revision_id,
-            document_table.c.inherit,
+            node_table.c.inherit,
+        )
+        .select_from(
+            document_table.join(node_table, node_table.c.id == document_table.c.id)
         )
         .where(*document_filters)
         .cte("matched_documents")
@@ -725,8 +730,7 @@ def _node_rules_allow(target_type_column, target_id_column, user: User):
     user_groups = list(user.all_groups)
     rule = aliased(CompiledAccessRule)
     relevant_rule = and_(
-        rule.target_type == target_type_column,
-        rule.target_id == target_id_column,
+        rule.node_id == target_id_column,
         rule.access_type == "read",
     )
     no_read_rules = not_(exists(select(1).where(relevant_rule)))
@@ -810,7 +814,7 @@ def _search_candidate_selectable(
     if search_documents:
         document_details = _effective_active_revision_details_subquery(
             [
-                Document.__table__.c.status != EntityStatus.DELETED,
+                Node.__table__.c.status != EntityStatus.DELETED,
                 Document.__table__.c.title.ilike(like_pattern),
             ]
         )
@@ -837,31 +841,38 @@ def _search_candidate_selectable(
 
 
 def _search_ancestor_cte(candidates):
+    folder_table = Folder.__table__
+    node_table = Node.__table__
     anchor = (
         select(
             candidates.c.type.label("object_type"),
             candidates.c.id.label("object_id"),
-            Folder.id.label("node_id"),
-            Folder.parent_id.label("parent_id"),
-            Folder.inherit.label("inherit"),
+            folder_table.c.id.label("node_id"),
+            folder_table.c.parent_id.label("parent_id"),
+            node_table.c.inherit.label("inherit"),
         )
         .select_from(
-            Folder.__table__.join(candidates, Folder.id == candidates.c.parent_id)
+            folder_table.join(
+                candidates, folder_table.c.id == candidates.c.parent_id
+            ).join(node_table, node_table.c.id == folder_table.c.id)
         )
         .where(candidates.c.inherit == True, candidates.c.parent_id != None)
     )
     ancestors = anchor.cte("search_visible_ancestors", recursive=True)
-    parent_folder = Folder.__table__.alias("search_visible_parent")
+    parent_folder = folder_table.alias("search_visible_parent")
+    parent_node = node_table.alias("search_visible_parent_node")
     ancestors = ancestors.union_all(
         select(
             ancestors.c.object_type,
             ancestors.c.object_id,
             parent_folder.c.id,
             parent_folder.c.parent_id,
-            parent_folder.c.inherit,
+            parent_node.c.inherit,
         )
         .select_from(
-            ancestors.join(parent_folder, parent_folder.c.id == ancestors.c.parent_id)
+            ancestors.join(
+                parent_folder, parent_folder.c.id == ancestors.c.parent_id
+            ).join(parent_node, parent_node.c.id == parent_folder.c.id)
         )
         .where(ancestors.c.inherit == True, ancestors.c.parent_id != None)
     )
@@ -1007,7 +1018,7 @@ def fetch_search_candidate_rows(
     if search_documents:
         document_details = _effective_active_revision_details_subquery(
             [
-                Document.__table__.c.status != EntityStatus.DELETED,
+                Node.__table__.c.status != EntityStatus.DELETED,
                 Document.__table__.c.title.ilike(like_pattern),
             ]
         )

@@ -125,7 +125,6 @@ def _insert_compiled_rule(
     connection,
     tables,
     *,
-    target_type: str,
     target_id: str,
     access_type: str,
     rule_data: dict,
@@ -133,8 +132,7 @@ def _insert_compiled_rule(
     result = connection.execute(
         insert(tables["compiled_access_rules"]),
         {
-            "target_type": target_type,
-            "target_id": target_id,
+            "node_id": target_id,
             "access_type": access_type,
             "match_mode": rule_data.get("match", "all"),
         },
@@ -275,6 +273,32 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             .values(preference_dek_id="key-1")
         )
         connection.execute(
+            insert(tables["nodes"]),
+            [
+                {
+                    "id": "/",
+                    "type": "directory",
+                    "inherit": True,
+                    "status": 0,
+                    "status_operation_id": None,
+                },
+                {
+                    "id": "folder-1",
+                    "type": "directory",
+                    "inherit": True,
+                    "status": 0,
+                    "status_operation_id": None,
+                },
+                {
+                    "id": "doc-1",
+                    "type": "document",
+                    "inherit": True,
+                    "status": 1,
+                    "status_operation_id": "soft-delete-op",
+                },
+            ],
+        )
+        connection.execute(
             insert(tables["folders"]),
             [
                 {
@@ -282,25 +306,18 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                     "name": "/",
                     "created_time": now,
                     "parent_id": None,
-                    "status": 0,
-                    "status_operation_id": None,
-                    "inherit": True,
                 },
                 {
                     "id": "folder-1",
                     "name": "Folder",
                     "created_time": now,
                     "parent_id": "/",
-                    "status": 0,
-                    "status_operation_id": None,
-                    "inherit": True,
                 },
             ],
         )
         _insert_compiled_rule(
             connection,
             tables,
-            target_type="directory",
             target_id="folder-1",
             access_type="read",
             rule_data={
@@ -316,9 +333,6 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "created_time": now,
                 "folder_id": "folder-1",
                 "current_revision_id": None,
-                "status": 1,
-                "status_operation_id": "soft-delete-op",
-                "inherit": True,
             },
         )
         connection.execute(
@@ -340,7 +354,6 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
         _insert_compiled_rule(
             connection,
             tables,
-            target_type="document",
             target_id="doc-1",
             access_type="read",
             rule_data={
@@ -765,7 +778,7 @@ def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
         compiled_rules = (
             connection.execute(
                 select(tables["compiled_access_rules"]).order_by(
-                    tables["compiled_access_rules"].c.target_type
+                    tables["compiled_access_rules"].c.node_id
                 )
             )
             .mappings()
@@ -782,12 +795,9 @@ def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
             .all()
         )
 
-    assert [
-        (row["target_type"], row["target_id"], row["access_type"])
-        for row in compiled_rules
-    ] == [
-        ("directory", "folder-legacy", "read"),
-        ("document", "doc-legacy", "manage"),
+    assert [(row["node_id"], row["access_type"]) for row in compiled_rules] == [
+        ("doc-legacy", "manage"),
+        ("folder-legacy", "read"),
     ]
     assert [row["group_name"] for row in memberships] == ["sysop"]
     assert [row["permission"] for row in rights] == ["list_users"]
@@ -858,10 +868,10 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     restored = _dump_backup_tables(base, target_engine)
     assert [row["id"] for row in restored["documents"]] == ["doc-1"]
     assert [row["id"] for row in restored["folders"]] == ["/", "folder-1"]
-    assert [
-        (row["target_type"], row["target_id"])
-        for row in restored["compiled_access_rules"]
-    ] == [("directory", "folder-1"), ("document", "doc-1")]
+    assert [row["node_id"] for row in restored["compiled_access_rules"]] == [
+        "folder-1",
+        "doc-1",
+    ]
     assert [row["target_identifier"] for row in restored["object_access_entries"]] == [
         "doc-1"
     ]
