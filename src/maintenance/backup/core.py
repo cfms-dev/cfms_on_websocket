@@ -25,7 +25,7 @@ import tomlkit
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from rich.progress import Progress, TaskID
-from sqlalchemy import DateTime, Table, func, insert, select, update
+from sqlalchemy import DateTime, Table, exists, func, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
@@ -173,7 +173,7 @@ DEFERRED_COLUMNS = {
     "folders": ("parent_id",),
     "documents": ("current_revision_id",),
     "document_revisions": ("parent_revision_id",),
-    "nodes": ("active_access_rule_set_id",),
+    "nodes": ("access_rule_set_id",),
 }
 
 DEFERRED_UPDATE_ORDER = (
@@ -181,7 +181,7 @@ DEFERRED_UPDATE_ORDER = (
     ("folders", "id", ("parent_id",)),
     ("document_revisions", "id", ("parent_revision_id",)),
     ("documents", "id", ("current_revision_id",)),
-    ("nodes", "id", ("active_access_rule_set_id",)),
+    ("nodes", "id", ("access_rule_set_id",)),
 )
 
 
@@ -801,6 +801,10 @@ def _export_tables(
     with session_factory() as session:
         connection = session.connection()
         file_ids = None
+        active_compiled_rule_set_ids = _collect_active_compiled_rule_set_ids(
+            connection,
+            metadata_tables,
+        )
         table_names = BACKUP_TABLE_NAMES
         if not full_export:
             file_ids = _collect_selected_file_ids(
@@ -847,13 +851,26 @@ def _export_tables(
                     components,
                     file_ids or frozenset(),
                 )
+            statement = _apply_compiled_access_rule_export_filter(
+                statement,
+                table,
+                table_name,
+                metadata_tables,
+                active_compiled_rule_set_ids,
+            )
 
             with rows_path.open("wb") as f:
                 for row in connection.execute(statement).mappings():
-                    encoded = {
-                        str(column.name): _serialize_value(row[column.name])
-                        for column in table.columns
-                    }
+                    encoded = {}
+                    for column in table.columns:
+                        value = row[column.name]
+                        if (
+                            table_name == "nodes"
+                            and column.name == "access_rule_set_id"
+                            and value not in active_compiled_rule_set_ids
+                        ):
+                            value = None
+                        encoded[str(column.name)] = _serialize_value(value)
                     f.write(orjson.dumps(encoded, option=orjson.OPT_SORT_KEYS))
                     f.write(b"\n")
                     row_count += 1
@@ -1042,6 +1059,25 @@ def _collect_selected_file_ids(
     return frozenset(file_ids)
 
 
+def _collect_active_compiled_rule_set_ids(
+    connection,
+    tables: dict[str, Table],
+) -> frozenset[str]:
+    nodes = tables["nodes"]
+    rule_sets = tables["compiled_access_rule_sets"]
+    rules = tables["compiled_access_rules"]
+    statement = (
+        select(rule_sets.c.id)
+        .join(nodes, nodes.c.access_rule_set_id == rule_sets.c.id)
+        .where(
+            rule_sets.c.node_id == nodes.c.id,
+            exists(select(1).where(rules.c.rule_set_id == rule_sets.c.id)),
+        )
+        .order_by(rule_sets.c.id)
+    )
+    return frozenset(str(row[0]) for row in connection.execute(statement))
+
+
 def _apply_export_table_filter(
     statement,
     table: Table,
@@ -1057,6 +1093,50 @@ def _apply_export_table_filter(
     ):
         return statement.where(
             table.c.target_type.in_(sorted(DOCUMENT_ACCESS_TARGET_TYPES))
+        )
+    return statement
+
+
+def _apply_compiled_access_rule_export_filter(
+    statement,
+    table: Table,
+    table_name: str,
+    tables: dict[str, Table],
+    active_compiled_rule_set_ids: frozenset[str],
+):
+    if table_name == "compiled_access_rule_sets":
+        return statement.where(table.c.id.in_(sorted(active_compiled_rule_set_ids)))
+    if table_name == "compiled_access_rules":
+        return statement.where(
+            table.c.rule_set_id.in_(sorted(active_compiled_rule_set_ids))
+        )
+    if table_name == "compiled_access_rule_groups":
+        rules = tables["compiled_access_rules"]
+        return statement.where(
+            table.c.rule_id.in_(
+                select(rules.c.id).where(
+                    rules.c.rule_set_id.in_(sorted(active_compiled_rule_set_ids))
+                )
+            )
+        )
+    if table_name in {
+        "compiled_access_rule_memberships",
+        "compiled_access_rule_rights",
+    }:
+        rules = tables["compiled_access_rules"]
+        groups = tables["compiled_access_rule_groups"]
+        return statement.where(
+            table.c.group_id.in_(
+                select(groups.c.id).where(
+                    groups.c.rule_id.in_(
+                        select(rules.c.id).where(
+                            rules.c.rule_set_id.in_(
+                                sorted(active_compiled_rule_set_ids)
+                            )
+                        )
+                    )
+                )
+            )
         )
     return statement
 
@@ -1460,7 +1540,7 @@ def _restore_missing_compiled_rule_sets(
         connection.execute(
             update(nodes)
             .where(nodes.c.id == node_id)
-            .values(active_access_rule_set_id=rule_set_id)
+            .values(access_rule_set_id=rule_set_id)
         )
 
 
@@ -1597,7 +1677,7 @@ def _restore_legacy_access_rules(
         session.add(rule_set)
         session.flush()
         node.active_access_rule_set = rule_set
-        node.active_access_rule_set_id = rule_set.id
+        node.access_rule_set_id = rule_set.id
 
 
 def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:

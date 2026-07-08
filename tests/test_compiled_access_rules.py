@@ -323,6 +323,8 @@ def test_compiled_access_rule_repair_removes_invalid_shape(access_rule_session):
     ]
     assert repair_compiled_access_rules(session) == []
     assert session.query(models.CompiledAccessRule).count() == 0
+    assert session.query(models.CompiledAccessRuleSet).count() == 0
+    assert document.access_rule_set_id is None
 
 
 def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
@@ -396,8 +398,9 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
     session.flush()
 
     assert session.query(models.CompiledAccessRule).count() == 0
-    assert session.query(models.CompiledAccessRuleSet).count() == 1
-    assert document.access_rule_set is not None
+    assert session.query(models.CompiledAccessRuleSet).count() == 0
+    assert document.access_rule_set is None
+    assert document.access_rule_set_id is None
     assert session.query(models.CompiledAccessRuleGroup).count() == 0
     assert session.query(models.CompiledAccessRuleMembership).count() == 0
     assert session.query(models.CompiledAccessRuleRight).count() == 0
@@ -424,7 +427,49 @@ def test_set_access_rules_locks_target_node(access_rule_session, monkeypatch):
     set_access_rules(document, {}, inherit_parent=False)
 
     assert lock_calls
-    assert document.access_rule_set is not None
+    assert document.access_rule_set is None
+
+
+def test_set_access_rules_discards_new_rows_when_guarded_update_fails(
+    access_rule_session,
+    monkeypatch,
+):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+
+    document = models.Document(id="doc-stale-update", title="Document", inherit=False)
+    session.add(document)
+    session.flush()
+
+    original_update = Query.update
+
+    def stale_update(self, values, *args, **kwargs):
+        if any(getattr(key, "key", None) == "access_rule_set_id" for key in values):
+            return 0
+        return original_update(self, values, *args, **kwargs)
+
+    monkeypatch.setattr(Query, "update", stale_update)
+
+    with pytest.raises(RuntimeError, match="changed concurrently"):
+        set_access_rules(
+            document,
+            {
+                "read": [
+                    {
+                        "match": "all",
+                        "match_groups": [
+                            {"groups": {"match": "all", "require": ["staff"]}}
+                        ],
+                    }
+                ]
+            },
+            inherit_parent=False,
+        )
+
+    session.flush()
+    assert session.query(models.CompiledAccessRuleSet).count() == 0
+    assert session.query(models.CompiledAccessRule).count() == 0
+    assert document.access_rule_set_id is None
 
 
 def test_orm_delete_removes_compiled_access_rules(access_rule_session):
@@ -564,6 +609,63 @@ def test_compiled_access_rule_repair_does_not_rebuild_missing_rows(
     assert find_compiled_access_rule_mismatches(session) == []
     assert repair_compiled_access_rules(session) == []
     assert session.query(models.CompiledAccessRule).count() == 0
+
+
+def test_compiled_access_rule_repair_removes_empty_and_inactive_rule_sets(
+    access_rule_session,
+):
+    models, session = access_rule_session
+    from include.domains.access.authorization.compiled_rules import (
+        find_compiled_access_rule_mismatches,
+        repair_compiled_access_rules,
+    )
+
+    empty_active_node = models.Document(
+        id="doc-empty-active",
+        title="Empty Active",
+        inherit=False,
+    )
+    inactive_node = models.Document(
+        id="doc-inactive-ruleset",
+        title="Inactive Rule Set",
+        inherit=False,
+    )
+    mismatched_node = models.Document(
+        id="doc-mismatched-active",
+        title="Mismatched Active",
+        inherit=False,
+    )
+    owner_node = models.Document(id="doc-owner", title="Owner", inherit=False)
+    session.add_all([empty_active_node, inactive_node, mismatched_node, owner_node])
+    session.flush()
+
+    empty_active_rule_set = models.CompiledAccessRuleSet(node_id=empty_active_node.id)
+    inactive_rule_set = models.CompiledAccessRuleSet(node_id=inactive_node.id)
+    inactive_rule_set.rules.append(
+        models.CompiledAccessRule(access_type="read", match_mode="all")
+    )
+    mismatched_rule_set = models.CompiledAccessRuleSet(node_id=owner_node.id)
+    mismatched_rule_set.rules.append(
+        models.CompiledAccessRule(access_type="read", match_mode="all")
+    )
+    session.add_all([empty_active_rule_set, inactive_rule_set, mismatched_rule_set])
+    session.flush()
+
+    empty_active_node.access_rule_set_id = empty_active_rule_set.id
+    mismatched_node.access_rule_set_id = mismatched_rule_set.id
+    session.flush()
+
+    assert find_compiled_access_rule_mismatches(session) == [
+        ("document", empty_active_node.id),
+        ("document", inactive_node.id),
+        ("document", mismatched_node.id),
+    ]
+
+    assert repair_compiled_access_rules(session) == []
+    assert session.query(models.CompiledAccessRuleSet).count() == 0
+    assert session.query(models.CompiledAccessRule).count() == 0
+    assert empty_active_node.access_rule_set_id is None
+    assert mismatched_node.access_rule_set_id is None
 
 
 def test_delete_compiled_access_rules_validates_target_type(access_rule_session):

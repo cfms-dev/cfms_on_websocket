@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, literal
 from sqlalchemy.orm import joinedload, raiseload, sessionmaker
 
 
@@ -30,6 +30,7 @@ def directory_models(protected_test_config):
         from include.database.models.files import File
         from include.database.session import Base
         from include.domains.documents.queries.listing import (
+            _node_rules_allow,
             count_active_directory_children,
             directory_cursor_key,
             fetch_deleted_listing_items,
@@ -45,6 +46,10 @@ def directory_models(protected_test_config):
 
     return SimpleNamespace(
         Base=Base,
+        CompiledAccessRule=blocking.CompiledAccessRule,
+        CompiledAccessRuleGroup=blocking.CompiledAccessRuleGroup,
+        CompiledAccessRuleMembership=blocking.CompiledAccessRuleMembership,
+        CompiledAccessRuleRight=blocking.CompiledAccessRuleRight,
         CompiledAccessRuleSet=blocking.CompiledAccessRuleSet,
         Document=Document,
         DocumentRevision=DocumentRevision,
@@ -58,6 +63,7 @@ def directory_models(protected_test_config):
         fetch_latest_active_revisions=fetch_latest_active_revisions_by_document,
         fetch_directory_listing_items=fetch_directory_listing_items,
         fetch_search_candidate_rows=fetch_search_candidate_rows,
+        node_rules_allow=_node_rules_allow,
         search_cursor_key=search_cursor_key,
     )
 
@@ -70,6 +76,10 @@ def directory_session(directory_models):
         tables=[
             directory_models.File.__table__,
             directory_models.CompiledAccessRuleSet.__table__,
+            directory_models.CompiledAccessRule.__table__,
+            directory_models.CompiledAccessRuleGroup.__table__,
+            directory_models.CompiledAccessRuleRight.__table__,
+            directory_models.CompiledAccessRuleMembership.__table__,
             directory_models.Node.__table__,
             directory_models.Folder.__table__,
             directory_models.Document.__table__,
@@ -580,6 +590,70 @@ def test_search_candidate_query_limits_directory_candidates(
     ]
     assert candidate_selects
     assert all("LIMIT" in statement.upper() for statement in candidate_selects)
+
+
+def test_node_rules_allow_handles_missing_empty_and_read_rules(
+    directory_models,
+    directory_session,
+):
+    no_rules = directory_models.Folder(id="listing-no-rules", name="No Rules")
+    empty_after_migration = directory_models.Folder(
+        id="listing-empty-migrated",
+        name="Empty Migrated",
+    )
+    restricted = directory_models.Folder(id="listing-restricted", name="Restricted")
+    directory_session.add_all([no_rules, empty_after_migration, restricted])
+    directory_session.flush()
+
+    rule_set = directory_models.CompiledAccessRuleSet(node_id=restricted.id)
+    rule = directory_models.CompiledAccessRule(access_type="read", match_mode="all")
+    group = directory_models.CompiledAccessRuleGroup(
+        group_index=0,
+        match_mode="all",
+        rights_match_mode="all",
+        rights_empty=False,
+        groups_match_mode="all",
+        groups_empty=True,
+    )
+    group.rights.append(
+        directory_models.CompiledAccessRuleRight(permission="view-restricted")
+    )
+    rule.match_groups.append(group)
+    rule_set.rules.append(rule)
+    directory_session.add(rule_set)
+    directory_session.flush()
+    restricted.access_rule_set_id = rule_set.id
+    directory_session.commit()
+
+    allowed_user = SimpleNamespace(
+        all_permissions={"view-restricted"},
+        all_groups=set(),
+    )
+    denied_user = SimpleNamespace(all_permissions=set(), all_groups=set())
+
+    def allowed_ids_for(user):
+        return {
+            row[0]
+            for row in directory_session.query(directory_models.Node.id)
+            .filter(
+                directory_models.node_rules_allow(
+                    literal("directory"),
+                    directory_models.Node.id,
+                    user,
+                )
+            )
+            .all()
+        }
+
+    assert allowed_ids_for(allowed_user) == {
+        no_rules.id,
+        empty_after_migration.id,
+        restricted.id,
+    }
+    assert allowed_ids_for(denied_user) == {
+        no_rules.id,
+        empty_after_migration.id,
+    }
 
 
 @pytest.mark.parametrize(

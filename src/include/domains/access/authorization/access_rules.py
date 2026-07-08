@@ -31,6 +31,7 @@ ACCESS_RULE_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
+                        "match": {"enum": ["any", "all"]},
                         "rights": {
                             "type": "object",
                             "properties": {
@@ -40,6 +41,7 @@ ACCESS_RULE_SCHEMA = {
                                     "items": {"type": "string"},
                                 },
                             },
+                            "additionalProperties": False,
                         },
                         "groups": {
                             "type": "object",
@@ -50,12 +52,15 @@ ACCESS_RULE_SCHEMA = {
                                     "items": {"type": "string"},
                                 },
                             },
+                            "additionalProperties": False,
                         },
                     },
+                    "additionalProperties": False,
                 },
             },
         },
         "required": ["match", "match_groups"],
+        "additionalProperties": False,
     },
 }
 
@@ -87,28 +92,10 @@ def set_access_rules(
     if session is None:
         raise RuntimeError("Target must be attached to a session before setting rules")
 
-    target.inherit = inherit_parent
-    session.flush()
     target_key = _target_type_and_id(target)
     if target_key is None:
         raise TypeError("Unsupported Object Type")
     target_type, target_id = target_key
-
-    node_for_update = (
-        session.query(Node)
-        .filter(Node.id == target_id, Node.type == target_type)
-        .with_for_update()
-        .populate_existing()
-        .one_or_none()
-    )
-    if node_for_update is None:
-        raise RuntimeError("Target node no longer exists while setting access rules")
-
-    old_rule_set = (
-        session.get(CompiledAccessRuleSet, node_for_update.access_rule_set_id)
-        if node_for_update.access_rule_set_id is not None
-        else None
-    )
 
     compiled_rules = []
 
@@ -132,19 +119,61 @@ def set_access_rules(
             if compiled_rule is not None:
                 compiled_rules.append(compiled_rule)
 
-    new_rule_set = CompiledAccessRuleSet(node_id=target_id)
-    new_rule_set.rules.extend(compiled_rules)
-    session.add(new_rule_set)
-    session.flush()
+    node_for_update = (
+        session.query(Node)
+        .filter(Node.id == target_id, Node.type == target_type)
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
+    if node_for_update is None:
+        raise RuntimeError("Target node no longer exists while setting access rules")
+
+    old_rule_set_id = node_for_update.access_rule_set_id
+    target.inherit = inherit_parent
+
+    new_rule_set = None
+    new_rule_set_id = None
+    if compiled_rules:
+        new_rule_set = CompiledAccessRuleSet(node_id=target_id)
+        new_rule_set.rules.extend(compiled_rules)
+        session.add(new_rule_set)
+        session.flush()
+        new_rule_set_id = new_rule_set.id
+
+    update_query = session.query(Node).filter(
+        Node.id == target_id,
+        Node.type == target_type,
+    )
+    if old_rule_set_id is None:
+        update_query = update_query.filter(Node.access_rule_set_id.is_(None))
+    else:
+        update_query = update_query.filter(Node.access_rule_set_id == old_rule_set_id)
+
+    updated_count = update_query.update(
+        {Node.access_rule_set_id: new_rule_set_id},
+        synchronize_session="fetch",
+    )
+    if updated_count != 1:
+        if new_rule_set is not None:
+            session.delete(new_rule_set)
+            session.flush()
+        raise RuntimeError("Access rules changed concurrently; retry the operation")
 
     node_for_update.access_rule_set = new_rule_set
-    node_for_update.access_rule_set_id = new_rule_set.id
+    node_for_update.access_rule_set_id = new_rule_set_id
     target.access_rule_set = new_rule_set
-    target.access_rule_set_id = new_rule_set.id
+    target.access_rule_set_id = new_rule_set_id
     session.flush()
 
-    if old_rule_set is not None:
-        session.delete(old_rule_set)
+    cleanup_query = session.query(CompiledAccessRuleSet).filter(
+        CompiledAccessRuleSet.node_id == target_id
+    )
+    if new_rule_set_id is not None:
+        cleanup_query = cleanup_query.filter(
+            CompiledAccessRuleSet.id != new_rule_set_id
+        )
+    cleanup_query.delete(synchronize_session=False)
 
 
 def apply_access_rules(

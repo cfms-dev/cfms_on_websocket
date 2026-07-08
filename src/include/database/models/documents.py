@@ -75,6 +75,7 @@ class Node(Base):
             use_alter=True,
         ),
         nullable=True,
+        index=True,
     )
     access_rule_set: Mapped["CompiledAccessRuleSet | None"] = relationship(
         "CompiledAccessRuleSet",

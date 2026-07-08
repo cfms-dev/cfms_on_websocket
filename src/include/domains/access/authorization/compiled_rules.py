@@ -4,7 +4,7 @@ from collections import defaultdict
 from itertools import batched
 from typing import Any, Iterable, Literal
 
-from sqlalchemy import delete
+from sqlalchemy import and_, delete
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import selectinload
 
@@ -47,6 +47,42 @@ def _access_rule_types_for(access_type: str) -> tuple[str, ...]:
             return ("read", "manage")
         case _:
             raise NotImplementedError(f"Unsupported access type: {access_type}")
+
+
+def active_compiled_rule_conditions(
+    *,
+    rule,
+    rule_set,
+    node,
+    target_type,
+    target_id,
+):
+    return (
+        rule.rule_set_id == rule_set.id,
+        rule_set.node_id == node.id,
+        node.id == target_id,
+        node.type == target_type,
+        node.access_rule_set_id == rule_set.id,
+    )
+
+
+def active_compiled_rule_filter(
+    *,
+    rule,
+    rule_set,
+    node,
+    target_type,
+    target_id,
+):
+    return and_(
+        *active_compiled_rule_conditions(
+            rule=rule,
+            rule_set=rule_set,
+            node=node,
+            target_type=target_type,
+            target_id=target_id,
+        )
+    )
 
 
 def _require_list(group_data: dict[str, Any], key: str) -> list[str]:
@@ -169,9 +205,13 @@ def get_compiled_access_rules(
         .join(CompiledAccessRule.rule_set)
         .join(CompiledAccessRuleSet.node)
         .filter(
-            CompiledAccessRuleSet.node_id == target_id,
-            Node.type == target_type,
-            Node.access_rule_set_id == CompiledAccessRule.rule_set_id,
+            *active_compiled_rule_conditions(
+                rule=CompiledAccessRule,
+                rule_set=CompiledAccessRuleSet,
+                node=Node,
+                target_type=target_type,
+                target_id=target_id,
+            ),
         )
         .order_by(CompiledAccessRule.id.asc())
         .all()
@@ -206,9 +246,14 @@ def fetch_compiled_access_rules_for_targets(
                 .join(CompiledAccessRule.rule_set)
                 .join(CompiledAccessRuleSet.node)
                 .filter(
-                    CompiledAccessRuleSet.node_id.in_(list(chunk)),
-                    Node.type == target_type,
-                    Node.access_rule_set_id == CompiledAccessRule.rule_set_id,
+                    *active_compiled_rule_conditions(
+                        rule=CompiledAccessRule,
+                        rule_set=CompiledAccessRuleSet,
+                        node=Node,
+                        target_type=target_type,
+                        target_id=Node.id,
+                    ),
+                    Node.id.in_(list(chunk)),
                 )
                 .order_by(CompiledAccessRule.id.asc())
                 .all()
@@ -338,9 +383,13 @@ def compiled_rules_allow(
         .join(CompiledAccessRule.rule_set)
         .join(CompiledAccessRuleSet.node)
         .filter(
-            CompiledAccessRuleSet.node_id == target_id,
-            Node.type == target_type,
-            Node.access_rule_set_id == CompiledAccessRule.rule_set_id,
+            *active_compiled_rule_conditions(
+                rule=CompiledAccessRule,
+                rule_set=CompiledAccessRuleSet,
+                node=Node,
+                target_type=target_type,
+                target_id=target_id,
+            ),
             CompiledAccessRule.access_type.in_(relevant_access_types),
         )
         .all()
@@ -441,23 +490,51 @@ def find_compiled_access_rule_mismatches(
     """
     mismatches: list[tuple[str, str]] = []
 
-    nodes = session.query(Node).options(selectinload(Node.access_rule_set)).all()
+    nodes = (
+        session.query(Node)
+        .options(
+            selectinload(Node.access_rule_set).selectinload(CompiledAccessRuleSet.rules)
+        )
+        .all()
+    )
     valid_node_ids = {node.id for node in nodes}
     node_type_by_id = {node.id: node.type for node in nodes}
+    active_rule_set_ids = {
+        node.access_rule_set_id for node in nodes if node.access_rule_set_id is not None
+    }
 
     for node in nodes:
         active_rule_set = node.access_rule_set
+        if node.access_rule_set_id is not None and active_rule_set is None:
+            mismatches.append((node.type, node.id))
+            continue
         if active_rule_set is not None and active_rule_set.node_id != node.id:
+            mismatches.append((node.type, node.id))
+            continue
+        if active_rule_set is not None and not active_rule_set.rules:
             mismatches.append((node.type, node.id))
 
     rule_sets = (
         session.query(CompiledAccessRuleSet)
-        .options(selectinload(CompiledAccessRuleSet.node))
+        .options(
+            selectinload(CompiledAccessRuleSet.node),
+            selectinload(CompiledAccessRuleSet.rules),
+        )
         .all()
     )
     for rule_set in rule_sets:
         if include_orphans and rule_set.node_id not in valid_node_ids:
             mismatches.append(("node", str(rule_set.node_id)))
+            continue
+        if (
+            rule_set.node_id in valid_node_ids
+            and rule_set.id not in active_rule_set_ids
+        ):
+            mismatches.append((node_type_by_id[rule_set.node_id], rule_set.node_id))
+            continue
+        if not rule_set.rules:
+            target_type = node_type_by_id.get(str(rule_set.node_id), "node")
+            mismatches.append((target_type, str(rule_set.node_id)))
 
     rules = (
         session.query(CompiledAccessRule)
@@ -493,9 +570,41 @@ def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
     This intentionally does not recreate missing rules because compiled rules
     are the only current persisted representation.
     """
-    valid_node_ids = {row[0] for row in session.query(Node.id).all()}
-    for rule_set in session.query(CompiledAccessRuleSet):
-        if rule_set.node_id not in valid_node_ids:
+    nodes = (
+        session.query(Node)
+        .options(
+            selectinload(Node.access_rule_set).selectinload(CompiledAccessRuleSet.rules)
+        )
+        .all()
+    )
+    node_by_id = {node.id: node for node in nodes}
+    rule_sets = (
+        session.query(CompiledAccessRuleSet)
+        .options(selectinload(CompiledAccessRuleSet.rules))
+        .all()
+    )
+    rule_set_by_id = {rule_set.id: rule_set for rule_set in rule_sets}
+
+    for node in nodes:
+        active_rule_set = rule_set_by_id.get(str(node.access_rule_set_id))
+        if active_rule_set is None:
+            node.access_rule_set_id = None
+            node.access_rule_set = None
+            continue
+        if active_rule_set.node_id != node.id or not active_rule_set.rules:
+            node.access_rule_set_id = None
+            node.access_rule_set = None
+    session.flush()
+
+    active_rule_set_ids = {
+        node.access_rule_set_id for node in nodes if node.access_rule_set_id is not None
+    }
+    for rule_set in rule_sets:
+        if (
+            rule_set.node_id not in node_by_id
+            or rule_set.id not in active_rule_set_ids
+            or not rule_set.rules
+        ):
             session.delete(rule_set)
 
     for rule in session.query(CompiledAccessRule).options(
@@ -507,5 +616,21 @@ def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
             delete_rule = True
         if delete_rule:
             session.delete(rule)
+    session.flush()
+
+    session.expire_all()
+    remaining_rule_sets = (
+        session.query(CompiledAccessRuleSet)
+        .options(selectinload(CompiledAccessRuleSet.rules))
+        .all()
+    )
+    for rule_set in remaining_rule_sets:
+        if rule_set.rules:
+            continue
+        node = session.get(Node, rule_set.node_id)
+        if node is not None and node.access_rule_set_id == rule_set.id:
+            node.access_rule_set_id = None
+            node.access_rule_set = None
+        session.delete(rule_set)
     session.flush()
     return find_compiled_access_rule_mismatches(session)

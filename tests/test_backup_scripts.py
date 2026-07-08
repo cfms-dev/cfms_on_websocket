@@ -130,7 +130,7 @@ def _insert_compiled_rule(
     rule_data: dict,
 ) -> None:
     rule_set_id = connection.execute(
-        select(tables["nodes"].c.active_access_rule_set_id).where(
+        select(tables["nodes"].c.access_rule_set_id).where(
             tables["nodes"].c.id == target_id
         )
     ).scalar_one()
@@ -147,7 +147,7 @@ def _insert_compiled_rule(
         connection.execute(
             update(tables["nodes"])
             .where(tables["nodes"].c.id == target_id)
-            .values(active_access_rule_set_id=rule_set_id)
+            .values(access_rule_set_id=rule_set_id)
         )
 
     result = connection.execute(
@@ -524,6 +524,14 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     )
 
 
+def _read_jsonl(path: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def _test_progress() -> Progress:
     return Progress(
         console=Console(file=StringIO(), force_terminal=False, width=120),
@@ -846,7 +854,7 @@ def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
         ("folder-legacy", "read"),
     ]
     assert [row["node_id"] for row in rule_sets] == ["doc-legacy", "folder-legacy"]
-    assert {row["id"]: row["active_access_rule_set_id"] for row in nodes} == {
+    assert {row["id"]: row["access_rule_set_id"] for row in nodes} == {
         row["node_id"]: row["id"] for row in rule_sets
     }
     assert [row["group_name"] for row in memberships] == ["sysop"]
@@ -865,6 +873,75 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
     source_storage.mkdir()
     staging_dir.mkdir()
     _seed_source(base, source_engine, source_storage)
+    tables = base.metadata.tables
+
+    with source_engine.begin() as connection:
+        connection.execute(
+            insert(tables["nodes"]),
+            [
+                {
+                    "id": "backup-empty-rules",
+                    "type": "directory",
+                    "inherit": True,
+                    "status": 0,
+                    "status_operation_id": None,
+                    "access_rule_set_id": None,
+                },
+                {
+                    "id": "backup-inactive-rules",
+                    "type": "directory",
+                    "inherit": True,
+                    "status": 0,
+                    "status_operation_id": None,
+                    "access_rule_set_id": None,
+                },
+            ],
+        )
+        connection.execute(
+            insert(tables["folders"]),
+            [
+                {
+                    "id": "backup-empty-rules",
+                    "name": "Backup Empty Rules",
+                    "created_time": 1_700_000_010.0,
+                    "parent_id": None,
+                },
+                {
+                    "id": "backup-inactive-rules",
+                    "name": "Backup Inactive Rules",
+                    "created_time": 1_700_000_011.0,
+                    "parent_id": None,
+                },
+            ],
+        )
+        connection.execute(
+            insert(tables["compiled_access_rule_sets"]),
+            [
+                {
+                    "id": "rule-set-empty",
+                    "node_id": "backup-empty-rules",
+                    "created_at": 1_700_000_010.0,
+                },
+                {
+                    "id": "rule-set-inactive",
+                    "node_id": "backup-inactive-rules",
+                    "created_at": 1_700_000_011.0,
+                },
+            ],
+        )
+        connection.execute(
+            update(tables["nodes"])
+            .where(tables["nodes"].c.id == "backup-empty-rules")
+            .values(access_rule_set_id="rule-set-empty")
+        )
+        connection.execute(
+            insert(tables["compiled_access_rules"]),
+            {
+                "rule_set_id": "rule-set-inactive",
+                "access_type": "read",
+                "match_mode": "all",
+            },
+        )
 
     manifest = _stage_backup_payload(
         staging_dir,
@@ -880,6 +957,23 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
     assert "compiled_access_rule_rights" in manifest["tables"]
     assert "document_access_rules" not in manifest["tables"]
     assert "folder_access_rules" not in manifest["tables"]
+
+    exported_rule_sets = _read_jsonl(
+        staging_dir / "tables" / "compiled_access_rule_sets.jsonl"
+    )
+    exported_nodes = _read_jsonl(staging_dir / "tables" / "nodes.jsonl")
+    assert {row["id"] for row in exported_rule_sets} == {
+        "rule-set-doc-1",
+        "rule-set-folder-1",
+    }
+    assert {
+        row["id"]: row["access_rule_set_id"]
+        for row in exported_nodes
+        if row["id"] in {"backup-empty-rules", "backup-inactive-rules"}
+    } == {
+        "backup-empty-rules": None,
+        "backup-inactive-rules": None,
+    }
 
 
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):

@@ -28,6 +28,9 @@ from include.database.models.documents import (
 )
 from include.database.models.files import File
 from include.database.models.identity import User
+from include.domains.access.authorization.compiled_rules import (
+    active_compiled_rule_filter,
+)
 from include.domains.access.permissions import Permissions
 
 _CURSOR_KEY = "_cursor_key"
@@ -733,11 +736,13 @@ def _node_rules_allow(target_type_column, target_id_column, user: User):
     rule_set = aliased(CompiledAccessRuleSet)
     target_node = aliased(Node)
     relevant_rule = and_(
-        rule.rule_set_id == rule_set.id,
-        rule_set.node_id == target_node.id,
-        target_node.id == target_id_column,
-        target_node.type == target_type_column,
-        target_node.access_rule_set_id == rule_set.id,
+        active_compiled_rule_filter(
+            rule=rule,
+            rule_set=rule_set,
+            node=target_node,
+            target_type=target_type_column,
+            target_id=target_id_column,
+        ),
         rule.access_type == "read",
     )
     no_read_rules = not_(exists(select(1).where(relevant_rule)))
