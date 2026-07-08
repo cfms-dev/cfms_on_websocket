@@ -1,5 +1,15 @@
 # AGENTS.md
 
+## Core philosophy
+- Shame in guessing APIs, Honor in careful research.
+- Shame in vague execution, Honor in seeking confirmation.
+- Shame in assuming business logic, Honor in human verification.
+- Shame in creating interfaces, Honor in reusing existing ones.
+- Shame in skipping validation, Honor in proactive testing.
+- Shame in breaking architecture, Honor in following specifications.
+- Shame in pretending to understand, Honor in honest ignorance.
+- Shame in blind modification, Honor in careful refactoring.
+
 ## Dev environment tips
 - Use `uv run ...` to run any command that you believe requires a specific virtual environment. If you need to install or update packages, you should also use `uv` as the package manager.
 - Determine the host machine's operating system at first. Do not run Linux-only commands on Windows, nor vice versa.
