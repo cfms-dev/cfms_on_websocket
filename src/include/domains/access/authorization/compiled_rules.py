@@ -31,10 +31,6 @@ def _target_type_and_id(target: Any) -> tuple[TargetType, str] | None:
     return None
 
 
-def _as_match_mode(value: Any) -> str:
-    return value if value in ("all", "any") else "all"
-
-
 def _access_rule_types_for(access_type: str) -> tuple[str, ...]:
     if access_type not in AVAILABLE_ACCESS_TYPES:
         raise ValueError(f"Invalid access type: {access_type}")
@@ -85,16 +81,16 @@ def _compile_match_groups(
         required_groups = _require_list(group_data, "groups")
         rights_empty = not required_rights
         groups_empty = not required_groups
-        match_mode = _as_match_mode(group_data.get("match", "all"))
+        match_mode = group_data.get("match", "all")
         if rights_empty or groups_empty:
             match_mode = "all"
 
         compiled_group = CompiledAccessRuleGroup(
             group_index=index,
             match_mode=match_mode,
-            rights_match_mode=_as_match_mode(rights_group.get("match", "all")),
+            rights_match_mode=rights_group.get("match", "all"),
             rights_empty=rights_empty,
-            groups_match_mode=_as_match_mode(groups_group.get("match", "all")),
+            groups_match_mode=groups_group.get("match", "all"),
             groups_empty=groups_empty,
         )
         compiled_group.rights.extend(
@@ -123,7 +119,7 @@ def compile_access_rule(
     compiled_rule = CompiledAccessRule(
         node_id=target_id,
         access_type=access_type,
-        match_mode=_as_match_mode(rule_data.get("match", "all")),
+        match_mode=rule_data.get("match", "all"),
     )
     compiled_rule.match_groups.extend(_compile_match_groups(rule_data))
     return compiled_rule
