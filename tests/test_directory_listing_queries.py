@@ -45,6 +45,7 @@ def directory_models(protected_test_config):
 
     return SimpleNamespace(
         Base=Base,
+        CompiledAccessRuleSet=blocking.CompiledAccessRuleSet,
         Document=Document,
         DocumentRevision=DocumentRevision,
         EntityStatus=EntityStatus,
@@ -68,6 +69,7 @@ def directory_session(directory_models):
         engine,
         tables=[
             directory_models.File.__table__,
+            directory_models.CompiledAccessRuleSet.__table__,
             directory_models.Node.__table__,
             directory_models.Folder.__table__,
             directory_models.Document.__table__,

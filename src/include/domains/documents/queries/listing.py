@@ -14,6 +14,7 @@ from include.database.models.access import (
     CompiledAccessRuleGroup,
     CompiledAccessRuleMembership,
     CompiledAccessRuleRight,
+    CompiledAccessRuleSet,
     ObjectAccessEntry,
     UserBlockEntry,
     UserBlockSubEntry,
@@ -729,8 +730,14 @@ def _node_rules_allow(target_type_column, target_id_column, user: User):
     user_permissions = [str(permission) for permission in user.all_permissions]
     user_groups = list(user.all_groups)
     rule = aliased(CompiledAccessRule)
+    rule_set = aliased(CompiledAccessRuleSet)
+    target_node = aliased(Node)
     relevant_rule = and_(
-        rule.node_id == target_id_column,
+        rule.rule_set_id == rule_set.id,
+        rule_set.node_id == target_node.id,
+        target_node.id == target_id_column,
+        target_node.type == target_type_column,
+        target_node.access_rule_set_id == rule_set.id,
         rule.access_type == "read",
     )
     no_read_rules = not_(exists(select(1).where(relevant_rule)))

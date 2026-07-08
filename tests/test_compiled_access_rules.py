@@ -277,7 +277,7 @@ def test_compiled_access_rule_mismatch_detector_reports_invalid_rows(
 
     session.add(
         models.CompiledAccessRule(
-            node_id=folder.id,
+            rule_set=models.CompiledAccessRuleSet(node_id=folder.id),
             access_type="invalid",
             match_mode="all",
         )
@@ -353,6 +353,8 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
     session.flush()
 
     assert session.query(models.CompiledAccessRule).count() == 1
+    assert session.query(models.CompiledAccessRuleSet).count() == 1
+    assert document.active_access_rule_set is not None
     assert find_compiled_access_rule_mismatches(session) == []
 
     set_access_rules(
@@ -379,6 +381,8 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
 
     compiled_rule = session.query(models.CompiledAccessRule).one()
     compiled_group = compiled_rule.match_groups[0]
+    assert session.query(models.CompiledAccessRuleSet).count() == 1
+    assert document.active_access_rule_set_id == compiled_rule.rule_set_id
     assert isinstance(compiled_group.id, str)
     assert len(compiled_group.id) == 32
     assert [right.permission for right in compiled_group.rights] == ["list_users"]
@@ -392,6 +396,8 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
     session.flush()
 
     assert session.query(models.CompiledAccessRule).count() == 0
+    assert session.query(models.CompiledAccessRuleSet).count() == 1
+    assert document.active_access_rule_set is not None
     assert session.query(models.CompiledAccessRuleGroup).count() == 0
     assert session.query(models.CompiledAccessRuleMembership).count() == 0
     assert session.query(models.CompiledAccessRuleRight).count() == 0
@@ -425,11 +431,13 @@ def test_orm_delete_removes_compiled_access_rules(access_rule_session):
     session.flush()
 
     assert session.query(models.CompiledAccessRule).count() == 1
+    assert session.query(models.CompiledAccessRuleSet).count() == 1
 
     session.delete(folder)
     session.flush()
 
     assert session.query(models.CompiledAccessRule).count() == 0
+    assert session.query(models.CompiledAccessRuleSet).count() == 0
     assert find_compiled_access_rule_mismatches(session) == []
 
 
@@ -479,7 +487,7 @@ def test_compiled_access_rule_maintenance_detects_and_repairs_invalid_rows(
 
     session.add(
         models.CompiledAccessRule(
-            node_id=document.id,
+            rule_set=models.CompiledAccessRuleSet(node_id=document.id),
             access_type="invalid",
             match_mode="all",
         )
@@ -532,6 +540,48 @@ def test_compiled_access_rule_repair_does_not_rebuild_missing_rows(
 
     assert find_compiled_access_rule_mismatches(session) == []
     assert repair_compiled_access_rules(session) == []
+    assert session.query(models.CompiledAccessRule).count() == 0
+
+
+def test_delete_compiled_access_rules_validates_target_type(access_rule_session):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        delete_compiled_access_rules_for_targets,
+    )
+
+    folder = models.Folder(id="folder-type-check", name="Folder", inherit=False)
+    document = models.Document(id="doc-type-check", title="Document", inherit=False)
+    session.add_all([folder, document])
+    session.flush()
+
+    set_access_rules(
+        folder,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    with pytest.raises(ValueError):
+        delete_compiled_access_rules_for_targets(session, [("document", folder.id)])
+
+    assert session.get(models.Folder, folder.id).active_access_rule_set_id is not None
+    assert session.query(models.CompiledAccessRuleSet).count() == 1
+
+    delete_compiled_access_rules_for_targets(session, [("directory", folder.id)])
+    session.flush()
+
+    assert session.get(models.Folder, folder.id).active_access_rule_set_id is None
+    assert session.query(models.CompiledAccessRuleSet).count() == 0
     assert session.query(models.CompiledAccessRule).count() == 0
 
 

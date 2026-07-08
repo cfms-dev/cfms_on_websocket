@@ -39,7 +39,7 @@ from include.domains.documents.queries.revisions import batch_count_other_revisi
 from include.exceptions.misc import NoActiveRevisionsError
 
 if TYPE_CHECKING:
-    from include.database.models.access import CompiledAccessRule
+    from include.database.models.access import CompiledAccessRuleSet
     from include.database.models.identity import User
 
 
@@ -67,12 +67,27 @@ class Node(Base):
     status_operation_id: Mapped[str | None] = mapped_column(
         VARCHAR(255), nullable=True, index=True
     )
-    compiled_access_rules: Mapped[list["CompiledAccessRule"]] = relationship(
-        "CompiledAccessRule",
+    access_rule_set_id: Mapped[str | None] = mapped_column(
+        VARCHAR(32),
+        ForeignKey(
+            "compiled_access_rule_sets.id",
+            name="fk_nodes_access_rule_set_id_compiled_access_rule_sets",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    access_rule_set: Mapped["CompiledAccessRuleSet | None"] = relationship(
+        "CompiledAccessRuleSet",
+        foreign_keys=[access_rule_set_id],
+        post_update=True,
+        uselist=False,
+    )
+    access_rule_sets: Mapped[list["CompiledAccessRuleSet"]] = relationship(
+        "CompiledAccessRuleSet",
         back_populates="node",
         cascade="all, delete-orphan",
-        passive_deletes=True,
-        order_by="CompiledAccessRule.id",
+        foreign_keys="CompiledAccessRuleSet.node_id",
+        order_by="CompiledAccessRuleSet.created_at",
     )
 
     __mapper_args__ = {
@@ -215,7 +230,7 @@ class Folder(Node):  # Document folder.
         )
         return active_folders_count + active_docs_count
 
-    def is_descendant_of(self, potential_ancestor: Folder) -> bool:
+    def is_descendant_of(self, potential_ancestor: Folder, /) -> bool:
         """
         Check if this folder is a descendant of the given potential ancestor folder.
 

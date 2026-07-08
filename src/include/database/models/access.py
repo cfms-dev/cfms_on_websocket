@@ -1,7 +1,8 @@
 import secrets
+import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Index, Integer
+from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -80,30 +81,54 @@ class CompiledAccessRule(Base):
     """
 
     __tablename__ = "compiled_access_rules"
-    __table_args__ = (
-        Index(
-            "ix_compiled_access_rules_node_id_access",
-            "node_id",
-            "access_type",
-        ),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    node_id: Mapped[str] = mapped_column(
-        VARCHAR(255),
-        ForeignKey("nodes.id", ondelete="CASCADE"),
+    rule_set_id: Mapped[str] = mapped_column(
+        VARCHAR(32),
+        ForeignKey("compiled_access_rule_sets.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     access_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
     match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
 
-    node: Mapped["Node"] = relationship("Node", back_populates="compiled_access_rules")
+    rule_set: Mapped["CompiledAccessRuleSet"] = relationship(
+        "CompiledAccessRuleSet", back_populates="rules"
+    )
     match_groups: Mapped[list["CompiledAccessRuleGroup"]] = relationship(
         "CompiledAccessRuleGroup",
         back_populates="rule",
         cascade="all, delete-orphan",
         order_by="CompiledAccessRuleGroup.group_index",
+    )
+
+
+class CompiledAccessRuleSet(Base):
+    __tablename__ = "compiled_access_rule_sets"
+
+    id: Mapped[str] = mapped_column(
+        VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
+    )
+    node_id: Mapped[str] = mapped_column(
+        VARCHAR(255),
+        ForeignKey("nodes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[float] = mapped_column(
+        Float, nullable=False, default=lambda: time.time()
+    )
+
+    node: Mapped["Node"] = relationship(
+        "Node",
+        back_populates="access_rule_sets",
+        foreign_keys=[node_id],
+    )
+    rules: Mapped[list[CompiledAccessRule]] = relationship(
+        "CompiledAccessRule",
+        back_populates="rule_set",
+        cascade="all, delete-orphan",
+        order_by="CompiledAccessRule.id",
     )
 
 

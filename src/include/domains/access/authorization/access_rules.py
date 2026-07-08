@@ -6,6 +6,7 @@ import jsonschema
 from sqlalchemy.orm.session import object_session
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
+from include.database.models.access import CompiledAccessRuleSet
 from include.database.models.identity import User
 
 if TYPE_CHECKING:
@@ -79,7 +80,6 @@ def set_access_rules(
     from include.domains.access.authorization.compiled_rules import (
         _target_type_and_id,
         compile_access_rule,
-        delete_compiled_access_rules,
     )
 
     session = object_session(target)
@@ -93,7 +93,7 @@ def set_access_rules(
         raise TypeError("Unsupported Object Type")
     target_type, target_id = target_key
 
-    delete_compiled_access_rules(session, target_type, target_id)
+    compiled_rules = []
 
     for access_type, this_type_rules in new_access_rules.items():
         if access_type not in AVAILABLE_ACCESS_TYPES:
@@ -113,7 +113,20 @@ def set_access_rules(
                 rule_data=each_rule,
             )
             if compiled_rule is not None:
-                session.add(compiled_rule)
+                compiled_rules.append(compiled_rule)
+
+    old_rule_set = target.access_rule_set
+    new_rule_set = CompiledAccessRuleSet(node_id=target_id)
+    new_rule_set.rules.extend(compiled_rules)
+    session.add(new_rule_set)
+    session.flush()
+
+    target.access_rule_set = new_rule_set
+    target.access_rule_set_id = new_rule_set.id
+    session.flush()
+
+    if old_rule_set is not None:
+        session.delete(old_rule_set)
 
 
 def apply_access_rules(

@@ -14,6 +14,7 @@ from include.database.models.access import (
     CompiledAccessRuleGroup,
     CompiledAccessRuleMembership,
     CompiledAccessRuleRight,
+    CompiledAccessRuleSet,
 )
 from include.database.models.documents import Node
 
@@ -117,7 +118,6 @@ def compile_access_rule(
         return None
 
     compiled_rule = CompiledAccessRule(
-        node_id=target_id,
         access_type=access_type,
         match_mode=rule_data.get("match", "all"),
     )
@@ -158,6 +158,7 @@ def get_compiled_access_rules(
     return (
         session.query(CompiledAccessRule)
         .options(
+            selectinload(CompiledAccessRule.rule_set),
             selectinload(CompiledAccessRule.match_groups).selectinload(
                 CompiledAccessRuleGroup.rights
             ),
@@ -165,10 +166,12 @@ def get_compiled_access_rules(
                 CompiledAccessRuleGroup.groups
             ),
         )
-        .join(CompiledAccessRule.node)
+        .join(CompiledAccessRule.rule_set)
+        .join(CompiledAccessRuleSet.node)
         .filter(
-            CompiledAccessRule.node_id == target_id,
+            CompiledAccessRuleSet.node_id == target_id,
             Node.type == target_type,
+            Node.access_rule_set_id == CompiledAccessRule.rule_set_id,
         )
         .order_by(CompiledAccessRule.id.asc())
         .all()
@@ -192,7 +195,7 @@ def fetch_compiled_access_rules_for_targets(
             rules = (
                 session.query(CompiledAccessRule)
                 .options(
-                    selectinload(CompiledAccessRule.node),
+                    selectinload(CompiledAccessRule.rule_set),
                     selectinload(CompiledAccessRule.match_groups).selectinload(
                         CompiledAccessRuleGroup.rights
                     ),
@@ -200,16 +203,20 @@ def fetch_compiled_access_rules_for_targets(
                         CompiledAccessRuleGroup.groups
                     ),
                 )
-                .join(CompiledAccessRule.node)
+                .join(CompiledAccessRule.rule_set)
+                .join(CompiledAccessRuleSet.node)
                 .filter(
-                    CompiledAccessRule.node_id.in_(list(chunk)),
+                    CompiledAccessRuleSet.node_id.in_(list(chunk)),
                     Node.type == target_type,
+                    Node.access_rule_set_id == CompiledAccessRule.rule_set_id,
                 )
                 .order_by(CompiledAccessRule.id.asc())
                 .all()
             )
             for rule in rules:
-                rules_by_target.setdefault((target_type, rule.node_id), []).append(rule)
+                rules_by_target.setdefault(
+                    (target_type, rule.rule_set.node_id), []
+                ).append(rule)
 
     return rules_by_target
 
@@ -328,10 +335,12 @@ def compiled_rules_allow(
                 CompiledAccessRuleGroup.groups
             ),
         )
-        .join(CompiledAccessRule.node)
+        .join(CompiledAccessRule.rule_set)
+        .join(CompiledAccessRuleSet.node)
         .filter(
-            CompiledAccessRule.node_id == target_id,
+            CompiledAccessRuleSet.node_id == target_id,
             Node.type == target_type,
+            Node.access_rule_set_id == CompiledAccessRule.rule_set_id,
             CompiledAccessRule.access_type.in_(relevant_access_types),
         )
         .all()
@@ -364,15 +373,48 @@ def delete_compiled_access_rules_for_targets(
 
     for target_type, target_ids in target_ids_by_type.items():
         for chunk in batched(target_ids, QUERY_CHUNK_SIZE):
+            chunk_ids = list(chunk)
+            matched_node_ids = {
+                row[0]
+                for row in session.query(Node.id)
+                .filter(Node.id.in_(chunk_ids), Node.type == target_type)
+                .all()
+            }
+            if matched_node_ids != set(chunk_ids):
+                invalid_ids = sorted(set(chunk_ids) - matched_node_ids)
+                raise ValueError(
+                    "Invalid compiled access rule target(s) for "
+                    f"{target_type}: {', '.join(invalid_ids)}"
+                )
+
+            rule_set_ids = [
+                row[0]
+                for row in session.query(CompiledAccessRuleSet.id)
+                .filter(CompiledAccessRuleSet.node_id.in_(chunk_ids))
+                .all()
+            ]
+            if not rule_set_ids:
+                continue
+
+            (
+                session.query(Node)
+                .filter(Node.id.in_(chunk_ids))
+                .update(
+                    {Node.access_rule_set_id: None},
+                    synchronize_session="fetch",
+                )
+            )
             session.execute(
-                delete(CompiledAccessRule).where(
-                    CompiledAccessRule.node_id.in_(list(chunk)),
+                delete(CompiledAccessRuleSet).where(
+                    CompiledAccessRuleSet.id.in_(rule_set_ids),
                 )
             )
 
 
 def _compiled_rule_has_invalid_shape(rule: CompiledAccessRule) -> bool:
-    if rule.node_id is None:
+    if rule.rule_set_id is None:
+        return True
+    if rule.rule_set is None:
         return True
     if rule.access_type not in AVAILABLE_ACCESS_TYPES:
         return True
@@ -399,23 +441,45 @@ def find_compiled_access_rule_mismatches(
     """
     mismatches: list[tuple[str, str]] = []
 
-    valid_node_ids = {row[0] for row in session.query(Node.id).all()}
+    nodes = session.query(Node).options(selectinload(Node.access_rule_set)).all()
+    valid_node_ids = {node.id for node in nodes}
+    node_type_by_id = {node.id: node.type for node in nodes}
+
+    for node in nodes:
+        active_rule_set = node.access_rule_set
+        if active_rule_set is not None and active_rule_set.node_id != node.id:
+            mismatches.append((node.type, node.id))
+
+    rule_sets = (
+        session.query(CompiledAccessRuleSet)
+        .options(selectinload(CompiledAccessRuleSet.node))
+        .all()
+    )
+    for rule_set in rule_sets:
+        if include_orphans and rule_set.node_id not in valid_node_ids:
+            mismatches.append(("node", str(rule_set.node_id)))
 
     rules = (
         session.query(CompiledAccessRule)
         .options(
-            selectinload(CompiledAccessRule.node),
+            selectinload(CompiledAccessRule.rule_set).selectinload(
+                CompiledAccessRuleSet.node
+            ),
             selectinload(CompiledAccessRule.match_groups),
         )
         .all()
     )
     for rule in rules:
-        target_type = rule.node.type if rule.node is not None else "node"
-        target_key = (target_type, str(rule.node_id))
+        if rule.rule_set is None:
+            mismatches.append(("rule_set", str(rule.rule_set_id)))
+            continue
+        node_id = rule.rule_set.node_id
+        target_type = node_type_by_id.get(str(node_id), "node")
+        target_key = (target_type, str(node_id))
         if _compiled_rule_has_invalid_shape(rule):
             mismatches.append(target_key)
             continue
-        if include_orphans and rule.node_id not in valid_node_ids:
+        if include_orphans and node_id not in valid_node_ids:
             mismatches.append(target_key)
             continue
 
@@ -430,10 +494,15 @@ def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
     are the only current persisted representation.
     """
     valid_node_ids = {row[0] for row in session.query(Node.id).all()}
+    for rule_set in session.query(CompiledAccessRuleSet):
+        if rule_set.node_id not in valid_node_ids:
+            session.delete(rule_set)
+
     for rule in session.query(CompiledAccessRule).options(
-        selectinload(CompiledAccessRule.match_groups)
+        selectinload(CompiledAccessRule.rule_set),
+        selectinload(CompiledAccessRule.match_groups),
     ):
-        delete_rule = rule.node_id not in valid_node_ids
+        delete_rule = rule.rule_set is None
         if _compiled_rule_has_invalid_shape(rule):
             delete_rule = True
         if delete_rule:

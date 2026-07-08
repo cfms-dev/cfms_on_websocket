@@ -129,10 +129,31 @@ def _insert_compiled_rule(
     access_type: str,
     rule_data: dict,
 ) -> None:
+    rule_set_id = connection.execute(
+        select(tables["nodes"].c.active_access_rule_set_id).where(
+            tables["nodes"].c.id == target_id
+        )
+    ).scalar_one()
+    if rule_set_id is None:
+        rule_set_id = f"rule-set-{target_id}"[:32]
+        connection.execute(
+            insert(tables["compiled_access_rule_sets"]),
+            {
+                "id": rule_set_id,
+                "node_id": target_id,
+                "created_at": 1_700_000_000.0,
+            },
+        )
+        connection.execute(
+            update(tables["nodes"])
+            .where(tables["nodes"].c.id == target_id)
+            .values(active_access_rule_set_id=rule_set_id)
+        )
+
     result = connection.execute(
         insert(tables["compiled_access_rules"]),
         {
-            "node_id": target_id,
+            "rule_set_id": rule_set_id,
             "access_type": access_type,
             "match_mode": rule_data.get("match", "all"),
         },
@@ -604,6 +625,7 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         )
 
     assert result["created_at"] == header.created_at
+    assert "compiled_access_rule_sets" in result["tables"]
     assert "compiled_access_rules" in result["tables"]
     assert "document_access_rules" not in result["tables"]
     assert "folder_access_rules" not in result["tables"]
@@ -646,6 +668,10 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
             select(base.metadata.tables["traffic_throttles"])
         ).all()
         assert len(compiled_rules) == 2
+        rule_sets = connection.execute(
+            select(base.metadata.tables["compiled_access_rule_sets"])
+        ).all()
+        assert len(rule_sets) == 2
         assert file_tasks == []
         assert login_throttles == []
         assert traffic_throttles == []
@@ -775,11 +801,19 @@ def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
 
     with target_engine.connect() as connection:
         tables = base.metadata.tables
+        compiled_rules_table = tables["compiled_access_rules"]
+        rule_sets_table = tables["compiled_access_rule_sets"]
         compiled_rules = (
             connection.execute(
-                select(tables["compiled_access_rules"]).order_by(
-                    tables["compiled_access_rules"].c.node_id
+                select(
+                    compiled_rules_table,
+                    rule_sets_table.c.node_id.label("node_id"),
                 )
+                .join(
+                    rule_sets_table,
+                    compiled_rules_table.c.rule_set_id == rule_sets_table.c.id,
+                )
+                .order_by(rule_sets_table.c.node_id)
             )
             .mappings()
             .all()
@@ -794,11 +828,27 @@ def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
             .mappings()
             .all()
         )
+        rule_sets = (
+            connection.execute(
+                select(rule_sets_table).order_by(rule_sets_table.c.node_id)
+            )
+            .mappings()
+            .all()
+        )
+        nodes = (
+            connection.execute(select(tables["nodes"]).order_by(tables["nodes"].c.id))
+            .mappings()
+            .all()
+        )
 
     assert [(row["node_id"], row["access_type"]) for row in compiled_rules] == [
         ("doc-legacy", "manage"),
         ("folder-legacy", "read"),
     ]
+    assert [row["node_id"] for row in rule_sets] == ["doc-legacy", "folder-legacy"]
+    assert {row["id"]: row["active_access_rule_set_id"] for row in nodes} == {
+        row["node_id"]: row["id"] for row in rule_sets
+    }
     assert [row["group_name"] for row in memberships] == ["sysop"]
     assert [row["permission"] for row in rights] == ["list_users"]
 
@@ -824,6 +874,7 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
     )
 
     assert "compiled_access_rules" in manifest["tables"]
+    assert "compiled_access_rule_sets" in manifest["tables"]
     assert "compiled_access_rule_groups" in manifest["tables"]
     assert "compiled_access_rule_memberships" in manifest["tables"]
     assert "compiled_access_rule_rights" in manifest["tables"]
@@ -868,10 +919,17 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     restored = _dump_backup_tables(base, target_engine)
     assert [row["id"] for row in restored["documents"]] == ["doc-1"]
     assert [row["id"] for row in restored["folders"]] == ["/", "folder-1"]
-    assert [row["node_id"] for row in restored["compiled_access_rules"]] == [
+    assert {row["node_id"] for row in restored["compiled_access_rule_sets"]} == {
         "folder-1",
         "doc-1",
-    ]
+    }
+    rule_set_node_by_id = {
+        row["id"]: row["node_id"] for row in restored["compiled_access_rule_sets"]
+    }
+    assert {
+        rule_set_node_by_id[row["rule_set_id"]]
+        for row in restored["compiled_access_rules"]
+    } == {"folder-1", "doc-1"}
     assert [row["target_identifier"] for row in restored["object_access_entries"]] == [
         "doc-1"
     ]

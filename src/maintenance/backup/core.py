@@ -36,6 +36,7 @@ from include.database.models.access import (
     CompiledAccessRuleGroup,
     CompiledAccessRuleMembership,
     CompiledAccessRuleRight,
+    CompiledAccessRuleSet,
     ObjectAccessEntry,
     UserBlockEntry,
     UserBlockSubEntry,
@@ -46,6 +47,7 @@ from include.database.models.documents import (
     DocumentMetadataTag,
     DocumentRevision,
     Folder,
+    Node,
 )
 from include.database.models.files import File
 from include.database.models.identity import (
@@ -74,6 +76,7 @@ _MODEL_IMPORTS = (
     CompiledAccessRuleGroup,
     CompiledAccessRuleMembership,
     CompiledAccessRuleRight,
+    CompiledAccessRuleSet,
     User,
     UserGroup,
     UserGroupPermission,
@@ -120,6 +123,7 @@ BACKUP_TABLE_NAMES = (
     "document_metadata",
     "document_metadata_tags",
     "object_access_entries",
+    "compiled_access_rule_sets",
     "compiled_access_rules",
     "compiled_access_rule_groups",
     "compiled_access_rule_memberships",
@@ -153,6 +157,7 @@ INSERT_ORDER = (
     "document_metadata",
     "document_metadata_tags",
     "object_access_entries",
+    "compiled_access_rule_sets",
     "compiled_access_rules",
     "compiled_access_rule_groups",
     "compiled_access_rule_memberships",
@@ -168,6 +173,7 @@ DEFERRED_COLUMNS = {
     "folders": ("parent_id",),
     "documents": ("current_revision_id",),
     "document_revisions": ("parent_revision_id",),
+    "nodes": ("active_access_rule_set_id",),
 }
 
 DEFERRED_UPDATE_ORDER = (
@@ -175,6 +181,7 @@ DEFERRED_UPDATE_ORDER = (
     ("folders", "id", ("parent_id",)),
     ("document_revisions", "id", ("parent_revision_id",)),
     ("documents", "id", ("current_revision_id",)),
+    ("nodes", "id", ("active_access_rule_set_id",)),
 )
 
 
@@ -205,6 +212,7 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
         "document_metadata",
         "document_metadata_tags",
         "object_access_entries",
+        "compiled_access_rule_sets",
         "compiled_access_rules",
         "compiled_access_rule_groups",
         "compiled_access_rule_memberships",
@@ -222,6 +230,7 @@ DOCUMENT_ACCESS_TARGET_TYPES = frozenset({"document", "directory"})
 COMPILED_ACCESS_RULE_TABLE_NAMES = frozenset(
     {
         "compiled_access_rules",
+        "compiled_access_rule_sets",
         "compiled_access_rule_groups",
         "compiled_access_rule_memberships",
         "compiled_access_rule_rights",
@@ -1241,6 +1250,9 @@ def _restore_database(
     tables = _backup_tables()
     table_names = _manifest_table_names(manifest)
     legacy_access_rule_rows = _load_legacy_access_rule_rows(extract_dir, manifest)
+    compiled_rule_set_id_by_node = _build_missing_compiled_rule_set_mapping(
+        extract_dir, manifest
+    )
     deferred_updates: dict[str, list[dict[str, Any]]] = {
         table_name: [] for table_name in DEFERRED_COLUMNS if table_name in table_names
     }
@@ -1268,6 +1280,21 @@ def _restore_database(
             )
             table = tables[table_name]
             rows = _load_table_rows(extract_dir, manifest, table)
+            if table_name == "compiled_access_rules" and compiled_rule_set_id_by_node:
+                _restore_missing_compiled_rule_sets(
+                    connection,
+                    tables,
+                    compiled_rule_set_id_by_node,
+                )
+                legacy_node_ids = _load_compiled_rule_node_ids(extract_dir, manifest)
+                for row, node_id in zip(rows, legacy_node_ids, strict=True):
+                    if node_id in compiled_rule_set_id_by_node:
+                        row["rule_set_id"] = compiled_rule_set_id_by_node[node_id]
+                    elif row.get("rule_set_id") is None:
+                        raise BackupFormatError(
+                            "Compiled access rule row is missing a restorable "
+                            "rule_set_id"
+                        )
             deferred_columns = set(DEFERRED_COLUMNS.get(table_name, ()))
             insert_rows = []
             for row in rows:
@@ -1344,6 +1371,97 @@ def _restore_legacy_nodes_if_needed(
 
     if node_rows:
         connection.execute(insert(tables["nodes"]), list(node_rows.values()))
+
+
+def _build_missing_compiled_rule_set_mapping(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> dict[str, str]:
+    if "compiled_access_rules" not in manifest.get("tables", {}):
+        return {}
+    if "compiled_access_rule_sets" in manifest.get("tables", {}):
+        return {}
+
+    table_manifest = manifest["tables"]["compiled_access_rules"]
+    path = _safe_payload_path(extract_dir, "tables/compiled_access_rules.jsonl")
+    node_ids: set[str] = set()
+    with path.open("rb") as f:
+        row_count = 0
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = orjson.loads(line)
+            except orjson.JSONDecodeError as exc:
+                raise BackupFormatError(
+                    f"Invalid JSON row in {path} at line {line_number}"
+                ) from exc
+            row_count += 1
+            node_id = row.get("node_id", row.get("target_id"))
+            if node_id:
+                node_ids.add(str(node_id))
+    if row_count != table_manifest["rows"]:
+        raise BackupFormatError(
+            "Row count mismatch for table 'compiled_access_rules': "
+            f"manifest says {table_manifest['rows']}, payload has {row_count}"
+        )
+    return {node_id: secrets.token_hex(16) for node_id in sorted(node_ids)}
+
+
+def _load_compiled_rule_node_ids(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> list[str | None]:
+    table_manifest = manifest["tables"]["compiled_access_rules"]
+    path = _safe_payload_path(extract_dir, "tables/compiled_access_rules.jsonl")
+    node_ids: list[str | None] = []
+    with path.open("rb") as f:
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = orjson.loads(line)
+            except orjson.JSONDecodeError as exc:
+                raise BackupFormatError(
+                    f"Invalid JSON row in {path} at line {line_number}"
+                ) from exc
+            node_id = row.get("node_id", row.get("target_id"))
+            node_ids.append(str(node_id) if node_id else None)
+    if len(node_ids) != table_manifest["rows"]:
+        raise BackupFormatError(
+            "Row count mismatch for table 'compiled_access_rules': "
+            f"manifest says {table_manifest['rows']}, payload has {len(node_ids)}"
+        )
+    return node_ids
+
+
+def _restore_missing_compiled_rule_sets(
+    connection,
+    tables: Mapping[str, Table],
+    rule_set_id_by_node: Mapping[str, str],
+) -> None:
+    if not rule_set_id_by_node:
+        return
+
+    created_at = dt.datetime.now(dt.timezone.utc).timestamp()
+    connection.execute(
+        insert(tables["compiled_access_rule_sets"]),
+        [
+            {
+                "id": rule_set_id,
+                "node_id": node_id,
+                "created_at": created_at,
+            }
+            for node_id, rule_set_id in rule_set_id_by_node.items()
+        ],
+    )
+    nodes = tables["nodes"]
+    for node_id, rule_set_id in rule_set_id_by_node.items():
+        connection.execute(
+            update(nodes)
+            .where(nodes.c.id == node_id)
+            .values(active_access_rule_set_id=rule_set_id)
+        )
 
 
 def _restore_config_keys(
@@ -1448,6 +1566,8 @@ def _restore_legacy_access_rules(
     rows_by_table: dict[str, list[dict[str, Any]]],
 ) -> None:
     """Convert pre-compiled backup rows into current compiled access rows."""
+    rules_by_node: dict[str, list[CompiledAccessRule]] = {}
+
     for row in rows_by_table.get("document_access_rules", []):
         compiled_rule = compile_access_rule(
             target_type="document",
@@ -1456,7 +1576,7 @@ def _restore_legacy_access_rules(
             rule_data=_coerce_legacy_rule_data(row.get("rule_data")),
         )
         if compiled_rule is not None:
-            session.add(compiled_rule)
+            rules_by_node.setdefault(str(row["document_id"]), []).append(compiled_rule)
 
     for row in rows_by_table.get("folder_access_rules", []):
         compiled_rule = compile_access_rule(
@@ -1466,7 +1586,18 @@ def _restore_legacy_access_rules(
             rule_data=_coerce_legacy_rule_data(row.get("rule_data")),
         )
         if compiled_rule is not None:
-            session.add(compiled_rule)
+            rules_by_node.setdefault(str(row["folder_id"]), []).append(compiled_rule)
+
+    for node_id, rules in rules_by_node.items():
+        node = session.get(Node, node_id)
+        if node is None:
+            continue
+        rule_set = CompiledAccessRuleSet(node_id=node_id)
+        rule_set.rules.extend(rules)
+        session.add(rule_set)
+        session.flush()
+        node.active_access_rule_set = rule_set
+        node.active_access_rule_set_id = rule_set.id
 
 
 def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:
@@ -1479,9 +1610,6 @@ def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
-    if table.name == "compiled_access_rules" and "node_id" not in row:
-        row = {**row, "node_id": row.get("target_id")}
-
     decoded = {}
     for column in table.columns:
         if column.name not in row:
@@ -1504,6 +1632,7 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     expected: set[str] = set(BACKUP_TABLE_NAMES)
     compiled_access_rule_tables = set(COMPILED_ACCESS_RULE_TABLE_NAMES)
     legacy_access_rule_tables = set(LEGACY_ACCESS_RULE_TABLE_NAMES)
+    previous_compiled_expected = expected - {"compiled_access_rule_sets"}
     legacy_expected = (
         expected - compiled_access_rule_tables
     ) | legacy_access_rule_tables
@@ -1515,6 +1644,7 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     if (
         "components" not in manifest
         and table_names != expected
+        and table_names != previous_compiled_expected
         and table_names != legacy_expected
     ):
         raise BackupFormatError(

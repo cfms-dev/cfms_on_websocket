@@ -4,7 +4,7 @@ import types
 from pathlib import Path
 
 import pytest
-from sqlalchemy import VARCHAR, ForeignKey, Integer, Text, create_engine, event
+from sqlalchemy import VARCHAR, ForeignKey, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 _src = str(Path(__file__).resolve().parent.parent / "src")
@@ -51,10 +51,10 @@ class MDocumentRevision(_Base):
     )
 
 
-class MCompiledAccessRule(_Base):
-    __tablename__ = "compiled_access_rules"
+class MCompiledAccessRuleSet(_Base):
+    __tablename__ = "compiled_access_rule_sets"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(VARCHAR(32), primary_key=True)
     node_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
 
 
@@ -105,8 +105,8 @@ def bulk_purge_module(monkeypatch):
 
     def delete_compiled_access_rules_for_targets(session, targets):
         for target_type, target_id in targets:
-            session.query(MCompiledAccessRule).filter(
-                MCompiledAccessRule.node_id == target_id,
+            session.query(MCompiledAccessRuleSet).filter(
+                MCompiledAccessRuleSet.node_id == target_id,
             ).delete(synchronize_session=False)
 
     compiled_rules_module.delete_compiled_access_rules_for_targets = (
@@ -155,7 +155,7 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
 ):
     _seed_document_with_revision(session, "doc1", "rev1", "file1")
     session.add(MFileTask(id="task1", file_id="file1"))
-    session.add(MCompiledAccessRule(node_id="doc1"))
+    session.add(MCompiledAccessRuleSet(id="rule-set-doc1", node_id="doc1"))
     session.commit()
 
     monkeypatch.setattr(
@@ -169,7 +169,7 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
 
     assert session.query(MDocument).count() == 0
     assert session.query(MDocumentRevision).count() == 0
-    assert session.query(MCompiledAccessRule).count() == 0
+    assert session.query(MCompiledAccessRuleSet).count() == 0
     assert session.query(MFileTask).count() == 0
     assert session.query(MFile).count() == 0
     assert session.info["queued_paths"] == ["/tmp/file1"]
@@ -181,7 +181,7 @@ def test_purge_documents_bulk_keeps_shared_files(
     session.add(MFile(id="shared", path="/tmp/shared"))
     session.add_all([MDocument(id="doc1"), MDocument(id="doc2")])
     session.flush()
-    session.add(MCompiledAccessRule(node_id="doc1"))
+    session.add(MCompiledAccessRuleSet(id="rule-set-doc1", node_id="doc1"))
     session.add_all(
         [
             MDocumentRevision(id="rev1", document_id="doc1", file_id="shared"),
@@ -210,6 +210,6 @@ def test_purge_documents_bulk_keeps_shared_files(
     assert session.get(MDocumentRevision, "rev1") is None
     assert session.get(MDocument, "doc2") is not None
     assert session.get(MDocumentRevision, "rev2") is not None
-    assert session.query(MCompiledAccessRule).count() == 0
+    assert session.query(MCompiledAccessRuleSet).count() == 0
     assert session.get(MFile, "shared") is not None
     assert "queued_paths" not in session.info
