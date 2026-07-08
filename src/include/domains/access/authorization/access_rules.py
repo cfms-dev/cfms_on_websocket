@@ -23,7 +23,7 @@ ACCESS_RULE_SCHEMA = {
     "items": {
         "type": "object",
         "properties": {
-            "match": {"type": "string"},
+            "match": {"enum": ["any", "all"]},
             "match_groups": {
                 "type": "array",
                 "items": {
@@ -32,7 +32,7 @@ ACCESS_RULE_SCHEMA = {
                         "rights": {
                             "type": "object",
                             "properties": {
-                                "match": {"type": "string"},
+                                "match": {"enum": ["any", "all"]},
                                 "require": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -42,7 +42,7 @@ ACCESS_RULE_SCHEMA = {
                         "groups": {
                             "type": "object",
                             "properties": {
-                                "match": {"type": "string"},
+                                "match": {"enum": ["any", "all"]},
                                 "require": {
                                     "type": "array",
                                     "items": {"type": "string"},
