@@ -9,6 +9,7 @@ from include.database.models.documents import (
     Document,
     EntityStatus,
     Folder,
+    Node,
 )
 from include.database.models.identity import User
 from include.database.session import Session
@@ -988,22 +989,14 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             op_id = folder.status_operation_id
 
             if op_id:
-                # Restore documents in bulk.
-                session.query(Document).execution_options(include_deleted=True).filter(
-                    Document.status_operation_id == op_id,
-                    Document.status == EntityStatus.DELETED,
+                session.query(Node).filter(
+                    Node.status_operation_id == op_id,
+                    Node.status == EntityStatus.DELETED,
                 ).update(
-                    {"status": EntityStatus.OK, "status_operation_id": None},
-                    synchronize_session=False,
-                )
-
-                # Restore folders in bulk.
-                session.query(Folder).execution_options(include_deleted=True).filter(
-                    Folder.status_operation_id == op_id,
-                    Folder.status == EntityStatus.DELETED,
-                    Folder.id != folder.id,
-                ).update(
-                    {"status": EntityStatus.OK, "status_operation_id": None},
+                    {
+                        Node.status: EntityStatus.OK,
+                        Node.status_operation_id: None,
+                    },
                     synchronize_session=False,
                 )
 

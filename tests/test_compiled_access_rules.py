@@ -407,6 +407,39 @@ def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
     assert find_compiled_access_rule_mismatches(session) == []
 
 
+def test_set_access_rules_accepts_pending_folder(access_rule_session):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        find_compiled_access_rule_mismatches,
+    )
+
+    folder = models.Folder(name="Pending Folder", inherit=True)
+    session.add(folder)
+
+    set_access_rules(
+        folder,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {"groups": {"match": "all", "require": ["staff"]}}
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    session.flush()
+
+    assert folder.id is not None
+    assert folder.inherit is False
+    assert session.query(models.CompiledAccessRule).count() == 1
+    assert session.query(models.CompiledAccessRuleSet).one().node_id == folder.id
+    assert find_compiled_access_rule_mismatches(session) == []
+
+
 def test_set_access_rules_locks_target_node(access_rule_session, monkeypatch):
     models, session = access_rule_session
     from include.domains.access.authorization.access_rules import set_access_rules

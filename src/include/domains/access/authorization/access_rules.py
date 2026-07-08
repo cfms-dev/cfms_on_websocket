@@ -92,6 +92,9 @@ def set_access_rules(
     if session is None:
         raise RuntimeError("Target must be attached to a session before setting rules")
 
+    if target.id is None:
+        session.flush()
+
     target_key = _target_type_and_id(target)
     if target_key is None:
         raise TypeError("Unsupported Object Type")

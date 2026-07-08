@@ -393,6 +393,7 @@ class Document(Node):
 
         self.current_revision_id = None
         self.current_revision = None
+        session.flush()
 
         with session.no_autoflush:
             # Task 2: Batch delete all FileTask rows for deletable files in one query per chunk.
@@ -424,7 +425,6 @@ class Document(Node):
         for file_obj in files_to_delete:
             _queue_deferred_file_deletion(session, file_obj.path)
 
-        self.revisions = []
         if do_commit:
             session.commit()
 

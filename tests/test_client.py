@@ -20,6 +20,7 @@ import orjson
 from Crypto.Cipher import AES
 from loguru import logger as log
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosedOK
 from websockets.typing import DataLike
 
 from include.transport.multiplexing import (
@@ -134,6 +135,8 @@ class AsyncMultiplexConnection:
                     with self._streams_lock:
                         self._streams.pop(frame.stream_id, None)
 
+        except ConnectionClosedOK:
+            return
         except Exception:
             logger.exception("Error in async multiplex receive loop")
         finally:
