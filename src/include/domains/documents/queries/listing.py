@@ -660,6 +660,9 @@ def _compiled_group_matches(group_alias, user_permissions: Sequence[str], user_g
             not_(_in_values(CompiledAccessRuleRight.permission, user_permissions)),
         )
     )
+    any_required_right = exists(
+        select(1).where(CompiledAccessRuleRight.group_id == group_alias.id)
+    )
     present_right = exists(
         select(1).where(
             CompiledAccessRuleRight.group_id == group_alias.id,
@@ -668,6 +671,7 @@ def _compiled_group_matches(group_alias, user_permissions: Sequence[str], user_g
     )
     rights_match = or_(
         group_alias.rights_empty == True,
+        not_(any_required_right),
         and_(group_alias.rights_match_mode == "all", not_(missing_right)),
         and_(group_alias.rights_match_mode == "any", present_right),
     )
@@ -678,6 +682,9 @@ def _compiled_group_matches(group_alias, user_permissions: Sequence[str], user_g
             not_(_in_values(CompiledAccessRuleMembership.group_name, user_groups)),
         )
     )
+    any_required_group = exists(
+        select(1).where(CompiledAccessRuleMembership.group_id == group_alias.id)
+    )
     present_group = exists(
         select(1).where(
             CompiledAccessRuleMembership.group_id == group_alias.id,
@@ -686,6 +693,7 @@ def _compiled_group_matches(group_alias, user_permissions: Sequence[str], user_g
     )
     groups_match = or_(
         group_alias.groups_empty == True,
+        not_(any_required_group),
         and_(group_alias.groups_match_mode == "all", not_(missing_group)),
         and_(group_alias.groups_match_mode == "any", present_group),
     )

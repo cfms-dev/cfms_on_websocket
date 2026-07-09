@@ -83,6 +83,10 @@ def _require_list(group_data: dict[str, Any], key: str) -> list[str]:
     return [str(item) for item in required]
 
 
+def _has_match_group(group_data: dict[str, Any], key: str) -> bool:
+    return key in group_data and isinstance(group_data[key], dict)
+
+
 def _compile_match_groups(
     rule_data: dict[str, Any],
 ) -> Iterable[CompiledAccessRuleGroup]:
@@ -106,10 +110,8 @@ def _compile_match_groups(
         required_rights = _require_list(group_data, "rights")
         required_groups = _require_list(group_data, "groups")
 
-        # Flags to indicate whether the rights or groups lists are empty, which affects
-        # the match mode for the group.
-        rights_empty = not required_rights
-        groups_empty = not required_groups
+        rights_empty = not _has_match_group(group_data, "rights")
+        groups_empty = not _has_match_group(group_data, "groups")
 
         match_mode = group_data.get("match", "all")
 
@@ -119,7 +121,7 @@ def _compile_match_groups(
         #
         # Although this logic will be applied again during validation, performing a
         # preliminary conversion at the time of storage is also acceptable.
-        if rights_empty or groups_empty:
+        if not required_rights or not required_groups:
             match_mode = "all"
 
         compiled_group = CompiledAccessRuleGroup(

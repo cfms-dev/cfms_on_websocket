@@ -656,6 +656,61 @@ def test_node_rules_allow_handles_missing_empty_and_read_rules(
     }
 
 
+def test_node_rules_allow_matches_explicit_empty_compiled_requirements(
+    directory_models,
+    directory_session,
+):
+    from include.domains.access.authorization.access_rules import set_access_rules
+
+    restricted = directory_models.Folder(
+        id="listing-explicit-empty-requirements",
+        name="Explicit Empty Requirements",
+        inherit=False,
+    )
+    directory_session.add(restricted)
+    directory_session.flush()
+
+    set_access_rules(
+        restricted,
+        {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {
+                            "match": "any",
+                            "rights": {"match": "any", "require": []},
+                            "groups": {"match": "all", "require": ["staff"]},
+                        }
+                    ],
+                }
+            ]
+        },
+        inherit_parent=False,
+    )
+    directory_session.flush()
+
+    staff_user = SimpleNamespace(all_permissions=set(), all_groups={"staff"})
+    denied_user = SimpleNamespace(all_permissions=set(), all_groups=set())
+
+    def allowed_ids_for(user):
+        return {
+            row[0]
+            for row in directory_session.query(directory_models.Node.id)
+            .filter(
+                directory_models.node_rules_allow(
+                    literal("directory"),
+                    directory_models.Node.id,
+                    user,
+                )
+            )
+            .all()
+        }
+
+    assert restricted.id in allowed_ids_for(staff_user)
+    assert restricted.id not in allowed_ids_for(denied_user)
+
+
 @pytest.mark.parametrize(
     ("sort_order", "expected_ids"),
     [

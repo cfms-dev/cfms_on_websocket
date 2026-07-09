@@ -245,6 +245,45 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
         )
 
 
+def test_serialized_compiled_access_rule_preserves_explicit_empty_rights(
+    access_rule_session,
+):
+    models, session = access_rule_session
+    from include.domains.access.authorization.access_rules import set_access_rules
+    from include.domains.access.authorization.compiled_rules import (
+        get_access_rules_dict,
+    )
+
+    document = models.Document(
+        id="doc-explicit-empty-rights",
+        title="Explicit Empty Rights",
+        inherit=False,
+    )
+    session.add(document)
+    session.flush()
+
+    rules = {
+        "read": [
+            {
+                "match": "any",
+                "match_groups": [
+                    {"rights": {"match": "any", "require": []}},
+                ],
+            }
+        ]
+    }
+    set_access_rules(document, rules, inherit_parent=False)
+    session.flush()
+
+    compiled_group = session.query(models.CompiledAccessRuleGroup).one()
+    assert compiled_group.rights_empty is False
+    assert compiled_group.groups_empty is True
+    assert (
+        get_access_rules_dict(session, target_type="document", target_id=document.id)
+        == rules
+    )
+
+
 def test_compiled_access_rule_mismatch_detector_reports_invalid_rows(
     access_rule_session,
 ):

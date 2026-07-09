@@ -105,6 +105,10 @@ def _required_items(group_data: dict[str, Any], key: str) -> list[str]:
     return [str(item) for item in required]
 
 
+def _has_match_group(group_data: dict[str, Any], key: str) -> bool:
+    return key in group_data and isinstance(group_data[key], dict)
+
+
 def _compiled_tables():
     metadata = sa.MetaData()
     rules_table = sa.Table(
@@ -196,10 +200,10 @@ def _backfill_one_rule(
 
         required_rights = _required_items(group_data, "rights")
         required_groups = _required_items(group_data, "groups")
-        rights_empty = not required_rights
-        groups_empty = not required_groups
+        rights_empty = not _has_match_group(group_data, "rights")
+        groups_empty = not _has_match_group(group_data, "groups")
         match_mode = _as_match_mode(group_data.get("match", "all"))
-        if rights_empty or groups_empty:
+        if not required_rights or not required_groups:
             match_mode = "all"
 
         result = conn.execute(

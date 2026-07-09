@@ -164,6 +164,8 @@ def _insert_compiled_rule(
         groups = group_data.get("groups", {})
         required_rights = rights.get("require", [])
         required_groups = groups.get("require", [])
+        rights_empty = "rights" not in group_data
+        groups_empty = "groups" not in group_data
         group_result = connection.execute(
             insert(tables["compiled_access_rule_groups"]),
             {
@@ -173,9 +175,9 @@ def _insert_compiled_rule(
                 if not required_rights or not required_groups
                 else group_data.get("match", "all"),
                 "rights_match_mode": rights.get("match", "all"),
-                "rights_empty": not required_rights,
+                "rights_empty": rights_empty,
                 "groups_match_mode": groups.get("match", "all"),
-                "groups_empty": not required_groups,
+                "groups_empty": groups_empty,
             },
         )
         compiled_group_id = group_result.inserted_primary_key[0]
