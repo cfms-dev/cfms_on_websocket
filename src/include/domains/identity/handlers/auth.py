@@ -3,8 +3,8 @@ from typing import Any
 
 from include.config.settings import global_config
 from include.database.models.identity import User
-from include.database.models.keyrings import UserKey
 from include.database.session import Session
+from include.domains.identity.sessions import build_login_success_data
 from include.domains.identity.validators.passwords import check_passwd_requirements
 from include.domains.operations.commands.audit import log_audit
 from include.domains.security.guards.login import LoginGuard
@@ -98,25 +98,9 @@ class RequestLoginHandler(RequestHandler):
                         4002, "Password should be changed because it's expired"
                     )
 
-            success_data = {
-                "token": token.raw,
-                "exp": token.exp,
-                "nickname": user.nickname,
-                "avatar_id": user.avatar_id,
-                "permissions": list(user.all_permissions),
-                "groups": list(user.all_groups),
-            }
-
-            if user.preference_dek_id:
-                preference_dek = session.get(UserKey, user.preference_dek_id)
-                if preference_dek:
-                    success_data["preference_dek"] = {
-                        "key_id": preference_dek.id,
-                        "key_content": preference_dek.content,
-                        "label": preference_dek.label,
-                    }
-
-            return respond(200, "Login successful", success_data)
+            return respond(
+                200, "Login successful", build_login_success_data(session, user, token)
+            )
 
 
 class RequestRefreshTokenHandler(RequestHandler):
