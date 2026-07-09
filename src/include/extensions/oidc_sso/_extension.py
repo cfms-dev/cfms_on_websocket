@@ -453,3 +453,11 @@ def ext_register_handlers() -> dict[str, type[RequestHandler]]:
 @hookimpl
 def ext_register_whitelisted_actions() -> set[str]:
     return {"sso_oidc_start", "sso_oidc_callback"}
+
+
+@hookimpl
+def ext_register_extension_flags() -> set[str]:
+    if not _get_oidc_config()["enabled"]:
+        return set()
+
+    return {"oidc_sso"}

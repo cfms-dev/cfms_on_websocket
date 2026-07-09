@@ -15,9 +15,15 @@ class TestServerBasics:
         response = await client.server_info()
         data = assert_success(response)
 
-        required_fields = ["server_name", "version", "protocol_version"]
+        required_fields = [
+            "server_name",
+            "version",
+            "protocol_version",
+            "extension_flags",
+        ]
         for field in required_fields:
             assert field in data
+        assert isinstance(data["extension_flags"], list)
 
     @pytest.mark.asyncio
     async def test_unknown_action(self, client: CFMSTestClient):

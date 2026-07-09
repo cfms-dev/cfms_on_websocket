@@ -110,7 +110,9 @@ def _install_memory_cache(monkeypatch, oidc):
     return cache
 
 
-def test_oidc_extension_registers_handlers_and_whitelist(oidc):
+def test_oidc_extension_registers_handlers_whitelist_and_enabled_flag(
+    monkeypatch, oidc
+):
     handlers = oidc.ext_register_handlers()
 
     assert handlers["sso_oidc_start"] is oidc.RequestOIDCStartHandler
@@ -119,6 +121,14 @@ def test_oidc_extension_registers_handlers_and_whitelist(oidc):
         "sso_oidc_start",
         "sso_oidc_callback",
     }
+
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    assert oidc.ext_register_extension_flags() == {"oidc_sso"}
+
+    monkeypatch.setattr(
+        oidc, "global_config", DummyConfig(_enabled_config(enabled=False))
+    )
+    assert oidc.ext_register_extension_flags() == set()
 
 
 def test_oidc_start_creates_authorization_url_and_state(monkeypatch, oidc):
