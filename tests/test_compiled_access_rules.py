@@ -124,7 +124,7 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
     from include.domains.access.authorization.compiled_rules import (
         compiled_rules_allow,
         find_compiled_access_rule_mismatches,
-        get_access_rules_json,
+        get_access_rules_dict,
     )
 
     now = time.time()
@@ -214,7 +214,7 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
 
     assert find_compiled_access_rule_mismatches(session) == []
     assert (
-        get_access_rules_json(session, target_type="document", target_id=document.id)
+        get_access_rules_dict(session, target_type="document", target_id=document.id)
         == rules
     )
 

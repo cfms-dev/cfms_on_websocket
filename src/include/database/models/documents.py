@@ -99,14 +99,16 @@ class Node(Base):
     def check_access_requirements(
         self, user: User, access_type: str = "read", _no_recursive_check=False
     ) -> bool:
-        """
-        Checks if a given user meets the access requirements for a specific access type based on defined access rules.
+        """Checks if a given user meets the access requirements for a specific access type based on defined access rules.
+
         Args:
             user (User): The user object whose permissions and groups are to be checked.
             access_type (int, optional): The type of access to check for. Defaults to `"read"`.
             _no_recursive_check (bool, optional): Useful when performing batch queries. Defaults to False.
+
         Returns:
             bool: True if the user meets all access requirements for the specified access type, False otherwise.
+
         Raises:
             ValueError: If the "match" value in any rule is not "all" or "any".
         Access rules are evaluated as follows:
@@ -114,8 +116,8 @@ class Node(Base):
             - Each requirement can specify a "match" mode: "all" (all required items must be present) or "any" (at least one must be present).
             - Rules are grouped and evaluated according to their match modes and requirements.
             - If no access rules are defined, access is granted by default.
-        """
 
+        """
         _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
 
         _session = object_session(user)
@@ -165,6 +167,7 @@ class Node(Base):
 
                 parent = parent.parent
 
+        # FIXME: Use lazy import when Python 3.15 comes out
         from include.domains.access.authorization.compiled_rules import (
             compiled_rules_allow,
         )
@@ -232,14 +235,14 @@ class Folder(Node):  # Document folder.
         return active_folders_count + active_docs_count
 
     def is_descendant_of(self, potential_ancestor: Folder, /) -> bool:
-        """
-        Check if this folder is a descendant of the given potential ancestor folder.
+        """Check if this folder is a descendant of the given potential ancestor folder.
 
         Args:
             potential_ancestor: The folder to check if it's an ancestor
 
         Returns:
             True if this folder is a descendant of potential_ancestor, False otherwise
+
         """
         current = self.parent
         visited_ids = set()
@@ -320,8 +323,7 @@ class Document(Node):
     __mapper_args__ = {"polymorphic_identity": "document"}
 
     def get_latest_revision(self) -> DocumentRevision:
-        """
-        Return the latest active revision.
+        """Return the latest active revision.
 
         If current_revision is set, walk upward from it and return the first
         active revision found in that branch. If current_revision is not set,
@@ -393,7 +395,6 @@ class Document(Node):
 
         self.current_revision_id = None
         self.current_revision = None
-        session.flush()
 
         with session.no_autoflush:
             # Task 2: Batch delete all FileTask rows for deletable files in one query per chunk.
@@ -425,6 +426,7 @@ class Document(Node):
         for file_obj in files_to_delete:
             _queue_deferred_file_deletion(session, file_obj.path)
 
+        self.revisions = []
         if do_commit:
             session.commit()
 
@@ -433,8 +435,7 @@ class Document(Node):
 
 
 class DocumentRevision(Base):
-    """
-    This class implemented a model for document revisions.
+    """This class implemented a model for document revisions.
 
     A document revision is a historical version of the document,
     should only be written once and not changed.

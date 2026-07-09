@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import jsonschema
 from sqlalchemy.orm.session import object_session
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
 from include.database.models.access import CompiledAccessRuleSet
-from include.database.models.documents import Node
+from include.database.models.documents import Document, Folder, Node
 from include.database.models.identity import User
-
-if TYPE_CHECKING:
-    from include.database.models.documents import Document, Folder
+from include.domains.access.authorization.compiled_rules import (
+    compile_access_rule,
+)
 
 __all__ = [
     "apply_access_rules",
@@ -66,6 +66,7 @@ ACCESS_RULE_SCHEMA = {
 
 
 def validate_access_rules(rules: list[dict[str, Any]]) -> None:
+    """Validate access rules against the access-rule JSON schema."""
     jsonschema.validate(rules, ACCESS_RULE_SCHEMA)
 
 
@@ -74,20 +75,15 @@ def set_access_rules(
     new_access_rules: dict[str, list[dict]],
     inherit_parent: bool = True,
 ) -> None:
-    """
-    Core helper: persist access rules for a Document or Folder without performing
+    """Core helper: persist access rules for a Document or Folder without performing
     any user-permission checks. Only modifies the active transaction.
 
     Raises:
         ValueError: if an access type is unrecognised or rule data is null.
         TypeError: if ``target`` is neither a Document nor a Folder.
         RuntimeError: if ``target`` is not attached to a session.
-    """
-    from include.domains.access.authorization.compiled_rules import (
-        _target_type_and_id,
-        compile_access_rule,
-    )
 
+    """
     session = object_session(target)
     if session is None:
         raise RuntimeError("Target must be attached to a session before setting rules")
@@ -95,10 +91,16 @@ def set_access_rules(
     if target.id is None:
         session.flush()
 
-    target_key = _target_type_and_id(target)
-    if target_key is None:
-        raise TypeError("Unsupported Object Type")
-    target_type, target_id = target_key
+    target_id = target.id
+    assert target_id is not None, "Target must have an ID after flush"
+
+    match target:
+        case Document():
+            target_type = "document"
+        case Folder():
+            target_type = "directory"
+        case _:
+            raise TypeError("Unsupported Object Type")
 
     compiled_rules = []
 
@@ -110,18 +112,20 @@ def set_access_rules(
             raise ValueError(
                 f"Access rule data for access type {access_type} can't be null"
             )
+
+        # Use the JSON schema to validate the access rules before compiling them
         validate_access_rules(this_type_rules)
 
         for each_rule in this_type_rules:
             compiled_rule = compile_access_rule(
-                target_type=target_type,
-                target_id=target_id,
                 access_type=access_type,
                 rule_data=each_rule,
             )
             if compiled_rule is not None:
                 compiled_rules.append(compiled_rule)
 
+    # Use a SELECT ... FOR UPDATE to lock the target node and ensure that
+    # no other transaction can modify its access rules concurrently.
     node_for_update = (
         session.query(Node)
         .filter(Node.id == target_id, Node.type == target_type)
@@ -137,6 +141,8 @@ def set_access_rules(
 
     new_rule_set = None
     new_rule_set_id = None
+
+    # Create a new CompiledAccessRuleSet if there are compiled rules to persist.
     if compiled_rules:
         new_rule_set = CompiledAccessRuleSet(node_id=target_id)
         new_rule_set.rules.extend(compiled_rules)
@@ -148,6 +154,8 @@ def set_access_rules(
         Node.id == target_id,
         Node.type == target_type,
     )
+
+    # Optimistic locking update mechanism
     if old_rule_set_id is None:
         update_query = update_query.filter(Node.access_rule_set_id.is_(None))
     else:
@@ -163,6 +171,7 @@ def set_access_rules(
             session.flush()
         raise RuntimeError("Access rules changed concurrently; retry the operation")
 
+    # Manually synchronize states of the ORM objects.
     node_for_update.access_rule_set = new_rule_set
     node_for_update.access_rule_set_id = new_rule_set_id
     target.access_rule_set = new_rule_set
@@ -185,8 +194,7 @@ def apply_access_rules(
     user: User,
     inherit_parent: bool = True,
 ) -> bool:
-    """
-    Attach access rules and verify the acting user still satisfies each rule.
+    """Attach access rules and verify the acting user still satisfies each rule.
     Only modifies the ORM object — does NOT commit.
 
     Returns False if any resulting rule would deny access to ``user``.

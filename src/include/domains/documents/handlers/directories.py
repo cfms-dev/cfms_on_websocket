@@ -16,7 +16,7 @@ from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
 from include.domains.access.authorization.compiled_rules import (
     delete_compiled_access_rules_for_targets,
-    get_access_rules_json,
+    get_access_rules_dict,
     get_access_rules_list,
 )
 from include.domains.access.permissions import Permissions
@@ -55,10 +55,10 @@ def _mark_nodes_deleted(session, node_ids, operation_id: str) -> None:
 
 
 class RequestListDirectoryHandler(RequestHandler):
-    """
-    Handles directory listing requests.
+    """Handles directory listing requests.
     This util processes a directory listing request by generating a list of files and directories in the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
+
     Args:
         handler (ConnectionHandler): The connection handler containing request data and methods for responding.
     Response Codes:
@@ -67,6 +67,7 @@ class RequestListDirectoryHandler(RequestHandler):
         403 - Invalid user or token.
         404 - Directory not found.
         500 - Internal server error, with the exception message.
+
     """
 
     schema = {
@@ -153,10 +154,10 @@ class RequestListDirectoryHandler(RequestHandler):
 
 
 class RequestGetDirectoryInfoHandler(RequestHandler):
-    """
-    Handles directory information requests.
+    """Handles directory information requests.
     This util processes a directory information request by retrieving information about the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
+
     Args:
         handler (ConnectionHandler): The connection handler containing request data and methods for responding.
     Response Codes:
@@ -165,6 +166,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
         403 - Invalid user or token.
         404 - Directory not found.
         500 - Internal server error, with the exception message.
+
     """
 
     schema = {
@@ -256,7 +258,7 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
             handler.conclude_request(
                 200,
                 {
-                    "rules": get_access_rules_json(
+                    "rules": get_access_rules_dict(
                         session,
                         target_type="directory",
                         target_id=directory.id,
@@ -269,10 +271,10 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
 
 
 class RequestCreateDirectoryHandler(RequestHandler):
-    """
-    Handles directory creation requests.
+    """Handles directory creation requests.
     This util processes a directory creation request by creating a new directory in the specified parent directory.
     It sends an appropriate response back to the client, indicating success or failure.
+
     Args:
         handler (ConnectionHandler): The connection handler containing request data and methods for responding.
     Response Codes:
@@ -281,6 +283,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
         403 - Invalid user or token.
         404 - Parent directory not found.
         500 - Internal server error, with the exception message.
+
     """
 
     schema = {
@@ -399,10 +402,10 @@ class RequestCreateDirectoryHandler(RequestHandler):
 
 
 class RequestDeleteDirectoryHandler(RequestHandler):
-    """
-    Handles directory deletion requests.
+    """Handles directory deletion requests.
     This util processes a directory deletion request by deleting the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
+
     Args:
         handler (ConnectionHandler): The connection handler containing request data and methods for responding.
     Response Codes:
@@ -411,6 +414,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
         403 - Invalid user or token.
         404 - Directory not found.
         500 - Internal server error, with the exception message.
+
     """
 
     schema = {
@@ -499,10 +503,10 @@ class RequestDeleteDirectoryHandler(RequestHandler):
 
 
 class RequestRenameDirectoryHandler(RequestHandler):
-    """
-    Handles directory renaming requests.
+    """Handles directory renaming requests.
     This util processes a directory renaming request by updating the name of the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
+
     Args:
         handler (ConnectionHandler): The connection handler containing request data and methods for responding.
     Response Codes:
@@ -511,6 +515,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
         403 - Invalid user or token.
         404 - Directory not found.
         500 - Internal server error, with the exception message.
+
     """
 
     schema = {
@@ -714,9 +719,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
 
 
 class RequestSetDirectoryRulesHandler(RequestHandler):
-    """
-    Handles the "set_directory_rules" action.
-    """
+    """Handles the "set_directory_rules" action."""
 
     schema = {
         "type": "object",
@@ -736,9 +739,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
-        """
-        Handles the directory access rules setting request from the client.
-        """
+        """Handles the directory access rules setting request from the client."""
         directory_id: str = handler.data["directory_id"]
         access_rules_to_apply: dict = handler.data["access_rules"]
         inherit_parent: bool = handler.data.get("inherit_parent", True)
@@ -788,8 +789,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
 
 
 class RequestPurgeDirectoryHandler(RequestHandler):
-    """
-    Handles the "purge_directory" action.
+    """Handles the "purge_directory" action.
     Permanently removes a directory, all its subdirectories, and all documents within.
     This action is irreversible.
     """
@@ -890,8 +890,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
 
 
 class RequestRestoreDirectoryHandler(RequestHandler):
-    """
-    Handles the "restore_directory" action.
+    """Handles the "restore_directory" action.
     Supports virtual ROOT_DIRECTORY_ID translation to database None.
     """
 
@@ -1012,8 +1011,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
 
 
 class RequestListDeletedItemsHandler(RequestHandler):
-    """
-    Handles the "list_deleted_items" action.
+    """Handles the "list_deleted_items" action.
     Lists folders and documents that have been marked as deleted within
      a specific parent directory.
     """

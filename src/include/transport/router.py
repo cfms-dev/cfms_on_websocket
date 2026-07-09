@@ -222,8 +222,7 @@ def _log_handler_result(
 def _validate_replay_protection(
     handler: ConnectionHandler,
 ) -> str | None:
-    """
-    Validate nonce and timestamp for an authenticated request.
+    """Validate nonce and timestamp for an authenticated request.
 
     Returns None on success, or an error string after sending a rejection
     response via handler.conclude_request.
@@ -252,13 +251,12 @@ def _validate_replay_protection(
 
 
 def handle_connection(websocket: ServerConnection):
-    """
-    Handle incoming WebSocket connections.
+    """Handle incoming WebSocket connections.
 
     Args:
         websocket: The WebSocket connection object.
-    """
 
+    """
     client_cn = get_client_cert_subject(websocket)
     if client_cn:
         logger.info(
@@ -293,13 +291,12 @@ def handle_connection(websocket: ServerConnection):
 
 
 def handle_request(stream: Stream):
-    """
-    Handle a specific request/message received over the WebSocket connection.
+    """Handle a specific request/message received over the WebSocket connection.
 
     Args:
         stream: The Stream object representing the logical request stream.
-    """
 
+    """
     ip = get_client_ip(stream.connection._ws)
 
     # Check IP-only access before proceeding

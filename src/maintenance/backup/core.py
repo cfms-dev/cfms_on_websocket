@@ -240,7 +240,10 @@ COMPILED_ACCESS_RULE_TABLE_NAMES = frozenset(
 # compiled access rules became authoritative. They are not part of the current
 # schema or export format.
 LEGACY_ACCESS_RULE_TABLE_NAMES = frozenset(
-    {"document_access_rules", "folder_access_rules"}
+    {
+        "document_access_rules",
+        "folder_access_rules",
+    }
 )
 
 
@@ -1650,8 +1653,6 @@ def _restore_legacy_access_rules(
 
     for row in rows_by_table.get("document_access_rules", []):
         compiled_rule = compile_access_rule(
-            target_type="document",
-            target_id=str(row["document_id"]),
             access_type=str(row["access_type"]),
             rule_data=_coerce_legacy_rule_data(row.get("rule_data")),
         )
@@ -1660,8 +1661,6 @@ def _restore_legacy_access_rules(
 
     for row in rows_by_table.get("folder_access_rules", []):
         compiled_rule = compile_access_rule(
-            target_type="directory",
-            target_id=str(row["folder_id"]),
             access_type=str(row["access_type"]),
             rule_data=_coerce_legacy_rule_data(row.get("rule_data")),
         )

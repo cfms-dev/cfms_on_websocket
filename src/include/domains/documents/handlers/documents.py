@@ -36,7 +36,7 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
 from include.domains.access.authorization.compiled_rules import (
-    get_access_rules_json,
+    get_access_rules_dict,
     get_access_rules_list,
 )
 from include.domains.access.permissions import Permissions
@@ -53,10 +53,11 @@ from include.transport.request_handler import RequestHandler, Result
 def create_file_task(
     file: File, transfer_mode: TransferMode = TransferMode.DOWNLOAD
 ) -> dict[str, Any]:
-    """
-    Creates a new file processing task for the specified file.
+    """Creates a new file processing task for the specified file.
+
     Args:
         file (File): The file object for which the task is to be generated.
+
     Returns:
         dict or None: A dictionary containing the task details:
             - task_id (int): The unique identifier of the created task.
@@ -64,8 +65,8 @@ def create_file_task(
             - start_time (float): The start time of the task.
             - end_time (float): The end time of the task (1 hour after start).
         Returns None if the file with the given file_id does not exist.
-    """
 
+    """
     with Session() as session:
         if not file:
             raise ValueError("File can not be None when creating a file task")
@@ -118,9 +119,7 @@ def serialize_document_metadata(document: Document) -> dict:
 
 
 class RequestGetDocumentInfoHandler(RequestHandler):
-    """
-    Handles the "get_document_info" action.
-    """
+    """Handles the "get_document_info" action."""
 
     schema = {
         "type": "object",
@@ -219,7 +218,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
             handler.conclude_request(
                 200,
                 {
-                    "rules": get_access_rules_json(
+                    "rules": get_access_rules_dict(
                         session,
                         target_type="document",
                         target_id=document.id,
@@ -232,9 +231,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
 
 
 class RequestGetDocumentHandler(RequestHandler):
-    """
-    Handles the "get_document" action.
-    """
+    """Handles the "get_document" action."""
 
     schema = {
         "type": "object",
@@ -279,9 +276,7 @@ class RequestGetDocumentHandler(RequestHandler):
 
 
 class RequestCreateDocumentHandler(RequestHandler):
-    """
-    Handles the "create_document" action.
-    """
+    """Handles the "create_document" action."""
 
     schema = {
         "type": "object",
@@ -415,9 +410,7 @@ class RequestCreateDocumentHandler(RequestHandler):
 
 
 class RequestUploadDocumentHandler(RequestHandler):
-    """
-    Handles the "upload_document" action.
-    """
+    """Handles the "upload_document" action."""
 
     schema = {
         "type": "object",
@@ -516,9 +509,7 @@ class RequestUploadDocumentHandler(RequestHandler):
 
 
 class RequestDeleteDocumentHandler(RequestHandler):
-    """
-    Handles the "delete_document" action.
-    """
+    """Handles the "delete_document" action."""
 
     schema = {
         "type": "object",
@@ -561,9 +552,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
 
 
 class RequestRenameDocumentHandler(RequestHandler):
-    """
-    Handles the "rename_document" action.
-    """
+    """Handles the "rename_document" action."""
 
     schema = {
         "type": "object",
@@ -646,9 +635,7 @@ class RequestRenameDocumentHandler(RequestHandler):
 
 
 class RequestDownloadFileHandler(RequestHandler):
-    """
-    Handles the "download_file" action.
-    """
+    """Handles the "download_file" action."""
 
     schema = {
         "type": "object",
@@ -689,9 +676,7 @@ class RequestDownloadFileHandler(RequestHandler):
 
 
 class RequestUploadFileHandler(RequestHandler):
-    """
-    Handles the "upload_file" action.
-    """
+    """Handles the "upload_file" action."""
 
     schema = {
         "type": "object",
@@ -730,9 +715,7 @@ class RequestUploadFileHandler(RequestHandler):
 
 
 class RequestSetDocumentRulesHandler(RequestHandler):
-    """
-    Handles the "set_document_rules" action.
-    """
+    """Handles the "set_document_rules" action."""
 
     schema = {
         "type": "object",
@@ -752,9 +735,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
-        """
-        Handles the document access rules setting request from the client.
-        """
+        """Handles the document access rules setting request from the client."""
         document_id: str = handler.data["document_id"]
         access_rules_to_apply: dict = handler.data["access_rules"]
         inherit_parent: bool = handler.data.get("inherit_parent", True)
@@ -803,9 +784,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
 
 
 class RequestMoveDocumentHandler(RequestHandler):
-    """
-    Handles the "move_document" action.
-    """
+    """Handles the "move_document" action."""
 
     schema = {
         "type": "object",
@@ -946,8 +925,7 @@ class RequestMoveDocumentHandler(RequestHandler):
 
 
 class RequestPurgeDocumentHandler(RequestHandler):
-    """
-    Handles the "purge_document" action, which permanently deletes a document and all its revisions.
+    """Handles the "purge_document" action, which permanently deletes a document and all its revisions.
 
     This action is irreversible and should only be allowed for users with special permissions.
     """
@@ -999,8 +977,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
 
 
 class RequestRestoreDocumentHandler(RequestHandler):
-    """
-    Handles the "restore_document" action.
+    """Handles the "restore_document" action.
     Restores a marked-as-deleted document. Supports renaming and moving to a
     new folder during restoration. Maps virtual ROOT_DIRECTORY_ID to database None.
     """

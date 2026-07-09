@@ -22,17 +22,8 @@ TargetType = Literal["document", "directory"]
 CompiledRuleMap = dict[tuple[TargetType, str], list[CompiledAccessRule]]
 
 
-def _target_type_and_id(target: Any) -> tuple[TargetType, str] | None:
-    from include.database.models.documents import Document, Folder
-
-    if isinstance(target, Document) and target.id:
-        return "document", target.id
-    if isinstance(target, Folder) and target.id:
-        return "directory", target.id
-    return None
-
-
 def _access_rule_types_for(access_type: str) -> tuple[str, ...]:
+    # FIXME: Is this check logic a duplication?
     if access_type not in AVAILABLE_ACCESS_TYPES:
         raise ValueError(f"Invalid access type: {access_type}")
 
@@ -86,39 +77,48 @@ def active_compiled_rule_filter(
 
 
 def _require_list(group_data: dict[str, Any], key: str) -> list[str]:
-    value = group_data.get(key, {})
-    if not isinstance(value, dict):
-        return []
-    required = value.get("require", [])
-    if not isinstance(required, list):
-        return []
+    """Extract a list of required items from a match group dict."""
+    value: dict = group_data.get(key, {})
+    required: list = value.get("require", [])
     return [str(item) for item in required]
 
 
 def _compile_match_groups(
     rule_data: dict[str, Any],
 ) -> Iterable[CompiledAccessRuleGroup]:
-    match_groups = rule_data.get("match_groups", [])
-    if not isinstance(match_groups, list):
-        return []
+    """Compile the match groups from the access rule data into database objects.
+
+    The correctness of the dict structure is ensured by JSON Schema validation
+    at a higher level; therefore, this function does not perform comprehensive
+    validation.
+    """
+    match_groups: list[dict] = rule_data.get("match_groups", [])
+    assert isinstance(match_groups, list), "match_groups must be a list"
 
     compiled_groups: list[CompiledAccessRuleGroup] = []
     for index, group_data in enumerate(match_groups):
         if not isinstance(group_data, dict) or not group_data:
             continue
 
-        rights_group = group_data.get("rights", {})
-        if not isinstance(rights_group, dict):
-            rights_group = {}
-        groups_group = group_data.get("groups", {})
-        if not isinstance(groups_group, dict):
-            groups_group = {}
+        rights_group: dict[str, Any] = group_data.get("rights", {})
+        groups_group: dict[str, Any] = group_data.get("groups", {})
 
         required_rights = _require_list(group_data, "rights")
         required_groups = _require_list(group_data, "groups")
+
+        # Flags to indicate whether the rights or groups lists are empty, which affects
+        # the match mode for the group.
         rights_empty = not required_rights
         groups_empty = not required_groups
+
         match_mode = group_data.get("match", "all")
+
+        # If either the rights or groups list is empty, we default the match mode to
+        # "all" to ensure that the single remaining group is definitely checked,
+        # rather than being short-circuited.
+        #
+        # Although this logic will be applied again during validation, performing a
+        # preliminary conversion at the time of storage is also acceptable.
         if rights_empty or groups_empty:
             match_mode = "all"
 
@@ -145,8 +145,6 @@ def _compile_match_groups(
 
 def compile_access_rule(
     *,
-    target_type: TargetType,
-    target_id: str,
     access_type: str,
     rule_data: dict[str, Any],
 ) -> CompiledAccessRule | None:
@@ -266,12 +264,17 @@ def fetch_compiled_access_rules_for_targets(
     return rules_by_target
 
 
-def get_access_rules_json(
+def get_access_rules_dict(
     session: OrmSession,
     *,
     target_type: TargetType,
     target_id: str,
 ) -> dict[str, list[dict[str, Any]]]:
+    """Deserializes compiled access rules and returns a dictionary.
+
+    The returned dictionary can be directly converted into JSON text equivalent to
+    the compiled rules.
+    """
     access_rules: dict[str, list[dict[str, Any]]] = {}
     for rule in get_compiled_access_rules(
         session, target_type=target_type, target_id=target_id
@@ -482,8 +485,7 @@ def find_compiled_access_rule_mismatches(
     *,
     include_orphans: bool = True,
 ) -> list[tuple[str, str]]:
-    """
-    Report invalid or orphaned compiled rows.
+    """Report invalid or orphaned compiled rows.
 
     Compiled access rules are now the authoritative storage format, so there is
     no legacy source table to compare against or rebuild from.
@@ -564,8 +566,7 @@ def find_compiled_access_rule_mismatches(
 
 
 def repair_compiled_access_rules(session: OrmSession) -> list[tuple[str, str]]:
-    """
-    Delete invalid or orphaned compiled rows, then return remaining mismatches.
+    """Delete invalid or orphaned compiled rows, then return remaining mismatches.
 
     This intentionally does not recreate missing rules because compiled rules
     are the only current persisted representation.

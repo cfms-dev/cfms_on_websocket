@@ -67,5 +67,3 @@ __all__ = [
     "UserPermission",
     "UserStatus",
 ]
-
-import include.domains.access.authorization.compiled_rules  # noqa: F401, E402

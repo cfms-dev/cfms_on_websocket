@@ -66,8 +66,12 @@ ignore = [
     "E711", # allow `== None`
     "E712", # allow `== True`
     # "E402",
+    "D100", # Missing docstring in public module
+    "D101", # Missing docstring in public class
+    "D102", # Missing docstring in public method
+    "D103", # Missing docstring in public function
 ]
-extend-select = ["I"]
+extend-select = ["I"] # , "D"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]  # allow `import *` in `__init__.py` for better package structuring
