@@ -59,3 +59,63 @@ def test_mark_nodes_deleted_updates_node_table_for_joined_inheritance(
         assert document_node.status_operation_id == "operation-1"
 
     global_config.stop()
+
+
+def test_deleting_revision_sets_document_and_child_revision_references_null(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.database import models
+    from include.database.session import Base, global_config
+
+    engine = create_engine("sqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal() as session:
+        document = models.Document(id="document-1", title="document")
+        first_file = models.File(id="file-1", path="/missing/file-1", active=True)
+        second_file = models.File(id="file-2", path="/missing/file-2", active=True)
+        session.add_all([document, first_file, second_file])
+        session.flush()
+
+        first_revision = models.DocumentRevision(
+            id="revision-1",
+            document=document,
+            file=first_file,
+        )
+        second_revision = models.DocumentRevision(
+            id="revision-2",
+            document=document,
+            file=second_file,
+            parent_revision=first_revision,
+        )
+        session.add_all([first_revision, second_revision])
+        session.flush()
+
+        document.current_revision = first_revision
+        session.commit()
+
+        session.execute(
+            models.DocumentRevision.__table__.delete().where(
+                models.DocumentRevision.id == first_revision.id
+            )
+        )
+        session.commit()
+
+        session.expire_all()
+        assert session.get(models.Document, document.id).current_revision_id is None
+        assert (
+            session.get(models.DocumentRevision, second_revision.id).parent_revision_id
+            is None
+        )
+
+    global_config.stop()
