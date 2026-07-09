@@ -1,3 +1,11 @@
+"""
+OIDC SSO extension for CFMS, providing OpenID Connect Single Sign-On support.
+
+This extension was primarily written by a large language model and was created for
+experimental purposes. We make no guarantees regarding the functional reliability
+of this extension.
+"""
+
 from __future__ import annotations
 
 import base64

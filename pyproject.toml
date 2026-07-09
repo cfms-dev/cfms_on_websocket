@@ -22,8 +22,6 @@ dependencies = [
     "watchdog>=6.0.0",
     "rich>=15.0.0",
     "typer>=0.26.7",
-    "authlib>=1.7.2",
-    "requests>=2.34.2",
 ]
 
 [project.scripts]
@@ -36,6 +34,10 @@ cluster = [
 ]
 mysql = [
     "mysql-connector-python>=9.6.0",
+]
+ext_oidc_sso = [
+    "authlib>=1.7.2",
+    "requests>=2.34.2",
 ]
 
 [dependency-groups]
