@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from sqlalchemy.orm import Session as ORMSession
-from sqlalchemy.orm import object_session
 
 from include.database.models.identity import User, UserStatus
 from include.database.models.keyrings import UserKey
@@ -16,14 +14,7 @@ def issue_login_token(user: User) -> Token:
     if user.status != UserStatus.ACTIVE:
         raise UserNotActiveError
 
-    token = user.renew_token()
-    session = object_session(user)
-    if session is not None:
-        user.last_login = time.time()
-        session.add(user)
-        session.commit()
-
-    return token
+    return user.renew_token()
 
 
 def build_login_success_data(

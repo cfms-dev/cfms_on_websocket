@@ -206,9 +206,6 @@ def collect_extension_flags() -> list[str]:
     flags: set[str] = set()
 
     for registered_flags in pm.hook.ext_register_extension_flags():
-        if registered_flags is None:
-            continue
-
         for flag in registered_flags:
             if not isinstance(flag, str):
                 logger.warning(f"Ignoring non-string extension flag: {flag!r}")

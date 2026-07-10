@@ -168,8 +168,10 @@ def test_oidc_start_creates_authorization_url_and_state(monkeypatch, oidc):
 
 
 def test_oidc_callback_success_uses_existing_login_response(monkeypatch, oidc):
-    user = SimpleNamespace(username="alice")
+    user = SimpleNamespace(username="alice", last_login=None)
+    session_events = []
     monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    monkeypatch.setattr(oidc.time, "time", lambda: 123.0)
     monkeypatch.setattr(oidc, "_pop_state", lambda state: {"nonce": "nonce"})
     monkeypatch.setattr(oidc, "_get_provider_metadata", lambda cfg: _metadata())
     monkeypatch.setattr(
@@ -182,11 +184,12 @@ def test_oidc_callback_success_uses_existing_login_response(monkeypatch, oidc):
     )
     monkeypatch.setattr(oidc, "_resolve_or_create_user", lambda cfg, claims: user)
     monkeypatch.setattr(oidc, "issue_login_token", lambda resolved_user: "token")
-    monkeypatch.setattr(
-        oidc,
-        "build_login_success_data",
-        lambda session, resolved_user, token: {"token": "cfms-token"},
-    )
+
+    def build_login_success_data(session, resolved_user, token):
+        session_events.append(("build", resolved_user.last_login))
+        return {"token": "cfms-token"}
+
+    monkeypatch.setattr(oidc, "build_login_success_data", build_login_success_data)
 
     class DummySession:
         def __enter__(self):
@@ -199,6 +202,10 @@ def test_oidc_callback_success_uses_existing_login_response(monkeypatch, oidc):
             assert ident == "alice"
             return user
 
+        def commit(self):
+            session_events.append(("commit", user.last_login))
+            del user.username
+
     monkeypatch.setattr(oidc, "Session", DummySession)
 
     handler = DummyHandler({"state": "state", "code": "code"})
@@ -206,6 +213,8 @@ def test_oidc_callback_success_uses_existing_login_response(monkeypatch, oidc):
 
     assert result.code == 200
     assert result.target == "alice"
+    assert user.last_login == 123.0
+    assert session_events == [("build", None), ("commit", 123.0)]
     assert handler.responses[-1] == {
         "code": 200,
         "data": {"token": "cfms-token"},

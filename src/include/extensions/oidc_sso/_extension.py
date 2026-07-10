@@ -423,10 +423,14 @@ class RequestOIDCCallbackHandler(RequestHandler):
                 handler.conclude_request(401, {}, "SSO user is not allowed")
                 return Result(code=401)
 
+            username = user.username
             with Session() as session:
-                user = User.get_existing(session, user.username)
+                user = User.get_existing(session, username)
                 token = issue_login_token(user)
                 data = build_login_success_data(session, user, token)
+
+                user.last_login = time.time()
+                session.commit()
         except UserNotActiveError:
             handler.conclude_request(4003, {}, "User account is not active")
             return Result(code=4003)
@@ -439,7 +443,7 @@ class RequestOIDCCallbackHandler(RequestHandler):
             return None
 
         handler.conclude_request(200, data, "Login successful")
-        return Result(code=200, target=user.username, username=user.username)
+        return Result(code=200, target=username, username=username)
 
 
 @hookimpl
