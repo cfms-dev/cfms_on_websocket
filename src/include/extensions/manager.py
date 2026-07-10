@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-__all__ = ["pm", "load_builtin_extension", "load_extensions_from_directory"]
+__all__ = [
+    "pm",
+    "collect_extension_flags",
+    "load_builtin_extension",
+    "load_extensions_from_directory",
+]
 
 import importlib.util
 import os
@@ -28,8 +33,7 @@ class ServerHookSpecs:
 
     @hookspec
     def ext_register_handlers(self) -> dict[str, type[RequestHandler]]:
-        """
-        Register handlers for specific actions.
+        """Register handlers for specific actions.
 
         Should return a dictionary mapping action names to their
         corresponding RequestHandler classes.
@@ -38,8 +42,7 @@ class ServerHookSpecs:
 
     @hookspec
     def ext_unregister_handlers(self) -> set[str]:
-        """
-        Unregister handlers for specific actions.
+        """Unregister handlers for specific actions.
 
         Should return a set of action names whose handlers should
         be unregistered.
@@ -53,6 +56,15 @@ class ServerHookSpecs:
         during lockdown).
 
         Should return a set of action names.
+        """
+        ...
+
+    @hookspec
+    def ext_register_extension_flags(self) -> set[str]:
+        """
+        Register extension capability flags advertised by server_info.
+
+        Should return a set of string flags that are currently enabled.
         """
         ...
 
@@ -188,6 +200,20 @@ def load_extensions_from_directory(extension_dir: str | Path):
             continue
 
         loaded_extensions.add(ext_name)
+
+
+def collect_extension_flags() -> list[str]:
+    flags: set[str] = set()
+
+    for registered_flags in pm.hook.ext_register_extension_flags():
+        for flag in registered_flags:
+            if not isinstance(flag, str):
+                logger.warning(f"Ignoring non-string extension flag: {flag!r}")
+                continue
+
+            flags.add(flag)
+
+    return sorted(flags)
 
 
 pm = pluggy.PluginManager("cfms")

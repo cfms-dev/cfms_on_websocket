@@ -61,6 +61,23 @@ require_client_cert = false
 # Only takes effect when require_client_cert is true.
 client_cert_ca_path = "./content/ssl/client/"
 
+[sso.oidc]
+# Enable OpenID Connect single sign-on.
+enabled = false
+# Issuer URL of the OpenID Provider, without a trailing slash.
+issuer = ""
+# OAuth/OIDC client credentials registered with the provider.
+client_id = ""
+client_secret = ""
+# Redirect URI registered with the provider and used by the client.
+redirect_uri = ""
+# Claim used to map the external identity to a CFMS username.
+username_claim = "preferred_username"
+# Automatically create local users when the mapped username does not exist.
+auto_provision = false
+# Groups assigned to auto-provisioned users.
+default_groups = ["user"]
+
 [access]
 # Enable recursive access checks.
 # When enabled, access rules will be checked for the requested object itself, 

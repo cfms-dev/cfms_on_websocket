@@ -284,7 +284,7 @@ class Document(Node):
         VARCHAR(64),
         ForeignKey(
             "document_revisions.id",
-            name="fk_documents_current_revision_id",
+            ondelete="SET NULL",
             use_alter=True,
         ),
         nullable=True,
@@ -464,7 +464,9 @@ class DocumentRevision(Base):
     )
 
     parent_revision_id: Mapped[str | None] = mapped_column(
-        VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
+        VARCHAR(64),
+        ForeignKey("document_revisions.id", ondelete="SET NULL"),
+        nullable=True,
     )
     parent_revision: Mapped[DocumentRevision | None] = relationship(
         "DocumentRevision",

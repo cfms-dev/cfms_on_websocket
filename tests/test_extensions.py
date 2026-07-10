@@ -117,3 +117,64 @@ def test_builtin_extension_loads_quietly_and_is_not_loaded_twice(monkeypatch, tm
     assert pm.has_plugin("builtin")
     assert counter_path.read_text(encoding="utf-8") == "1"
     assert info_messages == []
+
+
+def test_collect_extension_flags_returns_sorted_unique_strings(monkeypatch):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+
+    class FirstExtension:
+        @extension_manager.hookimpl
+        def ext_register_extension_flags(self):
+            return {"zeta", "alpha"}
+
+    class SecondExtension:
+        @extension_manager.hookimpl
+        def ext_register_extension_flags(self):
+            return {"alpha", "beta"}
+
+    pm.register(FirstExtension())
+    pm.register(SecondExtension())
+
+    assert extension_manager.collect_extension_flags() == ["alpha", "beta", "zeta"]
+
+
+def test_collect_extension_flags_with_no_plugins(monkeypatch):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+
+    assert extension_manager.collect_extension_flags() == []
+
+
+def test_collect_extension_flags_ignores_non_string_flags(monkeypatch):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+
+    class Extension:
+        @extension_manager.hookimpl
+        def ext_register_extension_flags(self):
+            return {"alpha", 123}
+
+    pm.register(Extension())
+
+    assert extension_manager.collect_extension_flags() == ["alpha"]
+
+
+def test_collect_extension_flags_skips_none_results(monkeypatch):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+
+    class SetReturningExtension:
+        @extension_manager.hookimpl
+        def ext_register_extension_flags(self):
+            return {"delta", "alpha"}
+
+    class NoneReturningExtension:
+        @extension_manager.hookimpl
+        def ext_register_extension_flags(self):
+            return None
+
+    pm.register(SetReturningExtension())
+    pm.register(NoneReturningExtension())
+
+    assert extension_manager.collect_extension_flags() == ["alpha", "delta"]
