@@ -350,7 +350,12 @@ class RequestOIDCStartHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler) -> Result | None:
         try:
             cfg = _require_enabled_config()
-            redirect_uri = handler.data.get("redirect_uri") or cfg["redirect_uri"]
+            requested_redirect_uri = handler.data.get("redirect_uri")
+            if requested_redirect_uri and requested_redirect_uri != cfg["redirect_uri"]:
+                raise OIDCConfigurationError(
+                    "OIDC redirect_uri must match the configured redirect URI"
+                )
+            redirect_uri = cfg["redirect_uri"]
             metadata = _get_provider_metadata(cfg)
             authorization_url, state_data = _create_authorization_url(
                 cfg, metadata, redirect_uri

@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 <!-- insertion marker -->
 
+### Fixed
+
+- Prevent OIDC clients from overriding the configured redirect URI.
+
 ## [v0.2.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.2.0) - 2026-05-17
 
 <small>[Compare with first commit](https://github.com/cfms-dev/cfms_on_websocket/compare/3ed4a3a48f9d6ff0444f1c0b560146eb5a6e98e6...v0.2.0)</small>

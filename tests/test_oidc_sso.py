@@ -167,6 +167,20 @@ def test_oidc_start_creates_authorization_url_and_state(monkeypatch, oidc):
     assert state_data["code_verifier"]
 
 
+def test_oidc_start_rejects_redirect_uri_override(monkeypatch, oidc):
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    handler = DummyHandler({"redirect_uri": "https://attacker.example/callback"})
+
+    result = oidc.RequestOIDCStartHandler().handle(handler)
+
+    assert result.code == 400
+    assert handler.responses[-1] == {
+        "code": 400,
+        "data": {},
+        "message": "OIDC redirect_uri must match the configured redirect URI",
+    }
+
+
 def test_oidc_callback_success_uses_existing_login_response(monkeypatch, oidc):
     user = SimpleNamespace(username="alice", last_login=None)
     session_events = []
