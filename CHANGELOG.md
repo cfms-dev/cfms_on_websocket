@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Added
 
 - Add non-persistent lockdown reasons to lockdown responses, events, and server information.
+- Expose account status in user information responses.
 
 ### Fixed
 

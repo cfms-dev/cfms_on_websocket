@@ -20,6 +20,10 @@ class TestUserBlocksAndStatus:
             username, "disabled"
         )
         assert_success(disable_resp)
+        disabled_user_info = assert_success(
+            await authenticated_client.get_user_info(username)
+        )
+        assert disabled_user_info["status"] == "disabled"
 
         # Try to login as the disabled user
         user_client = CFMSTestClient()
@@ -35,6 +39,10 @@ class TestUserBlocksAndStatus:
         # Re-enable user
         enable_resp = await authenticated_client.update_user_status(username, "active")
         assert_success(enable_resp)
+        active_user_info = assert_success(
+            await authenticated_client.get_user_info(username)
+        )
+        assert active_user_info["status"] == "active"
 
         # Try to login again
         user_client2 = CFMSTestClient()
