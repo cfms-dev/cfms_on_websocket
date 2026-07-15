@@ -7,6 +7,7 @@ def test_database_models_register_core_tables(monkeypatch, protected_test_config
     expected_tables = {
         "audit_entries",
         "banned_subnets",
+        "comments",
         "document_revisions",
         "documents",
         "files",

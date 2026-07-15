@@ -8,6 +8,7 @@ from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
 )
+from include.database.models.comments import Comment
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -43,6 +44,7 @@ __all__ = [
     "CompiledAccessRuleMembership",
     "CompiledAccessRuleRight",
     "CompiledAccessRuleSet",
+    "Comment",
     "Document",
     "DocumentMetadata",
     "DocumentMetadataTag",
