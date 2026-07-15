@@ -209,7 +209,10 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             insert(tables["comments"]),
             {
                 "comment_id": 1,
-                "comment_hash": 12345,
+                "digest_version": 1,
+                "content_digest": (
+                    "e28bca6fb18bcde822a03cfa87a802b94136c6367f1952229382517c9f6d64cc"
+                ),
                 "comment_text": "Repeated policy violations",
                 "comment_data": None,
             },
