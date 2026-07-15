@@ -28,6 +28,12 @@ class LockdownStateManager:
 
     @property
     def cache(self) -> CachingProvider:
+        """Returns the caching provider to use for storing the lockdown state.
+
+        FIXME: I wonder if it is necessary to design the property this way solely for
+        testing purposes, given that support for manually specifying a
+        CachingProvider serves no purpose other than testing?
+        """
         if self._cache is not None:
             return self._cache
         return ProviderManager().caching
