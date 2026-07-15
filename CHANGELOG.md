@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 <!-- insertion marker -->
 
+### Added
+
+- Add non-persistent lockdown reasons to lockdown responses, events, and server information.
+
 ### Fixed
 
 - Prevent OIDC clients from overriding the configured redirect URI.

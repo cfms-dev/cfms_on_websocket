@@ -13,9 +13,9 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.documents.queries.file_references import _get_file_references
+from include.domains.operations.lockdown import lockdown_state_manager
 from include.extensions.manager import collect_extension_flags, hookimpl
 from include.messages import Messages as smsg
-from include.shared import lockdown_enabled
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
@@ -33,12 +33,14 @@ class RequestServerInfoHandler(RequestHandler):
     schema = {"type": "object", "properties": {}, "additionalProperties": False}
 
     def handle(self, handler: ConnectionHandler):
+        lockdown_state = lockdown_state_manager.get_state()
 
         server_info = {
             "server_name": global_config["server"]["name"],
             "version": CORE_VERSION.original,
             "protocol_version": PROTOCOL_VERSION,
-            "lockdown": lockdown_enabled.is_set(),
+            "lockdown": lockdown_state.enabled,
+            "lockdown_reason": lockdown_state.reason,
             "extension_flags": collect_extension_flags(),
         }
         handler.conclude_request(

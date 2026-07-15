@@ -24,8 +24,17 @@ class TestSystemManagement:
         self, authenticated_client: CFMSTestClient, user_factory
     ):
         # Enable lockdown
-        lockdown_resp = await authenticated_client.set_lockdown(True)
-        assert_success(lockdown_resp)
+        lockdown_resp = await authenticated_client.set_lockdown(
+            True, "Scheduled maintenance"
+        )
+        assert assert_success(lockdown_resp) == {
+            "status": True,
+            "reason": "Scheduled maintenance",
+        }
+
+        server_info = assert_success(await authenticated_client.server_info())
+        assert server_info["lockdown"] is True
+        assert server_info["lockdown_reason"] == "Scheduled maintenance"
 
         try:
             # Create a regular user
@@ -41,13 +50,20 @@ class TestSystemManagement:
 
             create_resp = await user_client.create_directory("LockdownTestDir")
             try:
-                assert_error(create_resp, 999)  # 999 is lockdown or access denied
+                error = assert_error(create_resp, 999)
+                assert error["data"] == {
+                    "status": True,
+                    "reason": "Scheduled maintenance",
+                }
             finally:
                 await user_client.disconnect()
         finally:
             # Revert lockdown
             unlockdown_resp = await authenticated_client.set_lockdown(False)
-            assert_success(unlockdown_resp)
+            assert assert_success(unlockdown_resp) == {
+                "status": False,
+                "reason": None,
+            }
 
     @pytest.mark.asyncio
     async def test_lockdown_broadcast_event(
@@ -63,11 +79,16 @@ class TestSystemManagement:
         await event_client.connect()
 
         try:
-            lockdown_resp = await authenticated_client.set_lockdown(True)
+            lockdown_resp = await authenticated_client.set_lockdown(
+                True, "Emergency maintenance"
+            )
             assert_success(lockdown_resp)
 
             event = await event_client.accept_event(timeout=5)
-            assert event == {"event": "lockdown", "data": {"status": True}}
+            assert event == {
+                "event": "lockdown",
+                "data": {"status": True, "reason": "Emergency maintenance"},
+            }
         finally:
             unlockdown_resp = await authenticated_client.set_lockdown(False)
             assert_success(unlockdown_resp)

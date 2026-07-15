@@ -19,11 +19,15 @@ class TestServerBasics:
             "server_name",
             "version",
             "protocol_version",
+            "lockdown",
+            "lockdown_reason",
             "extension_flags",
         ]
         for field in required_fields:
             assert field in data
         assert isinstance(data["extension_flags"], list)
+        assert data["lockdown"] is False
+        assert data["lockdown_reason"] is None
 
     @pytest.mark.asyncio
     async def test_unknown_action(self, client: CFMSTestClient):

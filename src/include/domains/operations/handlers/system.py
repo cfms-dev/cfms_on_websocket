@@ -8,6 +8,7 @@ from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.operations.lockdown import lockdown_state_manager
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
@@ -16,7 +17,6 @@ from include.domains.pagination import (
     make_cursor_response,
 )
 from include.messages import Messages as smsg
-from include.shared import lockdown_enabled
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
@@ -24,15 +24,28 @@ from include.transport.request_handler import RequestHandler, Result
 class RequestLockdownHandler(RequestHandler):
     schema = {
         "type": "object",
-        "properties": {"status": {"type": "boolean"}},
+        "properties": {
+            "status": {"type": "boolean"},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+        },
         "required": ["status"],
         "additionalProperties": False,
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"status": {"const": False}},
+                    "required": ["status"],
+                },
+                "then": {"not": {"required": ["reason"]}},
+            }
+        ],
     }
 
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
         status_to_change: bool = handler.data["status"]
+        reason: str | None = handler.data.get("reason")
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -42,7 +55,7 @@ class RequestLockdownHandler(RequestHandler):
                 return Result(code=403, target=None, username=handler.username)
 
             if status_to_change:
-                lockdown_enabled.set()
+                lockdown_state = lockdown_state_manager.enable(reason)
 
                 # cancel all pending file tasks to prevent new file
                 # operations during lockdown.
@@ -55,14 +68,15 @@ class RequestLockdownHandler(RequestHandler):
                 session.execute(stmt)
                 session.commit()
             else:
-                lockdown_enabled.clear()
+                lockdown_state = lockdown_state_manager.disable()
 
-        handler.conclude_request(200, {}, smsg.SUCCESS)
+        response_data = lockdown_state.as_response_data()
+        handler.conclude_request(200, response_data, smsg.SUCCESS)
         handler.broadcast(
             orjson.dumps(
                 {
                     "event": "lockdown",
-                    "data": {"status": lockdown_enabled.is_set()},
+                    "data": response_data,
                 }
             )
         )

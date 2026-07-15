@@ -1365,9 +1365,14 @@ class CFMSTestClient:
     # ------------------------------------------------------------------------
     # System and Management Functions
     # ------------------------------------------------------------------------
-    async def set_lockdown(self, status: bool) -> dict[str, Any]:
+    async def set_lockdown(
+        self, status: bool, reason: str | None = None
+    ) -> dict[str, Any]:
         """Enable or disable global lockdown."""
-        return await self.send_request("lockdown", {"status": status})
+        data: dict[str, Any] = {"status": status}
+        if reason is not None:
+            data["reason"] = reason
+        return await self.send_request("lockdown", data)
 
     async def update_user_status(self, username: str, status: str) -> dict[str, Any]:
         """Update user status ('active' or 'disabled')."""

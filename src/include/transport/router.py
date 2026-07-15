@@ -92,6 +92,7 @@ from include.domains.operations.handlers.system import (
     RequestLockdownHandler,
     RequestViewAuditLogsHandler,
 )
+from include.domains.operations.lockdown import lockdown_state_manager
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.replay import nonce_store
 from include.domains.security.handlers.two_factor import (
@@ -103,7 +104,7 @@ from include.domains.security.handlers.two_factor import (
 )
 from include.domains.security.validators.certificates import get_client_cert_subject
 from include.extensions.manager import pm
-from include.shared import clients, clients_lock, lockdown_enabled
+from include.shared import clients, clients_lock
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
 from include.transport.multiplexing import FrameType, MultiplexedConnection, Stream
@@ -349,14 +350,17 @@ def handle_request(stream: Stream):
                 this_handler.conclude_request(401, {}, "Invalid user or token")
                 return
 
-    if lockdown_enabled.is_set():
+    lockdown_state = lockdown_state_manager.get_state()
+    if lockdown_state.enabled:
         if action not in whitelisted_functions:
             can_bypass_lockdown = False
             if authenticated and Permissions.BYPASS_LOCKDOWN in user_permissions:
                 can_bypass_lockdown = True
 
             if not can_bypass_lockdown:
-                this_handler.conclude_request(999, {}, "lockdown")
+                this_handler.conclude_request(
+                    999, lockdown_state.as_response_data(), "lockdown"
+                )
                 return
 
     # Replay attack protection: validate nonce and timestamp.
