@@ -110,6 +110,7 @@ HUMAN_KEY_SEPARATOR = "-"
 
 BACKUP_TABLE_NAMES = (
     "files",
+    "comments",
     "users",
     "user_groups",
     "group_permissions",
@@ -144,6 +145,7 @@ EXCLUDED_TABLE_NAMES = frozenset(
 
 INSERT_ORDER = (
     "files",
+    "comments",
     "users",
     "user_groups",
     "group_permissions",
@@ -195,6 +197,7 @@ class BackupComponent(str, enum.Enum):
 
 BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
     BackupComponent.ACCOUNTS: (
+        "comments",
         "users",
         "user_groups",
         "group_permissions",

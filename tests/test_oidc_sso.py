@@ -305,6 +305,7 @@ def test_oidc_callback_rejects_disabled_user(monkeypatch, oidc):
 
     assert result.code == 4003
     assert handler.responses[-1]["message"] == "User account is not active"
+    assert handler.responses[-1]["data"] == {"reason": None}
 
 
 def test_validate_id_token_checks_signature_audience_issuer_and_nonce(

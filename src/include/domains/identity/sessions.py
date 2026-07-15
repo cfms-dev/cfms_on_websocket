@@ -12,7 +12,7 @@ from include.exceptions.misc import UserNotActiveError
 
 def issue_login_token(user: User) -> Token:
     if user.status != UserStatus.ACTIVE:
-        raise UserNotActiveError
+        raise UserNotActiveError(user.status_reason)
 
     return user.renew_token()
 

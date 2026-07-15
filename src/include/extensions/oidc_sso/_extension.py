@@ -436,8 +436,10 @@ class RequestOIDCCallbackHandler(RequestHandler):
 
                 user.last_login = time.time()
                 session.commit()
-        except UserNotActiveError:
-            handler.conclude_request(4003, {}, "User account is not active")
+        except UserNotActiveError as exc:
+            handler.conclude_request(
+                4003, {"reason": exc.reason}, "User account is not active"
+            )
             return Result(code=4003)
         except (OIDCConfigurationError, OIDCAuthenticationError, jwt.PyJWTError) as exc:
             handler.conclude_request(401, {}, str(exc))

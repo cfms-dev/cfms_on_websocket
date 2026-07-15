@@ -45,10 +45,10 @@ class RequestLoginHandler(RequestHandler):
             handler.conclude_request(code=code, data=data or {}, message=message)
             return Result(code=code, target=username)
 
-        def fail(code: int, message: str):
+        def fail(code: int, message: str, data: dict[str, Any] | None = None):
             # Throttle by both IP+username and IP-only
             LoginGuard.report_failure(ip, username, max_attempts=5, ip_max_attempts=20)
-            return respond(code, message)
+            return respond(code, message, data)
 
         # Check access: both by IP+username and IP-only are checked simultaneously
         if not LoginGuard.check_access(ip, username):
@@ -72,8 +72,12 @@ class RequestLoginHandler(RequestHandler):
                 )
             except UserTOTPFailedError:
                 return fail(401, "Invalid two-factor authentication token")
-            except UserNotActiveError:
-                return fail(4003, "User account is not active")
+            except UserNotActiveError as exc:
+                return fail(
+                    4003,
+                    "User account is not active",
+                    {"reason": exc.reason},
+                )
 
             if not token:
                 return fail(401, "Invalid credentials")

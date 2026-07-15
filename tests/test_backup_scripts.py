@@ -206,6 +206,15 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
 
     with db_engine.begin() as connection:
         connection.execute(
+            insert(tables["comments"]),
+            {
+                "comment_id": 1,
+                "comment_hash": 12345,
+                "comment_text": "Repeated policy violations",
+                "comment_data": None,
+            },
+        )
+        connection.execute(
             insert(tables["files"]),
             [
                 {
@@ -236,7 +245,8 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "avatar_id": "file-avatar",
                 "last_login": None,
                 "created_time": now,
-                "status": 0,
+                "status": 1,
+                "status_comment_id": 1,
                 "secret_key": "alice-secret",
                 "totp_secret": None,
                 "totp_enabled": False,
@@ -1030,6 +1040,10 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
         "doc-1"
     ]
     assert [row["username"] for row in restored["users"]] == ["alice"]
+    assert restored["users"][0]["status_comment_id"] == 1
+    assert [row["comment_text"] for row in restored["comments"]] == [
+        "Repeated policy violations"
+    ]
     assert {row["id"] for row in restored["files"]} == {"file-avatar", "file-doc"}
     assert restored["audit_entries"] == []
     assert restored["banned_subnets"] == []

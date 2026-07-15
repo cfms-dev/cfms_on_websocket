@@ -16,8 +16,9 @@ class TestUserBlocksAndStatus:
         username = test_user["username"]
 
         # Disable user
+        reason = "Repeated policy violations"
         disable_resp = await authenticated_client.update_user_status(
-            username, "disabled"
+            username, "disabled", reason
         )
         assert_success(disable_resp)
         disabled_user_info = assert_success(
@@ -29,10 +30,8 @@ class TestUserBlocksAndStatus:
         user_client = CFMSTestClient()
         await user_client.connect()
         login_resp = await user_client.login(username, test_user["password"])
-        # Should be forbidden or unauthorized, or 4003 (disabled specific code)
-        assert login_resp["code"] in [401, 403, 4003], (
-            f"Expected 401, 403, or 4003, got {login_resp['code']}"
-        )
+        assert login_resp["code"] == 4003
+        assert login_resp["data"] == {"reason": reason}
 
         await user_client.disconnect()
 
@@ -50,6 +49,20 @@ class TestUserBlocksAndStatus:
         login_resp2 = await user_client2.login(username, test_user["password"])
         assert_success(login_resp2)
         await user_client2.disconnect()
+
+        # A reason is optional and is represented as null in the login response.
+        assert_success(
+            await authenticated_client.update_user_status(username, "disabled")
+        )
+        user_client3 = CFMSTestClient()
+        await user_client3.connect()
+        login_resp3 = await user_client3.login(username, test_user["password"])
+        assert login_resp3["code"] == 4003
+        assert login_resp3["data"] == {"reason": None}
+        await user_client3.disconnect()
+        assert_success(
+            await authenticated_client.update_user_status(username, "active")
+        )
 
     @pytest.mark.asyncio
     async def test_block_user_from_directory(

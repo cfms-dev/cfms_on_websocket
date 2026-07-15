@@ -1374,11 +1374,14 @@ class CFMSTestClient:
             data["reason"] = reason
         return await self.send_request("lockdown", data)
 
-    async def update_user_status(self, username: str, status: str) -> dict[str, Any]:
+    async def update_user_status(
+        self, username: str, status: str, reason: str | None = None
+    ) -> dict[str, Any]:
         """Update user status ('active' or 'disabled')."""
-        return await self.send_request(
-            "manage_user_status", {"username": username, "status": status}
-        )
+        data = {"username": username, "status": status}
+        if reason is not None:
+            data["reason"] = reason
+        return await self.send_request("manage_user_status", data)
 
     async def block_user(
         self,

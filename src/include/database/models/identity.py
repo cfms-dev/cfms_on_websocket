@@ -41,6 +41,7 @@ _password_hasher = PasswordHasher()
 
 if TYPE_CHECKING:
     from include.database.models.access import UserBlockEntry
+    from include.database.models.comments import Comment
     from include.database.models.files import File
     from include.database.models.keyrings import UserKey
     from include.database.models.operations import AuditEntry
@@ -115,6 +116,10 @@ class User(Base):
     status: Mapped[UserStatus] = mapped_column(
         Integer, default=UserStatus.ACTIVE.value, nullable=False
     )
+    status_comment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("comments.comment_id", ondelete="SET NULL"), nullable=True
+    )
+    status_comment: Mapped[Comment | None] = relationship("Comment")
 
     # Per-user secret key. It is regenerated whenever the password changes.
     # Token verification uses it when present; otherwise it falls back to the
@@ -177,6 +182,10 @@ class User(Base):
             f"created_time={self.created_time!r})"
         )
 
+    @property
+    def status_reason(self) -> str | None:
+        return self.status_comment.comment_text if self.status_comment else None
+
     def verify_password(self, plain_password: str) -> bool:
         try:
             return _password_hasher.verify(self.pass_hash, plain_password)
@@ -194,7 +203,7 @@ class User(Base):
                 raise UserTOTPFailedError
 
         if self.status != UserStatus.ACTIVE:
-            raise UserNotActiveError
+            raise UserNotActiveError(self.status_reason)
 
         return True
 

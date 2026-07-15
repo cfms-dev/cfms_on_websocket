@@ -45,6 +45,7 @@ from include.domains.identity.validators.passwords import (
     RuleRequirementsNotMetError,
     check_passwd_requirements,
 )
+from include.domains.operations.comments import CommentStore
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     OFFSET_PAGINATION_SCHEMA,
@@ -1197,9 +1198,19 @@ class RequestManageUserStatusHandler(RequestHandler):
         "properties": {
             "status": {"enum": ["active", "disabled"]},
             "username": {"type": "string", "minLength": 1},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
         },
         "required": ["status", "username"],
         "additionalProperties": False,
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"status": {"const": "active"}},
+                    "required": ["status"],
+                },
+                "then": {"not": {"required": ["reason"]}},
+            }
+        ],
     }
 
     require_auth = True
@@ -1207,6 +1218,7 @@ class RequestManageUserStatusHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         new_status: str = handler.data["status"]
         username: str = handler.data["username"]
+        reason: str | None = handler.data.get("reason")
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -1238,6 +1250,11 @@ class RequestManageUserStatusHandler(RequestHandler):
                 return Result(code=400, target=None, username=handler.username)
             else:
                 user.status = mapping[new_status]
+                user.status_comment = (
+                    CommentStore.get_or_create(session, reason)
+                    if new_status == "disabled" and reason is not None
+                    else None
+                )
 
             session.commit()
 
