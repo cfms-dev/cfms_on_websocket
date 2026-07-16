@@ -691,7 +691,7 @@ class RequestGetUserInfoHandler(RequestHandler):
             user_info = {
                 "nickname": user_to_get.nickname,
                 "username": user_to_get.username,
-                "status": UserStatus(user_to_get.status).name.lower(),
+                "status": UserStatus(user_to_get.status).value,
                 "permissions": list(user_to_get.all_permissions),
                 "own_permissions": list(user_to_get.own_permissions),
                 "inherited_permissions": list(user_to_get.inherited_permissions),
