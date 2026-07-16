@@ -193,6 +193,28 @@ def _insert_compiled_rule(
             )
 
 
+def test_comment_digest_backup_representation(backup_context) -> None:
+    from maintenance.backup.core import _decode_row, _serialize_table_value
+
+    digest = bytes.fromhex("e2" * 32)
+    comments = backup_context.Base.metadata.tables["comments"]
+
+    encoded = _serialize_table_value("comments", "content_digest", digest)
+    decoded = _decode_row({"content_digest": encoded}, comments)
+
+    assert encoded == digest.hex()
+    assert decoded["content_digest"] == digest
+
+
+def test_comment_digest_backup_rejects_invalid_hex(backup_context) -> None:
+    from maintenance.backup.core import _decode_row
+
+    comments = backup_context.Base.metadata.tables["comments"]
+
+    with pytest.raises(backup_context.BackupFormatError):
+        _decode_row({"content_digest": "not-a-digest"}, comments)
+
+
 def _seed_source(base, db_engine, storage_root: Path) -> None:
     storage = _RootedStorage(storage_root)
     with storage.fopen("content/files/doc.bin", "wb") as f:
@@ -210,7 +232,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             {
                 "comment_id": 1,
                 "digest_version": 1,
-                "content_digest": (
+                "content_digest": bytes.fromhex(
                     "e28bca6fb18bcde822a03cfa87a802b94136c6367f1952229382517c9f6d64cc"
                 ),
                 "comment_text": "Repeated policy violations",
@@ -1047,6 +1069,9 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     assert [row["comment_text"] for row in restored["comments"]] == [
         "Repeated policy violations"
     ]
+    assert restored["comments"][0]["content_digest"] == bytes.fromhex(
+        "e28bca6fb18bcde822a03cfa87a802b94136c6367f1952229382517c9f6d64cc"
+    )
     assert {row["id"] for row in restored["files"]} == {"file-avatar", "file-doc"}
     assert restored["audit_entries"] == []
     assert restored["banned_subnets"] == []

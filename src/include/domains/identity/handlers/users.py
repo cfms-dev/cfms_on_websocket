@@ -1250,8 +1250,8 @@ class RequestManageUserStatusHandler(RequestHandler):
                 return Result(code=400, target=None, username=handler.username)
             else:
                 user.status = mapping[new_status]
-                user.status_comment = (
-                    CommentStore.get_or_create(session, reason)
+                user.status_comment_id = (
+                    CommentStore.get_or_create_id(session, reason)
                     if new_status == "disabled" and reason is not None
                     else None
                 )

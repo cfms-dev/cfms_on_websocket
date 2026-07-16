@@ -876,7 +876,11 @@ def _export_tables(
                             and value not in active_compiled_rule_set_ids
                         ):
                             value = None
-                        encoded[str(column.name)] = _serialize_value(value)
+                        encoded[str(column.name)] = _serialize_table_value(
+                            table_name,
+                            column.name,
+                            value,
+                        )
                     f.write(orjson.dumps(encoded, option=orjson.OPT_SORT_KEYS))
                     f.write(b"\n")
                     row_count += 1
@@ -1700,6 +1704,19 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
         value = row[column.name]
         if value is not None and isinstance(column.type, DateTime):
             value = dt.datetime.fromisoformat(value)
+        if (
+            value is not None
+            and table.name == "comments"
+            and column.name == "content_digest"
+        ):
+            if not isinstance(value, str) or len(value) != 64:
+                raise BackupFormatError("Invalid comment digest in backup")
+            try:
+                value = bytes.fromhex(value)
+            except ValueError as exc:
+                raise BackupFormatError("Invalid comment digest in backup") from exc
+            if len(value) != 32:
+                raise BackupFormatError("Invalid comment digest in backup")
         decoded[column.name] = value
     return decoded
 
@@ -1953,6 +1970,21 @@ def _serialize_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_serialize_value(item) for item in value]
     return value
+
+
+def _serialize_table_value(table_name: str, column_name: str, value: Any) -> Any:
+    if (
+        value is not None
+        and table_name == "comments"
+        and column_name == "content_digest"
+    ):
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            raise BackupIntegrityError("Invalid binary comment digest in database")
+        digest = bytes(value)
+        if len(digest) != 32:
+            raise BackupIntegrityError("Invalid binary comment digest in database")
+        return digest.hex()
+    return _serialize_value(value)
 
 
 def _encode_bytes(value: bytes) -> str:

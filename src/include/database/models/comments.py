@@ -4,11 +4,12 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Integer,
+    LargeBinary,
     SmallInteger,
-    String,
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.mysql import BINARY as MySQLBinary
 from sqlalchemy.orm import Mapped, mapped_column
 
 from include.database.session import Base
@@ -30,6 +31,9 @@ class Comment(Base):
         autoincrement=True,
     )
     digest_version: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_digest: Mapped[bytes] = mapped_column(
+        LargeBinary(32).with_variant(MySQLBinary(32), "mysql"),
+        nullable=False,
+    )
     comment_text: Mapped[str] = mapped_column(Text, nullable=False)
     comment_data: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
