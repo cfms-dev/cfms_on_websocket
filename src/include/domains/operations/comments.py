@@ -1,11 +1,12 @@
 import hashlib
-from typing import Any
+from typing import Any, cast
 
 import orjson
 from sqlalchemy import func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from include.database.models.comments import Comment
@@ -102,12 +103,12 @@ class CommentStore:
             if inserted_id is not None:
                 return inserted_id
         else:
-            result = session.execute(statement)
+            result = cast(CursorResult[Any], session.execute(statement))
             if dialect_name == "sqlite" and result.rowcount == 1:
-                inserted_id = result.inserted_primary_key[0]
-                if inserted_id is None:
+                primary_key = result.inserted_primary_key
+                if not primary_key or primary_key[0] is None:
                     raise RuntimeError("Comment insert did not return a primary key")
-                return inserted_id
+                return primary_key[0]
             if dialect_name == "mysql":
                 comment_id = result.lastrowid
                 if not comment_id:
