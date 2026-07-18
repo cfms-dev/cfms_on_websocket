@@ -1,10 +1,25 @@
-__all__ = ["get_client_ip", "is_v6_address"]
+__all__ = ["get_bind_options", "get_client_ip", "is_v6_address"]
 
 import ipaddress
+import socket
 
 from websockets.sync.server import ServerConnection
 
 from include.config.constants import TRUSTED_PROXY_IPS
+
+
+def get_bind_options(
+    address: str, dualstack_ipv6: bool
+) -> tuple[socket.AddressFamily, bool]:
+    """Return a compatible socket family and dual-stack setting for a host."""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        family = socket.AF_INET6
+    else:
+        family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+
+    return family, dualstack_ipv6 and family == socket.AF_INET6
 
 
 def get_client_ip(websocket: ServerConnection) -> str:

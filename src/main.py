@@ -9,7 +9,6 @@ database directly and loads user information for later processing.
 """
 
 import os
-import socket
 import ssl
 import sys
 
@@ -44,7 +43,7 @@ from include.extensions.manager import (
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
-from include.transport.client_address import is_v6_address
+from include.transport.client_address import get_bind_options, is_v6_address
 from include.transport.request_entrypoint import global_process_request
 from include.transport.router import (
     available_functions,
@@ -467,11 +466,11 @@ def main():
     # Preload banned subnet list into memory for LoginGuard
     LoginGuard.reload_networks()
 
-    # DO NOT MODIFY socket family setting unless you know what you are doing
-    socket_family = socket.AF_INET6
-
     host = global_config["server"]["host"]
     port = global_config["server"]["port"]
+    socket_family, dualstack_ipv6 = get_bind_options(
+        host, global_config["server"]["dualstack_ipv6"]
+    )
     host_address = f"[{host}]" if is_v6_address(host) else host
 
     with serve(
@@ -480,7 +479,7 @@ def main():
         port,
         ssl=ssl_context,
         family=socket_family,
-        dualstack_ipv6=global_config["server"]["dualstack_ipv6"],
+        dualstack_ipv6=dualstack_ipv6,
         process_request=global_process_request,
     ) as server:
         logger.info(f"CFMS WebSocket server started at wss://{host_address}:{port}")
