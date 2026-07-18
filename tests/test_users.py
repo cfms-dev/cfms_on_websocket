@@ -77,7 +77,7 @@ class TestUserOperations:
         response = await authenticated_client.get_user_info(test_user["username"])
         data = assert_success(response)
         assert data["username"] == test_user["username"]
-        assert data["status"] == "active"
+        assert data["status"] == 0
 
     @pytest.mark.asyncio
     async def test_get_nonexistent_user_info(
