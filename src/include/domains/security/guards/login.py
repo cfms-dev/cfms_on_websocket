@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from warnings import deprecated
 
 from loguru import logger as log
 from sqlalchemy import or_, select
@@ -220,6 +221,7 @@ class LoginGuard:
                         return cls._cache_decision(scope, key, record.locked_until, now)
         return ThrottleDecision(True)
 
+    @deprecated("Use evaluate() instead, which returns a ThrottleDecision object.")
     @classmethod
     def check_access(cls, ip_address: str, username: str | None = None) -> bool:
         """Compatibility wrapper for extensions using the legacy boolean API."""
