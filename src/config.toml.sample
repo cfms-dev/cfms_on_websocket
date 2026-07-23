@@ -61,6 +61,21 @@ require_client_cert = false
 # Only takes effect when require_client_cert is true.
 client_cert_ca_path = "./content/ssl/client/"
 
+[security.auth_throttle]
+# Failed authentication throttling. Missing settings use these defaults.
+enabled = true
+account_failure_threshold = 5
+account_base_delay_seconds = 30
+account_max_delay_seconds = 3600
+account_reset_seconds = 86400
+account_ip_failure_threshold = 5
+account_ip_window_seconds = 900
+account_ip_block_seconds = 900
+ip_failure_threshold = 60
+ip_window_seconds = 600
+ip_block_seconds = 900
+record_retention_days = 7
+
 [sso.oidc]
 # Enable OpenID Connect single sign-on.
 enabled = false

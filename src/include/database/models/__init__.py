@@ -31,12 +31,14 @@ from include.database.models.identity import (
 from include.database.models.keyrings import UserKey
 from include.database.models.operations import AuditEntry
 from include.database.models.security import (
+    AccountThrottle,
     BannedSubnet,
     LoginThrottle,
     TrafficThrottle,
 )
 
 __all__ = [
+    "AccountThrottle",
     "AuditEntry",
     "BannedSubnet",
     "CompiledAccessRule",

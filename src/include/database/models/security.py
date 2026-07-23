@@ -1,4 +1,9 @@
-__all__ = ["BannedSubnet", "LoginThrottle", "TrafficThrottle"]
+__all__ = [
+    "AccountThrottle",
+    "BannedSubnet",
+    "LoginThrottle",
+    "TrafficThrottle",
+]
 
 from datetime import datetime
 
@@ -33,8 +38,11 @@ class LoginThrottle(Base):
     ip_address: Mapped[str] = mapped_column(String(45), primary_key=True, index=True)
 
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), nullable=False
+    )
     last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), onupdate=func.now()
+        DateTime, default=func.now(), onupdate=func.now(), index=True
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -58,8 +66,11 @@ class TrafficThrottle(Base):
     ip_address: Mapped[str] = mapped_column(String(45), primary_key=True)
 
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), nullable=False
+    )
     last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), onupdate=func.now()
+        DateTime, default=func.now(), onupdate=func.now(), index=True
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -75,3 +86,26 @@ class TrafficThrottle(Base):
     @classmethod
     def make_cache_key(cls, ip_address: str) -> tuple[str, str]:
         return ("ip", ip_address)
+
+
+class AccountThrottle(Base):
+    __tablename__ = "account_throttles"
+
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    factor: Mapped[str] = mapped_column(String(16), primary_key=True)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_attempt: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now(), index=True
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def is_locked(self) -> bool:
+        return self.locked_until is not None and self.locked_until > datetime.now()
+
+    @classmethod
+    def get_record(cls, session, username: str, factor: str):
+        return session.get(cls, (username, factor))
+
+    @classmethod
+    def make_cache_key(cls, username: str, factor: str) -> tuple[str, str, str]:
+        return ("account", username, factor)

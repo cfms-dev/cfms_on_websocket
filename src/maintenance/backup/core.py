@@ -137,6 +137,7 @@ BACKUP_TABLE_NAMES = (
 
 EXCLUDED_TABLE_NAMES = frozenset(
     {
+        "account_throttles",
         "file_tasks",
         "login_throttles",
         "traffic_throttles",
