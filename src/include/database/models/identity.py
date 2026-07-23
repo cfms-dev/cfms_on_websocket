@@ -213,6 +213,11 @@ class User(Base):
         if not self.authenticate(plain_password, totp_token=totp_token):
             return None  # exceptions should be handled by caller
 
+        return self.create_token_after_authentication(plain_password)
+
+    def create_token_after_authentication(self, plain_password: str) -> Token:
+        """Issue a token after the caller has verified every required factor."""
+
         secret = (
             global_config["server"]["secret_key"]
             if not self.secret_key

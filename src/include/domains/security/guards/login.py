@@ -22,6 +22,7 @@ from include.database.models.security import (
     TrafficThrottle,
 )
 from include.database.session import Session, engine
+from include.domains.operations.commands.audit import log_audit
 from include.providers.manager import ProviderManager
 
 logger = log.bind(name="login_guard")
@@ -392,7 +393,19 @@ class LoginGuard:
             ip_address=ip_address,
             locked_until=locked_until.isoformat(),
         ).warning("Authentication throttle activated")
-        return cls._cache_decision(scope, key, locked_until, now)
+        decision = cls._cache_decision(scope, key, locked_until, now)
+        log_audit(
+            "auth_throttle",
+            429,
+            target=username,
+            data={
+                "scope": scope.value,
+                "factor": factor.value,
+                "retry_after_seconds": decision.retry_after_seconds,
+            },
+            remote_address=ip_address,
+        )
+        return decision
 
     @classmethod
     def report_success(

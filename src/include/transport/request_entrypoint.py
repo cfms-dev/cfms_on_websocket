@@ -12,15 +12,14 @@ def global_process_request(
 ) -> Response | None:
     ip = get_client_ip(connection)
 
-    # IP-only check
-    if not LoginGuard.check_access(ip):
+    if not LoginGuard.evaluate_permanent_access(ip).allowed:
         response_headers = Headers()
         response_headers["Content-Type"] = "text/plain"
         return Response(
             status_code=HTTPStatus.FORBIDDEN,
             reason_phrase="Forbidden",
             headers=response_headers,
-            body=b"IP temporarily blocked. Too many failed attempts.",
+            body=b"IP address is not permitted.",
         )
 
     return None

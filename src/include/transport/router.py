@@ -300,18 +300,17 @@ def handle_request(stream: Stream):
     """
     ip = get_client_ip(stream.connection._ws)
 
-    # Check IP-only access before proceeding
-    if not LoginGuard.check_access(ip):
+    if not LoginGuard.evaluate_permanent_access(ip).allowed:
         response = {
             "code": 403,
-            "message": "Your IP has been temporarily blocked due to suspicious activity. Please try again later.",
+            "message": "Your IP address is not permitted.",
             "timestamp": time.time(),
         }
         stream.send(orjson.dumps(response), frame_type=FrameType.CONCLUSION)
         # Force-close the WebSocket connection.
         # 1008 is the WebSocket policy violation close code.
         stream.connection.close()
-        stream.connection._ws.close(code=1008, reason="IP temporarily blocked")
+        stream.connection._ws.close(code=1008, reason="IP address is not permitted")
         return
 
     try:

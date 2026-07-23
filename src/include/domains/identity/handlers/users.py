@@ -40,6 +40,7 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import create_file_task
 from include.domains.identity.commands.users import create_user
+from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.identity.validators.passwords import (
     InvalidPasswordLengthError,
     RuleRequirementsNotMetError,
@@ -55,7 +56,9 @@ from include.domains.pagination import (
     get_page_size,
     make_cursor_response,
 )
+from include.domains.security.guards.login import AuthFactor, LoginGuard
 from include.messages import Messages as smsg
+from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
@@ -1011,7 +1014,7 @@ class RequestSetPasswdHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "username": {"type": "string", "minLength": 1},
+            "username": {"type": "string", "minLength": 1, "maxLength": 64},
             "old_passwd": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "new_passwd": {"type": "string", "minLength": 1},
             "force_update_after_login": {"type": "boolean"},
@@ -1022,12 +1025,27 @@ class RequestSetPasswdHandler(RequestHandler):
     }
 
     def handle(self, handler: ConnectionHandler):
+        target_username: str = handler.data["username"]
+        old_passwd: str | None = handler.data.get("old_passwd")
+        ip: str | None = None
+
+        if old_passwd is not None:
+            ip = get_client_ip(handler.stream.connection._ws)
+            decision = LoginGuard.evaluate(ip, target_username, AuthFactor.PASSWORD)
+            if not decision.allowed:
+                data = {}
+                if decision.retry_after_seconds is not None:
+                    data["retry_after_seconds"] = decision.retry_after_seconds
+                handler.conclude_request(
+                    429,
+                    data,
+                    "Too many authentication attempts. Please try again later.",
+                )
+                return Result(code=429, target=target_username)
 
         with Session() as session:
             operator_username = handler.username
 
-            target_username = handler.data.get("username", None)
-            old_passwd = handler.data.get("old_passwd", None)
             new_passwd: str = handler.data["new_passwd"]
             # sysop feature.
             bypass_passwd_requirements: bool = handler.data.get(
@@ -1039,6 +1057,10 @@ class RequestSetPasswdHandler(RequestHandler):
 
             user = session.get(User, target_username)
             if not user:
+                if old_passwd is not None:
+                    verify_password_or_dummy(None, old_passwd)
+                    assert ip is not None
+                    LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                 handler.conclude_request(
                     **{
                         "code": 401,
@@ -1074,7 +1096,7 @@ class RequestSetPasswdHandler(RequestHandler):
             else:  # operator_user should never be used on this path.
                 operator_user = None
 
-            if old_passwd:  # An old password means the user changes their own password.
+            if old_passwd is not None:
                 # Disallow these elevated flags when a user is changing their own password
                 _flags_set = []
                 if bypass_passwd_requirements:
@@ -1091,7 +1113,9 @@ class RequestSetPasswdHandler(RequestHandler):
                     )
                     return
 
-                if not user.verify_password(old_passwd):
+                if not verify_password_or_dummy(user, old_passwd):
+                    assert ip is not None
+                    LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                     handler.conclude_request(
                         **{
                             "code": 401,
@@ -1100,6 +1124,13 @@ class RequestSetPasswdHandler(RequestHandler):
                         }
                     )
                     return
+                assert ip is not None
+                LoginGuard.report_success(
+                    ip,
+                    target_username,
+                    AuthFactor.PASSWORD,
+                    completed_authentication=True,
+                )
                 if user.status != UserStatus.ACTIVE:
                     handler.conclude_request(403, {}, "Account is not active")
                     return

@@ -43,7 +43,11 @@ from include.extensions.manager import (
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
-from include.transport.client_address import get_bind_options, is_v6_address
+from include.transport.client_address import (
+    get_bind_options,
+    is_v6_address,
+    validate_client_address_config,
+)
 from include.transport.request_entrypoint import global_process_request
 from include.transport.router import (
     available_functions,
@@ -464,6 +468,8 @@ def main():
     prepare_handlers()
 
     # Preload banned subnet list into memory for LoginGuard
+    LoginGuard.validate_config()
+    validate_client_address_config()
     LoginGuard.reload_networks()
 
     host = global_config["server"]["host"]

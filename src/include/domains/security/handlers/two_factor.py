@@ -12,8 +12,31 @@ import orjson
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.security.guards.login import (
+    AuthFactor,
+    LoginGuard,
+    ThrottleDecision,
+)
+from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
+
+
+def _conclude_throttled(
+    handler: ConnectionHandler,
+    decision: ThrottleDecision,
+    target: str,
+    username: str | None = None,
+) -> Result:
+    data = {}
+    if decision.retry_after_seconds is not None:
+        data["retry_after_seconds"] = decision.retry_after_seconds
+    handler.conclude_request(
+        429,
+        data,
+        "Too many authentication attempts. Please try again later.",
+    )
+    return Result(code=429, target=target, username=username)
 
 
 class RequestSetup2FAHandler(RequestHandler):
@@ -79,7 +102,7 @@ class RequestValidate2FAHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "token": {"type": "string", "minLength": 1},
+            "token": {"type": "string", "minLength": 1, "maxLength": 64},
         },
         "required": ["token"],
         "additionalProperties": False,
@@ -90,6 +113,11 @@ class RequestValidate2FAHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         token = handler.data["token"]
         username = handler.username
+        ip = get_client_ip(handler.stream.connection._ws)
+
+        decision = LoginGuard.evaluate(ip, username, AuthFactor.TOTP)
+        if not decision.allowed:
+            return _conclude_throttled(handler, decision, username)
 
         success = False
 
@@ -127,12 +155,19 @@ class RequestValidate2FAHandler(RequestHandler):
                 success = True
 
         if success:
+            LoginGuard.report_success(
+                ip,
+                username,
+                AuthFactor.TOTP,
+                completed_authentication=True,
+            )
             handler.conclude_request(
                 code=200,
                 message="Two-factor authentication enabled successfully",
                 data={"method": "totp"},
             )
         else:
+            LoginGuard.report_failure(ip, username, AuthFactor.TOTP)
             handler.conclude_request(401, {}, "Invalid verification code")
 
         return Result(code=0 if success else 401, target=username)
@@ -149,7 +184,7 @@ class RequestDisable2FAHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "username": {"type": "string", "minLength": 1},
+            "username": {"type": "string", "minLength": 1, "maxLength": 64},
             "password": {"type": "string", "minLength": 1},
         },
         "anyOf": [
@@ -178,6 +213,14 @@ class RequestDisable2FAHandler(RequestHandler):
             handler.conclude_request(400, {}, error_msg)
             return Result(code=400, target=target_username, username=requester_username)
 
+        ip = get_client_ip(handler.stream.connection._ws)
+        if password:
+            decision = LoginGuard.evaluate(ip, target_username, AuthFactor.PASSWORD)
+            if not decision.allowed:
+                return _conclude_throttled(
+                    handler, decision, target_username, requester_username
+                )
+
         with Session() as session:
             user = session.get(User, target_username)
             if not user or not user.totp_enabled:
@@ -188,10 +231,18 @@ class RequestDisable2FAHandler(RequestHandler):
 
             if password:
                 if not user.verify_password(password):
+                    LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                     handler.conclude_request(401, {}, "Invalid password")
                     return Result(
                         code=401, target=target_username, username=requester_username
                     )
+
+                LoginGuard.report_success(
+                    ip,
+                    target_username,
+                    AuthFactor.PASSWORD,
+                    completed_authentication=True,
+                )
 
                 if user.status != UserStatus.ACTIVE:
                     handler.conclude_request(4003, {}, "User account is not active")
