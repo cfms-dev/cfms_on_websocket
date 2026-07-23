@@ -67,6 +67,10 @@ def test_login_throttled_response_returns_result(monkeypatch, tmp_path):
 
     from include.domains.identity.handlers import auth
     from include.domains.identity.handlers.auth import RequestLoginHandler
+    from include.domains.security.guards.login import (
+        ThrottleDecision,
+        ThrottleScope,
+    )
     from include.transport.request_handler import Result
 
     responses = []
@@ -77,7 +81,13 @@ def test_login_throttled_response_returns_result(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(auth, "get_client_ip", lambda _websocket: "127.0.0.1")
-    monkeypatch.setattr(auth.LoginGuard, "check_access", lambda *_args: False)
+    monkeypatch.setattr(
+        auth.LoginGuard,
+        "evaluate",
+        lambda *_args: ThrottleDecision(
+            False, ThrottleScope.ACCOUNT, retry_after_seconds=30
+        ),
+    )
 
     result = RequestLoginHandler().handle(handler)
 
@@ -85,7 +95,104 @@ def test_login_throttled_response_returns_result(monkeypatch, tmp_path):
     assert responses == [
         {
             "code": 429,
-            "data": {},
-            "message": "Too many login attempts. Please try again later.",
+            "data": {"retry_after_seconds": 30},
+            "message": "Too many authentication attempts. Please try again later.",
         }
     ]
+
+
+def _throttled_decision():
+    from include.domains.security.guards.login import (
+        ThrottleDecision,
+        ThrottleScope,
+    )
+
+    return ThrottleDecision(False, ThrottleScope.ACCOUNT, retry_after_seconds=45)
+
+
+def test_totp_validation_uses_authentication_throttle(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.security.handlers import two_factor
+    from include.domains.security.handlers.two_factor import RequestValidate2FAHandler
+
+    responses = []
+    handler = SimpleNamespace(
+        username="alice",
+        data={"token": "000000"},
+        stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
+        conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
+    )
+    monkeypatch.setattr(two_factor, "get_client_ip", lambda _websocket: "127.0.0.1")
+    monkeypatch.setattr(
+        two_factor.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
+    )
+
+    result = RequestValidate2FAHandler().handle(handler)
+
+    assert result.code == 429
+    assert responses == [
+        (
+            (
+                429,
+                {"retry_after_seconds": 45},
+                "Too many authentication attempts. Please try again later.",
+            ),
+            {},
+        )
+    ]
+
+
+def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.security.handlers import two_factor
+    from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
+
+    responses = []
+    handler = SimpleNamespace(
+        username="alice",
+        data={"password": "wrong"},
+        stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
+        conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
+    )
+    monkeypatch.setattr(two_factor, "get_client_ip", lambda _websocket: "127.0.0.1")
+    monkeypatch.setattr(
+        two_factor.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
+    )
+
+    result = RequestDisable2FAHandler().handle(handler)
+
+    assert result.code == 429
+    assert responses[0][0][0] == 429
+    assert responses[0][0][1] == {"retry_after_seconds": 45}
+
+
+def test_password_change_uses_authentication_throttle(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.identity.handlers import users
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+
+    responses = []
+    handler = SimpleNamespace(
+        username="",
+        token="",
+        data={
+            "username": "alice",
+            "old_passwd": "wrong",
+            "new_passwd": "NewPassword123!",
+        },
+        stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
+        conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
+    )
+    monkeypatch.setattr(users, "get_client_ip", lambda _websocket: "127.0.0.1")
+    monkeypatch.setattr(
+        users.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
+    )
+
+    result = RequestSetPasswdHandler().handle(handler)
+
+    assert result.code == 429
+    assert responses[0][0][0] == 429
+    assert responses[0][0][1] == {"retry_after_seconds": 45}

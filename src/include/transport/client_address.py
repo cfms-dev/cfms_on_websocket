@@ -2,7 +2,7 @@ __all__ = [
     "get_bind_options",
     "get_client_ip",
     "is_v6_address",
-    "validate_client_address_config",
+    "configure_trusted_proxy_networks",
 ]
 
 import ipaddress
@@ -11,8 +11,6 @@ from functools import lru_cache
 
 from loguru import logger
 from websockets.sync.server import ServerConnection
-
-from include.config.settings import global_config
 
 _DEFAULT_TRUSTED_PROXY_NETWORKS = ("127.0.0.1/32", "::1/128")
 
@@ -37,17 +35,20 @@ def _parse_proxy_networks(
     return tuple(networks)
 
 
-def _trusted_proxy_networks():
-    values = global_config["server"].get(
-        "trusted_proxy_networks", _DEFAULT_TRUSTED_PROXY_NETWORKS
-    )
+_configured_proxy_networks = _parse_proxy_networks(_DEFAULT_TRUSTED_PROXY_NETWORKS)
+
+
+def configure_trusted_proxy_networks(values) -> None:
+    global _configured_proxy_networks
     if isinstance(values, str):
         raise ValueError("server.trusted_proxy_networks must be an array of CIDRs")
-    return _parse_proxy_networks(tuple(str(value) for value in values))
+    _configured_proxy_networks = _parse_proxy_networks(
+        tuple(str(value) for value in values)
+    )
 
 
-def validate_client_address_config() -> None:
-    _trusted_proxy_networks()
+def _trusted_proxy_networks():
+    return _configured_proxy_networks
 
 
 def _is_trusted_proxy(

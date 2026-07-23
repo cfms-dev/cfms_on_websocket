@@ -10,6 +10,41 @@ from tests.utils import assert_error, assert_success
 
 class TestUserOperations:
     @pytest.mark.asyncio
+    async def test_self_password_change_is_throttled_and_can_recover(
+        self,
+        authenticated_client: CFMSTestClient,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        user = await user_factory()
+        username = user["username"]
+        new_password = "UpdatedPassword456!"
+        assert_success(
+            await authenticated_client.change_user_permissions(username, ["set_passwd"])
+        )
+
+        failed = await unauthenticated_client.send_request(
+            "set_passwd",
+            {
+                "username": username,
+                "old_passwd": "wrong-password",
+                "new_passwd": new_password,
+            },
+        )
+        assert_error(failed, 401)
+
+        changed = await unauthenticated_client.send_request(
+            "set_passwd",
+            {
+                "username": username,
+                "old_passwd": user["password"],
+                "new_passwd": new_password,
+            },
+        )
+        assert_success(changed)
+        assert_success(await unauthenticated_client.login(username, new_password))
+
+    @pytest.mark.asyncio
     async def test_list_users(self, authenticated_client: CFMSTestClient):
         response = await authenticated_client.list_users()
         data = assert_success(response)

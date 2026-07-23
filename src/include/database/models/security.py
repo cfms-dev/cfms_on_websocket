@@ -5,12 +5,16 @@ __all__ = [
     "TrafficThrottle",
 ]
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from include.database.session import Base
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class BannedSubnet(Base):
@@ -42,13 +46,13 @@ class LoginThrottle(Base):
         DateTime, default=func.now(), nullable=False
     )
     last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), onupdate=func.now(), index=True
+        DateTime, default=_utc_now, index=True
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def is_locked(self) -> bool:
         if self.locked_until is not None:
-            return self.locked_until > datetime.now()
+            return self.locked_until > _utc_now()
         return False
 
     @classmethod
@@ -70,13 +74,13 @@ class TrafficThrottle(Base):
         DateTime, default=func.now(), nullable=False
     )
     last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), onupdate=func.now(), index=True
+        DateTime, default=_utc_now, index=True
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def is_locked(self) -> bool:
         if self.locked_until is not None:
-            return self.locked_until > datetime.now()
+            return self.locked_until > _utc_now()
         return False
 
     @classmethod
@@ -95,12 +99,12 @@ class AccountThrottle(Base):
     factor: Mapped[str] = mapped_column(String(16), primary_key=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), onupdate=func.now(), index=True
+        DateTime, default=_utc_now, index=True
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def is_locked(self) -> bool:
-        return self.locked_until is not None and self.locked_until > datetime.now()
+        return self.locked_until is not None and self.locked_until > _utc_now()
 
     @classmethod
     def get_record(cls, session, username: str, factor: str):

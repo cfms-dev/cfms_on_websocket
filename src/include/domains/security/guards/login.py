@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, fields
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from loguru import logger as log
@@ -26,6 +26,10 @@ from include.domains.operations.commands.audit import log_audit
 from include.providers.manager import ProviderManager
 
 logger = log.bind(name="login_guard")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class AuthFactor(StrEnum):
@@ -196,7 +200,7 @@ class LoginGuard:
                 )
             )
 
-        now = datetime.now()
+        now = _utc_now()
         cache = ProviderManager().caching
         for scope, key, _model, _identity in checks:
             cache_key = cls._cache_key(key)
@@ -296,7 +300,7 @@ class LoginGuard:
         if not policy.enabled:
             return ThrottleDecision(True)
 
-        now = datetime.now()
+        now = _utc_now()
         locked: list[tuple[ThrottleScope, tuple[str, ...], datetime]] = []
         with cls._write_lock, Session.begin() as session:
             ip_record = cls._get_or_create(
@@ -380,6 +384,7 @@ class LoginGuard:
                         pair_lock,
                     )
                 )
+            session.flush()
 
         cls._maybe_cleanup(policy)
         if not locked:
@@ -439,7 +444,7 @@ class LoginGuard:
         try:
             if time.monotonic() - cls._last_cleanup_monotonic < 3600:
                 return
-            now = datetime.now()
+            now = _utc_now()
             cutoff = now - timedelta(days=policy.record_retention_days)
             with Session.begin() as session:
                 for model in (AccountThrottle, LoginThrottle, TrafficThrottle):

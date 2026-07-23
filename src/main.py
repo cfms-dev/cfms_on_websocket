@@ -44,9 +44,9 @@ from include.extensions.manager import (
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
 from include.transport.client_address import (
+    configure_trusted_proxy_networks,
     get_bind_options,
     is_v6_address,
-    validate_client_address_config,
 )
 from include.transport.request_entrypoint import global_process_request
 from include.transport.router import (
@@ -469,7 +469,11 @@ def main():
 
     # Preload banned subnet list into memory for LoginGuard
     LoginGuard.validate_config()
-    validate_client_address_config()
+    configure_trusted_proxy_networks(
+        global_config["server"].get(
+            "trusted_proxy_networks", ["127.0.0.1/32", "::1/128"]
+        )
+    )
     LoginGuard.reload_networks()
 
     host = global_config["server"]["host"]
