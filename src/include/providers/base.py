@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Buffer, Callable
 from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Any, ClassVar, Self
@@ -44,7 +44,7 @@ class FileObject(AbstractContextManager["FileObject"]):
         pass
 
     @abstractmethod
-    def write(self, data: bytes) -> int:
+    def write(self, data: Buffer) -> int:
         pass
 
     @abstractmethod

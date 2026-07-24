@@ -2,6 +2,7 @@ __all__ = ["S3FileObject", "S3StorageProvider"]
 
 import base64
 import hashlib
+from collections.abc import Buffer
 from io import UnsupportedOperation
 from types import TracebackType
 from typing import Any
@@ -37,15 +38,16 @@ class S3FileObject(FileObject):
             raise NotImplementedError
         return self._body.read(size)
 
-    def write(self, data: bytes) -> int:
+    def write(self, data: Buffer) -> int:
         if "w" not in self._mode:
             raise NotImplementedError
         if self._closed:
             raise ValueError("I/O operation on closed file")
 
-        self._buffer.extend(data)
-        self._hasher.update(data)
-        bytes_written = len(data)
+        with memoryview(data) as source_view, source_view.cast("B") as byte_view:
+            self._buffer.extend(byte_view)
+            self._hasher.update(byte_view)
+            bytes_written = byte_view.nbytes
 
         chunk_size = 5 * 1024 * 1024
         # S3 multipart uploads require parts to be at least 5MB (except the last part)
@@ -63,7 +65,7 @@ class S3FileObject(FileObject):
 
         return bytes_written
 
-    def _upload_part(self, data: bytes):
+    def _upload_part(self, data: Buffer):
         checksum = base64.b64encode(hashlib.sha256(data).digest()).decode()
         response = self._client.upload_part(
             Bucket=self._bucket_name,

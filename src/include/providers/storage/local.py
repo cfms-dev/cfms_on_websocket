@@ -1,6 +1,7 @@
 __all__ = ["LocalFileObject", "LocalStorageProvider"]
 
 import os
+from collections.abc import Buffer
 from types import TracebackType
 from typing import IO, Any
 
@@ -14,7 +15,7 @@ class LocalFileObject(FileObject):
     def read(self, size: int = -1) -> bytes:
         return self._file.read(size)
 
-    def write(self, data: bytes) -> int:
+    def write(self, data: Buffer) -> int:
         return self._file.write(data)
 
     def close(self) -> None:
