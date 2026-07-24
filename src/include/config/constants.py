@@ -8,6 +8,8 @@ __all__ = [
     "FILE_TASK_DEFAULT_DURATION_SECONDS",
     "FILE_TRANSFER_MAX_CHUNK_SIZE",
     "FILE_TRANSFER_MIN_CHUNK_SIZE",
+    "GLOBAL_BROADCAST_EVENT_CHANNEL",
+    "LOGIN_GUARD_EVENT_CHANNEL",
     "MAX_PARAM_SIZE",
     "NONCE_MIN_LENGTH",
     "PAGINATION_DEFAULT_PAGE_SIZE",
@@ -29,6 +31,10 @@ CORE_VERSION = Version("0.4.0.260719_alpha")
 PROTOCOL_VERSION = 16
 
 ROOT_ABSPATH = Path(__file__).resolve().parents[2]
+
+# Event bus channels
+GLOBAL_BROADCAST_EVENT_CHANNEL = "system:broadcast"
+LOGIN_GUARD_EVENT_CHANNEL = "security:login_guard"
 
 AVAILABLE_ACCESS_TYPES = ["read", "write", "move", "manage"]
 AVAILABLE_BLOCK_TYPES: set = {"read", "write", "move"}

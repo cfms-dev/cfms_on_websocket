@@ -19,6 +19,8 @@ import include.database.models  # noqa: F401
 from include.config.constants import (
     CORE_VERSION,
     DEFAULT_SSL_CERT_VALIDITY_DAYS,
+    GLOBAL_BROADCAST_EVENT_CHANNEL,
+    LOGIN_GUARD_EVENT_CHANNEL,
     ROOT_ABSPATH,
     ROOT_DIRECTORY_ID,
 )
@@ -35,7 +37,7 @@ from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
 from include.domains.operations.broadcast import on_global_broadcast
-from include.domains.security.guards.login import LOGIN_GUARD_EVENT_CHANNEL, LoginGuard
+from include.domains.security.guards.login import LoginGuard
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
 from include.extensions.manager import (
     load_builtin_extension,
@@ -447,7 +449,9 @@ def main():
     initialize_providers()
 
     # Register global broadcast handler
-    ProviderManager().event_bus.subscribe("system:broadcast", on_global_broadcast)
+    ProviderManager().event_bus.subscribe(
+        GLOBAL_BROADCAST_EVENT_CHANNEL, on_global_broadcast
+    )
     ProviderManager().event_bus.subscribe(
         LOGIN_GUARD_EVENT_CHANNEL, LoginGuard.handle_event
     )

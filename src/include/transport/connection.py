@@ -17,6 +17,7 @@ from websockets.typing import Data
 from include.config.constants import (
     FILE_TRANSFER_MAX_CHUNK_SIZE,
     FILE_TRANSFER_MIN_CHUNK_SIZE,
+    GLOBAL_BROADCAST_EVENT_CHANNEL,
 )
 from include.config.settings import global_config
 from include.database.models.files import File, FileTask
@@ -555,4 +556,4 @@ class ConnectionHandler:
         elif not isinstance(message, str):
             raise TypeError("data must be str or bytes")
 
-        ProviderManager().event_bus.publish("system:broadcast", message)
+        ProviderManager().event_bus.publish(GLOBAL_BROADCAST_EVENT_CHANNEL, message)

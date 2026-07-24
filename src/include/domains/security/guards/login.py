@@ -28,7 +28,6 @@ from include.domains.operations.commands.audit import log_audit
 from include.providers.manager import ProviderManager
 
 logger = log.bind(name="login_guard")
-LOGIN_GUARD_EVENT_CHANNEL = "security:login_guard"
 
 
 class AuthFactor(StrEnum):

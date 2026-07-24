@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy import Double, and_, asc, desc, literal, null, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 
+from include.config.constants import LOGIN_GUARD_EVENT_CHANNEL
 from include.database.models.identity import User
 from include.database.models.security import (
     AccountThrottle,
@@ -26,12 +27,7 @@ from include.domains.pagination import (
     get_page_size,
     make_cursor_response,
 )
-from include.domains.security.guards.login import (
-    LOGIN_GUARD_EVENT_CHANNEL,
-    AuthFactor,
-    LoginGuard,
-    ThrottleScope,
-)
+from include.domains.security.guards.login import AuthFactor, LoginGuard, ThrottleScope
 from include.messages import Messages as smsg
 from include.providers.manager import ProviderManager
 from include.transport.client_address import get_client_ip
