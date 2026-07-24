@@ -15,6 +15,7 @@ def guard_context(monkeypatch, tmp_path):
     copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
     monkeypatch.chdir(tmp_path)
 
+    from include.database.models.comments import Comment
     from include.database.models.security import (
         AccountThrottle,
         BannedSubnet,
@@ -30,6 +31,7 @@ def guard_context(monkeypatch, tmp_path):
     Base.metadata.create_all(
         test_engine,
         tables=[
+            Comment.__table__,
             AccountThrottle.__table__,
             BannedSubnet.__table__,
             LoginThrottle.__table__,

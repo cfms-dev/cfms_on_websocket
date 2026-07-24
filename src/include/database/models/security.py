@@ -6,12 +6,16 @@ __all__ = [
 ]
 
 import time
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Double, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import BigInteger, Double, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.config.constants import USERNAME_DATABASE_MAX_LENGTH
 from include.database.session import Base
+
+if TYPE_CHECKING:
+    from include.database.models.comments import Comment
 
 
 class BannedSubnet(Base):
@@ -26,10 +30,19 @@ class BannedSubnet(Base):
     __tablename__ = "banned_subnets"
 
     subnet: Mapped[str] = mapped_column(String(128), primary_key=True)
-    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reason_comment_id: Mapped[int | None] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("comments.comment_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reason_comment: Mapped[Comment | None] = relationship("Comment")
     created_at: Mapped[float] = mapped_column(Double, default=time.time, nullable=False)
     starts_at: Mapped[float] = mapped_column(Double, default=time.time, nullable=False)
     expires_at: Mapped[float | None] = mapped_column(Double, nullable=True)
+
+    @property
+    def reason(self) -> str | None:
+        return self.reason_comment.comment_text if self.reason_comment else None
 
 
 class LoginThrottle(Base):

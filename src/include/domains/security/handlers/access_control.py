@@ -9,6 +9,7 @@ import orjson
 from loguru import logger
 from sqlalchemy import Double, and_, asc, desc, literal, null, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from include.config.constants import LOGIN_GUARD_EVENT_CHANNEL
 from include.database.models.identity import User
@@ -20,6 +21,7 @@ from include.database.models.security import (
 )
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.operations.comments import CommentStore
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
@@ -161,7 +163,9 @@ class RequestListBannedSubnetsHandler(RequestHandler):
             return Result(code=400, target=None, username=handler.username)
 
         now = time.time()
-        statement = select(BannedSubnet)
+        statement = select(BannedSubnet).options(
+            selectinload(BannedSubnet.reason_comment)
+        )
         if status == "scheduled":
             statement = statement.where(BannedSubnet.starts_at > now)
         elif status == "active":
@@ -259,15 +263,20 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
             )
             return Result(code=409, target=str(network), username=handler.username)
 
-        row = BannedSubnet(
-            subnet=str(network),
-            reason=handler.data.get("reason"),
-            created_at=now,
-            starts_at=starts_at,
-            expires_at=expires_at,
-        )
         try:
             with Session.begin() as session:
+                reason = handler.data.get("reason")
+                row = BannedSubnet(
+                    subnet=str(network),
+                    reason_comment_id=(
+                        CommentStore.get_or_create_id(session, reason)
+                        if reason is not None
+                        else None
+                    ),
+                    created_at=now,
+                    starts_at=starts_at,
+                    expires_at=expires_at,
+                )
                 session.add(row)
                 session.flush()
                 response = _serialize_subnet(row, time.time())
@@ -344,7 +353,12 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
                 return Result(code=409, target=str(network), username=handler.username)
 
             if "reason" in handler.data:
-                row.reason = handler.data["reason"]
+                reason = handler.data["reason"]
+                row.reason_comment_id = (
+                    CommentStore.get_or_create_id(session, reason)
+                    if reason is not None
+                    else None
+                )
             row.starts_at = starts_at
             row.expires_at = expires_at
             session.flush()

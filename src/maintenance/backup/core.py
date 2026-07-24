@@ -25,7 +25,7 @@ import tomlkit
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from rich.progress import Progress, TaskID
-from sqlalchemy import DateTime, Table, exists, func, insert, select, update
+from sqlalchemy import DateTime, Table, exists, func, insert, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
@@ -64,6 +64,7 @@ from include.database.session import Base, Session, engine
 from include.domains.access.authorization.compiled_rules import (
     compile_access_rule,
 )
+from include.domains.operations.comments import CommentStore
 from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
 
@@ -223,7 +224,7 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
         "compiled_access_rule_rights",
     ),
     BackupComponent.AUDIT_LOG: ("audit_entries",),
-    BackupComponent.BANNED_SUBNETS: ("banned_subnets",),
+    BackupComponent.BANNED_SUBNETS: ("comments", "banned_subnets"),
     BackupComponent.CONFIGURATION: (),
 }
 BACKUP_COMPONENT_DEPENDENCIES: dict[BackupComponent, tuple[BackupComponent, ...]] = {
@@ -855,6 +856,7 @@ def _export_tables(
                     statement,
                     table,
                     table_name,
+                    metadata_tables,
                     components,
                     file_ids or frozenset(),
                 )
@@ -1095,6 +1097,7 @@ def _apply_export_table_filter(
     statement,
     table: Table,
     table_name: str,
+    tables: dict[str, Table],
     components: frozenset[BackupComponent],
     file_ids: frozenset[str],
 ):
@@ -1107,6 +1110,27 @@ def _apply_export_table_filter(
         return statement.where(
             table.c.target_type.in_(sorted(DOCUMENT_ACCESS_TARGET_TYPES))
         )
+    if table_name == "comments":
+        reference_filters = []
+        if BackupComponent.ACCOUNTS in components:
+            users = tables["users"]
+            reference_filters.append(
+                table.c.comment_id.in_(
+                    select(users.c.status_comment_id).where(
+                        users.c.status_comment_id.is_not(None)
+                    )
+                )
+            )
+        if BackupComponent.BANNED_SUBNETS in components:
+            banned_subnets = tables["banned_subnets"]
+            reference_filters.append(
+                table.c.comment_id.in_(
+                    select(banned_subnets.c.reason_comment_id).where(
+                        banned_subnets.c.reason_comment_id.is_not(None)
+                    )
+                )
+            )
+        return statement.where(or_(*reference_filters))
     return statement
 
 
@@ -1350,6 +1374,9 @@ def _restore_database(
     compiled_rule_set_id_by_node = _build_missing_compiled_rule_set_mapping(
         extract_dir, manifest
     )
+    legacy_banned_subnet_reasons = _load_legacy_banned_subnet_reasons(
+        extract_dir, manifest
+    )
     deferred_updates: dict[str, list[dict[str, Any]]] = {
         table_name: [] for table_name in DEFERRED_COLUMNS if table_name in table_names
     }
@@ -1377,6 +1404,13 @@ def _restore_database(
             )
             table = tables[table_name]
             rows = _load_table_rows(extract_dir, manifest, table)
+            if table_name == "banned_subnets" and legacy_banned_subnet_reasons:
+                for row in rows:
+                    reason = legacy_banned_subnet_reasons.get(row["subnet"])
+                    if reason is not None:
+                        row["reason_comment_id"] = CommentStore.get_or_create_id(
+                            session, reason
+                        )
             if table_name == "compiled_access_rules" and compiled_rule_set_id_by_node:
                 _restore_missing_compiled_rule_sets(
                     connection,
@@ -1626,6 +1660,38 @@ def _load_table_rows(
         )
     LOGGER.debug("Loaded %d row(s) for table %s", len(rows), table_name)
     return rows
+
+
+def _load_legacy_banned_subnet_reasons(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> dict[str, str | None]:
+    table_manifest = manifest.get("tables", {}).get("banned_subnets")
+    if table_manifest is None:
+        return {}
+
+    path = _safe_payload_path(extract_dir, "tables/banned_subnets.jsonl")
+    reasons: dict[str, str | None] = {}
+    row_count = 0
+    with path.open("rb") as f:
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = orjson.loads(line)
+            except orjson.JSONDecodeError as exc:
+                raise BackupFormatError(
+                    f"Invalid JSON row in {path} at line {line_number}"
+                ) from exc
+            row_count += 1
+            if "reason" in row and "reason_comment_id" not in row:
+                reasons[str(row["subnet"])] = row["reason"]
+    if row_count != table_manifest["rows"]:
+        raise BackupFormatError(
+            "Row count mismatch for table 'banned_subnets': "
+            f"manifest says {table_manifest['rows']}, payload has {row_count}"
+        )
+    return reasons
 
 
 def _load_legacy_access_rule_rows(

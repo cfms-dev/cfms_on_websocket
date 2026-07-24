@@ -112,6 +112,7 @@ def test_legacy_banned_subnet_times_are_upgraded(backup_context):
     assert decoded["created_at"] == expected
     assert decoded["starts_at"] == expected
     assert decoded["expires_at"] is None
+    assert decoded["reason_comment_id"] is None
 
 
 def _write_config(path: Path, *, secret_key: str, pepper: str) -> dict:
@@ -248,15 +249,26 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
     with db_engine.begin() as connection:
         connection.execute(
             insert(tables["comments"]),
-            {
-                "comment_id": 1,
-                "digest_version": 1,
-                "content_digest": bytes.fromhex(
-                    "e28bca6fb18bcde822a03cfa87a802b94136c6367f1952229382517c9f6d64cc"
-                ),
-                "comment_text": "Repeated policy violations",
-                "comment_data": None,
-            },
+            [
+                {
+                    "comment_id": 1,
+                    "digest_version": 1,
+                    "content_digest": bytes.fromhex(
+                        "e28bca6fb18bcde822a03cfa87a802b94136c6367f1952229382517c9f6d64cc"
+                    ),
+                    "comment_text": "Repeated policy violations",
+                    "comment_data": None,
+                },
+                {
+                    "comment_id": 2,
+                    "digest_version": 1,
+                    "content_digest": bytes.fromhex(
+                        "f2a01247ea2f1c75120f51d5514e9d562002bc363d3b93a15a11ca63912018bd"
+                    ),
+                    "comment_text": "manual incident",
+                    "comment_data": None,
+                },
+            ],
         )
         connection.execute(
             insert(tables["files"]),
@@ -502,7 +514,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             insert(tables["banned_subnets"]),
             {
                 "subnet": "192.0.2.0/24",
-                "reason": "manual",
+                "reason_comment_id": 2,
                 "created_at": created_at,
                 "starts_at": created_at,
                 "expires_at": None,
@@ -1113,6 +1125,83 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     restored_config = tomlkit.parse(target_config.read_text(encoding="utf-8"))
     assert restored_config["security"]["pepper"] == "target-pepper"
     assert restored_config["server"]["secret_key"] == "target-secret"
+
+
+def test_banned_subnet_export_includes_only_referenced_comments(
+    backup_context, tmp_path
+):
+    from maintenance.backup.core import _stage_backup_payload
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_storage = tmp_path / "source-storage"
+    staging_dir = tmp_path / "staging"
+    source_storage.mkdir()
+    staging_dir.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    selection = backup_context.BackupExportSelection.from_component_values(
+        ["banned_subnets"]
+    )
+
+    manifest = _stage_backup_payload(
+        staging_dir,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+        selection=selection,
+    )
+
+    assert set(manifest["tables"]) == {"comments", "banned_subnets"}
+    assert _read_jsonl(staging_dir / "tables" / "comments.jsonl") == [
+        {
+            "comment_data": None,
+            "comment_id": 2,
+            "comment_text": "manual incident",
+            "content_digest": (
+                "f2a01247ea2f1c75120f51d5514e9d562002bc363d3b93a15a11ca63912018bd"
+            ),
+            "digest_version": 1,
+        }
+    ]
+    assert (
+        _read_jsonl(staging_dir / "tables" / "banned_subnets.jsonl")[0][
+            "reason_comment_id"
+        ]
+        == 2
+    )
+
+
+def test_legacy_banned_subnet_reason_restores_as_comment(backup_context, tmp_path):
+    from maintenance.backup.core import BACKUP_FORMAT_VERSION, _restore_database
+
+    base = backup_context.Base
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "legacy-payload"
+    tables_dir = extract_dir / "tables"
+    rows = [
+        {
+            "subnet": "192.0.2.0/24",
+            "reason": "legacy incident",
+            "created_at": "2024-01-02T03:04:05Z",
+        }
+    ]
+    _write_jsonl(tables_dir / "banned_subnets.jsonl", rows)
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["banned_subnets"],
+        "tables": {"banned_subnets": {"rows": 1}},
+        "files": [],
+        "configuration": {},
+    }
+
+    _restore_database(extract_dir, manifest, target_session)
+
+    restored = _dump_backup_tables(base, target_engine)
+    assert restored["comments"][0]["comment_text"] == "legacy incident"
+    assert (
+        restored["banned_subnets"][0]["reason_comment_id"]
+        == restored["comments"][0]["comment_id"]
+    )
 
 
 def test_wrong_magic_and_wrong_key_fail(backup_context, tmp_path):

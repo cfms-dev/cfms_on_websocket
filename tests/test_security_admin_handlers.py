@@ -4,7 +4,7 @@ from shutil import copyfile
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +32,7 @@ def security_admin_context(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
     import include.database.models  # noqa: F401
+    from include.database.models.comments import Comment
     from include.database.models.identity import User, UserPermission
     from include.database.models.security import (
         AccountThrottle,
@@ -84,6 +85,7 @@ def security_admin_context(monkeypatch, tmp_path):
         AccountThrottle=AccountThrottle,
         LoginThrottle=LoginThrottle,
         TrafficThrottle=TrafficThrottle,
+        Comment=Comment,
     )
     engine.dispose()
 
@@ -109,6 +111,7 @@ def test_banned_subnet_crud_and_filters(security_admin_context):
     )
     assert created["code"] == 200
     assert created["data"]["subnet"] == "192.0.2.0/24"
+    assert created["data"]["reason"] == "incident"
     assert created["data"]["status"] == "active"
 
     _, duplicate = _call(
@@ -138,6 +141,37 @@ def test_banned_subnet_crud_and_filters(security_admin_context):
     assert deleted["code"] == 200
     with security_admin_context.Session() as session:
         assert session.get(security_admin_context.BannedSubnet, "192.0.2.0/24") is None
+
+
+def test_banned_subnets_reuse_equal_reason_comments(security_admin_context):
+    handlers = security_admin_context.handlers
+    for subnet in ("192.0.2.0/24", "198.51.100.0/24"):
+        _, response = _call(
+            handlers.RequestCreateBannedSubnetHandler,
+            {"subnet": subnet, "reason": "shared incident"},
+        )
+        assert response["code"] == 200
+
+    with security_admin_context.Session() as session:
+        rows = session.scalars(
+            select(security_admin_context.BannedSubnet).order_by(
+                security_admin_context.BannedSubnet.subnet
+            )
+        ).all()
+        assert rows[0].reason_comment_id == rows[1].reason_comment_id
+        assert rows[0].reason == rows[1].reason == "shared incident"
+        comments = session.scalars(select(security_admin_context.Comment)).all()
+        assert len(comments) == 1
+
+    _, updated = _call(
+        handlers.RequestUpdateBannedSubnetHandler,
+        {"subnet": "192.0.2.0/24", "reason": None},
+    )
+    assert updated["data"]["reason"] is None
+    with security_admin_context.Session() as session:
+        retained = session.get(security_admin_context.BannedSubnet, "198.51.100.0/24")
+        assert retained is not None
+        assert retained.reason == "shared incident"
 
 
 def test_banned_subnet_requires_explicit_self_block_confirmation(
