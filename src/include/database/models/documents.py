@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 __all__ = [
     "Document",
     "DocumentMetadata",
@@ -77,13 +75,13 @@ class Node(Base):
         nullable=True,
         index=True,
     )
-    access_rule_set: Mapped[CompiledAccessRuleSet | None] = relationship(
+    access_rule_set: Mapped["CompiledAccessRuleSet | None"] = relationship(
         "CompiledAccessRuleSet",
         foreign_keys=[access_rule_set_id],
         post_update=True,
         uselist=False,
     )
-    access_rule_sets: Mapped[list[CompiledAccessRuleSet]] = relationship(
+    access_rule_sets: Mapped[list["CompiledAccessRuleSet"]] = relationship(
         "CompiledAccessRuleSet",
         back_populates="node",
         cascade="all, delete-orphan",
@@ -97,7 +95,7 @@ class Node(Base):
     }
 
     def check_access_requirements(
-        self, user: User, access_type: str = "read", _no_recursive_check=False
+        self, user: "User", access_type: str = "read", _no_recursive_check=False
     ) -> bool:
         """Checks if a given user meets the access requirements for a specific access type based on defined access rules.
 
@@ -316,7 +314,7 @@ class Document(Node):
     def active(self):
         try:
             latest_revision = self.get_latest_revision()
-        except (RuntimeError, NoActiveRevisionsError):
+        except RuntimeError, NoActiveRevisionsError:
             return False
         return latest_revision is not None
 
@@ -538,8 +536,10 @@ class DocumentMetadata(Base):
         back_populates="metadata_record",
         foreign_keys=[document_id],
     )
-    creator: Mapped[User | None] = relationship("User", foreign_keys=[creator_username])
-    last_modified_by: Mapped[User | None] = relationship(
+    creator: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[creator_username]
+    )
+    last_modified_by: Mapped["User | None"] = relationship(
         "User", foreign_keys=[last_modified_by_username]
     )
     tags: Mapped[list[DocumentMetadataTag]] = relationship(

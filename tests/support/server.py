@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 import subprocess
 import sys
@@ -56,7 +54,7 @@ def log_server_output(
                 try:
                     output_file.write(line)
                     output_file.flush()
-                except (ValueError, OSError):
+                except ValueError, OSError:
                     break
         except Exception:
             pass

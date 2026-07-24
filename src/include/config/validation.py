@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import ipaddress
 import os
 from collections.abc import Mapping, Sequence

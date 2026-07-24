@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import importlib
 import logging
 from collections.abc import Iterable
@@ -44,7 +42,7 @@ def export_backup(
     *,
     key_output_path: str | Path | None = None,
     components: Iterable[str] | None = None,
-    progress: Progress | None = None,
+    progress: "Progress | None" = None,
     show_progress_details: bool = False,
 ) -> BackupExportResult:
     ensure_src_workdir()
@@ -78,7 +76,7 @@ def export_backup(
     )
 
 
-def read_backup_info(backup_path: str | Path) -> BackupHeader:
+def read_backup_info(backup_path: str | Path) -> "BackupHeader":
     ensure_src_workdir()
     backup_module = _load_backup_module()
 
@@ -94,7 +92,7 @@ def import_backup(
     *,
     key: str | None = None,
     key_file: str | Path | None = None,
-    progress: Progress | None = None,
+    progress: "Progress | None" = None,
     show_progress_details: bool = False,
 ) -> BackupImportResult:
     ensure_src_workdir()

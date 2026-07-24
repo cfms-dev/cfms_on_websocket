@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import base64
 import binascii
 import contextlib
@@ -2132,7 +2130,7 @@ def _config_get(config, keys: tuple[str, ...], default: Any = None) -> Any:
     for key in keys:
         try:
             value = value[key]
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             return default
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value

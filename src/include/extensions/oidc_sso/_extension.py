@@ -6,8 +6,6 @@ experimental purposes. We make no guarantees regarding the functional reliabilit
 of this extension.
 """
 
-from __future__ import annotations
-
 import base64
 import hashlib
 import secrets

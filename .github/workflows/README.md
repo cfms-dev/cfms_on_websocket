@@ -7,7 +7,7 @@ This workflow runs the pytest test suite automatically when:
 - A pull request is opened or updated
 
 ### What it does:
-1. Sets up a Python environment (tests on Python 3.13 and 3.14)
+1. Sets up a Python 3.14 environment
 2. Installs project dependencies and test requirements
 3. Creates necessary directories for the server
 4. Runs the full test suite with pytest
@@ -15,7 +15,7 @@ This workflow runs the pytest test suite automatically when:
 
 ### Configuration:
 - **Timeout**: 10 minutes per test run
-- **Matrix testing**: Tests across Python 3.13 and 3.14
+- **Python version**: Tests run on Python 3.14
 - **Artifacts**: Test cache and server logs are uploaded for debugging
 
 ### Viewing Results:

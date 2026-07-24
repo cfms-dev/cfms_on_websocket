@@ -17,7 +17,7 @@ The test suite provides comprehensive coverage of the server's functionality, in
 
 Before running the tests, ensure you have:
 
-1. Python 3.13 or higher installed
+1. Python 3.14 or higher installed
 2. All project dependencies installed:
    ```bash
    uv sync --upgrade --dev

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 __all__ = [
     "collect_extension_flags",
     "load_builtin_extension",
@@ -32,7 +30,7 @@ class ServerHookSpecs:
     """Hook specifications for server extensions."""
 
     @hookspec
-    def ext_register_handlers(self) -> dict[str, type[RequestHandler]]:
+    def ext_register_handlers(self) -> dict[str, type["RequestHandler"]]:
         """Register handlers for specific actions.
 
         Should return a dictionary mapping action names to their
@@ -80,7 +78,9 @@ class ServerHookSpecs:
 
     @hookspec(firstresult=True)
     def ext_pre_request(
-        self, request_handler: RequestHandler, connection_handler: ConnectionHandler
+        self,
+        request_handler: "RequestHandler",
+        connection_handler: "ConnectionHandler",
     ) -> bool | None:
         """
         Triggered before processing a request.
@@ -93,8 +93,8 @@ class ServerHookSpecs:
     def ext_post_request(
         self,
         action: str,
-        handler: ConnectionHandler,
-        callback: Result | None,
+        handler: "ConnectionHandler",
+        callback: "Result | None",
         time_cost: float,
     ) -> None: ...
 

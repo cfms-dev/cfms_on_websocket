@@ -12,8 +12,6 @@ rather than the file itself, so that atomic replacements (write-to-temp +
 rename, or symlink updates) are detected reliably.
 """
 
-from __future__ import annotations
-
 import os
 import pathlib
 import secrets

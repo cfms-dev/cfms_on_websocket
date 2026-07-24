@@ -1,9 +1,9 @@
 [project]
 name = "cfms-on-websocket"
-version = "0.3.0"
+version = "0.4.0"
 description = "The server-side program for CFMS on WebSocket, a WebSocket-based implementation of the CFMS protocol."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "argon2-cffi>=25.1.0",
     "cryptography>=46.0.3",
@@ -80,7 +80,9 @@ extend-select = ["I", "UP"] # , "D"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]  # allow `import *` in `__init__.py` for better package structuring
-"src/include/database/models/*" = ["E711", "E712"] # allow `== None` and `== True` in database models
+"src/include/database/models/*" = ["E711", "E712", "UP037"] # allow `== None`, `== True`, and quoted ORM forward references
+"src/include/extensions/manager.py" = ["UP037"] # pluggy evaluates hook annotations at runtime
+"src/maintenance/operations/backups.py" = ["UP037"] # imported lazily to avoid loading backup providers
 "tests/*" = ["E722", "F841"]  # allow bare `except:` in tests for better error detection
 
 [tool.ruff.lint.isort]

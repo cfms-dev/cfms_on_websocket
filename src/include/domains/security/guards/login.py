@@ -1,7 +1,5 @@
 """Authentication throttling and scheduled subnet blocking."""
 
-from __future__ import annotations
-
 import ipaddress
 import json
 import math
@@ -138,7 +136,7 @@ class LoginGuard:
                 cls.invalidate_cache_keys([tuple(key) for key in keys])
                 return
             raise ValueError(f"Unknown event type: {event_type!r}")
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        except KeyError, TypeError, ValueError, json.JSONDecodeError:
             logger.warning("Ignoring invalid login guard event")
 
     @classmethod

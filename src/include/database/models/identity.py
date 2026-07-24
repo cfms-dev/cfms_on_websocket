@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import secrets
 import time
 from collections.abc import Callable, Iterable
@@ -108,7 +106,7 @@ class User(Base):
     nickname: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
     avatar_id: Mapped[str | None] = mapped_column(ForeignKey("files.id"), nullable=True)
-    avatar: Mapped[File | None] = relationship("File")
+    avatar: Mapped["File | None"] = relationship("File")
 
     last_login: Mapped[float | None] = mapped_column(Float)
     created_time: Mapped[float | None] = mapped_column(Float, nullable=False)
@@ -119,7 +117,7 @@ class User(Base):
     status_comment_id: Mapped[int | None] = mapped_column(
         ForeignKey("comments.comment_id", ondelete="SET NULL"), nullable=True
     )
-    status_comment: Mapped[Comment | None] = relationship("Comment")
+    status_comment: Mapped["Comment | None"] = relationship("Comment")
 
     # Per-user secret key. It is regenerated whenever the password changes.
     # Token verification uses it when present; otherwise it falls back to the
@@ -144,13 +142,13 @@ class User(Base):
         "UserPermission", back_populates="user", cascade="all, delete-orphan"
     )
 
-    block_entries: Mapped[list[UserBlockEntry]] = relationship(
+    block_entries: Mapped[list["UserBlockEntry"]] = relationship(
         "UserBlockEntry", back_populates="user", cascade="all, delete-orphan"
     )
-    audit_entries: Mapped[list[AuditEntry]] = relationship(
+    audit_entries: Mapped[list["AuditEntry"]] = relationship(
         "AuditEntry", back_populates="user"
     )
-    keyring: Mapped[list[UserKey]] = relationship(
+    keyring: Mapped[list["UserKey"]] = relationship(
         "UserKey",
         back_populates="user",
         foreign_keys="UserKey.username",
@@ -168,7 +166,7 @@ class User(Base):
         nullable=True,
         unique=True,
     )
-    preference_dek: Mapped[UserKey | None] = relationship(
+    preference_dek: Mapped["UserKey | None"] = relationship(
         "UserKey",
         uselist=False,
         post_update=True,
@@ -189,7 +187,7 @@ class User(Base):
     def verify_password(self, plain_password: str) -> bool:
         try:
             return _password_hasher.verify(self.pass_hash, plain_password)
-        except (VerifyMismatchError, VerificationError, InvalidHashError):
+        except VerifyMismatchError, VerificationError, InvalidHashError:
             return False
 
     def create_token_after_authentication(self, plain_password: str) -> Token:
@@ -238,7 +236,7 @@ class User(Base):
                 algorithms=["HS256"],
             )
             return payload.get("username") == self.username
-        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        except jwt.ExpiredSignatureError, jwt.InvalidTokenError:
             return False
 
     def renew_token(self) -> Token:
@@ -360,7 +358,7 @@ class User(Base):
                             return True
                     except VerifyMismatchError:
                         continue
-            except (orjson.JSONDecodeError, ValueError):
+            except orjson.JSONDecodeError, ValueError:
                 pass
 
         return False

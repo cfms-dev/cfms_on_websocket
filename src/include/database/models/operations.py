@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import secrets
 import time
 from typing import TYPE_CHECKING
@@ -20,7 +18,7 @@ class AuditEntry(Base):
     )
     action: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
     username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=True)
-    user: Mapped[User] = relationship("User", back_populates="audit_entries")
+    user: Mapped["User"] = relationship("User", back_populates="audit_entries")
     target: Mapped[str] = mapped_column(VARCHAR(255), nullable=True)
     data: Mapped[dict] = mapped_column(JSON, nullable=True)
     result: Mapped[int] = mapped_column(Integer, nullable=False)
