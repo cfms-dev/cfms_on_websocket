@@ -220,6 +220,13 @@ def test_scheduled_and_expired_subnet_rules(guard_context, monkeypatch):
     assert guard.evaluate_subnet_access("2001:db8::10").allowed is True
 
 
+@pytest.mark.parametrize("address", ["", "not-an-ip"])
+def test_invalid_address_is_not_blocked_by_subnet_rules(guard_context, address):
+    decision = guard_context.login.LoginGuard.evaluate_subnet_access(address)
+
+    assert decision.allowed is True
+
+
 def test_permanent_access_compatibility_method_was_removed(guard_context):
     assert not hasattr(guard_context.login.LoginGuard, "evaluate_permanent_access")
 

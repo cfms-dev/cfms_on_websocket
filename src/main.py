@@ -9,6 +9,7 @@ database directly and loads user information for later processing.
 """
 
 import os
+import socket
 import ssl
 import sys
 
@@ -46,7 +47,7 @@ from include.extensions.manager import (
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
-from include.transport.client_address import get_bind_options, is_v6_address
+from include.transport.client_address import get_bind_options
 from include.transport.request_entrypoint import global_process_request
 from include.transport.router import (
     available_functions,
@@ -472,7 +473,6 @@ def main():
     socket_family, dualstack_ipv6 = get_bind_options(
         host, global_config["server"]["dualstack_ipv6"]
     )
-    host_address = f"[{host}]" if is_v6_address(host) else host
 
     with serve(
         handle_connection,
@@ -483,7 +483,14 @@ def main():
         dualstack_ipv6=dualstack_ipv6,
         process_request=global_process_request,
     ) as server:
-        logger.info(f"CFMS WebSocket server started at wss://{host_address}:{port}")
+        bound_address = server.socket.getsockname()
+        bound_host = bound_address[0]
+        display_host = (
+            f"[{bound_host}]" if server.socket.family == socket.AF_INET6 else bound_host
+        )
+        logger.info(
+            f"CFMS WebSocket server started at wss://{display_host}:{bound_address[1]}"
+        )
         server.serve_forever()
 
 

@@ -55,6 +55,28 @@ def test_ipv6_address_preserves_dualstack_setting(
     assert actual_dualstack_ipv6 is expected_dualstack_ipv6
 
 
+@pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6])
+def test_hostname_uses_system_resolver_family(monkeypatch, family):
+    def resolve(host, port, *, type, flags):
+        assert (host, port, type, flags) == (
+            "server.example",
+            None,
+            socket.SOCK_STREAM,
+            socket.AI_PASSIVE,
+        )
+        sockaddr = ("192.0.2.1", 0) if family == socket.AF_INET else ("::1", 0, 0, 0)
+        return [(family, socket.SOCK_STREAM, 0, "", sockaddr)]
+
+    monkeypatch.setattr(client_address.socket, "getaddrinfo", resolve)
+
+    actual_family, dualstack_ipv6 = get_bind_options(
+        "server.example", dualstack_ipv6=True
+    )
+
+    assert actual_family == family
+    assert dualstack_ipv6 is (family == socket.AF_INET6)
+
+
 def _websocket(peer_ip: str, headers: dict[str, str]):
     return SimpleNamespace(
         remote_address=(peer_ip, 5104),
@@ -91,3 +113,13 @@ def test_ipv4_mapped_ipv6_address_is_canonicalized(monkeypatch):
     websocket = _websocket("::ffff:192.0.2.10", {})
 
     assert client_address.get_client_ip(websocket) == "192.0.2.10"
+
+
+def test_ipv4_mapped_forwarded_address_uses_ipv4_trust_rules(monkeypatch):
+    _set_trusted_proxy_networks(monkeypatch, ["10.0.0.0/8", "192.0.2.0/24"])
+    websocket = _websocket(
+        "10.0.0.2",
+        {"X-Forwarded-For": "198.51.100.9, ::ffff:192.0.2.10"},
+    )
+
+    assert client_address.get_client_ip(websocket) == "198.51.100.9"

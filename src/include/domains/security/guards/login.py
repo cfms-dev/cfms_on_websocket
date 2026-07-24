@@ -93,22 +93,19 @@ class LoginGuard:
         logger.info(f"Loaded {len(rules)} banned subnet rule(s) from database.")
 
     @classmethod
-    def _is_ip_banned_by_subnet(cls, ip_str: str, now: float | None = None) -> bool:
-        try:
-            address = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if now is None:
-            now = time.time()
-        with cls._network_lock:
-            rules = tuple(cls._banned_rules)
-        return any(rule.is_active(now) and address in rule.network for rule in rules)
-
-    @classmethod
     def evaluate_subnet_access(cls, ip_address: str) -> ThrottleDecision:
         if not cls._networks_loaded:
             cls.reload_networks()
-        if ip_address and cls._is_ip_banned_by_subnet(ip_address):
+        if not ip_address:
+            return ThrottleDecision(True)
+        try:
+            address = ipaddress.ip_address(ip_address)
+        except ValueError:
+            return ThrottleDecision(True)
+        now = time.time()
+        with cls._network_lock:
+            rules = tuple(cls._banned_rules)
+        if any(rule.is_active(now) and address in rule.network for rule in rules):
             return ThrottleDecision(False, ThrottleScope.BANNED_SUBNET)
         return ThrottleDecision(True)
 

@@ -71,10 +71,6 @@ def _require_permission(
     return None
 
 
-def _normalize_subnet(value: str):
-    return ipaddress.ip_network(value, strict=False)
-
-
 def _validate_interval(starts_at: float, expires_at: float | None) -> bool:
     return (
         math.isfinite(starts_at)
@@ -236,7 +232,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
             return denial
 
         try:
-            network = _normalize_subnet(handler.data["subnet"])
+            network = ipaddress.ip_network(handler.data["subnet"], strict=False)
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
             return Result(
@@ -315,7 +311,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
             )
 
         try:
-            network = _normalize_subnet(handler.data["subnet"])
+            network = ipaddress.ip_network(handler.data["subnet"], strict=False)
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
             return Result(
@@ -378,7 +374,7 @@ class RequestDeleteBannedSubnetHandler(RequestHandler):
         if denial:
             return denial
         try:
-            subnet = str(_normalize_subnet(handler.data["subnet"]))
+            subnet = str(ipaddress.ip_network(handler.data["subnet"], strict=False))
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
             return Result(
