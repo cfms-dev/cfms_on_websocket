@@ -285,9 +285,12 @@ def _validate_id_token(
         raise OIDCAuthenticationError("OIDC nonce validation failed")
 
     audience = claims.get("aud")
-    if isinstance(audience, list) and len(audience) > 1:
-        if claims.get("azp") != cfg["client_id"]:
-            raise OIDCAuthenticationError("OIDC authorized party validation failed")
+    if (
+        isinstance(audience, list)
+        and len(audience) > 1
+        and claims.get("azp") != cfg["client_id"]
+    ):
+        raise OIDCAuthenticationError("OIDC authorized party validation failed")
 
     return claims
 

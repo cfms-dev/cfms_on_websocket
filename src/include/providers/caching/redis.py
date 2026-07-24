@@ -24,7 +24,7 @@ class RedisCachingProvider(CachingProvider):
     def set(
         self,
         key: str,
-        value: bytes | bytearray | memoryview | str | int | float,
+        value: bytes | bytearray | memoryview | str | float,
         ttl: float | None = None,
         nx: bool = False,
     ) -> bool:

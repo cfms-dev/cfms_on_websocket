@@ -350,17 +350,16 @@ def handle_request(stream: Stream):
                 return
 
     lockdown_state = lockdown_state_manager.get_state()
-    if lockdown_state.enabled:
-        if action not in whitelisted_functions:
-            can_bypass_lockdown = False
-            if authenticated and Permissions.BYPASS_LOCKDOWN in user_permissions:
-                can_bypass_lockdown = True
+    if lockdown_state.enabled and action not in whitelisted_functions:
+        can_bypass_lockdown = False
+        if authenticated and Permissions.BYPASS_LOCKDOWN in user_permissions:
+            can_bypass_lockdown = True
 
-            if not can_bypass_lockdown:
-                this_handler.conclude_request(
-                    999, lockdown_state.as_response_data(), "lockdown"
-                )
-                return
+        if not can_bypass_lockdown:
+            this_handler.conclude_request(
+                999, lockdown_state.as_response_data(), "lockdown"
+            )
+            return
 
     # Replay attack protection: validate nonce and timestamp.
     # Only applied to authenticated requests to prevent unauthenticated
@@ -420,7 +419,7 @@ def handle_request(stream: Stream):
         ):
             logger.info("WebSocket connection closed during request handling")
             return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - convert handler failures into protocol errors.
             this_handler.report_error(e)
             return
 

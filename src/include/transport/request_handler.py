@@ -2,7 +2,7 @@ __all__ = ["RequestHandler", "Result"]
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from include.transport.connection import ConnectionHandler
 
@@ -19,7 +19,7 @@ class RequestHandler(ABC):
     """
     Abstract base class for handling requests.
     Attributes:
-        schema (dict): A dictionary defining the expected schema for request data.
+        schema (ClassVar[dict]): A dictionary defining the expected schema for request data.
     Methods:
         handle():
             Abstract method to process a request. Must be implemented by subclasses.
@@ -32,7 +32,7 @@ class RequestHandler(ABC):
     """
 
     # This property defines the json structure of the request data.
-    schema: dict[str, Any] = {}
+    schema: ClassVar[dict[str, Any]] = {}
     # Defines whether the handler needs auth check before handling a request.
     require_auth: bool = False
 

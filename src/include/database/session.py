@@ -14,7 +14,7 @@ from sqlalchemy.orm import (
 from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
 from include.config.settings import global_config
 
-__all__ = ["engine", "Session", "Base"]
+__all__ = ["Base", "Session", "engine"]
 
 SUPPORTED_DB_TYPES = {
     "mysql": "mysql+mysqlconnector",

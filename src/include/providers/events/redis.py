@@ -47,7 +47,7 @@ class RedisEventBusProvider(EventBusProvider):
                     for callback in subs:
                         try:
                             callback(data)
-                        except Exception as e:
+                        except Exception as e:  # noqa: BLE001 - callbacks are third-party code.
                             logger.error(f"Error in Redis pubsub callback: {e}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - keep the listener alive after broker errors.
             logger.error(f"Redis pubsub listener error: {e}")

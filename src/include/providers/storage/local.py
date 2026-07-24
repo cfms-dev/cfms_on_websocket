@@ -1,4 +1,4 @@
-__all__ = ["LocalStorageProvider", "LocalFileObject"]
+__all__ = ["LocalFileObject", "LocalStorageProvider"]
 
 import os
 from types import TracebackType

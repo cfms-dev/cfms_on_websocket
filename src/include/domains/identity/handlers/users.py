@@ -1,18 +1,18 @@
 __all__ = [
-    "RequestListUsersHandler",
-    "RequestCreateUserHandler",
-    "RequestDeleteUserHandler",
-    "RequestRenameUserHandler",
     "RequestBlockUserHandler",
-    "RequestUnblockUserHandler",
-    "RequestListUserBlocksHandler",
-    "RequestGetUserInfoHandler",
-    "RequestGetUserAvatarHandler",
-    "RequestSetUserAvatarHandler",
     "RequestChangeUserGroupsHandler",
     "RequestChangeUserPermissionsHandler",
-    "RequestSetPasswdHandler",
+    "RequestCreateUserHandler",
+    "RequestDeleteUserHandler",
+    "RequestGetUserAvatarHandler",
+    "RequestGetUserInfoHandler",
+    "RequestListUserBlocksHandler",
+    "RequestListUsersHandler",
     "RequestManageUserStatusHandler",
+    "RequestRenameUserHandler",
+    "RequestSetPasswdHandler",
+    "RequestSetUserAvatarHandler",
+    "RequestUnblockUserHandler",
 ]
 
 import time
@@ -251,11 +251,9 @@ class RequestDeleteUserHandler(RequestHandler):
 
             if Permissions.DELETE_USER not in this_user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to delete users",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to delete users",
+                    data={},
                 )
                 return
 
@@ -264,21 +262,13 @@ class RequestDeleteUserHandler(RequestHandler):
             user_to_delete = session.get(User, user_to_delete_username)
             if not user_to_delete:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "User does not exist",
-                        "data": {},
-                    }
+                    code=404, message="User does not exist", data={}
                 )
                 return
 
             if user_to_delete.username == this_user.username:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Cannot delete yourself",
-                        "data": {},
-                    }
+                    code=400, message="Cannot delete yourself", data={}
                 )
                 return
 
@@ -341,11 +331,7 @@ class RequestRenameUserHandler(RequestHandler):
 
             if not this_user or not this_user.is_token_valid(handler.token):
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "Invalid user or token",
-                        "data": {},
-                    }
+                    code=403, message="Invalid user or token", data={}
                 )
                 return
 
@@ -354,11 +340,9 @@ class RequestRenameUserHandler(RequestHandler):
                 and target_username != this_user.username
             ):
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to rename users",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to rename users",
+                    data={},
                 )
                 return
 
@@ -367,11 +351,7 @@ class RequestRenameUserHandler(RequestHandler):
             user_to_rename = session.get(User, target_username)
             if not user_to_rename:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "User does not exist",
-                        "data": {},
-                    }
+                    code=400, message="User does not exist", data={}
                 )
                 return
 
@@ -674,11 +654,7 @@ class RequestGetUserInfoHandler(RequestHandler):
             user_to_get = session.get(User, user_to_get_username)
             if not user_to_get:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "User does not exist",
-                        "data": {},
-                    }
+                    code=404, message="User does not exist", data={}
                 )
                 return
 
@@ -687,11 +663,9 @@ class RequestGetUserInfoHandler(RequestHandler):
                 and Permissions.GET_USER_INFO not in this_user.all_permissions
             ):
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to get user information",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to get user information",
+                    data={},
                 )
                 return
 
@@ -708,13 +682,7 @@ class RequestGetUserInfoHandler(RequestHandler):
                 "passwd_last_modified": user_to_get.passwd_last_modified,
             }
 
-            handler.conclude_request(
-                **{
-                    "code": 200,
-                    "message": "OK",
-                    "data": user_info,
-                }
-            )
+            handler.conclude_request(code=200, message="OK", data=user_info)
 
 
 class RequestGetUserAvatarHandler(RequestHandler):
@@ -740,13 +708,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         user_to_get_username = handler.data["username"]
         if not user_to_get_username:
-            handler.conclude_request(
-                **{
-                    "code": 400,
-                    "message": "Username is required",
-                    "data": {},
-                }
-            )
+            handler.conclude_request(code=400, message="Username is required", data={})
             return
 
         with Session() as session:
@@ -756,11 +718,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
             user_to_get = session.get(User, user_to_get_username)
             if not user_to_get:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "User does not exist",
-                        "data": {},
-                    }
+                    code=404, message="User does not exist", data={}
                 )
                 return
 
@@ -769,11 +727,9 @@ class RequestGetUserAvatarHandler(RequestHandler):
                 and Permissions.GET_USER_INFO not in this_user.all_permissions
             ):
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to get user information",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to get user information",
+                    data={},
                 )
                 return
 
@@ -882,33 +838,23 @@ class RequestChangeUserGroupsHandler(RequestHandler):
 
             if Permissions.CHANGE_USER_GROUPS not in this_user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to change user groups",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to change user groups",
+                    data={},
                 )
                 return
 
             user_to_change_username = handler.data["username"]
             if not user_to_change_username:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Username is required",
-                        "data": {},
-                    }
+                    code=400, message="Username is required", data={}
                 )
                 return
 
             user_to_change = session.get(User, user_to_change_username)
             if not user_to_change:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "User does not exist",
-                        "data": {},
-                    }
+                    code=404, message="User does not exist", data={}
                 )
                 return
 
@@ -952,11 +898,9 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
 
             if Permissions.SET_USER_PERMISSIONS not in this_user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to set user permissions",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to set user permissions",
+                    data={},
                 )
                 return Result(
                     code=403, target=handler.data["username"], username=handler.username
@@ -965,22 +909,14 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
             target_username = handler.data["username"]
             if not target_username:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Username is required",
-                        "data": {},
-                    }
+                    code=400, message="Username is required", data={}
                 )
                 return
 
             user_to_change = session.get(User, target_username)
             if not user_to_change:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "User does not exist",
-                        "data": {},
-                    }
+                    code=404, message="User does not exist", data={}
                 )
                 return Result(
                     code=404, target=target_username, username=handler.username
@@ -990,11 +926,7 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
 
             if not all(isinstance(permission, str) for permission in new_permissions):
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "All permissions must be of type str",
-                        "data": {},
-                    }
+                    code=400, message="All permissions must be of type str", data={}
                 )
                 return
 
@@ -1070,11 +1002,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     assert ip is not None
                     LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                 handler.conclude_request(
-                    **{
-                        "code": 401,
-                        "message": "Invalid credentials",
-                        "data": {},
-                    }
+                    code=401, message="Invalid credentials", data={}
                 )
                 return
 
@@ -1083,22 +1011,16 @@ class RequestSetPasswdHandler(RequestHandler):
             if operator_username:
                 if not handler.token:
                     handler.conclude_request(
-                        **{
-                            "code": 400,
-                            "message": "Given an operator, token is required",
-                            "data": {},
-                        }
+                        code=400,
+                        message="Given an operator, token is required",
+                        data={},
                     )
                     return
 
                 operator_user = session.get(User, operator_username)
                 if not operator_user or not operator_user.is_token_valid(handler.token):
                     handler.conclude_request(
-                        **{
-                            "code": 401,
-                            "message": "Invalid user or token",
-                            "data": {},
-                        }
+                        code=401, message="Invalid user or token", data={}
                     )
                     return
             else:  # operator_user should never be used on this path.
@@ -1125,11 +1047,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     assert ip is not None
                     LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                     handler.conclude_request(
-                        **{
-                            "code": 401,
-                            "message": "Invalid credentials",
-                            "data": {},
-                        }
+                        code=401, message="Invalid credentials", data={}
                     )
                     return
                 assert ip is not None
@@ -1148,31 +1066,25 @@ class RequestSetPasswdHandler(RequestHandler):
                     & user.all_permissions
                 ):
                     handler.conclude_request(
-                        **{
-                            "code": 403,
-                            "message": "You do not have permission to change your own password",
-                            "data": {},
-                        }
+                        code=403,
+                        message="You do not have permission to change your own password",
+                        data={},
                     )
                     return
 
             else:  # User changes another user's password.
                 if not operator_user:
                     handler.conclude_request(
-                        **{
-                            "code": 400,
-                            "message": "Operator is required when setting other user password",
-                            "data": {},
-                        }
+                        code=400,
+                        message="Operator is required when setting other user password",
+                        data={},
                     )
                     return
                 if Permissions.SUPER_SET_PASSWD not in operator_user.all_permissions:
                     handler.conclude_request(
-                        **{
-                            "code": 403,
-                            "message": "You do not have permission to set user password",
-                            "data": {},
-                        }
+                        code=403,
+                        message="You do not have permission to set user password",
+                        data={},
                     )
                     return
 

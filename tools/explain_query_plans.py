@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 EXPECTED_INDEXES = {
     "folders": {
@@ -138,7 +139,7 @@ def first_folder_id(engine: Engine) -> str | None:
 def table_count(engine: Engine, table_name: str) -> int | None:
     try:
         return scalar_or_none(engine, f"SELECT COUNT(*) FROM {table_name}")
-    except Exception:
+    except SQLAlchemyError:
         return None
 
 
@@ -175,7 +176,7 @@ def explain(engine: Engine, sql: str, params: dict[str, Any]) -> list[Any]:
     with engine.connect() as conn:
         try:
             rows = conn.execute(text(explain_prefix(engine) + sql), params).fetchall()
-        except Exception:
+        except SQLAlchemyError:
             rows = conn.execute(text("EXPLAIN " + sql), params).fetchall()
     return [tuple(row) for row in rows]
 
@@ -219,7 +220,7 @@ def main() -> None:
     for table, expected in EXPECTED_INDEXES.items():
         try:
             existing = table_indexes(engine, table)
-        except Exception as exc:
+        except SQLAlchemyError as exc:
             print(f"  {table}: unable to inspect indexes ({exc})")
             continue
         missing = sorted(expected - existing)

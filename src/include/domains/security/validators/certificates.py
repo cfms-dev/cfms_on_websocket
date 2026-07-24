@@ -28,6 +28,6 @@ def get_client_cert_subject(
                 for attr_name, attr_value in rdn:
                     if attr_name == "commonName":
                         return attr_value
-    except Exception:
-        pass
+    except OSError:
+        return None
     return None

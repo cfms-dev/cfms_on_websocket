@@ -46,7 +46,6 @@ class RequestServerInfoHandler(RequestHandler):
         handler.conclude_request(
             200, server_info, "Server information retrieved successfully"
         )
-        return
 
 
 class RequestShutdownHandler(RequestHandler):
@@ -134,7 +133,7 @@ def ext_on_file_uploaded(id: str, path: str, sha256: str):
             session.delete(uploaded)
             session.commit()
 
-            logger.info(
+            logger.info(  # noqa: PLE1205 - Loguru uses brace-style formatting.
                 "Merged uploaded file {} into existing file {} and removed duplicate",
                 uploaded.id,
                 existing.id,

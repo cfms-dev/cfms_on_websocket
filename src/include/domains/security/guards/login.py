@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import ClassVar
 from warnings import deprecated
 
 from loguru import logger as log
@@ -53,7 +54,7 @@ class ThrottleDecision:
 
 
 class LoginGuard:
-    _banned_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    _banned_networks: ClassVar[list[ipaddress.IPv4Network | ipaddress.IPv6Network]] = []
     _networks_loaded = False
     _network_lock = threading.Lock()
     _write_lock = threading.RLock()
@@ -173,9 +174,12 @@ class LoginGuard:
         with Session() as session:
             for scope, key, model, identity in checks:
                 record = session.get(model, identity)
-                if record is not None and record.locked_until is not None:
-                    if record.locked_until > now:
-                        return cls._cache_decision(scope, key, record.locked_until, now)
+                if (
+                    record is not None
+                    and record.locked_until is not None
+                    and record.locked_until > now
+                ):
+                    return cls._cache_decision(scope, key, record.locked_until, now)
         return ThrottleDecision(True)
 
     @classmethod

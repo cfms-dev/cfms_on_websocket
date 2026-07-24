@@ -48,18 +48,18 @@ def _queue_deferred_file_deletion(session: Session, path: str) -> None:
         @event.listens_for(session, "after_commit")
         def _do_deferred_file_deletes(session: Session):
             paths = session.info.pop("pending_delete_files", [])
-            for path in paths:
+            for pending_path in paths:
                 try:
-                    ProviderManager().storage.remove(path)
+                    ProviderManager().storage.remove(pending_path)
                 except FileNotFoundError:
                     pass  # already removed manually — this is fine
                 except OSError as exc:
                     # e.g. PermissionError on a locked file post-commit; the DB record
                     # has already been deleted so the file becomes an orphan.  Log the
                     # error so operators can clean up manually.
-                    logger.warning(
+                    logger.warning(  # noqa: PLE1205 - Loguru uses brace-style formatting.
                         "Failed to remove file after commit (orphaned file): {} — {}",
-                        path,
+                        pending_path,
                         exc,
                     )
 
@@ -108,7 +108,7 @@ class File(Base):
             return self._size
         try:
             return ProviderManager().storage.getsize(self.path)
-        except Exception:
+        except Exception:  # noqa: BLE001 - storage backends expose provider-specific failures.
             return None
 
     @size.setter

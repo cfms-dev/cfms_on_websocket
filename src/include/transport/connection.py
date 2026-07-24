@@ -11,7 +11,6 @@ from loguru import logger as log
 from websockets.exceptions import (
     ConnectionClosed,
     ConnectionClosedError,
-    ConnectionClosedOK,
 )
 from websockets.typing import Data
 
@@ -344,7 +343,7 @@ class ConnectionHandler:
         ):
             self.logger.info("File transmission aborted: Connection closed")
             return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - report unexpected transfer failures to the client.
             self.report_error(e, context=f"Error sending file {file_path}")
             return
 
@@ -416,11 +415,7 @@ class ConnectionHandler:
             "max_chunk_size", FILE_TRANSFER_MAX_CHUNK_SIZE
         )
 
-        chunk_size = (
-            FILE_TRANSFER_MAX_CHUNK_SIZE
-            if max_chunk_size > FILE_TRANSFER_MAX_CHUNK_SIZE
-            else max_chunk_size
-        )
+        chunk_size = min(max_chunk_size, FILE_TRANSFER_MAX_CHUNK_SIZE)
 
         with Session() as session:
             file_task = session.get(FileTask, task_id)
@@ -467,26 +462,19 @@ class ConnectionHandler:
         try:
             logger.info("Receiving file: transfer started")
             with ProviderManager().storage.fopen(file_path, "wb") as f:
-                try:
-                    hasher = hashlib.sha256()
-                    received_size = 0
-                    while received_size < file_size:
-                        data = self.stream.recv().data
-                        if not data:
-                            break
+                hasher = hashlib.sha256()
+                received_size = 0
+                while received_size < file_size:
+                    data = self.stream.recv().data
+                    if not data:
+                        break
 
-                        f.write(data)
-                        hasher.update(data)
-                        received_size += len(data)
+                    f.write(data)
+                    hasher.update(data)
+                    received_size += len(data)
 
-                        if len(data) < chunk_size:
-                            break
-                except (
-                    ConnectionClosed,
-                    ConnectionClosedOK,
-                ):
-                    raise
-
+                    if len(data) < chunk_size:
+                        break
             actual_size = ProviderManager().storage.getsize(file_path)
             if file_size and actual_size != file_size:
                 self.logger.error(
@@ -543,7 +531,7 @@ class ConnectionHandler:
             self.logger.info("File reception aborted: Connection closed")
             return
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - report unexpected transfer failures to the client.
             self.report_error(e, context=f"Error receiving file for task {task_id}")
             return
 

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from types import TracebackType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
 
 class Provider(ABC):
@@ -27,7 +27,7 @@ class FileObject(AbstractContextManager["FileObject"]):
     Abstract base class for file objects that manage read/write operations.
     """
 
-    def __enter__(self) -> "FileObject":
+    def __enter__(self) -> Self:
         return self
 
     @abstractmethod
@@ -133,7 +133,6 @@ class CachingProvider(Provider):
         If `nx` is True, the value will only be set if the key does not already exist.
         Returns True if the value was set, False otherwise (e.g. if nx=True and key already exists).
         """
-        pass
 
     @abstractmethod
     def delete(self, key: str) -> None:

@@ -221,7 +221,7 @@ class Folder(Node):  # Document folder.
         foreign_keys="[Document.folder_id]",
     )
 
-    __mapper_args__ = {"polymorphic_identity": "directory"}
+    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "directory"}
 
     @property
     @deprecated("Use count_active_directory_children instead.")
@@ -320,7 +320,7 @@ class Document(Node):
             return False
         return latest_revision is not None
 
-    __mapper_args__ = {"polymorphic_identity": "document"}
+    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "document"}
 
     def get_latest_revision(self) -> DocumentRevision:
         """Return the latest active revision.
@@ -361,7 +361,7 @@ class Document(Node):
     def delete_all_revisions(self, do_commit: bool = True):
         session = object_session(self)
         if not session:
-            raise Exception("The object is not associated with a session")
+            raise RuntimeError("The object is not associated with a session")
 
         # Task 4: Lightweight tuple query — fetch only the IDs we need for logic.
         # Avoids loading the full ORM graph (revisions + files) just for reference counting.
@@ -495,7 +495,7 @@ class DocumentRevision(Base):
     def before_delete(self):
         session = object_session(self)
         if not session:
-            raise Exception("The object is not associated with a session")
+            raise RuntimeError("The object is not associated with a session")
         if not self.file_id:
             return
         # Use centralized reference counting across all FK references.

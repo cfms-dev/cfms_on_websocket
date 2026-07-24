@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 __all__ = [
-    "pm",
     "collect_extension_flags",
     "load_builtin_extension",
     "load_extensions_from_directory",
+    "pm",
 ]
 
 import importlib.util
@@ -38,7 +38,6 @@ class ServerHookSpecs:
         Should return a dictionary mapping action names to their
         corresponding RequestHandler classes.
         """
-        ...
 
     @hookspec
     def ext_unregister_handlers(self) -> set[str]:
@@ -47,7 +46,6 @@ class ServerHookSpecs:
         Should return a set of action names whose handlers should
         be unregistered.
         """
-        ...
 
     @hookspec
     def ext_register_whitelisted_actions(self) -> set[str]:
@@ -57,7 +55,6 @@ class ServerHookSpecs:
 
         Should return a set of action names.
         """
-        ...
 
     @hookspec
     def ext_register_extension_flags(self) -> set[str]:
@@ -66,7 +63,6 @@ class ServerHookSpecs:
 
         Should return a set of string flags that are currently enabled.
         """
-        ...
 
     @hookspec
     def ext_on_connect(self, websocket: websockets.sync.server.ServerConnection):
@@ -156,8 +152,8 @@ def _load_extension(
             logger.info(f"Loaded extension: {ext_name}")
         return True
 
-    except Exception as e:
-        logger.exception(f"Failed to load extension '{ext_name}': {e}")
+    except Exception:
+        logger.exception(f"Failed to load extension '{ext_name}'")
         return False
 
 

@@ -460,7 +460,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
                 deletable_doc_ids,
                 failed_items,
                 protected_folder_ids,
-                folder_map,
+                _folder_map,
             ) = fetch_subtree_for_deletion(session, folder_id, this_user, now=now)
 
             # execute batch deletion in a transaction
@@ -566,11 +566,9 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
             if folder.name == new_name:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "New name is the same as the current name",
-                        "data": {},
-                    }
+                    code=400,
+                    message="New name is the same as the current name",
+                    data={},
                 )
                 return
 
@@ -598,11 +596,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
             session.commit()
 
             handler.conclude_request(
-                **{
-                    "code": 200,
-                    "message": "Directory renamed successfully",
-                    "data": {},
-                }
+                code=200, message="Directory renamed successfully", data={}
             )
             return Result(code=0, target=folder_id, username=handler.username)
 
@@ -643,11 +637,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
 
             if not folder:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": smsg.SUBJECT_DIRECTORY_NOT_FOUND,
-                        "data": {},
-                    }
+                    code=404, message=smsg.SUBJECT_DIRECTORY_NOT_FOUND, data={}
                 )
                 return Result(code=404, target=folder_id, username=handler.username)
 
@@ -663,11 +653,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
             )
             if not target_folder:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": smsg.TARGET_DIRECTORY_NOT_FOUND,
-                        "data": {},
-                    }
+                    code=404, message=smsg.TARGET_DIRECTORY_NOT_FOUND, data={}
                 )
                 return Result(code=404, target=folder_id, username=handler.username)
 
@@ -782,9 +768,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
                     )
             except (ValueError, jsonschema.ValidationError) as exc:
                 session.rollback()
-                handler.conclude_request(
-                    400, {}, f"Set access rules failed: {str(exc)}"
-                )
+                handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
                 return Result(code=400, target=directory_id, username=handler.username)
 
 
@@ -843,7 +827,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
                     all_doc_ids,
                     failed_items,
                     _,
-                    folder_map,
+                    _folder_map,
                 ) = fetch_subtree_for_deletion(
                     session, folder_id, user, include_deleted=True
                 )

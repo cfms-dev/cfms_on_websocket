@@ -379,7 +379,7 @@ class MultiplexedConnection:
                     if not self._is_running:
                         raise ConnectionClosedError
                     self._ws.send(item.payload)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - a writer thread must propagate every send failure.
                     item.exception = exc
                     if item.done is not None:
                         item.done.set()
@@ -389,7 +389,7 @@ class MultiplexedConnection:
                         self._fail_pending_sends(exc)
                     try:
                         self._ws.close()
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 - close is best-effort after a write failure.
                         # The send failure is already reported to callers.
                         pass
                     return
@@ -425,6 +425,6 @@ class MultiplexedConnection:
                 pass
         try:
             self._ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - close is safe to call repeatedly.
             # Close is best-effort because callers may invoke it repeatedly.
             pass

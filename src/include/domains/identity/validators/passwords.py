@@ -1,6 +1,6 @@
 __all__ = [
-    "RuleRequirementsNotMetError",
     "InvalidPasswordLengthError",
+    "RuleRequirementsNotMetError",
     "check_passwd_requirements",
 ]
 
@@ -67,8 +67,7 @@ def check_passwd_requirements(
     if not rules or min_passed_count <= 0:
         return
 
-    if min_passed_count > len(rules):
-        min_passed_count = len(rules)
+    min_passed_count = min(min_passed_count, len(rules))
 
     matched_rules = {rule for rule in rules if re.search(rule, passwd)}
     passed_count = len(matched_rules)

@@ -24,5 +24,5 @@ def on_global_broadcast(msg: str):
             continue
         except ConnectionError as e:
             logger.warning(f"Failed to forward global broadcast: {e}")
-        except Exception:
+        except Exception:  # noqa: BLE001 - one failed client must not stop the broadcast.
             logger.exception("Failed to forward global broadcast")

@@ -1,13 +1,11 @@
 """Password verification helpers shared by authentication endpoints."""
 
 import secrets
-from typing import TYPE_CHECKING
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
-if TYPE_CHECKING:
-    from include.database.models.identity import User
+from include.database.models.identity import User
 
 _password_hasher = PasswordHasher()
 _dummy_password_hash = _password_hasher.hash(secrets.token_urlsafe(32))

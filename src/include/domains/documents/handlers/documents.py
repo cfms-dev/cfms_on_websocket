@@ -1,15 +1,15 @@
 __all__ = [
-    "RequestGetDocumentInfoHandler",
-    "RequestGetDocumentHandler",
     "RequestCreateDocumentHandler",
-    "RequestUploadDocumentHandler",
     "RequestDeleteDocumentHandler",
-    "RequestRenameDocumentHandler",
     "RequestDownloadFileHandler",
-    "RequestUploadFileHandler",
+    "RequestGetDocumentHandler",
+    "RequestGetDocumentInfoHandler",
+    "RequestMoveDocumentHandler",
+    "RequestRenameDocumentHandler",
     "RequestSetDocumentRulesHandler",
     "RequestSetDocumentTagsHandler",
-    "RequestMoveDocumentHandler",
+    "RequestUploadDocumentHandler",
+    "RequestUploadFileHandler",
 ]
 
 import datetime
@@ -398,9 +398,7 @@ class RequestCreateDocumentHandler(RequestHandler):
 
             except (ValueError, jsonschema.ValidationError) as exc:
                 session.rollback()
-                handler.conclude_request(
-                    400, {}, f"Set access rules failed: {str(exc)}"
-                )
+                handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
                 return Result(
                     code=400,
                     target=folder_id,
@@ -592,11 +590,9 @@ class RequestRenameDocumentHandler(RequestHandler):
 
             if document.title == new_title:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "New name is the same as the current name",
-                        "data": {},
-                    }
+                    code=400,
+                    message="New name is the same as the current name",
+                    data={},
                 )
                 return
 
@@ -625,11 +621,7 @@ class RequestRenameDocumentHandler(RequestHandler):
             session.commit()
 
             handler.conclude_request(
-                **{
-                    "code": 200,
-                    "message": "Document renamed successfully",
-                    "data": {},
-                }
+                code=200, message="Document renamed successfully", data={}
             )
             return Result(code=0, target=document_id, username=handler.username)
 
@@ -777,9 +769,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
                     )
             except (ValueError, jsonschema.ValidationError) as exc:
                 session.rollback()
-                handler.conclude_request(
-                    400, {}, f"Set access rules failed: {str(exc)}"
-                )
+                handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
                 return Result(code=400, target=document_id, username=handler.username)
 
 
@@ -821,11 +811,7 @@ class RequestMoveDocumentHandler(RequestHandler):
             document = session.get(Document, document_id)
             if not document:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": smsg.TARGET_DOCUMENT_NOT_FOUND,
-                        "data": {},
-                    }
+                    code=404, message=smsg.TARGET_DOCUMENT_NOT_FOUND, data={}
                 )
                 return Result(
                     code=404,
@@ -860,11 +846,7 @@ class RequestMoveDocumentHandler(RequestHandler):
             )
             if not target_folder:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": smsg.TARGET_DIRECTORY_NOT_FOUND,
-                        "data": {},
-                    }
+                    code=404, message=smsg.TARGET_DIRECTORY_NOT_FOUND, data={}
                 )
                 return Result(
                     code=404,

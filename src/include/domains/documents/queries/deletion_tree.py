@@ -281,9 +281,8 @@ def fetch_subtree_for_deletion(
         is_active = (
             doc.current_revision is not None and doc.current_revision.file.active
         )
-        if is_active and doc.id not in deletable_doc_ids:
-            if doc.folder_id:
-                folder_has_undeletable_doc[doc.folder_id] = True
+        if is_active and doc.id not in deletable_doc_ids and doc.folder_id:
+            folder_has_undeletable_doc[doc.folder_id] = True
 
     for fid in topo_order:
         self_undeletable = not folder_self_deletable.get(fid, True)

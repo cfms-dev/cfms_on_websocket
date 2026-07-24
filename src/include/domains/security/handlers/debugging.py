@@ -21,6 +21,6 @@ class RequestThrowExceptionHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.USER_LACKS_DEBUGGING_PERMISSION)
                 return Result(code=403, target=None, username=handler.username)
 
-        raise Exception(
+        raise RuntimeError(
             "This is a test exception thrown by RequestThrowExceptionHandler."
         )

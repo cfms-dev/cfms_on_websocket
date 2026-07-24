@@ -14,11 +14,11 @@ Security constraints enforced by these handlers:
 """
 
 __all__ = [
-    "RequestUploadUserKeyHandler",
-    "RequestGetUserKeyHandler",
     "RequestDeleteUserKeyHandler",
-    "RequestSetPreferenceDEKHandler",
+    "RequestGetUserKeyHandler",
     "RequestListUserKeysHandler",
+    "RequestSetPreferenceDEKHandler",
+    "RequestUploadUserKeyHandler",
 ]
 
 import time
@@ -147,10 +147,12 @@ class RequestGetUserKeyHandler(RequestHandler):
 
             # Authorisation: the key must belong to the requesting user, or the
             # user must have admin-level manage_keyrings permission.
-            if key.username != handler.username:
-                if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
-                    handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return Result(code=403, target=key_id, username=handler.username)
+            if (
+                key.username != handler.username
+                and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
+            ):
+                handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
+                return Result(code=403, target=key_id, username=handler.username)
 
             handler.conclude_request(
                 200,
@@ -204,10 +206,12 @@ class RequestDeleteUserKeyHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
                 return Result(code=404, target=key_id, username=handler.username)
 
-            if key.username != handler.username:
-                if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
-                    handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return Result(code=403, target=key_id, username=handler.username)
+            if (
+                key.username != handler.username
+                and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
+            ):
+                handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
+                return Result(code=403, target=key_id, username=handler.username)
 
             # If this key is set as the owner's preference DEK, clear it before deletion
             owner_user = session.get(User, key.username)
@@ -262,10 +266,12 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
                 return Result(code=404, target=key_id, username=handler.username)
 
-            if key.username != handler.username:
-                if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
-                    handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return Result(code=403, target=key_id, username=handler.username)
+            if (
+                key.username != handler.username
+                and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
+            ):
+                handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
+                return Result(code=403, target=key_id, username=handler.username)
 
             key_owner = User.get_existing(session, key.username)
             key_owner.preference_dek = key
@@ -311,12 +317,14 @@ class RequestListUserKeysHandler(RequestHandler):
             target_user = session.get(User, target_username)
             operator = User.get_existing(session, handler.username)
 
-            if target_username != handler.username:
-                if Permissions.MANAGE_KEYRINGS not in operator.all_permissions:
-                    handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                    return Result(
-                        code=403, target=target_username, username=handler.username
-                    )
+            if (
+                target_username != handler.username
+                and Permissions.MANAGE_KEYRINGS not in operator.all_permissions
+            ):
+                handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
+                return Result(
+                    code=403, target=target_username, username=handler.username
+                )
 
             if not target_user:
                 handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)

@@ -37,11 +37,9 @@ class RequestListGroupsHandler(RequestHandler):
 
             if Permissions.LIST_GROUPS not in user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to list groups",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to list groups",
+                    data={},
                 )
                 return
 
@@ -156,11 +154,9 @@ class RequestDeleteGroupHandler(RequestHandler):
 
             if Permissions.DELETE_GROUP not in this_user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to delete groups",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to delete groups",
+                    data={},
                 )
                 return Result(
                     code=403,
@@ -173,11 +169,7 @@ class RequestDeleteGroupHandler(RequestHandler):
 
             if not group_to_delete:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "Group does not exist",
-                        "data": {},
-                    }
+                    code=404, message="Group does not exist", data={}
                 )
                 return Result(
                     code=404, target=group_to_delete_name, username=handler.username
@@ -238,11 +230,9 @@ class RequestRenameGroupHandler(RequestHandler):
 
             if Permissions.RENAME_GROUP not in this_user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to rename groups",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to rename groups",
+                    data={},
                 )
                 return Result(
                     code=403, target=target_group_name, username=handler.username
@@ -251,22 +241,14 @@ class RequestRenameGroupHandler(RequestHandler):
             new_display_name: str | None = handler.data.get("display_name", None)
             if type(new_display_name) not in (str, None):
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "display_name must be null or a string",
-                        "data": {},
-                    }
+                    code=400, message="display_name must be null or a string", data={}
                 )
                 return
 
             group_to_rename = session.get(UserGroup, target_group_name)
             if not group_to_rename:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Group does not exist",
-                        "data": {},
-                    }
+                    code=400, message="Group does not exist", data={}
                 )
                 return
 
@@ -302,21 +284,15 @@ class RequestGetGroupInfoHandler(RequestHandler):
 
             if not handler.data["group_name"]:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Group name is required",
-                        "data": {},
-                    }
+                    code=400, message="Group name is required", data={}
                 )
                 return
 
             if Permissions.GET_GROUP_INFO not in user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to view group info",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to view group info",
+                    data={},
                 )
                 return Result(
                     code=403,
@@ -327,11 +303,7 @@ class RequestGetGroupInfoHandler(RequestHandler):
             group = session.get(UserGroup, handler.data["group_name"])
             if not group:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "Group does not exist",
-                        "data": {},
-                    }
+                    code=404, message="Group does not exist", data={}
                 )
                 return Result(
                     code=404,
@@ -382,21 +354,15 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
 
             if not handler.data["group_name"]:
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "Group name is required",
-                        "data": {},
-                    }
+                    code=400, message="Group name is required", data={}
                 )
                 return
 
             if Permissions.SET_GROUP_PERMISSIONS not in user.all_permissions:
                 handler.conclude_request(
-                    **{
-                        "code": 403,
-                        "message": "You do not have permission to set group permissions",
-                        "data": {},
-                    }
+                    code=403,
+                    message="You do not have permission to set group permissions",
+                    data={},
                 )
                 return Result(
                     code=403,
@@ -407,11 +373,7 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
             group = session.get(UserGroup, handler.data["group_name"])
             if not group:
                 handler.conclude_request(
-                    **{
-                        "code": 404,
-                        "message": "Group does not exist",
-                        "data": {},
-                    }
+                    code=404, message="Group does not exist", data={}
                 )
                 return Result(
                     code=404,
@@ -424,11 +386,7 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
             # Check if all elements in new_permissions are of type str
             if not all(isinstance(permission, str) for permission in new_permissions):
                 handler.conclude_request(
-                    **{
-                        "code": 400,
-                        "message": "All permissions must be of type str",
-                        "data": {},
-                    }
+                    code=400, message="All permissions must be of type str", data={}
                 )
                 return
 

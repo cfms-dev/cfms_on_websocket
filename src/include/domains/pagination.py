@@ -4,8 +4,8 @@ __all__ = [
     "PAGINATION_CURSOR_MAX_LENGTH",
     "CursorError",
     "PaginationCursor",
-    "get_page_size",
     "get_offset_pagination",
+    "get_page_size",
     "make_cursor_response",
     "require_cursor_types",
 ]

@@ -1,4 +1,4 @@
-__all__ = ["S3StorageProvider", "S3FileObject"]
+__all__ = ["S3FileObject", "S3StorageProvider"]
 
 import base64
 import hashlib
