@@ -1,24 +1,24 @@
 __all__ = [
-    "CORE_VERSION",
-    "PROTOCOL_VERSION",
-    "ROOT_ABSPATH",
     "AVAILABLE_ACCESS_TYPES",
     "AVAILABLE_BLOCK_TYPES",
-    "DEFAULT_TOKEN_EXPIRY_SECONDS",
+    "CORE_VERSION",
     "DEFAULT_SSL_CERT_VALIDITY_DAYS",
-    "USERNAME_MAX_LENGTH",
-    "USERNAME_DATABASE_MAX_LENGTH",
+    "DEFAULT_TOKEN_EXPIRY_SECONDS",
+    "DEFAULT_TRUSTED_PROXY_NETWORKS",
+    "FILE_TASK_DEFAULT_DURATION_SECONDS",
     "FILE_TRANSFER_MAX_CHUNK_SIZE",
     "FILE_TRANSFER_MIN_CHUNK_SIZE",
-    "FILE_TASK_DEFAULT_DURATION_SECONDS",
-    "REPLAY_PROTECTION_TIME_WINDOW_SECONDS",
+    "MAX_PARAM_SIZE",
     "NONCE_MIN_LENGTH",
-    "ROOT_DIRECTORY_ID",
     "PAGINATION_DEFAULT_PAGE_SIZE",
     "PAGINATION_MAX_PAGE_SIZE",
-    "MAX_PARAM_SIZE",
+    "PROTOCOL_VERSION",
     "QUERY_CHUNK_SIZE",
-    "TRUSTED_PROXY_IPS",
+    "REPLAY_PROTECTION_TIME_WINDOW_SECONDS",
+    "ROOT_ABSPATH",
+    "ROOT_DIRECTORY_ID",
+    "USERNAME_DATABASE_MAX_LENGTH",
+    "USERNAME_MAX_LENGTH",
 ]
 
 from pathlib import Path
@@ -61,6 +61,5 @@ USERNAME_DATABASE_MAX_LENGTH = 256  # Maximum length of username field in the da
 MAX_PARAM_SIZE = 950  # Maximum number of parameters in a single SQL query
 QUERY_CHUNK_SIZE = 576  # used to prevent hitting the limit of bind variables per query
 
-# IP addresses of trusted reverse proxies that may set X-Forwarded-For / X-Real-IP.
-# Adjust this set as needed for your deployment environment.
-TRUSTED_PROXY_IPS = frozenset({"127.0.0.1", "::1"})
+# Networks of trusted reverse proxies that may set X-Forwarded-For / X-Real-IP.
+DEFAULT_TRUSTED_PROXY_NETWORKS = ("127.0.0.1/32", "::1/128")

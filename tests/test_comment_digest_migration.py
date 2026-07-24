@@ -162,9 +162,11 @@ def test_comment_digest_migration_rejects_invalid_hex(
         )
 
     migration = _load_migration()
-    with engine.begin() as connection:
-        with pytest.raises(RuntimeError, match="Invalid hexadecimal comment digest"):
-            _run_migration(connection, migration, "upgrade")
+    with (
+        engine.begin() as connection,
+        pytest.raises(RuntimeError, match="Invalid hexadecimal comment digest"),
+    ):
+        _run_migration(connection, migration, "upgrade")
 
 
 def test_comment_digest_migration_rejects_binary_duplicates(tmp_path) -> None:
@@ -192,6 +194,8 @@ def test_comment_digest_migration_rejects_binary_duplicates(tmp_path) -> None:
         )
 
     migration = _load_migration()
-    with engine.begin() as connection:
-        with pytest.raises(RuntimeError, match="Duplicate comment digest"):
-            _run_migration(connection, migration, "upgrade")
+    with (
+        engine.begin() as connection,
+        pytest.raises(RuntimeError, match="Duplicate comment digest"),
+    ):
+        _run_migration(connection, migration, "upgrade")

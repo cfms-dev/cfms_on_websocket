@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 __all__ = [
-    "EntityStatus",
-    "Node",
     "Document",
-    "DocumentRevision",
-    "DocumentRevisionStatus",
     "DocumentMetadata",
     "DocumentMetadataTag",
+    "DocumentRevision",
+    "DocumentRevisionStatus",
+    "EntityStatus",
     "Folder",
+    "Node",
 ]
 
 import secrets
 import time
 from enum import IntEnum
 from itertools import batched
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 from warnings import deprecated
 
 from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
@@ -77,13 +77,13 @@ class Node(Base):
         nullable=True,
         index=True,
     )
-    access_rule_set: Mapped["CompiledAccessRuleSet | None"] = relationship(
+    access_rule_set: Mapped[CompiledAccessRuleSet | None] = relationship(
         "CompiledAccessRuleSet",
         foreign_keys=[access_rule_set_id],
         post_update=True,
         uselist=False,
     )
-    access_rule_sets: Mapped[list["CompiledAccessRuleSet"]] = relationship(
+    access_rule_sets: Mapped[list[CompiledAccessRuleSet]] = relationship(
         "CompiledAccessRuleSet",
         back_populates="node",
         cascade="all, delete-orphan",
@@ -91,7 +91,7 @@ class Node(Base):
         order_by="CompiledAccessRuleSet.created_at",
     )
 
-    __mapper_args__ = {
+    __mapper_args__: ClassVar = {
         "polymorphic_on": type,
         "polymorphic_identity": "node",
     }

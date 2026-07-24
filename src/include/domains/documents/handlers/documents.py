@@ -341,7 +341,7 @@ class RequestCreateDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            today = datetime.date.today()
+            today = datetime.datetime.now(datetime.UTC).date()
             file_id = secrets.token_hex(32)
             real_filename = secrets.token_hex(32)
 
@@ -449,7 +449,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                         code=403, target=document_id, username=handler.username
                     )
 
-                today = datetime.date.today()
+                today = datetime.datetime.now(datetime.UTC).date()
 
                 file_id = secrets.token_hex(32)
                 real_filename = secrets.token_hex(32)

@@ -2,17 +2,16 @@ __all__ = [
     "get_bind_options",
     "get_client_ip",
     "is_v6_address",
-    "configure_trusted_proxy_networks",
 ]
 
 import ipaddress
 import socket
-from functools import lru_cache
 
 from loguru import logger
 from websockets.sync.server import ServerConnection
 
-_DEFAULT_TRUSTED_PROXY_NETWORKS = ("127.0.0.1/32", "::1/128")
+from include.config.settings import global_config
+from include.config.validation import get_trusted_proxy_networks
 
 
 def _normalize_ip(value: str) -> str:
@@ -20,31 +19,6 @@ def _normalize_ip(value: str) -> str:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
         return address.ipv4_mapped.compressed
     return address.compressed
-
-
-@lru_cache(maxsize=8)
-def _parse_proxy_networks(
-    configured: tuple[str, ...],
-) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-    networks = []
-    for value in configured:
-        try:
-            networks.append(ipaddress.ip_network(value, strict=False))
-        except ValueError as exc:
-            raise ValueError(f"Invalid trusted proxy network {value!r}") from exc
-    return tuple(networks)
-
-
-_configured_proxy_networks = _parse_proxy_networks(_DEFAULT_TRUSTED_PROXY_NETWORKS)
-
-
-def configure_trusted_proxy_networks(values) -> None:
-    global _configured_proxy_networks
-    if isinstance(values, str):
-        raise ValueError("server.trusted_proxy_networks must be an array of CIDRs")
-    _configured_proxy_networks = _parse_proxy_networks(
-        tuple(str(value) for value in values)
-    )
 
 
 def _is_trusted_proxy(
@@ -73,7 +47,7 @@ def get_client_ip(websocket: ServerConnection) -> str:
     assert websocket.request is not None
 
     peer_ip = _normalize_ip(websocket.remote_address[0])
-    trusted_networks = _configured_proxy_networks
+    trusted_networks = get_trusted_proxy_networks(global_config)
     if not _is_trusted_proxy(peer_ip, trusted_networks):
         return peer_ip
 

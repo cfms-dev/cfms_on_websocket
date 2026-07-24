@@ -6,7 +6,7 @@ import ipaddress
 import json
 import threading
 import time
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from warnings import deprecated
@@ -15,7 +15,7 @@ from loguru import logger as log
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
-from include.config.settings import global_config
+from include.config.validation import AuthThrottlePolicy
 from include.database.models.security import (
     AccountThrottle,
     BannedSubnet,
@@ -52,45 +52,6 @@ class ThrottleDecision:
     retry_after_seconds: int | None = None
 
 
-@dataclass(frozen=True)
-class AuthThrottlePolicy:
-    enabled: bool = True
-    account_failure_threshold: int = 5
-    account_base_delay_seconds: int = 30
-    account_max_delay_seconds: int = 3600
-    account_reset_seconds: int = 86400
-    account_ip_failure_threshold: int = 5
-    account_ip_window_seconds: int = 900
-    account_ip_block_seconds: int = 900
-    ip_failure_threshold: int = 60
-    ip_window_seconds: int = 600
-    ip_block_seconds: int = 900
-    record_retention_days: int = 7
-
-    @classmethod
-    def from_config(cls) -> AuthThrottlePolicy:
-        section = global_config["security"].get("auth_throttle", {})
-        values = {
-            field.name: section.get(field.name, field.default) for field in fields(cls)
-        }
-        policy = cls(**values)
-        if not isinstance(policy.enabled, bool):
-            raise ValueError("security.auth_throttle.enabled must be a boolean")
-        for field in fields(cls):
-            if field.name == "enabled":
-                continue
-            value = getattr(policy, field.name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(
-                    f"security.auth_throttle.{field.name} must be a positive integer"
-                )
-        if policy.account_base_delay_seconds > policy.account_max_delay_seconds:
-            raise ValueError(
-                "account_base_delay_seconds must not exceed account_max_delay_seconds"
-            )
-        return policy
-
-
 class LoginGuard:
     _banned_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     _networks_loaded = False
@@ -98,10 +59,6 @@ class LoginGuard:
     _write_lock = threading.RLock()
     _cleanup_lock = threading.Lock()
     _last_cleanup_monotonic = 0.0
-
-    @classmethod
-    def validate_config(cls) -> None:
-        AuthThrottlePolicy.from_config()
 
     @classmethod
     def reload_networks(cls) -> None:

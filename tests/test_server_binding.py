@@ -3,8 +3,24 @@ from types import SimpleNamespace
 
 import pytest
 
+from include.config.validation import parse_trusted_proxy_networks
 from include.transport import client_address
 from include.transport.client_address import get_bind_options
+
+
+@pytest.fixture(autouse=True)
+def clear_proxy_network_cache():
+    parse_trusted_proxy_networks.cache_clear()
+    yield
+    parse_trusted_proxy_networks.cache_clear()
+
+
+def _set_trusted_proxy_networks(monkeypatch, values) -> None:
+    monkeypatch.setattr(
+        client_address,
+        "global_config",
+        {"server": {"trusted_proxy_networks": values}},
+    )
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
@@ -47,15 +63,14 @@ def _websocket(peer_ip: str, headers: dict[str, str]):
 
 
 def test_untrusted_peer_cannot_spoof_forwarded_address(monkeypatch):
-    monkeypatch.setattr(client_address, "_trusted_proxy_networks", lambda: ())
+    _set_trusted_proxy_networks(monkeypatch, [])
     websocket = _websocket("198.51.100.20", {"X-Forwarded-For": "203.0.113.99"})
 
     assert client_address.get_client_ip(websocket) == "198.51.100.20"
 
 
 def test_forwarded_chain_uses_rightmost_untrusted_address(monkeypatch):
-    networks = client_address._parse_proxy_networks(("10.0.0.0/8",))
-    monkeypatch.setattr(client_address, "_trusted_proxy_networks", lambda: networks)
+    _set_trusted_proxy_networks(monkeypatch, ["10.0.0.0/8"])
     websocket = _websocket(
         "10.0.0.2",
         {"X-Forwarded-For": "192.0.2.123, 198.51.100.7, 10.0.0.1"},
@@ -65,15 +80,14 @@ def test_forwarded_chain_uses_rightmost_untrusted_address(monkeypatch):
 
 
 def test_invalid_forwarded_chain_falls_back_to_peer(monkeypatch):
-    networks = client_address._parse_proxy_networks(("10.0.0.0/8",))
-    monkeypatch.setattr(client_address, "_trusted_proxy_networks", lambda: networks)
+    _set_trusted_proxy_networks(monkeypatch, ["10.0.0.0/8"])
     websocket = _websocket("10.0.0.2", {"X-Forwarded-For": "not-an-ip"})
 
     assert client_address.get_client_ip(websocket) == "10.0.0.2"
 
 
 def test_ipv4_mapped_ipv6_address_is_canonicalized(monkeypatch):
-    monkeypatch.setattr(client_address, "_trusted_proxy_networks", lambda: ())
+    _set_trusted_proxy_networks(monkeypatch, [])
     websocket = _websocket("::ffff:192.0.2.10", {})
 
     assert client_address.get_client_ip(websocket) == "192.0.2.10"

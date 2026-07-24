@@ -188,7 +188,7 @@ DEFERRED_UPDATE_ORDER = (
 )
 
 
-class BackupComponent(str, enum.Enum):
+class BackupComponent(enum.StrEnum):
     ACCOUNTS = "accounts"
     DOCUMENT_LIBRARY = "documents"
     AUDIT_LOG = "audit"
@@ -435,7 +435,7 @@ def export_backup(
         total_steps=EXPORT_PROGRESS_STEPS,
         detail=str(output),
     )
-    created_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    created_at = dt.datetime.now(dt.UTC).isoformat()
     nonce = secrets.token_bytes(GCM_NONCE_BYTES)
     header = BackupHeader(
         format_version=BACKUP_FORMAT_VERSION,
@@ -777,7 +777,7 @@ def _stage_backup_payload(
     manifest = {
         "format_version": BACKUP_FORMAT_VERSION,
         "core_version": str(CORE_VERSION),
-        "exported_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "exported_at": dt.datetime.now(dt.UTC).isoformat(),
         "components": sorted(component.value for component in components),
         "tables": table_export.manifest,
         "excluded_tables": sorted(EXCLUDED_TABLE_NAMES),
@@ -962,12 +962,14 @@ def _export_files(
 
         sha256 = hashlib.sha256()
         size = 0
-        with storage_provider.fopen(storage_path, "rb") as source:
-            with staged_file.open("wb") as target:
-                while chunk := source.read(1024 * 1024):
-                    sha256.update(chunk)
-                    size += len(chunk)
-                    target.write(chunk)
+        with (
+            storage_provider.fopen(storage_path, "rb") as source,
+            staged_file.open("wb") as target,
+        ):
+            while chunk := source.read(1024 * 1024):
+                sha256.update(chunk)
+                size += len(chunk)
+                target.write(chunk)
 
         file_manifest.append(
             {
@@ -1212,20 +1214,22 @@ def _write_compressed_payload(
         *((staged_file, f"files/{staged_file.name}") for staged_file in staged_files),
     ]
     total_members = len(archive_members)
-    with lzma.open(output_path, "wb", preset=6) as compressed:
-        with tarfile.open(fileobj=compressed, mode="w|") as tar:
-            for member_index, (source_path, archive_path) in enumerate(
-                archive_members,
-                start=1,
-            ):
-                _add_staged_file(
-                    tar,
-                    source_path,
-                    archive_path,
-                    progress_reporter=progress_reporter,
-                    member_index=member_index,
-                    total_members=total_members,
-                )
+    with (
+        lzma.open(output_path, "wb", preset=6) as compressed,
+        tarfile.open(fileobj=compressed, mode="w|") as tar,
+    ):
+        for member_index, (source_path, archive_path) in enumerate(
+            archive_members,
+            start=1,
+        ):
+            _add_staged_file(
+                tar,
+                source_path,
+                archive_path,
+                progress_reporter=progress_reporter,
+                member_index=member_index,
+                total_members=total_members,
+            )
     LOGGER.debug("Compressed payload created at %s", output_path)
 
 
@@ -1322,9 +1326,11 @@ def _restore_files(
         parent = os.path.dirname(storage_path)
         if parent:
             storage_provider.makedirs(parent, exist_ok=True)
-        with source_path.open("rb") as source:
-            with storage_provider.fopen(storage_path, "wb") as target:
-                shutil.copyfileobj(source, target, length=1024 * 1024)
+        with (
+            source_path.open("rb") as source,
+            storage_provider.fopen(storage_path, "wb") as target,
+        ):
+            shutil.copyfileobj(source, target, length=1024 * 1024)
         written_paths.append(storage_path)
         LOGGER.debug("Restored storage file %s", storage_path)
 
@@ -1534,7 +1540,7 @@ def _restore_missing_compiled_rule_sets(
     if not rule_set_id_by_node:
         return
 
-    created_at = dt.datetime.now(dt.timezone.utc).timestamp()
+    created_at = dt.datetime.now(dt.UTC).timestamp()
     connection.execute(
         insert(tables["compiled_access_rule_sets"]),
         [
@@ -1792,27 +1798,26 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 
 def _safe_extract_tar_xz(source_path: Path, target_dir: Path) -> None:
     LOGGER.debug("Extracting compressed payload %s to %s", source_path, target_dir)
-    with lzma.open(source_path, "rb") as compressed:
-        with tarfile.open(fileobj=compressed, mode="r|") as tar:
-            for member in tar:
-                LOGGER.debug("Extracting archive member %s", member.name)
-                target_path = _safe_payload_path(target_dir, member.name)
-                if member.isdir():
-                    target_path.mkdir(parents=True, exist_ok=True)
-                    continue
-                if not member.isfile():
-                    raise BackupFormatError(
-                        f"Unsupported archive member type: {member.name}"
-                    )
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                extracted = tar.extractfile(member)
-                if extracted is None:
-                    raise BackupFormatError(
-                        f"Unable to read archive member: {member.name}"
-                    )
-                with extracted:
-                    with target_path.open("wb") as target:
-                        shutil.copyfileobj(extracted, target, length=1024 * 1024)
+    with (
+        lzma.open(source_path, "rb") as compressed,
+        tarfile.open(fileobj=compressed, mode="r|") as tar,
+    ):
+        for member in tar:
+            LOGGER.debug("Extracting archive member %s", member.name)
+            target_path = _safe_payload_path(target_dir, member.name)
+            if member.isdir():
+                target_path.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise BackupFormatError(
+                    f"Unsupported archive member type: {member.name}"
+                )
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                raise BackupFormatError(f"Unable to read archive member: {member.name}")
+            with extracted, target_path.open("wb") as target:
+                shutil.copyfileobj(extracted, target, length=1024 * 1024)
     LOGGER.debug("Compressed payload extracted to %s", target_dir)
 
 

@@ -83,7 +83,7 @@ def admin_credentials(server_process) -> dict:
     if not os.path.exists(password_file):
         raise RuntimeError("Admin password file not found after server started")
 
-    with open(password_file, "r", encoding="utf-8") as f:
+    with open(password_file, encoding="utf-8") as f:
         password = f.read().strip()
     if not password:
         raise RuntimeError("Admin password file is empty")

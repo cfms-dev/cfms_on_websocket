@@ -23,6 +23,7 @@ from include.config.constants import (
     ROOT_DIRECTORY_ID,
 )
 from include.config.settings import global_config
+from include.config.validation import get_config_warnings
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -43,11 +44,7 @@ from include.extensions.manager import (
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
-from include.transport.client_address import (
-    configure_trusted_proxy_networks,
-    get_bind_options,
-    is_v6_address,
-)
+from include.transport.client_address import get_bind_options, is_v6_address
 from include.transport.request_entrypoint import global_process_request
 from include.transport.router import (
     available_functions,
@@ -186,7 +183,7 @@ def server_init():
     # Add sample file and document
     sample_source_path = "content/hello"
 
-    today = datetime.date.today()
+    today = datetime.datetime.now(datetime.UTC).date()
     real_filename = secrets.token_hex(32)
     sample_target_path = f"content/files/{today.year}/{today.month}/{real_filename}"
 
@@ -195,9 +192,11 @@ def server_init():
         os.path.dirname(sample_target_path), exist_ok=True
     )
 
-    with open(sample_source_path, "rb") as source:
-        with ProviderManager().storage.fopen(sample_target_path, "wb") as f:
-            f.write(source.read())
+    with (
+        open(sample_source_path, "rb") as source,
+        ProviderManager().storage.fopen(sample_target_path, "wb") as f,
+    ):
+        f.write(source.read())
 
     with Session() as session:
         # not using `ROOT_ABSPATH` here to allow easy migration
@@ -283,9 +282,9 @@ def server_init():
             .issuer_name(issuer)
             .public_key(private_key.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+            .not_valid_before(datetime.datetime.now(datetime.UTC))
             .not_valid_after(
-                datetime.datetime.now(datetime.timezone.utc)
+                datetime.datetime.now(datetime.UTC)
                 + datetime.timedelta(days=DEFAULT_SSL_CERT_VALIDITY_DAYS)
             )
             .add_extension(
@@ -400,14 +399,6 @@ def main():
     security_cfg = global_config.get("security", {})
     if security_cfg.get("require_client_cert", False):
         client_ca_path: str = security_cfg["client_cert_ca_path"]
-        if not os.path.exists(client_ca_path) or not os.path.isdir(client_ca_path):
-            logger.error(
-                "Client certificate CA path not found or is not a dir: "
-                f"{client_ca_path}. Cannot enable client certificate "
-                "verification. Please provide a valid CA certificate "
-                "path or disable 'require_client_cert' in the configuration."
-            )
-            raise SystemExit(1)
         ssl_context.verify_mode = ssl.CERT_REQUIRED
 
         ssl_context.verify_flags |= ssl.VERIFY_X509_STRICT
@@ -420,13 +411,8 @@ def main():
             f"against CA path '{client_ca_path}'."
         )
 
-    if not security_cfg["pepper"]:
-        logger.warning(
-            "Setting the value for `pepper` to empty in the configuration "
-            "file can lead to potential security vulnerabilities. For "
-            "details, see: https://cheatsheetseries.owasp.org/cheatsheets/"
-            "Password_Storage_Cheat_Sheet.html#peppering"
-        )
+    for warning in get_config_warnings(global_config):
+        logger.warning(warning)
 
     if sys.version_info < (3, 14):
         logger.warning(
@@ -468,12 +454,6 @@ def main():
     prepare_handlers()
 
     # Preload banned subnet list into memory for LoginGuard
-    LoginGuard.validate_config()
-    configure_trusted_proxy_networks(
-        global_config["server"].get(
-            "trusted_proxy_networks", ["127.0.0.1/32", "::1/128"]
-        )
-    )
     LoginGuard.reload_networks()
 
     host = global_config["server"]["host"]

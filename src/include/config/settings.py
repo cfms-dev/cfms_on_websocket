@@ -26,6 +26,8 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
+from include.config.validation import ConfigValidationError, parse_config_document
+
 __all__ = ["global_config"]
 
 
@@ -133,7 +135,7 @@ class GlobalConfig:
                 f"Configuration file {self._config_path!r} not found."
             )
 
-        with open(self._config_path, "r", encoding="utf-8") as f:
+        with open(self._config_path, encoding="utf-8") as f:
             toml_doc = parse(f.read())
 
         toml_doc["server"]["secret_key"] = secrets.token_hex(32)
@@ -145,8 +147,8 @@ class GlobalConfig:
     # -- loading ----------------------------------------------------------
 
     def _load(self):
-        with open(self._config_path, "r", encoding="utf-8") as f:
-            new_data = parse(f.read())
+        with open(self._config_path, encoding="utf-8") as f:
+            new_data = parse_config_document(f.read())
 
         with self._lock:
             self._data = new_data
@@ -168,9 +170,16 @@ class GlobalConfig:
         observer.start()
         self._observer = observer
 
-    def reload(self):
+    def reload(self) -> bool:
         """Force an immediate reload (also called by the watchdog handler)."""
-        self._load()
+        try:
+            self._load()
+        except ConfigValidationError as exc:
+            logger.error(
+                f"Configuration reload rejected; keeping the previous values: {exc}"
+            )
+            return False
+        return True
 
     def stop(self):
         """Stop the watchdog observer (e.g. during graceful shutdown)."""
@@ -188,7 +197,7 @@ class GlobalConfig:
     def get(self, key: str, /) -> Any | None: ...
 
     @overload
-    def get[_T](self, key: str, default: _T, /) -> Any | _T: ...
+    def get[T](self, key: str, default: T, /) -> Any | T: ...
 
     def get(self, key: str, default: Any = None, /) -> Any:
         with self._lock:

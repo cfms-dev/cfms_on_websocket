@@ -84,7 +84,7 @@ class ServerHookSpecs:
 
     @hookspec(firstresult=True)
     def ext_pre_request(
-        self, request_handler: "RequestHandler", connection_handler: "ConnectionHandler"
+        self, request_handler: RequestHandler, connection_handler: ConnectionHandler
     ) -> bool | None:
         """
         Triggered before processing a request.
@@ -97,7 +97,7 @@ class ServerHookSpecs:
     def ext_post_request(
         self,
         action: str,
-        handler: "ConnectionHandler",
+        handler: ConnectionHandler,
         callback: Result | None,
         time_cost: float,
     ) -> None: ...

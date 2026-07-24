@@ -16,6 +16,9 @@
 
 ## Coding style guidelines
 - When introducing dependencies in your code, do not simply add the import statement in the middle of the code; instead, place it at the beginning of the file.
+- Combine nested context managers with the same lifetime into a single `with` statement.
+- Use `datetime.datetime.now(datetime.UTC).date()` instead of `datetime.date.today()` so the current date has an explicit timezone basis.
+- Use the `datetime.UTC` alias (or the corresponding module alias, such as `dt.UTC`) instead of `datetime.timezone.utc`.
 - Do not insert redundant comments.
 - Avoid anti-patterns when coding.
 - Observe the DRY principle.

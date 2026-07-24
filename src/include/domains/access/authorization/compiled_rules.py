@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from itertools import batched
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from sqlalchemy import and_, delete
 from sqlalchemy.orm import Session as OrmSession
