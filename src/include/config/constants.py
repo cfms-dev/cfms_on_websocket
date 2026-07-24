@@ -6,6 +6,8 @@ __all__ = [
     "AVAILABLE_BLOCK_TYPES",
     "DEFAULT_TOKEN_EXPIRY_SECONDS",
     "DEFAULT_SSL_CERT_VALIDITY_DAYS",
+    "USERNAME_MAX_LENGTH",
+    "USERNAME_DATABASE_MAX_LENGTH",
     "FILE_TRANSFER_MAX_CHUNK_SIZE",
     "FILE_TRANSFER_MIN_CHUNK_SIZE",
     "FILE_TASK_DEFAULT_DURATION_SECONDS",
@@ -34,6 +36,7 @@ AVAILABLE_BLOCK_TYPES: set = {"read", "write", "move"}
 # Authentication and Security Constants
 DEFAULT_TOKEN_EXPIRY_SECONDS = 3600  # 1 hour
 DEFAULT_SSL_CERT_VALIDITY_DAYS = 365  # 1 year
+USERNAME_MAX_LENGTH = 64  # Must not exceed USERNAME_DATABASE_MAX_LENGTH
 
 # File Transfer Constants
 FILE_TRANSFER_MAX_CHUNK_SIZE = (
@@ -54,6 +57,7 @@ PAGINATION_DEFAULT_PAGE_SIZE = 128
 PAGINATION_MAX_PAGE_SIZE = 128
 
 # Database Constants
+USERNAME_DATABASE_MAX_LENGTH = 256  # Maximum length of username field in the database
 MAX_PARAM_SIZE = 950  # Maximum number of parameters in a single SQL query
 QUERY_CHUNK_SIZE = 576  # used to prevent hitting the limit of bind variables per query
 

@@ -221,8 +221,8 @@ class LoginGuard:
                         return cls._cache_decision(scope, key, record.locked_until, now)
         return ThrottleDecision(True)
 
-    @deprecated("Use evaluate() instead, which returns a ThrottleDecision object.")
     @classmethod
+    @deprecated("Use evaluate() instead, which returns a ThrottleDecision object.")
     def check_access(cls, ip_address: str, username: str | None = None) -> bool:
         """Compatibility wrapper for extensions using the legacy boolean API."""
         return cls.evaluate(ip_address, username).allowed

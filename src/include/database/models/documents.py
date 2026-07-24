@@ -22,7 +22,7 @@ from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
-from include.config.constants import QUERY_CHUNK_SIZE
+from include.config.constants import QUERY_CHUNK_SIZE, USERNAME_DATABASE_MAX_LENGTH
 from include.config.settings import global_config
 from include.database.models.files import (
     File,
@@ -521,13 +521,13 @@ class DocumentMetadata(Base):
         VARCHAR(255), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
     )
     creator_username: Mapped[str | None] = mapped_column(
-        VARCHAR(64),
+        VARCHAR(USERNAME_DATABASE_MAX_LENGTH),
         ForeignKey("users.username", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
     last_modified_by_username: Mapped[str | None] = mapped_column(
-        VARCHAR(64),
+        VARCHAR(USERNAME_DATABASE_MAX_LENGTH),
         ForeignKey("users.username", ondelete="SET NULL"),
         nullable=True,
         index=True,

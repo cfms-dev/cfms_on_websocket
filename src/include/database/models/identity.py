@@ -24,16 +24,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
 
-from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
+from include.config.constants import (
+    DEFAULT_TOKEN_EXPIRY_SECONDS,
+    USERNAME_DATABASE_MAX_LENGTH,
+)
 from include.config.settings import global_config
 from include.database.session import Base, Session
 from include.domains.access.permissions import Permissions
 from include.domains.identity.tokens import Token
-from include.exceptions.misc import (
-    UserNotActiveError,
-    UserTOTPFailedError,
-    UserTOTPRequiredError,
-)
 
 # Module-level PasswordHasher instance — reused across all calls to avoid
 # repeated construction overhead.
@@ -100,7 +98,9 @@ def _replace_permission_entries(
 class User(Base):
     __tablename__ = "users"
     # id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(VARCHAR(64), primary_key=True)
+    username: Mapped[str] = mapped_column(
+        VARCHAR(USERNAME_DATABASE_MAX_LENGTH), primary_key=True
+    )
     pass_hash: Mapped[str] = mapped_column(Text)
     passwd_last_modified: Mapped[float] = mapped_column(
         Float, default=0, nullable=False
@@ -192,31 +192,12 @@ class User(Base):
         except (VerifyMismatchError, VerificationError, InvalidHashError):
             return False
 
-    def authenticate(self, plain_password: str, totp_token: str | None = None) -> bool:
-        if not self.verify_password(plain_password):
-            return False
-
-        if self.totp_enabled:
-            if not totp_token:
-                raise UserTOTPRequiredError
-            elif not self.verify_totp(totp_token):
-                raise UserTOTPFailedError
-
-        if self.status != UserStatus.ACTIVE:
-            raise UserNotActiveError(self.status_reason)
-
-        return True
-
-    def authenticate_and_create_token(
-        self, plain_password: str, totp_token: str | None = None
-    ) -> Token | None:
-        if not self.authenticate(plain_password, totp_token=totp_token):
-            return None  # exceptions should be handled by caller
-
-        return self.create_token_after_authentication(plain_password)
-
     def create_token_after_authentication(self, plain_password: str) -> Token:
-        """Issue a token after the caller has verified every required factor."""
+        """Issue a token after the caller has verified every required factor.
+
+        This method will automatically update and commit to the database when
+        generating the token, which may lead to unexpected consequences.
+        """
 
         secret = (
             global_config["server"]["secret_key"]

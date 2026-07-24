@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from sqlalchemy import DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from include.config.constants import USERNAME_DATABASE_MAX_LENGTH
 from include.database.session import Base
 
 
@@ -95,7 +96,9 @@ class TrafficThrottle(Base):
 class AccountThrottle(Base):
     __tablename__ = "account_throttles"
 
-    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    username: Mapped[str] = mapped_column(
+        String(USERNAME_DATABASE_MAX_LENGTH), primary_key=True
+    )
     factor: Mapped[str] = mapped_column(String(16), primary_key=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_attempt: Mapped[datetime] = mapped_column(

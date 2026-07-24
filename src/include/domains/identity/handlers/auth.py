@@ -1,6 +1,7 @@
 import time
 from typing import Any
 
+from include.config.constants import USERNAME_MAX_LENGTH
 from include.config.settings import global_config
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
@@ -25,7 +26,11 @@ class RequestLoginHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "username": {"type": "string", "minLength": 1, "maxLength": 64},
+            "username": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": USERNAME_MAX_LENGTH,
+            },
             "password": {"type": "string", "minLength": 1},
             "2fa_token": {"type": "string", "minLength": 1, "maxLength": 64},
         },

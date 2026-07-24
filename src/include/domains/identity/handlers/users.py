@@ -23,7 +23,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import selectinload
 
-from include.config.constants import AVAILABLE_BLOCK_TYPES
+from include.config.constants import AVAILABLE_BLOCK_TYPES, USERNAME_MAX_LENGTH
 from include.config.settings import global_config
 from include.database.models.access import (
     UserBlockEntry,
@@ -134,7 +134,11 @@ class RequestCreateUserHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "username": {"type": "string", "minLength": 1, "maxLength": 64},
+            "username": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": USERNAME_MAX_LENGTH,
+            },
             "password": {"type": "string"},
             "nickname": {"type": "string"},
             "permissions": {
@@ -1014,7 +1018,11 @@ class RequestSetPasswdHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "username": {"type": "string", "minLength": 1, "maxLength": 64},
+            "username": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": USERNAME_MAX_LENGTH,
+            },
             "old_passwd": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "new_passwd": {"type": "string", "minLength": 1},
             "force_update_after_login": {"type": "boolean"},

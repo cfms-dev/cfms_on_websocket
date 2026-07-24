@@ -9,6 +9,7 @@ from operator import xor
 
 import orjson
 
+from include.config.constants import USERNAME_MAX_LENGTH
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
@@ -184,7 +185,11 @@ class RequestDisable2FAHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
-            "username": {"type": "string", "minLength": 1, "maxLength": 64},
+            "username": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": USERNAME_MAX_LENGTH,
+            },
             "password": {"type": "string", "minLength": 1},
         },
         "anyOf": [

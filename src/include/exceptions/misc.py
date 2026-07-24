@@ -2,8 +2,6 @@ __all__ = [
     "NoActiveRevisionsError",
     "UserError",
     "UserNotActiveError",
-    "UserTOTPRequiredError",
-    "UserTOTPFailedError",
 ]
 
 
@@ -17,9 +15,3 @@ class UserNotActiveError(UserError):
     def __init__(self, reason: str | None = None) -> None:
         super().__init__("User account is not active")
         self.reason = reason
-
-
-class UserTOTPRequiredError(UserError): ...
-
-
-class UserTOTPFailedError(UserError): ...
