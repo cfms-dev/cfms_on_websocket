@@ -95,6 +95,14 @@ from include.domains.operations.handlers.system import (
 from include.domains.operations.lockdown import lockdown_state_manager
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.replay import nonce_store
+from include.domains.security.handlers.access_control import (
+    RequestCreateBannedSubnetHandler,
+    RequestDeleteBannedSubnetHandler,
+    RequestListAuthLockoutsHandler,
+    RequestListBannedSubnetsHandler,
+    RequestUnlockAuthLockoutsHandler,
+    RequestUpdateBannedSubnetHandler,
+)
 from include.domains.security.handlers.two_factor import (
     RequestCancel2FASetupHandler,
     RequestDisable2FAHandler,
@@ -122,6 +130,13 @@ available_functions: dict[str, type[RequestHandler]] = {
     "validate_2fa": RequestValidate2FAHandler,
     "disable_2fa": RequestDisable2FAHandler,
     "get_2fa_status": RequestGet2FAStatusHandler,
+    # Security administration
+    "list_banned_subnets": RequestListBannedSubnetsHandler,
+    "create_banned_subnet": RequestCreateBannedSubnetHandler,
+    "update_banned_subnet": RequestUpdateBannedSubnetHandler,
+    "delete_banned_subnet": RequestDeleteBannedSubnetHandler,
+    "list_auth_lockouts": RequestListAuthLockoutsHandler,
+    "unlock_auth_lockouts": RequestUnlockAuthLockoutsHandler,
     # Documents
     "get_document": RequestGetDocumentHandler,
     "create_document": RequestCreateDocumentHandler,
@@ -300,7 +315,7 @@ def handle_request(stream: Stream):
     """
     ip = get_client_ip(stream.connection._ws)
 
-    if not LoginGuard.evaluate_permanent_access(ip).allowed:
+    if not LoginGuard.evaluate_subnet_access(ip).allowed:
         response = {
             "code": 403,
             "message": "Your IP address is not permitted.",

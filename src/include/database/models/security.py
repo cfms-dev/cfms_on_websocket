@@ -5,22 +5,18 @@ __all__ = [
     "TrafficThrottle",
 ]
 
-from datetime import UTC, datetime
+import time
 
-from sqlalchemy import DateTime, Integer, String, func
+from sqlalchemy import Double, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from include.config.constants import USERNAME_DATABASE_MAX_LENGTH
 from include.database.session import Base
 
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
-
-
 class BannedSubnet(Base):
     """
-    Represents a manually blocked IP subnet (CIDR notation).
+    Represents a manually scheduled IP subnet block (CIDR notation).
 
     Administrators can add CIDR ranges here (e.g. '192.168.1.0/24' or
     '2001:db8::/32') to permanently block all addresses within that range
@@ -31,9 +27,9 @@ class BannedSubnet(Base):
 
     subnet: Mapped[str] = mapped_column(String(128), primary_key=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[float] = mapped_column(Double, default=time.time, nullable=False)
+    starts_at: Mapped[float] = mapped_column(Double, default=time.time, nullable=False)
+    expires_at: Mapped[float | None] = mapped_column(Double, nullable=True)
 
 
 class LoginThrottle(Base):
@@ -43,17 +39,15 @@ class LoginThrottle(Base):
     ip_address: Mapped[str] = mapped_column(String(45), primary_key=True, index=True)
 
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
-    window_started_at: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), nullable=False
+    window_started_at: Mapped[float] = mapped_column(
+        Double, default=time.time, nullable=False
     )
-    last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=_utc_now, index=True
-    )
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_attempt: Mapped[float] = mapped_column(Double, default=time.time, index=True)
+    locked_until: Mapped[float | None] = mapped_column(Double, nullable=True)
 
     def is_locked(self) -> bool:
         if self.locked_until is not None:
-            return self.locked_until > _utc_now()
+            return self.locked_until > time.time()
         return False
 
     @classmethod
@@ -71,17 +65,15 @@ class TrafficThrottle(Base):
     ip_address: Mapped[str] = mapped_column(String(45), primary_key=True)
 
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
-    window_started_at: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), nullable=False
+    window_started_at: Mapped[float] = mapped_column(
+        Double, default=time.time, nullable=False
     )
-    last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=_utc_now, index=True
-    )
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_attempt: Mapped[float] = mapped_column(Double, default=time.time, index=True)
+    locked_until: Mapped[float | None] = mapped_column(Double, nullable=True)
 
     def is_locked(self) -> bool:
         if self.locked_until is not None:
-            return self.locked_until > _utc_now()
+            return self.locked_until > time.time()
         return False
 
     @classmethod
@@ -101,13 +93,11 @@ class AccountThrottle(Base):
     )
     factor: Mapped[str] = mapped_column(String(16), primary_key=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
-    last_attempt: Mapped[datetime] = mapped_column(
-        DateTime, default=_utc_now, index=True
-    )
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_attempt: Mapped[float] = mapped_column(Double, default=time.time, index=True)
+    locked_until: Mapped[float | None] = mapped_column(Double, nullable=True)
 
     def is_locked(self) -> bool:
-        return self.locked_until is not None and self.locked_until > _utc_now()
+        return self.locked_until is not None and self.locked_until > time.time()
 
     @classmethod
     def get_record(cls, session, username: str, factor: str):

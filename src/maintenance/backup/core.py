@@ -1703,6 +1703,21 @@ def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
+    if table.name == "banned_subnets":
+        created_at = row.get("created_at")
+        if isinstance(created_at, str):
+            parsed_created_at = dt.datetime.fromisoformat(
+                created_at.replace("Z", "+00:00")
+            )
+            if parsed_created_at.tzinfo is None:
+                parsed_created_at = parsed_created_at.replace(tzinfo=dt.UTC)
+            created_at = parsed_created_at.timestamp()
+            row = {**row, "created_at": created_at}
+        if "starts_at" not in row:
+            row = {**row, "starts_at": created_at}
+        if "expires_at" not in row:
+            row = {**row, "expires_at": None}
+
     decoded = {}
     for column in table.columns:
         if column.name not in row:

@@ -35,7 +35,7 @@ from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
 from include.domains.operations.broadcast import on_global_broadcast
-from include.domains.security.guards.login import LoginGuard
+from include.domains.security.guards.login import LOGIN_GUARD_EVENT_CHANNEL, LoginGuard
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
 from include.extensions.manager import (
     load_builtin_extension,
@@ -171,6 +171,10 @@ def server_init():
             {"permission": Permissions.DELETE_REVISION},
             {"permission": Permissions.MANAGE_KEYRINGS},
             {"permission": Permissions.LIST_USER_BLOCKS},
+            {"permission": Permissions.LIST_BANNED_SUBNETS},
+            {"permission": Permissions.MANAGE_BANNED_SUBNETS},
+            {"permission": Permissions.LIST_AUTH_LOCKOUTS},
+            {"permission": Permissions.UNLOCK_AUTH_LOCKOUTS},
             {"permission": Permissions.PURGE},
             {"permission": Permissions.RESTORE},
             {"permission": Permissions.LIST_DELETED_ITEMS},
@@ -444,6 +448,9 @@ def main():
 
     # Register global broadcast handler
     ProviderManager().event_bus.subscribe("system:broadcast", on_global_broadcast)
+    ProviderManager().event_bus.subscribe(
+        LOGIN_GUARD_EVENT_CHANNEL, LoginGuard.handle_event
+    )
 
     # Register plugins after database initialization
     extension_root = ROOT_ABSPATH / "include" / "extensions"

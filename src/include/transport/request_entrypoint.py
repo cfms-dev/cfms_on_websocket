@@ -12,7 +12,7 @@ def global_process_request(
 ) -> Response | None:
     ip = get_client_ip(connection)
 
-    if not LoginGuard.evaluate_permanent_access(ip).allowed:
+    if not LoginGuard.evaluate_subnet_access(ip).allowed:
         response_headers = Headers()
         response_headers["Content-Type"] = "text/plain"
         return Response(

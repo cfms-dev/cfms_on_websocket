@@ -1,13 +1,13 @@
-"""Authentication throttling and permanent subnet blocking."""
+"""Authentication throttling and scheduled subnet blocking."""
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import ClassVar
 from warnings import deprecated
@@ -28,10 +28,7 @@ from include.domains.operations.commands.audit import log_audit
 from include.providers.manager import ProviderManager
 
 logger = log.bind(name="login_guard")
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+LOGIN_GUARD_EVENT_CHANNEL = "security:login_guard"
 
 
 class AuthFactor(StrEnum):
@@ -53,8 +50,20 @@ class ThrottleDecision:
     retry_after_seconds: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class BannedSubnetRule:
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network
+    starts_at: float
+    expires_at: float | None
+
+    def is_active(self, now: float) -> bool:
+        return self.starts_at <= now and (
+            self.expires_at is None or now < self.expires_at
+        )
+
+
 class LoginGuard:
-    _banned_networks: ClassVar[list[ipaddress.IPv4Network | ipaddress.IPv6Network]] = []
+    _banned_rules: ClassVar[list[BannedSubnetRule]] = []
     _networks_loaded = False
     _network_lock = threading.Lock()
     _write_lock = threading.RLock()
@@ -63,33 +72,41 @@ class LoginGuard:
 
     @classmethod
     def reload_networks(cls) -> None:
-        networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        rules: list[BannedSubnetRule] = []
         with Session() as session:
             rows = session.query(BannedSubnet).all()
             for row in rows:
                 try:
-                    networks.append(ipaddress.ip_network(row.subnet, strict=True))
+                    rules.append(
+                        BannedSubnetRule(
+                            network=ipaddress.ip_network(row.subnet, strict=True),
+                            starts_at=row.starts_at,
+                            expires_at=row.expires_at,
+                        )
+                    )
                 except ValueError:
                     logger.warning(
                         f"Ignoring invalid subnet in database: {row.subnet!r}"
                     )
         with cls._network_lock:
-            cls._banned_networks = networks
+            cls._banned_rules = rules
             cls._networks_loaded = True
-        logger.info(f"Loaded {len(networks)} banned subnet(s) from database.")
+        logger.info(f"Loaded {len(rules)} banned subnet rule(s) from database.")
 
     @classmethod
-    def _is_ip_banned_by_subnet(cls, ip_str: str) -> bool:
+    def _is_ip_banned_by_subnet(cls, ip_str: str, now: float | None = None) -> bool:
         try:
             address = ipaddress.ip_address(ip_str)
         except ValueError:
             return False
+        if now is None:
+            now = time.time()
         with cls._network_lock:
-            networks = tuple(cls._banned_networks)
-        return any(address in network for network in networks)
+            rules = tuple(cls._banned_rules)
+        return any(rule.is_active(now) and address in rule.network for rule in rules)
 
     @classmethod
-    def evaluate_permanent_access(cls, ip_address: str) -> ThrottleDecision:
+    def evaluate_subnet_access(cls, ip_address: str) -> ThrottleDecision:
         if not cls._networks_loaded:
             cls.reload_networks()
         if ip_address and cls._is_ip_banned_by_subnet(ip_address):
@@ -102,16 +119,43 @@ class LoginGuard:
         return f"guard:v2:{encoded}"
 
     @classmethod
+    def invalidate_cache_keys(cls, keys: list[tuple[str, ...]]) -> None:
+        cache = ProviderManager().caching
+        for key in keys:
+            cache.delete(cls._cache_key(key))
+
+    @classmethod
+    def handle_event(cls, message: str) -> None:
+        try:
+            payload = json.loads(message)
+            event_type = payload["type"]
+            if event_type == "reload_subnets":
+                cls.reload_networks()
+                return
+            if event_type == "invalidate_lockouts":
+                keys = payload["keys"]
+                if not isinstance(keys, list) or not all(
+                    isinstance(key, list) and all(isinstance(part, str) for part in key)
+                    for key in keys
+                ):
+                    raise ValueError("Invalid lockout cache keys")
+                cls.invalidate_cache_keys([tuple(key) for key in keys])
+                return
+            raise ValueError(f"Unknown event type: {event_type!r}")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("Ignoring invalid login guard event")
+
+    @classmethod
     def _cache_decision(
         cls,
         scope: ThrottleScope,
         key: tuple[str, ...],
-        locked_until: datetime,
-        now: datetime,
+        locked_until: float,
+        now: float,
     ) -> ThrottleDecision:
-        retry_after = max(1, int((locked_until - now).total_seconds() + 0.999))
+        retry_after = max(1, math.ceil(locked_until - now))
         ProviderManager().caching.set(
-            cls._cache_key(key), locked_until.timestamp(), ttl=retry_after
+            cls._cache_key(key), locked_until, ttl=retry_after
         )
         return ThrottleDecision(False, scope, retry_after)
 
@@ -122,9 +166,9 @@ class LoginGuard:
         username: str | None = None,
         factor: AuthFactor | None = None,
     ) -> ThrottleDecision:
-        permanent = cls.evaluate_permanent_access(ip_address)
-        if not permanent.allowed:
-            return permanent
+        subnet = cls.evaluate_subnet_access(ip_address)
+        if not subnet.allowed:
+            return subnet
 
         policy = AuthThrottlePolicy.from_config()
         if not policy.enabled:
@@ -159,14 +203,14 @@ class LoginGuard:
                 )
             )
 
-        now = _utc_now()
+        now = time.time()
         cache = ProviderManager().caching
         for scope, key, _model, _identity in checks:
             cache_key = cls._cache_key(key)
             expiry = cache.get(cache_key)
             if expiry is None:
                 continue
-            retry_after = int(float(expiry) - now.timestamp() + 0.999)
+            retry_after = math.ceil(float(expiry) - now)
             if retry_after > 0:
                 return ThrottleDecision(False, scope, retry_after)
             cache.delete(cache_key)
@@ -215,28 +259,28 @@ class LoginGuard:
     @staticmethod
     def _update_fixed_window(
         record,
-        now: datetime,
+        now: float,
         threshold: int,
         window_seconds: int,
         block_seconds: int,
-    ) -> datetime | None:
-        if now >= record.window_started_at + timedelta(seconds=window_seconds):
+    ) -> float | None:
+        if now >= record.window_started_at + window_seconds:
             record.window_started_at = now
             record.failed_attempts = 1
         else:
             record.failed_attempts += 1
         record.last_attempt = now
         if record.failed_attempts >= threshold:
-            record.locked_until = now + timedelta(seconds=block_seconds)
+            record.locked_until = now + block_seconds
             return record.locked_until
         record.locked_until = None
         return None
 
     @staticmethod
     def _update_account(
-        record: AccountThrottle, now: datetime, policy: AuthThrottlePolicy
-    ) -> datetime | None:
-        if now >= record.last_attempt + timedelta(seconds=policy.account_reset_seconds):
+        record: AccountThrottle, now: float, policy: AuthThrottlePolicy
+    ) -> float | None:
+        if now >= record.last_attempt + policy.account_reset_seconds:
             record.failed_attempts = 1
         else:
             record.failed_attempts += 1
@@ -247,7 +291,7 @@ class LoginGuard:
                 policy.account_base_delay_seconds * (2**exponent),
                 policy.account_max_delay_seconds,
             )
-            record.locked_until = now + timedelta(seconds=delay)
+            record.locked_until = now + delay
             return record.locked_until
         record.locked_until = None
         return None
@@ -263,8 +307,8 @@ class LoginGuard:
         if not policy.enabled:
             return ThrottleDecision(True)
 
-        now = _utc_now()
-        locked: list[tuple[ThrottleScope, tuple[str, ...], datetime]] = []
+        now = time.time()
+        locked: list[tuple[ThrottleScope, tuple[str, ...], float]] = []
         with cls._write_lock, Session.begin() as session:
             ip_record = cls._get_or_create(
                 session,
@@ -359,7 +403,7 @@ class LoginGuard:
             factor=factor.value,
             username=username,
             ip_address=ip_address,
-            locked_until=locked_until.isoformat(),
+            locked_until=locked_until,
         ).warning("Authentication throttle activated")
         decision = cls._cache_decision(scope, key, locked_until, now)
         log_audit(
@@ -394,9 +438,7 @@ class LoginGuard:
                 if pair_record:
                     session.delete(pair_record)
                 cache_keys.append(LoginThrottle.make_cache_key(username, ip_address))
-        cache = ProviderManager().caching
-        for key in cache_keys:
-            cache.delete(cls._cache_key(key))
+        cls.invalidate_cache_keys(cache_keys)
 
     @classmethod
     def _maybe_cleanup(cls, policy: AuthThrottlePolicy) -> None:
@@ -407,8 +449,8 @@ class LoginGuard:
         try:
             if time.monotonic() - cls._last_cleanup_monotonic < 3600:
                 return
-            now = _utc_now()
-            cutoff = now - timedelta(days=policy.record_retention_days)
+            now = time.time()
+            cutoff = now - policy.record_retention_days * 86400
             with Session.begin() as session:
                 for model in (AccountThrottle, LoginThrottle, TrafficThrottle):
                     session.query(model).filter(

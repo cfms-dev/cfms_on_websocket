@@ -68,6 +68,10 @@ class Permissions(StrEnum):
     BLOCK = "block"
     UNBLOCK = "unblock"
     LIST_USER_BLOCKS = "list_user_blocks"
+    LIST_BANNED_SUBNETS = "list_banned_subnets"
+    MANAGE_BANNED_SUBNETS = "manage_banned_subnets"
+    LIST_AUTH_LOCKOUTS = "list_auth_lockouts"
+    UNLOCK_AUTH_LOCKOUTS = "unlock_auth_lockouts"
 
     # Logs and version control
     VIEW_AUDIT_LOGS = "view_audit_logs"
