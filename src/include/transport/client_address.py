@@ -47,18 +47,12 @@ def configure_trusted_proxy_networks(values) -> None:
     )
 
 
-def _trusted_proxy_networks():
-    return _configured_proxy_networks
-
-
 def _is_trusted_proxy(
     address: str,
     networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
 ) -> bool:
     parsed = ipaddress.ip_address(address)
-    return any(
-        parsed.version == network.version and parsed in network for network in networks
-    )
+    return any(parsed in network for network in networks)
 
 
 def get_bind_options(
@@ -79,7 +73,7 @@ def get_client_ip(websocket: ServerConnection) -> str:
     assert websocket.request is not None
 
     peer_ip = _normalize_ip(websocket.remote_address[0])
-    trusted_networks = _trusted_proxy_networks()
+    trusted_networks = _configured_proxy_networks
     if not _is_trusted_proxy(peer_ip, trusted_networks):
         return peer_ip
 

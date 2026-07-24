@@ -114,11 +114,6 @@ class RequestValidate2FAHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         token = handler.data["token"]
         username = handler.username
-        ip = get_client_ip(handler.stream.connection._ws)
-
-        decision = LoginGuard.evaluate(ip, username, AuthFactor.TOTP)
-        if not decision.allowed:
-            return _conclude_throttled(handler, decision, username)
 
         success = False
 
@@ -156,19 +151,12 @@ class RequestValidate2FAHandler(RequestHandler):
                 success = True
 
         if success:
-            LoginGuard.report_success(
-                ip,
-                username,
-                AuthFactor.TOTP,
-                completed_authentication=True,
-            )
             handler.conclude_request(
                 code=200,
                 message="Two-factor authentication enabled successfully",
                 data={"method": "totp"},
             )
         else:
-            LoginGuard.report_failure(ip, username, AuthFactor.TOTP)
             handler.conclude_request(401, {}, "Invalid verification code")
 
         return Result(code=0 if success else 401, target=username)

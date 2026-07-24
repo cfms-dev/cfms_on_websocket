@@ -110,35 +110,77 @@ def _throttled_decision():
     return ThrottleDecision(False, ThrottleScope.ACCOUNT, retry_after_seconds=45)
 
 
-def test_totp_validation_uses_authentication_throttle(monkeypatch, tmp_path):
+def test_totp_setup_validation_does_not_use_authentication_throttle(
+    monkeypatch, tmp_path
+):
     _prepare_config(monkeypatch, tmp_path)
 
     from include.domains.security.handlers import two_factor
     from include.domains.security.handlers.two_factor import RequestValidate2FAHandler
 
+    class FakeUser:
+        totp_secret = "secret"
+        totp_enabled = False
+        valid_token = False
+
+        def verify_totp(self, _token):
+            return self.valid_token
+
+        def enable_totp(self):
+            self.totp_enabled = True
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _model, _username):
+            return user
+
+    def unexpected_throttle_call(*_args, **_kwargs):
+        raise AssertionError(
+            "2FA setup validation must not use authentication throttle"
+        )
+
+    user = FakeUser()
     responses = []
     handler = SimpleNamespace(
         username="alice",
         data={"token": "000000"},
-        stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
         conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
     )
-    monkeypatch.setattr(two_factor, "get_client_ip", lambda _websocket: "127.0.0.1")
+    monkeypatch.setattr(two_factor, "Session", FakeSession)
+    monkeypatch.setattr(two_factor, "get_client_ip", unexpected_throttle_call)
+    monkeypatch.setattr(two_factor.LoginGuard, "evaluate", unexpected_throttle_call)
     monkeypatch.setattr(
-        two_factor.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
+        two_factor.LoginGuard, "report_failure", unexpected_throttle_call
+    )
+    monkeypatch.setattr(
+        two_factor.LoginGuard, "report_success", unexpected_throttle_call
     )
 
     result = RequestValidate2FAHandler().handle(handler)
 
-    assert result.code == 429
+    assert result.code == 401
+    assert responses == [((401, {}, "Invalid verification code"), {})]
+
+    user.valid_token = True
+    user.totp_enabled = False
+    responses.clear()
+
+    result = RequestValidate2FAHandler().handle(handler)
+
+    assert result.code == 0
     assert responses == [
         (
-            (
-                429,
-                {"retry_after_seconds": 45},
-                "Too many authentication attempts. Please try again later.",
-            ),
-            {},
+            (),
+            {
+                "code": 200,
+                "message": "Two-factor authentication enabled successfully",
+                "data": {"method": "totp"},
+            },
         )
     ]
 

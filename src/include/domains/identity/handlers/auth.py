@@ -80,7 +80,10 @@ class RequestLoginHandler(RequestHandler):
                         {"method": "totp"},
                     )
 
+                # For different authentication factors, we evaluate the access
+                # separately to ensure that each factor is throttled independently.
                 totp_access = LoginGuard.evaluate(ip, username, AuthFactor.TOTP)
+
                 if not totp_access.allowed:
                     return throttled(totp_access)
                 if not user.verify_totp(totp_token):
