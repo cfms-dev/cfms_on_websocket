@@ -1,5 +1,4 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
 from pathlib import Path
 from shutil import copyfile
 from types import SimpleNamespace
@@ -61,7 +60,7 @@ def guard_context(monkeypatch, tmp_path):
         classmethod(lambda _cls: policy),
     )
     ProviderManager().register(MemoryCachingProvider())
-    monkeypatch.setattr(login.LoginGuard, "_banned_networks", [])
+    monkeypatch.setattr(login.LoginGuard, "_banned_rules", [])
     monkeypatch.setattr(login.LoginGuard, "_networks_loaded", True)
     monkeypatch.setattr(login.LoginGuard, "_last_cleanup_monotonic", float("inf"))
 
@@ -69,6 +68,7 @@ def guard_context(monkeypatch, tmp_path):
         login=login,
         policy=policy,
         Session=test_session,
+        BannedSubnet=BannedSubnet,
         AccountThrottle=AccountThrottle,
         LoginThrottle=LoginThrottle,
         TrafficThrottle=TrafficThrottle,
@@ -123,7 +123,7 @@ def test_password_and_totp_account_counters_are_independent(guard_context):
 def test_account_delay_doubles_and_is_capped(guard_context):
     update = guard_context.login.LoginGuard._update_account
     policy = guard_context.policy
-    now = datetime.now()
+    now = 1_700_000_000.0
     record = guard_context.AccountThrottle(
         username="alice",
         factor="password",
@@ -132,17 +132,17 @@ def test_account_delay_doubles_and_is_capped(guard_context):
     )
 
     first_lock = update(record, now, policy)
-    second_time = now + timedelta(seconds=31)
+    second_time = now + 31
     second_lock = update(record, second_time, policy)
-    third_time = second_time + timedelta(seconds=61)
+    third_time = second_time + 61
     third_lock = update(record, third_time, policy)
-    capped_time = third_time + timedelta(seconds=121)
+    capped_time = third_time + 121
     capped_lock = update(record, capped_time, policy)
 
-    assert first_lock == now + timedelta(seconds=30)
-    assert second_lock == second_time + timedelta(seconds=60)
-    assert third_lock == third_time + timedelta(seconds=120)
-    assert capped_lock == capped_time + timedelta(seconds=120)
+    assert first_lock == now + 30
+    assert second_lock == second_time + 60
+    assert third_lock == third_time + 120
+    assert capped_lock == capped_time + 120
 
 
 def test_concurrent_failures_do_not_lose_increments(guard_context):
@@ -172,7 +172,7 @@ def test_concurrent_failures_do_not_lose_increments(guard_context):
 
 
 def test_cleanup_removes_only_stale_unlocked_records(guard_context):
-    old = datetime.now() - timedelta(days=2)
+    old = guard_context.login.time.time() - 2 * 86400
     with guard_context.Session.begin() as session:
         session.add(
             guard_context.AccountThrottle(
@@ -188,3 +188,48 @@ def test_cleanup_removes_only_stale_unlocked_records(guard_context):
 
     with guard_context.Session() as session:
         assert session.get(guard_context.AccountThrottle, ("stale", "password")) is None
+
+
+def test_scheduled_and_expired_subnet_rules(guard_context, monkeypatch):
+    guard = guard_context.login.LoginGuard
+    now = 1_700_000_000.0
+    with guard_context.Session.begin() as session:
+        session.add_all(
+            [
+                guard_context.BannedSubnet(
+                    subnet="192.0.2.0/24",
+                    created_at=now,
+                    starts_at=now + 10,
+                ),
+                guard_context.BannedSubnet(
+                    subnet="2001:db8::/32",
+                    created_at=now,
+                    starts_at=now - 20,
+                    expires_at=now + 10,
+                ),
+            ]
+        )
+    guard.reload_networks()
+    monkeypatch.setattr(guard_context.login.time, "time", lambda: now)
+
+    assert guard.evaluate_subnet_access("192.0.2.10").allowed is True
+    assert guard.evaluate_subnet_access("2001:db8::10").allowed is False
+
+    monkeypatch.setattr(guard_context.login.time, "time", lambda: now + 10)
+    assert guard.evaluate_subnet_access("192.0.2.10").allowed is False
+    assert guard.evaluate_subnet_access("2001:db8::10").allowed is True
+
+
+def test_permanent_access_compatibility_method_was_removed(guard_context):
+    assert not hasattr(guard_context.login.LoginGuard, "evaluate_permanent_access")
+
+
+def test_lockout_invalidation_event_clears_local_cache(guard_context):
+    guard = guard_context.login.LoginGuard
+    key = guard_context.TrafficThrottle.make_cache_key("192.0.2.25")
+    cache = guard_context.login.ProviderManager().caching
+    cache.set(guard._cache_key(key), 1_800_000_000.0, ttl=600)
+
+    guard.handle_event('{"type":"invalidate_lockouts","keys":[["ip","192.0.2.25"]]}')
+
+    assert cache.get(guard._cache_key(key)) is None

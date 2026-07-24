@@ -1365,6 +1365,72 @@ class CFMSTestClient:
     # ------------------------------------------------------------------------
     # System and Management Functions
     # ------------------------------------------------------------------------
+    async def list_banned_subnets(
+        self,
+        page_size: int | None = None,
+        cursor: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
+        if status is not None:
+            data["status"] = status
+        return await self.send_request("list_banned_subnets", data)
+
+    async def create_banned_subnet(
+        self,
+        subnet: str,
+        reason: str | None = None,
+        starts_at: float | None = None,
+        expires_at: float | None = None,
+        confirm_self_block: bool = False,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"subnet": subnet}
+        if reason is not None:
+            data["reason"] = reason
+        if starts_at is not None:
+            data["starts_at"] = starts_at
+        if expires_at is not None:
+            data["expires_at"] = expires_at
+        if confirm_self_block:
+            data["confirm_self_block"] = True
+        return await self.send_request("create_banned_subnet", data)
+
+    async def update_banned_subnet(
+        self,
+        subnet: str,
+        **changes: Any,
+    ) -> dict[str, Any]:
+        return await self.send_request(
+            "update_banned_subnet", {"subnet": subnet, **changes}
+        )
+
+    async def delete_banned_subnet(self, subnet: str) -> dict[str, Any]:
+        return await self.send_request("delete_banned_subnet", {"subnet": subnet})
+
+    async def list_auth_lockouts(
+        self,
+        page_size: int | None = None,
+        cursor: str | None = None,
+        **filters: str,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = dict(filters)
+        if page_size is not None:
+            data["page_size"] = page_size
+        if cursor is not None:
+            data["cursor"] = cursor
+        return await self.send_request("list_auth_lockouts", data)
+
+    async def unlock_auth_lockouts(
+        self, locks: list[dict[str, str]], reason: str
+    ) -> dict[str, Any]:
+        return await self.send_request(
+            "unlock_auth_lockouts", {"locks": locks, "reason": reason}
+        )
+
     async def set_lockdown(
         self, status: bool, reason: str | None = None
     ) -> dict[str, Any]:

@@ -78,6 +78,7 @@ def backup_context(monkeypatch, tmp_path):
         import_backup,
         read_backup_header,
     )
+    from maintenance.backup import core as backup_core
 
     return SimpleNamespace(
         Base=Base,
@@ -91,8 +92,26 @@ def backup_context(monkeypatch, tmp_path):
         export_backup=export_backup,
         import_backup=import_backup,
         read_backup_header=read_backup_header,
+        backup_core=backup_core,
         source_config=source_config,
     )
+
+
+def test_legacy_banned_subnet_times_are_upgraded(backup_context):
+    table = backup_context.Base.metadata.tables["banned_subnets"]
+    decoded = backup_context.backup_core._decode_row(
+        {
+            "subnet": "192.0.2.0/24",
+            "reason": "legacy",
+            "created_at": "2024-01-02T03:04:05",
+        },
+        table,
+    )
+
+    expected = dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.UTC).timestamp()
+    assert decoded["created_at"] == expected
+    assert decoded["starts_at"] == expected
+    assert decoded["expires_at"] is None
 
 
 def _write_config(path: Path, *, secret_key: str, pepper: str) -> dict:
@@ -224,7 +243,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
 
     tables = base.metadata.tables
     now = 1_700_000_000.0
-    created_at = dt.datetime(2024, 1, 2, 3, 4, 5)
+    created_at = now
 
     with db_engine.begin() as connection:
         connection.execute(
@@ -485,6 +504,8 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "subnet": "192.0.2.0/24",
                 "reason": "manual",
                 "created_at": created_at,
+                "starts_at": created_at,
+                "expires_at": None,
             },
         )
         connection.execute(
@@ -505,6 +526,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "username": "alice",
                 "ip_address": "198.51.100.10",
                 "failed_attempts": 3,
+                "window_started_at": created_at,
                 "last_attempt": created_at,
                 "locked_until": created_at,
             },
@@ -514,6 +536,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             {
                 "ip_address": "198.51.100.11",
                 "failed_attempts": 4,
+                "window_started_at": created_at,
                 "last_attempt": created_at,
                 "locked_until": created_at,
             },
