@@ -36,8 +36,9 @@ jobs:
       run: |
         uv sync --dev --all-extras
     
-    - name: Create necessary directories
+    - name: Prepare test environment
       run: |
+        cp src/config.toml.sample config.toml
         mkdir -p src/content/ssl
         mkdir -p src/content/logs
     
