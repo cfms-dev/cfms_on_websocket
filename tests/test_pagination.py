@@ -1,19 +1,23 @@
 import base64
 import importlib
 import sys
+from pathlib import Path
 
 import pytest
 from cryptography import fernet as fernet_module
+from tomlkit import dumps, parse
+
+_CONFIG_SAMPLE = Path(__file__).resolve().parents[1] / "src" / "config.toml.sample"
 
 
 def _load_pagination(monkeypatch, tmp_path):
     module_names = ("include.domains.pagination", "include.config.settings")
     previous_modules = {name: sys.modules.get(name) for name in module_names}
+    config = parse(_CONFIG_SAMPLE.read_text(encoding="utf-8"))
+    config["server"]["secret_key"] = "pagination-test-secret"
+    config["security"]["pepper"] = "pagination-test-pepper"
     (tmp_path / "config.toml").write_text(
-        """
-[server]
-secret_key = "pagination-test-secret"
-""".strip(),
+        dumps(config),
         encoding="utf-8",
     )
     (tmp_path / "init").write_text("", encoding="utf-8")
