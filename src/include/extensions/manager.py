@@ -15,6 +15,7 @@ import importlib.util
 import re
 import sys
 import tomllib
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -203,10 +204,11 @@ def discover_extensions(extension_dir: str | Path) -> dict[str, DiscoveredExtens
 
 
 # ext = extension
-class ServerHookSpecs:
+class ServerHookSpecs(ABC):
     """Hook specifications for server extensions."""
 
     @hookspec
+    @abstractmethod
     def ext_register_handlers(self) -> dict[str, type["RequestHandler"]]:
         """Register handlers for specific actions.
 
@@ -215,6 +217,7 @@ class ServerHookSpecs:
         """
 
     @hookspec
+    @abstractmethod
     def ext_unregister_handlers(self) -> set[str]:
         """Unregister handlers for specific actions.
 
@@ -223,6 +226,7 @@ class ServerHookSpecs:
         """
 
     @hookspec
+    @abstractmethod
     def ext_register_whitelisted_actions(self) -> set[str]:
         """
         Register actions that should be whitelisted (allowed even
@@ -232,6 +236,7 @@ class ServerHookSpecs:
         """
 
     @hookspec
+    @abstractmethod
     def ext_register_extension_flags(self) -> set[str]:
         """
         Register extension capability flags advertised by server_info.
@@ -240,20 +245,25 @@ class ServerHookSpecs:
         """
 
     @hookspec
-    def ext_on_connect(self, websocket: websockets.sync.server.ServerConnection):
+    @abstractmethod
+    def ext_on_connect(
+        self, websocket: websockets.sync.server.ServerConnection
+    ) -> None:
         """
         Triggered when a new client connects, providing the websocket
         connection object.
         """
 
     @hookspec
-    def ext_post_disconnect(self):
+    @abstractmethod
+    def ext_post_disconnect(self) -> None:
         """
         Triggered after a client disconnects, regardless of
         the reason.
         """
 
     @hookspec(firstresult=True)
+    @abstractmethod
     def ext_pre_request(
         self,
         request_handler: "RequestHandler",
@@ -267,16 +277,19 @@ class ServerHookSpecs:
         """
 
     @hookspec
+    @abstractmethod
     def ext_post_request(
         self,
         action: str,
         handler: "ConnectionHandler",
         callback: "Result | None",
         time_cost: float,
-    ) -> None: ...
+    ) -> None:
+        """Triggered after a request has been processed."""
 
     @hookspec
-    def ext_on_file_uploaded(self, id: str, path: str, sha256: str):
+    @abstractmethod
+    def ext_on_file_uploaded(self, id: str, path: str, sha256: str) -> None:
         """
         Triggered when a file is uploaded to the server, providing the
         file's id, path, and sha256 hash.
@@ -286,7 +299,8 @@ class ServerHookSpecs:
         """
 
     @hookspec
-    def ext_on_empty_file_uploaded(self, id: str, path: str):
+    @abstractmethod
+    def ext_on_empty_file_uploaded(self, id: str, path: str) -> None:
         """
         Triggered when an empty file is uploaded to the server,
         providing the filename. This can be used to clean up
