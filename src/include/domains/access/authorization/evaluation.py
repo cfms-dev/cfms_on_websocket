@@ -1,5 +1,8 @@
+import time
+from dataclasses import dataclass
 from enum import IntEnum
 
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import object_session
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
@@ -11,6 +14,11 @@ from include.domains.access.authorization.compiled_rules import (
     TargetType,
     compiled_rules_allow,
     compiled_rules_allow_from_map,
+    fetch_compiled_access_rules_for_targets,
+)
+from include.domains.access.authorization.grants import prefetch_user_blocks
+from include.domains.access.authorization.searchable_tree import (
+    load_user_folder_access_context,
 )
 
 
@@ -18,6 +26,69 @@ class SingleNodeCheckResult(IntEnum):
     ALLOWED_OAE = 2
     ALLOWED = 1
     DENIED = 0
+
+
+@dataclass(slots=True)
+class FolderAccessEvaluationContext:
+    user: User
+    access_type: str
+    folders: list[Folder]
+    oae_by_target: dict
+    compiled_rules_by_target: CompiledRuleMap
+    folder_map: dict[str, Folder]
+    is_globally_blocked: bool
+    blocked_ids: set[str]
+
+    def allows(self, folder: Folder) -> bool:
+        return check_access_for_object(
+            folder,
+            self.user,
+            self.access_type,
+            all_folders=self.folders,
+            oae_by_target=self.oae_by_target,
+            compiled_rules_by_target=self.compiled_rules_by_target,
+            folder_map=self.folder_map,
+            is_globally_blocked=self.is_globally_blocked,
+            blocked_ids=self.blocked_ids,
+        )
+
+
+def load_folder_access_evaluation_context(
+    session: Session,
+    folders: list[Folder],
+    user: User,
+    access_type: str,
+    *,
+    preload_all_rule_types: bool = False,
+) -> FolderAccessEvaluationContext:
+    now = time.time()
+    ancestors, oae_by_target = load_user_folder_access_context(
+        session,
+        folders,
+        user,
+        access_type,
+        now,
+    )
+    all_folders = [*folders, *ancestors]
+    folder_map = {folder.id: folder for folder in all_folders}
+    compiled_rules_by_target = fetch_compiled_access_rules_for_targets(
+        session,
+        (("directory", folder.id) for folder in all_folders),
+        access_type=None if preload_all_rule_types else access_type,
+    )
+    is_globally_blocked, blocked_ids = prefetch_user_blocks(
+        session, user, access_type, now
+    )
+    return FolderAccessEvaluationContext(
+        user=user,
+        access_type=access_type,
+        folders=all_folders,
+        oae_by_target=oae_by_target,
+        compiled_rules_by_target=compiled_rules_by_target,
+        folder_map=folder_map,
+        is_globally_blocked=is_globally_blocked,
+        blocked_ids=blocked_ids,
+    )
 
 
 def check_access_for_object(
@@ -29,6 +100,8 @@ def check_access_for_object(
     recursive: bool = True,
     compiled_rules_by_target: CompiledRuleMap | None = None,
     folder_map: dict[str, Folder] | None = None,
+    is_globally_blocked: bool = False,
+    blocked_ids: set[str] | None = None,
 ) -> bool:
 
     if access_type not in AVAILABLE_ACCESS_TYPES:
@@ -40,6 +113,10 @@ def check_access_for_object(
 
     if folder_map is None:
         folder_map = {f.id: f for f in all_folders}
+    if blocked_ids is None:
+        blocked_ids = set()
+    if is_globally_blocked:
+        return False
 
     def _check_single_node(node: Document | Folder) -> SingleNodeCheckResult:
         """
@@ -70,6 +147,9 @@ def check_access_for_object(
             "documents": "document",
         }
         target_type = _TARGET_TYPE_MAPPING[node.__tablename__]
+
+        if node.id in blocked_ids:
+            return SingleNodeCheckResult.DENIED
 
         # check OAE first (highest priority)
         entries: list[ObjectAccessEntry] = oae_by_target.get(node.id, [])

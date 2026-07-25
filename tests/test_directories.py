@@ -2,9 +2,12 @@
 Tests for directory management operations.
 """
 
+import time
+
 import pytest
 
 from tests.test_client import CFMSTestClient
+from tests.utils import assert_success
 
 
 class TestDirectoryOperations:
@@ -17,6 +20,137 @@ class TestDirectoryOperations:
 
         assert response["code"] == 200
         assert "data" in response
+        assert response["data"]["parent_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_parent_id_hidden_without_parent_read_access(
+        self,
+        authenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        parent = assert_success(
+            await authenticated_client.create_directory("Hidden Parent")
+        )
+        parent_id = parent["id"]
+        child = assert_success(
+            await authenticated_client.create_directory(
+                "Directly Granted Child", parent_id=parent_id
+            )
+        )
+        child_id = child["id"]
+        restricted_rule = {
+            "read": [
+                {
+                    "match": "all",
+                    "match_groups": [
+                        {
+                            "rights": {
+                                "match": "all",
+                                "require": ["super_list_directory"],
+                            }
+                        }
+                    ],
+                }
+            ]
+        }
+
+        user = await user_factory()
+        user_client = CFMSTestClient()
+        try:
+            assert_success(
+                await authenticated_client.send_request(
+                    "set_directory_rules",
+                    {
+                        "directory_id": parent_id,
+                        "access_rules": restricted_rule,
+                        "inherit_parent": False,
+                    },
+                )
+            )
+            assert_success(
+                await authenticated_client.grant_access(
+                    entity_type="user",
+                    entity_identifier=user["username"],
+                    target_type="directory",
+                    target_identifier=child_id,
+                    access_types=["read"],
+                    start_time=time.time(),
+                )
+            )
+
+            await user_client.connect()
+            assert_success(await user_client.login(user["username"], user["password"]))
+
+            listing = assert_success(await user_client.list_directory(child_id))
+            info = assert_success(
+                await user_client.send_request(
+                    "get_directory_info", {"directory_id": child_id}
+                )
+            )
+            assert listing["parent_id"] is None
+            assert info["parent_id"] is None
+        finally:
+            await user_client.disconnect()
+            await authenticated_client.delete_directory(child_id)
+            await authenticated_client.delete_directory(parent_id)
+
+    @pytest.mark.asyncio
+    async def test_super_list_directory_keeps_parent_id_visible(
+        self,
+        authenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        parent = assert_success(
+            await authenticated_client.create_directory("Super Visible Parent")
+        )
+        parent_id = parent["id"]
+        child = assert_success(
+            await authenticated_client.create_directory(
+                "Super Visible Child", parent_id=parent_id
+            )
+        )
+        child_id = child["id"]
+        user = await user_factory()
+        user_client = CFMSTestClient()
+        try:
+            assert_success(
+                await authenticated_client.send_request(
+                    "set_directory_rules",
+                    {
+                        "directory_id": parent_id,
+                        "access_rules": {
+                            "read": [
+                                {
+                                    "match": "all",
+                                    "match_groups": [
+                                        {
+                                            "groups": {
+                                                "match": "all",
+                                                "require": ["sysop"],
+                                            }
+                                        }
+                                    ],
+                                }
+                            ]
+                        },
+                        "inherit_parent": False,
+                    },
+                )
+            )
+            assert_success(
+                await authenticated_client.change_user_permissions(
+                    user["username"], ["super_list_directory"]
+                )
+            )
+            await user_client.connect()
+            assert_success(await user_client.login(user["username"], user["password"]))
+
+            listing = assert_success(await user_client.list_directory(child_id))
+            assert listing["parent_id"] == parent_id
+        finally:
+            await user_client.disconnect()
+            await authenticated_client.delete_directory(child_id)
+            await authenticated_client.delete_directory(parent_id)
 
     @pytest.mark.asyncio
     async def test_create_directory(self, authenticated_client: CFMSTestClient):

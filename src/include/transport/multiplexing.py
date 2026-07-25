@@ -125,7 +125,7 @@ def decode_frame(raw_payload: Data) -> Frame:
 class Stream:
     """Represent an independent communication stream, like a virtual connection."""
 
-    def __init__(self, connection: "MultiplexedConnection", frame_id: int) -> None:
+    def __init__(self, connection: MultiplexedConnection, frame_id: int) -> None:
         self.connection = connection
         self.frame_id = frame_id
         self._queue: queue.Queue[Frame | None] = queue.Queue(100)

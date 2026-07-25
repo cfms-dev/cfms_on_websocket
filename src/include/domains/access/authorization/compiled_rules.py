@@ -220,7 +220,12 @@ def get_compiled_access_rules(
 def fetch_compiled_access_rules_for_targets(
     session: OrmSession,
     targets: Iterable[tuple[TargetType, str]],
+    *,
+    access_type: str | None = None,
 ) -> CompiledRuleMap:
+    relevant_access_types = (
+        None if access_type is None else _access_rule_types_for(access_type)
+    )
     target_ids_by_type: dict[TargetType, set[str]] = defaultdict(set)
     for target_type, target_id in targets:
         if target_type not in ("document", "directory"):
@@ -231,7 +236,7 @@ def fetch_compiled_access_rules_for_targets(
     rules_by_target: CompiledRuleMap = {}
     for target_type, target_ids in target_ids_by_type.items():
         for chunk in batched(target_ids, QUERY_CHUNK_SIZE):
-            rules = (
+            query = (
                 session.query(CompiledAccessRule)
                 .options(
                     selectinload(CompiledAccessRule.rule_set),
@@ -254,9 +259,12 @@ def fetch_compiled_access_rules_for_targets(
                     ),
                     Node.id.in_(list(chunk)),
                 )
-                .order_by(CompiledAccessRule.id.asc())
-                .all()
             )
+            if relevant_access_types is not None:
+                query = query.filter(
+                    CompiledAccessRule.access_type.in_(relevant_access_types)
+                )
+            rules = query.order_by(CompiledAccessRule.id.asc()).all()
             for rule in rules:
                 rules_by_target.setdefault(
                     (target_type, rule.rule_set.node_id), []
@@ -292,16 +300,33 @@ def get_access_rules_list(
     target_type: TargetType,
     target_id: str,
 ) -> list[dict[str, Any]]:
+    return _serialize_access_rules_list(
+        get_compiled_access_rules(session, target_type=target_type, target_id=target_id)
+    )
+
+
+def _serialize_access_rules_list(
+    rules: Iterable[CompiledAccessRule],
+) -> list[dict[str, Any]]:
     return [
         {
             "rule_id": rule.id,
             "rule_data": serialize_compiled_access_rule(rule),
             "access_type": rule.access_type,
         }
-        for rule in get_compiled_access_rules(
-            session, target_type=target_type, target_id=target_id
-        )
+        for rule in rules
     ]
+
+
+def get_access_rules_list_from_map(
+    rules_by_target: CompiledRuleMap,
+    *,
+    target_type: TargetType,
+    target_id: str,
+) -> list[dict[str, Any]]:
+    return _serialize_access_rules_list(
+        rules_by_target.get((target_type, target_id), [])
+    )
 
 
 def _compiled_group_matches_user(

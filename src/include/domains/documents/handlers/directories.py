@@ -17,7 +17,11 @@ from include.domains.access.authorization.access_rules import apply_access_rules
 from include.domains.access.authorization.compiled_rules import (
     delete_compiled_access_rules_for_targets,
     get_access_rules_dict,
-    get_access_rules_list,
+    get_access_rules_list_from_map,
+)
+from include.domains.access.authorization.evaluation import (
+    FolderAccessEvaluationContext,
+    load_folder_access_evaluation_context,
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
@@ -52,6 +56,41 @@ def _mark_nodes_deleted(session, node_ids, operation_id: str) -> None:
             },
             synchronize_session=False,
         )
+
+
+def _evaluate_directory_read_access(
+    session,
+    user: User,
+    directory: Folder,
+    *,
+    super_bypasses_target: bool,
+    preload_all_rule_types: bool = False,
+) -> tuple[bool, str | None, FolderAccessEvaluationContext | None]:
+    has_super_access = Permissions.SUPER_LIST_DIRECTORY in user.all_permissions
+    if has_super_access and super_bypasses_target:
+        return True, directory.parent_id, None
+
+    context = load_folder_access_evaluation_context(
+        session,
+        [directory],
+        user,
+        "read",
+        preload_all_rule_types=preload_all_rule_types,
+    )
+    if not context.allows(directory):
+        return False, None, context
+
+    parent = (
+        None
+        if directory.parent_id is None
+        else context.folder_map.get(directory.parent_id)
+    )
+    visible_parent_id = (
+        directory.parent_id
+        if parent is not None and (has_super_access or context.allows(parent))
+        else None
+    )
+    return True, visible_parent_id, context
 
 
 class RequestListDirectoryHandler(RequestHandler):
@@ -101,9 +140,11 @@ class RequestListDirectoryHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, username=handler.username)
 
-            has_permission = (
-                Permissions.SUPER_LIST_DIRECTORY in this_user.all_permissions
-                or folder.check_access_requirements(this_user, "read")
+            has_permission, parent_id, _ = _evaluate_directory_read_access(
+                session,
+                this_user,
+                folder,
+                super_bypasses_target=True,
             )
 
             if not has_permission:
@@ -125,7 +166,6 @@ class RequestListDirectoryHandler(RequestHandler):
                 handler.conclude_request(400, {}, str(exc))
                 return Result(code=400, target=folder_id, username=handler.username)
 
-            parent_id = folder.parent_id
             items = fetch_directory_listing_items(
                 session,
                 folder_id,
@@ -196,15 +236,26 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=directory_id, username=handler.username)
 
-            if not directory.check_access_requirements(user, access_type="read"):
+            can_view_access_rules = (
+                Permissions.VIEW_ACCESS_RULES in user.all_permissions
+            )
+            has_permission, parent_id, access_context = _evaluate_directory_read_access(
+                session,
+                user,
+                directory,
+                super_bypasses_target=False,
+                preload_all_rule_types=can_view_access_rules,
+            )
+            if not has_permission:
                 handler.conclude_access_denial()
                 return Result(code=403, target=directory_id, username=handler.username)
 
             info_code = 0
             access_rules = []
-            if Permissions.VIEW_ACCESS_RULES in user.all_permissions:
-                access_rules = get_access_rules_list(
-                    session,
+            if can_view_access_rules:
+                assert access_context is not None
+                access_rules = get_access_rules_list_from_map(
+                    access_context.compiled_rules_by_target,
                     target_type="directory",
                     target_id=directory.id,
                 )
@@ -216,7 +267,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
                 "count_of_child": count_active_directory_children(
                     session, directory.id
                 ),
-                "parent_id": directory.parent_id,
+                "parent_id": parent_id,
                 "name": directory.name,
                 "created_time": directory.created_time,
                 "access_rules": access_rules,
