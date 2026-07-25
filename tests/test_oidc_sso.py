@@ -62,9 +62,8 @@ class DummyHandler:
         return "log-id"
 
 
-def _enabled_config(**overrides):
+def _oidc_config(**overrides):
     config = {
-        "enabled": True,
         "issuer": "https://issuer.example",
         "client_id": "cfms-client",
         "client_secret": "secret",
@@ -110,9 +109,7 @@ def _install_memory_cache(monkeypatch, oidc):
     return cache
 
 
-def test_oidc_extension_registers_handlers_whitelist_and_enabled_flag(
-    monkeypatch, oidc
-):
+def test_oidc_extension_registers_handlers_whitelist_and_flag(oidc):
     handlers = oidc.ext_register_handlers()
 
     assert handlers["sso_oidc_start"] is oidc.RequestOIDCStartHandler
@@ -122,17 +119,11 @@ def test_oidc_extension_registers_handlers_whitelist_and_enabled_flag(
         "sso_oidc_callback",
     }
 
-    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
     assert oidc.ext_register_extension_flags() == {"oidc_sso"}
-
-    monkeypatch.setattr(
-        oidc, "global_config", DummyConfig(_enabled_config(enabled=False))
-    )
-    assert oidc.ext_register_extension_flags() == set()
 
 
 def test_oidc_start_creates_authorization_url_and_state(monkeypatch, oidc):
-    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_oidc_config()))
     monkeypatch.setattr(oidc, "_fetch_discovery_document", lambda issuer: _metadata())
     cache = _install_memory_cache(monkeypatch, oidc)
 
@@ -168,7 +159,7 @@ def test_oidc_start_creates_authorization_url_and_state(monkeypatch, oidc):
 
 
 def test_oidc_start_rejects_redirect_uri_override(monkeypatch, oidc):
-    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_oidc_config()))
     handler = DummyHandler({"redirect_uri": "https://attacker.example/callback"})
 
     result = oidc.RequestOIDCStartHandler().handle(handler)
@@ -184,7 +175,7 @@ def test_oidc_start_rejects_redirect_uri_override(monkeypatch, oidc):
 def test_oidc_callback_success_uses_existing_login_response(monkeypatch, oidc):
     user = SimpleNamespace(username="alice", last_login=None)
     session_events = []
-    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_oidc_config()))
     monkeypatch.setattr(oidc.time, "time", lambda: 123.0)
     monkeypatch.setattr(oidc, "_pop_state", lambda state: {"nonce": "nonce"})
     monkeypatch.setattr(oidc, "_get_provider_metadata", lambda cfg: _metadata())
@@ -237,7 +228,7 @@ def test_oidc_callback_success_uses_existing_login_response(monkeypatch, oidc):
 
 
 def test_oidc_callback_rejects_expired_state(monkeypatch, oidc):
-    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_oidc_config()))
     monkeypatch.setattr(oidc, "_pop_state", lambda state: None)
 
     handler = DummyHandler({"state": "expired", "code": "code"})
@@ -248,7 +239,7 @@ def test_oidc_callback_rejects_expired_state(monkeypatch, oidc):
 
 
 def test_oidc_callback_rejects_unknown_user(monkeypatch, oidc):
-    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_oidc_config()))
     monkeypatch.setattr(oidc, "_pop_state", lambda state: {"nonce": "nonce"})
     monkeypatch.setattr(oidc, "_get_provider_metadata", lambda cfg: _metadata())
     monkeypatch.setattr(
@@ -270,7 +261,7 @@ def test_oidc_callback_rejects_unknown_user(monkeypatch, oidc):
 
 def test_oidc_callback_rejects_disabled_user(monkeypatch, oidc):
     user = SimpleNamespace(username="alice")
-    monkeypatch.setattr(oidc, "global_config", DummyConfig(_enabled_config()))
+    monkeypatch.setattr(oidc, "global_config", DummyConfig(_oidc_config()))
     monkeypatch.setattr(oidc, "_pop_state", lambda state: {"nonce": "nonce"})
     monkeypatch.setattr(oidc, "_get_provider_metadata", lambda cfg: _metadata())
     monkeypatch.setattr(

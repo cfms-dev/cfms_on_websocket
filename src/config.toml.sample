@@ -83,8 +83,6 @@ ip_block_seconds = 900
 record_retention_days = 7
 
 [sso.oidc]
-# Enable OpenID Connect single sign-on.
-enabled = false
 # Issuer URL of the OpenID Provider, without a trailing slash.
 issuer = ""
 # OAuth/OIDC client credentials registered with the provider.

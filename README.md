@@ -47,6 +47,12 @@ the necessary dependencies for cluster functionality and MySQL support:
 uv sync --extra cluster --extra mysql
 ```
 
+## Extensions
+
+Extensions are discovered through versioned `extension.toml` manifests and are
+enabled by identifier in `config.toml`. See the [extension guide](docs/EXTENSIONS.md)
+for the manifest schema, activation rules, and migration instructions.
+
 ## Run
 ```bash
 python main.py # DO NOT use `-O`!

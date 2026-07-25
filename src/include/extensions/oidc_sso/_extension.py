@@ -64,7 +64,6 @@ def _get_oidc_config() -> dict[str, Any]:
     redirect_uri = str(oidc_cfg.get("redirect_uri", ""))
 
     return {
-        "enabled": bool(oidc_cfg.get("enabled", False)),
         "issuer": issuer,
         "client_id": client_id,
         "client_secret": str(oidc_cfg.get("client_secret", "")),
@@ -79,11 +78,8 @@ def _get_oidc_config() -> dict[str, Any]:
     }
 
 
-def _require_enabled_config() -> dict[str, Any]:
+def _get_validated_oidc_config() -> dict[str, Any]:
     cfg = _get_oidc_config()
-    if not cfg["enabled"]:
-        raise OIDCConfigurationError("OIDC SSO is disabled")
-
     missing = [
         name for name in ("issuer", "client_id", "redirect_uri") if not cfg.get(name)
     ]
@@ -350,7 +346,7 @@ class RequestOIDCStartHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler) -> Result | None:
         try:
-            cfg = _require_enabled_config()
+            cfg = _get_validated_oidc_config()
             requested_redirect_uri = handler.data.get("redirect_uri")
             if requested_redirect_uri and requested_redirect_uri != cfg["redirect_uri"]:
                 raise OIDCConfigurationError(
@@ -409,7 +405,7 @@ class RequestOIDCCallbackHandler(RequestHandler):
             return Result(code=400)
 
         try:
-            cfg = _require_enabled_config()
+            cfg = _get_validated_oidc_config()
             state_data = _pop_state(state)
             if state_data is None:
                 handler.conclude_request(401, {}, "Invalid or expired OIDC state")
@@ -469,7 +465,4 @@ def ext_register_whitelisted_actions() -> set[str]:
 
 @hookimpl
 def ext_register_extension_flags() -> set[str]:
-    if not _get_oidc_config()["enabled"]:
-        return set()
-
     return {"oidc_sso"}

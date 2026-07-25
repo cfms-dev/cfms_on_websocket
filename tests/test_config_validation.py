@@ -71,6 +71,14 @@ def test_extensions_enabled_is_required():
         get_enabled_extensions(config)
 
 
+def test_legacy_oidc_enabled_setting_is_rejected():
+    config = _valid_config()
+    config["sso"] = {"oidc": {"enabled": True}}
+
+    with pytest.raises(ConfigValidationError, match="sso.oidc.enabled"):
+        validate_config(config)
+
+
 def test_invalid_proxy_network_is_rejected():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = ["not-a-cidr"]
