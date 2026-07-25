@@ -15,11 +15,41 @@ EXTENSION_MODULE_NAMES = {
 }
 
 
+def _manifest_source(default_identifier: str, **overrides) -> str:
+    values = {
+        "manifest_version": 1,
+        "identifier": default_identifier,
+        "name": "Sample Extension",
+        "version": "1.0.0",
+        "authors": ["Test Author"],
+        "license": "Apache-2.0",
+    }
+    values.update(overrides)
+    lines = []
+    for key, value in values.items():
+        if isinstance(value, str):
+            lines.append(f"{key} = {value!r}")
+        elif isinstance(value, list):
+            rendered = ", ".join(repr(item) for item in value)
+            lines.append(f"{key} = [{rendered}]")
+        else:
+            lines.append(f"{key} = {value}")
+    return "\n".join(lines) + "\n"
+
+
 def _write_extension(root: Path, name: str, source: str = "VALUE = 1\n") -> Path:
     extension_dir = root / name
     extension_dir.mkdir()
     (extension_dir / "_extension.py").write_text(source, encoding="utf-8")
     return extension_dir
+
+
+def _write_manifest(extension_dir: Path, identifier: str, **overrides) -> Path:
+    manifest_path = extension_dir / "extension.toml"
+    manifest_path.write_text(
+        _manifest_source(identifier, **overrides), encoding="utf-8"
+    )
+    return manifest_path
 
 
 def _fresh_plugin_manager() -> pluggy.PluginManager:
@@ -78,6 +108,78 @@ def test_directory_without_entrypoint_is_skipped(monkeypatch, tmp_path):
 
     assert not pm.has_plugin("missing_entry_ext")
     assert "missing_entry_ext" not in sys.modules
+
+
+def test_extension_manifest_is_parsed(tmp_path):
+    extension_dir = _write_extension(tmp_path, "different_folder")
+    manifest_path = _write_manifest(
+        extension_dir,
+        "sample_ext",
+        description="A sample extension",
+        homepage="https://example.test/sample",
+    )
+
+    manifest = extension_manager.parse_extension_manifest(manifest_path)
+
+    assert manifest.identifier == "sample_ext"
+    assert manifest.name == "Sample Extension"
+    assert manifest.authors == ("Test Author",)
+    assert manifest.description == "A sample extension"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"manifest_version": 2}, "unsupported manifest_version"),
+        ({"identifier": "Invalid-Identifier"}, "invalid extension identifier"),
+        ({"authors": []}, "authors"),
+        ({"unknown_field": "value"}, "unknown fields"),
+    ],
+)
+def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, message):
+    manifest_path = tmp_path / "extension.toml"
+    manifest_path.write_text(
+        _manifest_source("sample_ext", **overrides), encoding="utf-8"
+    )
+
+    with pytest.raises(extension_manager.ExtensionManifestError, match=message):
+        extension_manager.parse_extension_manifest(manifest_path)
+
+
+def test_extension_manifest_requires_core_fields(tmp_path):
+    manifest_path = tmp_path / "extension.toml"
+    manifest_path.write_text("manifest_version = 1\n", encoding="utf-8")
+
+    with pytest.raises(
+        extension_manager.ExtensionManifestError, match="missing required fields"
+    ):
+        extension_manager.parse_extension_manifest(manifest_path)
+
+
+@pytest.mark.parametrize("missing", ["manifest", "entrypoint"])
+def test_incomplete_extension_candidate_is_rejected(tmp_path, missing):
+    extension_dir = _write_extension(tmp_path, "sample")
+    _write_manifest(extension_dir, "sample_ext")
+    if missing == "manifest":
+        (extension_dir / "extension.toml").unlink()
+    else:
+        (extension_dir / "_extension.py").unlink()
+
+    with pytest.raises(extension_manager.ExtensionDiscoveryError, match="is missing"):
+        extension_manager.discover_extensions(tmp_path)
+
+
+def test_duplicate_extension_identifiers_are_rejected(tmp_path):
+    first = _write_extension(tmp_path, "first")
+    second = _write_extension(tmp_path, "second")
+    _write_manifest(first, "sample_ext")
+    _write_manifest(second, "sample_ext")
+
+    with pytest.raises(
+        extension_manager.ExtensionDiscoveryError,
+        match="Duplicate extension identifier 'sample_ext'",
+    ):
+        extension_manager.discover_extensions(tmp_path)
 
 
 def test_builtin_extension_loads_quietly_and_is_not_loaded_twice(monkeypatch, tmp_path):

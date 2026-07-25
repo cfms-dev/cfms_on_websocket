@@ -1,13 +1,22 @@
 __all__ = [
+    "DiscoveredExtension",
+    "ExtensionDiscoveryError",
+    "ExtensionManifest",
+    "ExtensionManifestError",
     "collect_extension_flags",
+    "discover_extensions",
     "load_builtin_extension",
     "load_extensions_from_directory",
+    "parse_extension_manifest",
     "pm",
 ]
 
 import importlib.util
 import os
+import re
 import sys
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +32,171 @@ hookspec = pluggy.HookspecMarker("cfms")
 hookimpl = pluggy.HookimplMarker("cfms")
 
 logger = log.bind(name="ext_manager")
+
+MANIFEST_FILENAME = "extension.toml"
+ENTRYPOINT_FILENAME = "_extension.py"
+SUPPORTED_MANIFEST_VERSION = 1
+IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+REQUIRED_MANIFEST_FIELDS = {
+    "manifest_version",
+    "identifier",
+    "name",
+    "version",
+    "authors",
+    "license",
+}
+OPTIONAL_MANIFEST_FIELDS = {"description", "homepage"}
+
+
+class ExtensionManifestError(ValueError):
+    """Raised when an extension manifest is missing or invalid."""
+
+
+class ExtensionDiscoveryError(RuntimeError):
+    """Raised when the extension catalog cannot be discovered safely."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionManifest:
+    manifest_version: int
+    identifier: str
+    name: str
+    version: str
+    authors: tuple[str, ...]
+    license: str
+    description: str | None = None
+    homepage: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredExtension:
+    manifest: ExtensionManifest
+    directory: Path
+    entrypoint: Path
+
+
+def _required_string(data: dict, field: str, manifest_path: Path) -> str:
+    value = data[field]
+    if not isinstance(value, str) or not value.strip():
+        raise ExtensionManifestError(
+            f"{manifest_path}: {field!r} must be a non-empty string"
+        )
+    return value.strip()
+
+
+def _optional_string(data: dict, field: str, manifest_path: Path) -> str | None:
+    if field not in data:
+        return None
+    value = data[field]
+    if not isinstance(value, str) or not value.strip():
+        raise ExtensionManifestError(
+            f"{manifest_path}: {field!r} must be a non-empty string when provided"
+        )
+    return value.strip()
+
+
+def parse_extension_manifest(manifest_path: str | Path) -> ExtensionManifest:
+    """Parse and validate a versioned extension manifest."""
+    path = Path(manifest_path)
+    try:
+        with path.open("rb") as manifest_file:
+            data = tomllib.load(manifest_file)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ExtensionManifestError(f"Failed to read {path}: {exc}") from exc
+
+    fields = set(data)
+    missing = sorted(REQUIRED_MANIFEST_FIELDS - fields)
+    if missing:
+        raise ExtensionManifestError(
+            f"{path}: missing required fields: {', '.join(missing)}"
+        )
+    unknown = sorted(fields - REQUIRED_MANIFEST_FIELDS - OPTIONAL_MANIFEST_FIELDS)
+    if unknown:
+        raise ExtensionManifestError(f"{path}: unknown fields: {', '.join(unknown)}")
+
+    manifest_version = data["manifest_version"]
+    if isinstance(manifest_version, bool) or not isinstance(manifest_version, int):
+        raise ExtensionManifestError(f"{path}: 'manifest_version' must be an integer")
+    if manifest_version != SUPPORTED_MANIFEST_VERSION:
+        raise ExtensionManifestError(
+            f"{path}: unsupported manifest_version {manifest_version}; "
+            f"expected {SUPPORTED_MANIFEST_VERSION}"
+        )
+
+    identifier = _required_string(data, "identifier", path)
+    if IDENTIFIER_PATTERN.fullmatch(identifier) is None:
+        raise ExtensionManifestError(
+            f"{path}: invalid extension identifier {identifier!r}"
+        )
+
+    authors = data["authors"]
+    if not isinstance(authors, list) or not authors:
+        raise ExtensionManifestError(
+            f"{path}: 'authors' must be a non-empty array of strings"
+        )
+    if any(not isinstance(author, str) or not author.strip() for author in authors):
+        raise ExtensionManifestError(
+            f"{path}: 'authors' must be a non-empty array of strings"
+        )
+
+    return ExtensionManifest(
+        manifest_version=manifest_version,
+        identifier=identifier,
+        name=_required_string(data, "name", path),
+        version=_required_string(data, "version", path),
+        authors=tuple(author.strip() for author in authors),
+        license=_required_string(data, "license", path),
+        description=_optional_string(data, "description", path),
+        homepage=_optional_string(data, "homepage", path),
+    )
+
+
+def discover_extensions(extension_dir: str | Path) -> dict[str, DiscoveredExtension]:
+    """Discover and validate all extension candidates in a directory."""
+    root = Path(extension_dir)
+    if not root.is_dir():
+        raise ExtensionDiscoveryError(
+            f"Extension directory {str(root)!r} does not exist or is not a directory"
+        )
+
+    discovered: dict[str, DiscoveredExtension] = {}
+    for extension_path in sorted(root.iterdir(), key=lambda path: path.name):
+        if extension_path.name.startswith(("_", ".")) or not extension_path.is_dir():
+            continue
+
+        manifest_path = extension_path / MANIFEST_FILENAME
+        entrypoint = extension_path / ENTRYPOINT_FILENAME
+        has_manifest = manifest_path.is_file()
+        has_entrypoint = entrypoint.is_file()
+        if not has_manifest and not has_entrypoint:
+            continue
+        if not has_manifest:
+            raise ExtensionDiscoveryError(
+                f"Extension candidate {extension_path} is missing {MANIFEST_FILENAME}"
+            )
+        if not has_entrypoint:
+            raise ExtensionDiscoveryError(
+                f"Extension candidate {extension_path} is missing {ENTRYPOINT_FILENAME}"
+            )
+
+        try:
+            manifest = parse_extension_manifest(manifest_path)
+        except ExtensionManifestError as exc:
+            raise ExtensionDiscoveryError(str(exc)) from exc
+
+        previous = discovered.get(manifest.identifier)
+        if previous is not None:
+            raise ExtensionDiscoveryError(
+                f"Duplicate extension identifier {manifest.identifier!r} in "
+                f"{previous.directory} and {extension_path}"
+            )
+        discovered[manifest.identifier] = DiscoveredExtension(
+            manifest=manifest,
+            directory=extension_path,
+            entrypoint=entrypoint,
+        )
+
+    return discovered
 
 
 # ext = extension
