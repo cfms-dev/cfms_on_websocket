@@ -32,7 +32,7 @@ hookimpl = pluggy.HookimplMarker("cfms")
 
 logger = log.bind(name="ext_manager")
 
-MANIFEST_FILENAME = "extension.toml"
+MANIFEST_FILENAME = "manifest.toml"
 ENTRYPOINT_FILENAME = "_extension.py"
 SUPPORTED_MANIFEST_VERSION = 1
 IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")

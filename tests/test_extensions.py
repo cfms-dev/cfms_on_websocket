@@ -48,7 +48,7 @@ def _write_extension(root: Path, name: str, source: str = "VALUE = 1\n") -> Path
 
 
 def _write_manifest(extension_dir: Path, identifier: str, **overrides) -> Path:
-    manifest_path = extension_dir / "extension.toml"
+    manifest_path = extension_dir / "manifest.toml"
     manifest_path.write_text(
         _manifest_source(identifier, **overrides), encoding="utf-8"
     )
@@ -150,7 +150,7 @@ def test_extension_manifest_is_parsed(tmp_path):
     ],
 )
 def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, message):
-    manifest_path = tmp_path / "extension.toml"
+    manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(
         _manifest_source("sample_ext", **overrides), encoding="utf-8"
     )
@@ -160,7 +160,7 @@ def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, message):
 
 
 def test_extension_manifest_requires_core_fields(tmp_path):
-    manifest_path = tmp_path / "extension.toml"
+    manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text("manifest_version = 1\n", encoding="utf-8")
 
     with pytest.raises(
@@ -174,7 +174,7 @@ def test_incomplete_extension_candidate_is_rejected(tmp_path, missing):
     extension_dir = _write_extension(tmp_path, "sample")
     _write_manifest(extension_dir, "sample_ext")
     if missing == "manifest":
-        (extension_dir / "extension.toml").unlink()
+        (extension_dir / "manifest.toml").unlink()
     else:
         (extension_dir / "_extension.py").unlink()
 

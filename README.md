@@ -49,7 +49,7 @@ uv sync --extra cluster --extra mysql
 
 ## Extensions
 
-Extensions are discovered through versioned `extension.toml` manifests and are
+Extensions are discovered through versioned `manifest.toml` files and are
 enabled by identifier in `config.toml`. See the [extension guide](docs/EXTENSIONS.md)
 for the manifest schema, activation rules, and migration instructions.
 

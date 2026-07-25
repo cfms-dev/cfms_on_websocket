@@ -174,27 +174,11 @@ def _validate_client_certificate_config(config: _ConfigSource) -> None:
         )
 
 
-def _reject_legacy_extension_activation(config: _ConfigSource) -> None:
-    try:
-        sso = config["sso"]
-    except KeyError:
-        return
-    if not isinstance(sso, Mapping):
-        return
-    oidc = sso.get("oidc")
-    if isinstance(oidc, Mapping) and "enabled" in oidc:
-        raise ConfigValidationError(
-            "sso.oidc.enabled is no longer supported; configure the 'oidc_sso' "
-            "identifier in extensions.enabled instead"
-        )
-
-
 def validate_config(config: _ConfigSource) -> None:
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
     _validate_client_certificate_config(config)
-    _reject_legacy_extension_activation(config)
 
 
 def parse_config_document(source: str) -> TOMLDocument:

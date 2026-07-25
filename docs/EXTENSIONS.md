@@ -1,7 +1,7 @@
 # Server Extensions
 
 Each extension lives in its own directory under `src/include/extensions` and must
-contain both an `_extension.py` entrypoint and an `extension.toml` manifest. The
+contain both an `_extension.py` entrypoint and a `manifest.toml` file. The
 manifest lets the server validate and describe extensions without importing their
 Python code.
 
