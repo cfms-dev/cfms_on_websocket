@@ -5,6 +5,15 @@ debug = false
 # Extension identifiers to load, in registration order. Changes require a restart.
 enabled = []
 
+# Automatically enter lockdown after a service-wide burst of failed local
+# password or TOTP authentication attempts.
+[extensions.brute_force_lockdown]
+window_seconds = 600
+failure_threshold = 50
+distinct_account_threshold = 10
+distinct_ip_threshold = 10
+reason = "Automatic security lockdown: suspected credential-guessing attack detected."
+
 [server]
 # Name of the server
 name = "CFMS WebSocket Server"

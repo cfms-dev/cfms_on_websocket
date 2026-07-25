@@ -12,9 +12,11 @@ EXTENSION_MODULE_NAMES = {
     "disabled_ext",
     "first_ext",
     "missing_entry_ext",
+    "plain_validator_ext",
     "root_file_ext",
     "sample_ext",
     "second_ext",
+    "validated_ext",
 }
 
 
@@ -67,6 +69,14 @@ def _fresh_plugin_manager() -> pluggy.PluginManager:
     return pm
 
 
+def _load_extensions(root: Path, enabled: list[str]) -> None:
+    extension_manager.load_extensions_from_directory(
+        root,
+        enabled,
+        config={"extensions": {"enabled": enabled}},
+    )
+
+
 @pytest.fixture(autouse=True)
 def restore_extension_modules():
     saved_modules = {
@@ -92,7 +102,7 @@ def test_root_python_files_are_ignored(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    extension_manager.load_extensions_from_directory(tmp_path, [])
+    _load_extensions(tmp_path, [])
 
     assert not pm.has_plugin("root_file_ext")
     assert "root_file_ext" not in sys.modules
@@ -105,7 +115,7 @@ def test_directory_extension_entrypoint_is_loaded(monkeypatch, tmp_path):
     extension_dir = _write_extension(tmp_path, "different_folder", "VALUE = 42\n")
     _write_manifest(extension_dir, "sample_ext")
 
-    extension_manager.load_extensions_from_directory(tmp_path, ["sample_ext"])
+    _load_extensions(tmp_path, ["sample_ext"])
 
     assert pm.has_plugin("sample_ext")
     assert pm.get_plugin("sample_ext").VALUE == 42
@@ -117,7 +127,7 @@ def test_directory_without_entrypoint_is_skipped(monkeypatch, tmp_path):
     _write_builtin(tmp_path)
     (tmp_path / "missing_entry_ext").mkdir()
 
-    extension_manager.load_extensions_from_directory(tmp_path, [])
+    _load_extensions(tmp_path, [])
 
     assert not pm.has_plugin("missing_entry_ext")
     assert "missing_entry_ext" not in sys.modules
@@ -225,8 +235,8 @@ def test_builtin_extension_loads_quietly_and_is_not_loaded_twice(monkeypatch, tm
         ),
     )
 
-    extension_manager.load_extensions_from_directory(tmp_path, [])
-    extension_manager.load_extensions_from_directory(tmp_path, [])
+    _load_extensions(tmp_path, [])
+    _load_extensions(tmp_path, [])
 
     assert pm.has_plugin("builtin")
     assert counter_path.read_text(encoding="utf-8") == "1"
@@ -242,7 +252,7 @@ def test_disabled_extension_is_not_imported(monkeypatch, tmp_path):
     )
     _write_manifest(extension_dir, "disabled_ext")
 
-    extension_manager.load_extensions_from_directory(tmp_path, [])
+    _load_extensions(tmp_path, [])
 
     assert not pm.has_plugin("disabled_ext")
     assert "disabled_ext" not in sys.modules
@@ -257,9 +267,7 @@ def test_extensions_are_registered_in_configuration_order(monkeypatch, tmp_path)
     _write_manifest(first, "first_ext")
     _write_manifest(second, "second_ext")
 
-    extension_manager.load_extensions_from_directory(
-        tmp_path, ["first_ext", "second_ext"]
-    )
+    _load_extensions(tmp_path, ["first_ext", "second_ext"])
 
     registered = [name for name, _plugin in pm.list_name_plugin()]
     assert registered == ["builtin", "first_ext", "second_ext"]
@@ -274,7 +282,7 @@ def test_missing_configured_extension_is_rejected(monkeypatch, tmp_path):
         extension_manager.ExtensionDiscoveryError,
         match="Configured extensions were not found: missing_ext",
     ):
-        extension_manager.load_extensions_from_directory(tmp_path, ["missing_ext"])
+        _load_extensions(tmp_path, ["missing_ext"])
 
 
 def test_enabled_extension_import_failure_is_fatal(monkeypatch, tmp_path):
@@ -290,10 +298,92 @@ def test_enabled_extension_import_failure_is_fatal(monkeypatch, tmp_path):
         extension_manager.ExtensionLoadError,
         match="Failed to load extension 'sample_ext'",
     ):
-        extension_manager.load_extensions_from_directory(tmp_path, ["sample_ext"])
+        _load_extensions(tmp_path, ["sample_ext"])
 
     assert not pm.has_plugin("sample_ext")
     assert "sample_ext" not in sys.modules
+
+
+def test_extension_batch_rolls_back_when_later_import_fails(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    first = _write_extension(tmp_path, "first_folder")
+    second = _write_extension(
+        tmp_path, "second_folder", "raise RuntimeError('broken second extension')\n"
+    )
+    _write_manifest(first, "first_ext")
+    _write_manifest(second, "second_ext")
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match="Failed to load extension 'second_ext'",
+    ):
+        _load_extensions(tmp_path, ["first_ext", "second_ext"])
+
+    assert not pm.has_plugin("builtin")
+    assert not pm.has_plugin("first_ext")
+    assert not pm.has_plugin("second_ext")
+    assert "builtin" not in sys.modules
+    assert "first_ext" not in sys.modules
+    assert "second_ext" not in sys.modules
+
+
+def test_enabled_extension_config_failure_is_fatal(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    extension_dir = _write_extension(
+        tmp_path,
+        "validated_folder",
+        "\n".join(
+            [
+                "from include.config.validation import ConfigValidationError",
+                "from include.extensions.manager import hookimpl",
+                "@hookimpl",
+                "def ext_validate_config(config):",
+                "    raise ConfigValidationError('invalid extension config')",
+                "",
+            ]
+        ),
+    )
+    _write_manifest(extension_dir, "validated_ext")
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match=(
+            "Failed to validate loaded extension configuration: "
+            "invalid extension config"
+        ),
+    ):
+        _load_extensions(tmp_path, ["validated_ext"])
+
+    assert not pm.has_plugin("builtin")
+    assert not pm.has_plugin("validated_ext")
+    assert "builtin" not in sys.modules
+    assert "validated_ext" not in sys.modules
+
+
+def test_undecorated_config_validator_is_not_called(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    extension_dir = _write_extension(
+        tmp_path,
+        "plain_validator_folder",
+        "\n".join(
+            [
+                "def ext_validate_config(config):",
+                "    raise RuntimeError('must only run as a Pluggy hook')",
+                "",
+            ]
+        ),
+    )
+    _write_manifest(extension_dir, "plain_validator_ext")
+
+    _load_extensions(tmp_path, ["plain_validator_ext"])
+
+    assert pm.has_plugin("plain_validator_ext")
 
 
 def test_collect_extension_flags_returns_sorted_unique_strings(monkeypatch):

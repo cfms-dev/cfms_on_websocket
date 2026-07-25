@@ -180,6 +180,10 @@ def validate_config(config: _ConfigSource) -> None:
     AuthThrottlePolicy.from_config(config)
     _validate_client_certificate_config(config)
 
+    from include.extensions.manager import validate_extension_config
+
+    validate_extension_config(config)
+
 
 def parse_config_document(source: str) -> TOMLDocument:
     try:

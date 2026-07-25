@@ -1,0 +1,8 @@
+manifest_version = 1
+identifier = "brute_force_lockdown"
+name = "Automatic Brute-Force Lockdown"
+version = "1.0.0"
+authors = ["Creeper19472"]
+license = "Apache-2.0"
+description = "Automatically enters lockdown when local authentication failures indicate a service-wide credential-guessing attack."
+homepage = "https://github.com/cfms-dev/cfms_on_websocket"

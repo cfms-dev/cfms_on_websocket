@@ -26,6 +26,7 @@ from include.extensions.manager import pm
 from include.messages import Messages as smsg
 from include.observability.exception_logging import log_exception_with_id
 from include.providers.manager import ProviderManager
+from include.transport.client_address import get_client_ip
 from include.transport.multiplexing import FrameType, Stream
 
 logger = log.bind(name="conn")
@@ -54,7 +55,7 @@ _REQUEST_ENVELOPE_SCHEMA = {
 class ConnectionHandler:
     def __init__(self, stream: Stream) -> None:
         self.stream = stream
-        self.remote_address = self.stream.connection._ws.remote_address[0]
+        self.remote_address = get_client_ip(self.stream.connection._ws)
 
         # Since a thread is created only after a new request has been
         # received, the necessary initial data should be available

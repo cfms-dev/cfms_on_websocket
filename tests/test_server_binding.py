@@ -1,6 +1,7 @@
 import socket
 from types import SimpleNamespace
 
+import orjson
 import pytest
 
 from include.config.validation import parse_trusted_proxy_networks
@@ -123,3 +124,43 @@ def test_ipv4_mapped_forwarded_address_uses_ipv4_trust_rules(monkeypatch):
     )
 
     assert client_address.get_client_ip(websocket) == "198.51.100.9"
+
+
+def test_connection_handler_audits_effective_client_address(monkeypatch):
+    from include.transport.connection import ConnectionHandler
+
+    _set_trusted_proxy_networks(monkeypatch, ["10.0.0.0/8"])
+    websocket = _websocket(
+        "10.0.0.2",
+        {"X-Forwarded-For": "198.51.100.9, 10.0.0.1"},
+    )
+    stream = SimpleNamespace(
+        connection=SimpleNamespace(_ws=websocket),
+        recv=lambda: SimpleNamespace(
+            data=orjson.dumps({"action": "server_info", "data": {}})
+        ),
+    )
+
+    handler = ConnectionHandler(stream)
+
+    assert handler.remote_address == "198.51.100.9"
+
+
+def test_connection_handler_rejects_forwarding_from_untrusted_peer(monkeypatch):
+    from include.transport.connection import ConnectionHandler
+
+    _set_trusted_proxy_networks(monkeypatch, [])
+    websocket = _websocket(
+        "198.51.100.20",
+        {"X-Forwarded-For": "203.0.113.99"},
+    )
+    stream = SimpleNamespace(
+        connection=SimpleNamespace(_ws=websocket),
+        recv=lambda: SimpleNamespace(
+            data=orjson.dumps({"action": "server_info", "data": {}})
+        ),
+    )
+
+    handler = ConnectionHandler(stream)
+
+    assert handler.remote_address == "198.51.100.20"

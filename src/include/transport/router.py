@@ -422,6 +422,8 @@ def handle_request(stream: Stream):
             callback: Result | None = _request_handler.handle(this_handler)
 
             t2 = time.perf_counter()
+            if callback is not None:
+                _log_handler_result(action, callback, this_handler.remote_address)
             pm.hook.ext_post_request(
                 action=action,
                 handler=this_handler,
@@ -441,8 +443,6 @@ def handle_request(stream: Stream):
         if callback is None:
             # Reserved for flows that should not submit audit data via return.
             return
-
-        _log_handler_result(action, callback, this_handler.remote_address)
     else:
         # Handle unknown actions
         this_handler.conclude_request(400, {}, f"Unknown action: {this_handler.action}")

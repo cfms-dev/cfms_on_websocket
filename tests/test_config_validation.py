@@ -39,6 +39,25 @@ def test_valid_configuration_is_accepted():
     validate_config(_valid_config())
 
 
+def test_registered_extension_validates_configuration():
+    from include.extensions.manager import hookimpl, pm
+
+    class RejectingExtension:
+        @hookimpl
+        def ext_validate_config(self, config):
+            assert config is invalid_config
+            raise ConfigValidationError("extension setting is invalid")
+
+    invalid_config = _valid_config()
+    plugin = RejectingExtension()
+    pm.register(plugin, name="test_config_validator")
+    try:
+        with pytest.raises(ConfigValidationError, match="extension setting is invalid"):
+            validate_config(invalid_config)
+    finally:
+        pm.unregister(name="test_config_validator")
+
+
 def test_enabled_extensions_preserve_configuration_order():
     config = _valid_config()
     config["extensions"]["enabled"] = ["first_ext", "second_ext"]

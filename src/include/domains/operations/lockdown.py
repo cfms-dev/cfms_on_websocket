@@ -1,10 +1,17 @@
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import orjson
+from loguru import logger as log
+from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 
+from include.config.constants import GLOBAL_BROADCAST_EVENT_CHANNEL
 from include.providers.base import CachingProvider
 from include.providers.manager import ProviderManager
+
+logger = log.bind(name="lockdown")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +25,13 @@ class LockdownState:
 
     def as_response_data(self) -> dict[str, bool | str | None]:
         return {"status": self.enabled, "reason": self.reason}
+
+
+@dataclass(frozen=True, slots=True)
+class LockdownTransition:
+    state: LockdownState
+    applied: bool
+    cancelled_file_tasks: int = 0
 
 
 class LockdownStateManager:
@@ -58,7 +72,7 @@ class LockdownStateManager:
                 enabled=enabled,
                 reason=reason,
             )
-        except (orjson.JSONDecodeError, KeyError, TypeError, ValueError):
+        except orjson.JSONDecodeError, KeyError, TypeError, ValueError:
             return LockdownState()
 
     def set_state(self, state: LockdownState) -> LockdownState:
@@ -68,6 +82,23 @@ class LockdownStateManager:
             self.cache.delete(self._CACHE_KEY)
         return state
 
+    def enable_if_inactive(
+        self, reason: str | None = None
+    ) -> tuple[LockdownState, bool]:
+        current_state = self.get_state()
+        if current_state.enabled:
+            return current_state, False
+
+        state = LockdownState(enabled=True, reason=reason)
+        applied = self.cache.set(
+            self._CACHE_KEY,
+            orjson.dumps(state.as_response_data()),
+            nx=True,
+        )
+        if applied:
+            return state, True
+        return self.get_state(), False
+
     def enable(self, reason: str | None = None) -> LockdownState:
         return self.set_state(LockdownState(enabled=True, reason=reason))
 
@@ -76,3 +107,69 @@ class LockdownStateManager:
 
 
 lockdown_state_manager = LockdownStateManager()
+
+
+def _publish_lockdown_state(state: LockdownState) -> None:
+    message = orjson.dumps(
+        {
+            "event": "lockdown",
+            "data": state.as_response_data(),
+        }
+    ).decode()
+    try:
+        ProviderManager().event_bus.publish(GLOBAL_BROADCAST_EVENT_CHANNEL, message)
+    except Exception:  # the state transition is already committed.
+        logger.exception("Failed to broadcast lockdown state")
+
+
+def _cancel_pending_file_tasks() -> int:
+    from include.database.models.files import FileTask
+    from include.database.session import Session
+
+    now = time.time()
+    with Session.begin() as session:
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                update(FileTask)
+                .where(FileTask.status == 0, FileTask.end_time >= now)
+                .values(status=2)
+            ),
+        )
+        return result.rowcount or 0
+
+
+def apply_lockdown(
+    status: bool,
+    reason: str | None = None,
+    *,
+    only_if_inactive: bool = False,
+) -> LockdownTransition:
+    """Apply a lockdown transition and its shared operational side effects."""
+    if not status and reason is not None:
+        raise ValueError("A lockdown reason requires lockdown to be enabled")
+    if not status and only_if_inactive:
+        raise ValueError("only_if_inactive is only valid when enabling lockdown")
+
+    cancelled_file_tasks = 0
+    if status:
+        if only_if_inactive:
+            state, applied = lockdown_state_manager.enable_if_inactive(reason)
+        else:
+            state = lockdown_state_manager.enable(reason)
+            applied = True
+
+        if applied:
+            cancelled_file_tasks = _cancel_pending_file_tasks()
+    else:
+        state = lockdown_state_manager.disable()
+        applied = True
+
+    if applied:
+        _publish_lockdown_state(state)
+
+    return LockdownTransition(
+        state=state,
+        applied=applied,
+        cancelled_file_tasks=cancelled_file_tasks,
+    )

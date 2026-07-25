@@ -450,7 +450,9 @@ def main():
     # Register plugins after database initialization
     extension_root = ROOT_ABSPATH / "include" / "extensions"
     load_extensions_from_directory(
-        extension_root, get_enabled_extensions(global_config)
+        extension_root,
+        get_enabled_extensions(global_config),
+        config=global_config,
     )
 
     # Initialize available request handlers

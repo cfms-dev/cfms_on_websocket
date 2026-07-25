@@ -46,6 +46,40 @@ Startup fails when the extension catalog is invalid, an enabled identifier is no
 installed, or an enabled extension cannot be imported. This prevents the server
 from silently running without configured capabilities.
 
+Extensions may implement `ext_validate_config(config)` to validate their own
+configuration. The hook runs when an extension is loaded and whenever the global
+configuration is reloaded. It should raise `ConfigValidationError` for invalid
+values; a failed reload leaves the previous configuration active.
+
+## Automatic brute-force lockdown
+
+Enable the optional `brute_force_lockdown` extension to escalate a service-wide
+burst of failed local password or TOTP checks into the existing lockdown mode:
+
+```toml
+[extensions]
+enabled = ["brute_force_lockdown"]
+
+[extensions.brute_force_lockdown]
+window_seconds = 600
+failure_threshold = 50
+distinct_account_threshold = 10
+distinct_ip_threshold = 10
+reason = "Automatic security lockdown: suspected credential-guessing attack detected."
+```
+
+The extension counts only HTTP-style `401` results from the built-in `login`
+action that target existing accounts. Successful authentication, requests for a
+second factor, throttled requests, unknown usernames, and OIDC actions are not
+counted. Lockdown begins when the failure threshold is reached and either the
+distinct-account or distinct-IP threshold is reached in the same rolling window.
+
+Automatic lockdown never replaces an existing manual lockdown reason and does
+not expire automatically. An administrator must disable it through the existing
+`lockdown` action. Doing so starts a fresh detection window. The public reason is
+generic; aggregate trigger counts and thresholds are recorded under the
+`automatic_lockdown` audit action without account or IP lists.
+
 ## OIDC migration
 
 OIDC activation is now controlled exclusively by the `oidc_sso` identifier. Remove

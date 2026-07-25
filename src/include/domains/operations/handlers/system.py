@@ -1,14 +1,10 @@
-import time
+from sqlalchemy import and_, desc, or_, true
 
-import orjson
-from sqlalchemy import and_, desc, or_, true, update
-
-from include.database.models.files import FileTask
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.operations.lockdown import lockdown_state_manager
+from include.domains.operations.lockdown import apply_lockdown
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
@@ -54,33 +50,16 @@ class RequestLockdownHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=None, username=handler.username)
 
-            if status_to_change:
-                lockdown_state = lockdown_state_manager.enable(reason)
+        transition = apply_lockdown(status_to_change, reason)
 
-                # cancel all pending file tasks to prevent new file
-                # operations during lockdown.
-                now = time.time()
-                stmt = (
-                    update(FileTask)
-                    .where(FileTask.status == 0, FileTask.end_time >= now)
-                    .values(status=2)
-                )
-                session.execute(stmt)
-                session.commit()
-            else:
-                lockdown_state = lockdown_state_manager.disable()
-
-        response_data = lockdown_state.as_response_data()
+        response_data = transition.state.as_response_data()
         handler.conclude_request(200, response_data, smsg.SUCCESS)
-        handler.broadcast(
-            orjson.dumps(
-                {
-                    "event": "lockdown",
-                    "data": response_data,
-                }
-            )
+        return Result(
+            code=0,
+            target=None,
+            data=response_data,
+            username=handler.username,
         )
-        return Result(code=0, target=None, username=handler.username)
 
 
 class RequestViewAuditLogsHandler(RequestHandler):

@@ -9,6 +9,7 @@ __all__ = [
     "load_extensions_from_directory",
     "parse_extension_manifest",
     "pm",
+    "validate_extension_config",
 ]
 
 import importlib.util
@@ -16,9 +17,10 @@ import re
 import sys
 import tomllib
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pluggy
 import websockets.sync.server
@@ -209,6 +211,15 @@ class ServerHookSpecs(ABC):
 
     @hookspec
     @abstractmethod
+    def ext_validate_config(self, config: Mapping[str, Any]) -> None:
+        """Validate extension-owned configuration values.
+
+        Implementations should raise ``ConfigValidationError`` when the
+        supplied configuration is invalid.
+        """
+
+    @hookspec
+    @abstractmethod
     def ext_register_handlers(self) -> dict[str, type["RequestHandler"]]:
         """Register handlers for specific actions.
 
@@ -285,7 +296,7 @@ class ServerHookSpecs(ABC):
         callback: "Result | None",
         time_cost: float,
     ) -> None:
-        """Triggered after a request has been processed."""
+        """Triggered after a request has been processed and its result audited."""
 
     @hookspec
     @abstractmethod
@@ -308,13 +319,20 @@ class ServerHookSpecs(ABC):
         """
 
 
-def _load_extension(
-    extension: DiscoveredExtension,
-    *,
-    quiet: bool = False,
-) -> None:
+def _rollback_extension(ext_name: str) -> None:
+    pm.unregister(name=ext_name)
+    sys.modules.pop(ext_name, None)
+
+
+def _rollback_extensions(extensions: list[DiscoveredExtension]) -> None:
+    for extension in reversed(extensions):
+        _rollback_extension(extension.manifest.identifier)
+
+
+def _load_extension(extension: DiscoveredExtension) -> None:
     manifest = extension.manifest
     ext_name = manifest.identifier
+    registered = False
     try:
         spec = importlib.util.spec_from_file_location(ext_name, extension.entrypoint)
         if spec is None or spec.loader is None:
@@ -324,29 +342,28 @@ def _load_extension(
 
         module = importlib.util.module_from_spec(spec)
         sys.modules[ext_name] = module
-
-        try:
-            spec.loader.exec_module(module)
-        except Exception:
-            del sys.modules[ext_name]
-            raise
-
+        spec.loader.exec_module(module)
         pm.register(module, name=ext_name)
-
-        if not quiet:
-            logger.info(
-                f"Loaded extension: {manifest.name} {manifest.version} ({ext_name})"
-            )
-
+        registered = True
     except ExtensionLoadError:
         raise
     except Exception as exc:
         raise ExtensionLoadError(f"Failed to load extension {ext_name!r}") from exc
+    finally:
+        if not registered:
+            _rollback_extension(ext_name)
+
+
+def validate_extension_config(config: Any) -> None:
+    """Validate configuration through all registered extension hooks."""
+    pm.hook.ext_validate_config(config=config)
 
 
 def load_extensions_from_directory(
     extension_dir: str | Path,
     enabled_identifiers: tuple[str, ...] | list[str],
+    *,
+    config: Any,
 ) -> None:
     """Load the built-in extension and configured extensions in order."""
     discovered = discover_extensions(extension_dir)
@@ -369,11 +386,37 @@ def load_extensions_from_directory(
             "Configured extensions were not found: " + ", ".join(missing)
         )
 
+    extensions_to_load = []
     if not pm.has_plugin("builtin"):
-        _load_extension(builtin, quiet=True)
-    for identifier in enabled:
-        if not pm.has_plugin(identifier):
-            _load_extension(discovered[identifier])
+        extensions_to_load.append(builtin)
+    extensions_to_load.extend(
+        discovered[identifier]
+        for identifier in enabled
+        if not pm.has_plugin(identifier)
+    )
+
+    loaded_extensions: list[DiscoveredExtension] = []
+    try:
+        for extension in extensions_to_load:
+            _load_extension(extension)
+            loaded_extensions.append(extension)
+        validate_extension_config(config)
+    except ExtensionLoadError:
+        _rollback_extensions(loaded_extensions)
+        raise
+    except Exception as exc:
+        _rollback_extensions(loaded_extensions)
+        raise ExtensionLoadError(
+            f"Failed to validate loaded extension configuration: {exc}"
+        ) from exc
+
+    for extension in loaded_extensions:
+        manifest = extension.manifest
+        if manifest.identifier != "builtin":
+            logger.info(
+                f"Loaded extension: {manifest.name} {manifest.version} "
+                f"({manifest.identifier})"
+            )
 
 
 def collect_extension_flags() -> list[str]:
