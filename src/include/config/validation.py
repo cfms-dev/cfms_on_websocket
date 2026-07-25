@@ -14,6 +14,7 @@ __all__ = [
     "AuthThrottlePolicy",
     "ConfigValidationError",
     "get_config_warnings",
+    "get_enabled_extensions",
     "get_trusted_proxy_networks",
     "parse_config_document",
     "parse_trusted_proxy_networks",
@@ -70,6 +71,41 @@ def get_trusted_proxy_networks(
         )
     configured = tuple(values)
     return parse_trusted_proxy_networks(configured)
+
+
+def get_enabled_extensions(config: _ConfigSource) -> tuple[str, ...]:
+    from include.extensions.manager import IDENTIFIER_PATTERN
+
+    extensions = _section(config, "extensions")
+    try:
+        values = extensions["enabled"]
+    except KeyError as exc:
+        raise ConfigValidationError(
+            "Missing required configuration value extensions.enabled"
+        ) from exc
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ConfigValidationError(
+            "extensions.enabled must be an array of identifiers"
+        )
+
+    enabled = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str) or IDENTIFIER_PATTERN.fullmatch(value) is None:
+            raise ConfigValidationError(
+                "extensions.enabled entries must be valid extension identifiers"
+            )
+        if value == "builtin":
+            raise ConfigValidationError(
+                "extensions.enabled must not contain 'builtin'; it is always enabled"
+            )
+        if value in seen:
+            raise ConfigValidationError(
+                f"extensions.enabled contains duplicate identifier {value!r}"
+            )
+        seen.add(value)
+        enabled.append(value)
+    return tuple(enabled)
 
 
 @dataclass(frozen=True)
@@ -140,6 +176,7 @@ def _validate_client_certificate_config(config: _ConfigSource) -> None:
 
 def validate_config(config: _ConfigSource) -> None:
     get_trusted_proxy_networks(config)
+    get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
     _validate_client_certificate_config(config)
 

@@ -8,6 +8,7 @@ from include.config.validation import (
     AuthThrottlePolicy,
     ConfigValidationError,
     get_config_warnings,
+    get_enabled_extensions,
     get_trusted_proxy_networks,
     parse_config_document,
     parse_trusted_proxy_networks,
@@ -17,6 +18,7 @@ from include.config.validation import (
 
 def _valid_config() -> dict:
     return {
+        "extensions": {"enabled": []},
         "server": {"trusted_proxy_networks": ["127.0.0.1/32", "::1/128"]},
         "security": {
             "pepper": "test-pepper",
@@ -35,6 +37,38 @@ def clear_proxy_network_cache():
 
 def test_valid_configuration_is_accepted():
     validate_config(_valid_config())
+
+
+def test_enabled_extensions_preserve_configuration_order():
+    config = _valid_config()
+    config["extensions"]["enabled"] = ["first_ext", "second_ext"]
+
+    assert get_enabled_extensions(config) == ("first_ext", "second_ext")
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("oidc_sso", "must be an array"),
+        (["Invalid-Identifier"], "valid extension identifiers"),
+        (["oidc_sso", "oidc_sso"], "duplicate identifier"),
+        (["builtin"], "always enabled"),
+    ],
+)
+def test_invalid_enabled_extensions_are_rejected(value, message):
+    config = _valid_config()
+    config["extensions"]["enabled"] = value
+
+    with pytest.raises(ConfigValidationError, match=message):
+        get_enabled_extensions(config)
+
+
+def test_extensions_enabled_is_required():
+    config = _valid_config()
+    del config["extensions"]["enabled"]
+
+    with pytest.raises(ConfigValidationError, match="extensions.enabled"):
+        get_enabled_extensions(config)
 
 
 def test_invalid_proxy_network_is_rejected():

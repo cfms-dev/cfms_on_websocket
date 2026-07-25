@@ -1,18 +1,17 @@
 __all__ = [
     "DiscoveredExtension",
     "ExtensionDiscoveryError",
+    "ExtensionLoadError",
     "ExtensionManifest",
     "ExtensionManifestError",
     "collect_extension_flags",
     "discover_extensions",
-    "load_builtin_extension",
     "load_extensions_from_directory",
     "parse_extension_manifest",
     "pm",
 ]
 
 import importlib.util
-import os
 import re
 import sys
 import tomllib
@@ -54,6 +53,10 @@ class ExtensionManifestError(ValueError):
 
 class ExtensionDiscoveryError(RuntimeError):
     """Raised when the extension catalog cannot be discovered safely."""
+
+
+class ExtensionLoadError(RuntimeError):
+    """Raised when a configured extension cannot be loaded."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,24 +295,18 @@ class ServerHookSpecs:
 
 
 def _load_extension(
-    extension_dir: str | Path,
-    ext_name: str,
+    extension: DiscoveredExtension,
     *,
     quiet: bool = False,
-) -> bool:
-    extension_path = Path(extension_dir) / ext_name
-    entrypoint = extension_path / "_extension.py"
-
-    if not entrypoint.is_file():
-        return False
-
+) -> None:
+    manifest = extension.manifest
+    ext_name = manifest.identifier
     try:
-        spec = importlib.util.spec_from_file_location(ext_name, entrypoint)
+        spec = importlib.util.spec_from_file_location(ext_name, extension.entrypoint)
         if spec is None or spec.loader is None:
-            logger.error(f"Failed to load spec for extension: {ext_name}")
-            return False
+            raise ExtensionLoadError(f"Failed to load spec for extension: {ext_name}")
 
-        spec.submodule_search_locations = [str(extension_path)]
+        spec.submodule_search_locations = [str(extension.directory)]
 
         module = importlib.util.module_from_spec(spec)
         sys.modules[ext_name] = module
@@ -323,53 +320,46 @@ def _load_extension(
         pm.register(module, name=ext_name)
 
         if not quiet:
-            logger.info(f"Loaded extension: {ext_name}")
-        return True
-
-    except Exception:
-        logger.exception(f"Failed to load extension '{ext_name}'")
-        return False
-
-
-def load_builtin_extension(extension_dir: str | Path):
-    if pm.has_plugin("builtin"):
-        return
-
-    _load_extension(extension_dir, "builtin", quiet=True)
-
-
-def load_extensions_from_directory(extension_dir: str | Path):
-
-    if not os.path.isdir(extension_dir):
-        logger.warning(
-            f"Extension directory '{extension_dir}' does not exist or is not a directory. Skipping."
-        )
-        return
-
-    loaded_extensions = set()
-
-    for filename in sorted(os.listdir(extension_dir)):
-        if filename.startswith(("_", ".")):
-            continue
-
-        ext_path = os.path.join(extension_dir, filename)
-        if not os.path.isdir(ext_path):
-            continue
-
-        ext_name = filename
-        if ext_name in loaded_extensions:
-            logger.warning(
-                f"Skipping: Found a duplicate {filename} for extension '{ext_name}'"
+            logger.info(
+                f"Loaded extension: {manifest.name} {manifest.version} ({ext_name})"
             )
-            continue
 
-        if pm.has_plugin(ext_name):
-            continue
+    except ExtensionLoadError:
+        raise
+    except Exception as exc:
+        raise ExtensionLoadError(f"Failed to load extension {ext_name!r}") from exc
 
-        if not _load_extension(extension_dir, ext_name):
-            continue
 
-        loaded_extensions.add(ext_name)
+def load_extensions_from_directory(
+    extension_dir: str | Path,
+    enabled_identifiers: tuple[str, ...] | list[str],
+) -> None:
+    """Load the built-in extension and configured extensions in order."""
+    discovered = discover_extensions(extension_dir)
+    builtin = discovered.get("builtin")
+    if builtin is None:
+        raise ExtensionDiscoveryError(
+            f"Required built-in extension was not found in {extension_dir}"
+        )
+
+    enabled = tuple(enabled_identifiers)
+    if len(enabled) != len(set(enabled)):
+        raise ExtensionDiscoveryError("Enabled extension identifiers must be unique")
+    if "builtin" in enabled:
+        raise ExtensionDiscoveryError(
+            "The built-in extension is always loaded and must not be configured"
+        )
+    missing = [identifier for identifier in enabled if identifier not in discovered]
+    if missing:
+        raise ExtensionDiscoveryError(
+            "Configured extensions were not found: " + ", ".join(missing)
+        )
+
+    if not pm.has_plugin("builtin"):
+        _load_extension(builtin, quiet=True)
+    for identifier in enabled:
+        if not pm.has_plugin(identifier):
+            _load_extension(discovered[identifier])
 
 
 def collect_extension_flags() -> list[str]:

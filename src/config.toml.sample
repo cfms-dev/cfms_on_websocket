@@ -1,6 +1,10 @@
 # Enable debug mode for verbose logging and additional debugging features
 debug = false
 
+[extensions]
+# Extension identifiers to load, in registration order. Changes require a restart.
+enabled = []
+
 [server]
 # Name of the server
 name = "CFMS WebSocket Server"

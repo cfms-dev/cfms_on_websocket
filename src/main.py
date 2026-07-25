@@ -26,7 +26,7 @@ from include.config.constants import (
     ROOT_DIRECTORY_ID,
 )
 from include.config.settings import global_config
-from include.config.validation import get_config_warnings
+from include.config.validation import get_config_warnings, get_enabled_extensions
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -41,7 +41,6 @@ from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
 from include.extensions.manager import (
-    load_builtin_extension,
     load_extensions_from_directory,
     pm,
 )
@@ -450,8 +449,9 @@ def main():
 
     # Register plugins after database initialization
     extension_root = ROOT_ABSPATH / "include" / "extensions"
-    load_builtin_extension(extension_root)
-    load_extensions_from_directory(extension_root)
+    load_extensions_from_directory(
+        extension_root, get_enabled_extensions(global_config)
+    )
 
     # Initialize available request handlers
     prepare_handlers()

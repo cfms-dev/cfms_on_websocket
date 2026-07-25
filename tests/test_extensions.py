@@ -9,9 +9,12 @@ import include.extensions.manager as extension_manager
 
 EXTENSION_MODULE_NAMES = {
     "builtin",
+    "disabled_ext",
+    "first_ext",
     "missing_entry_ext",
     "root_file_ext",
     "sample_ext",
+    "second_ext",
 }
 
 
@@ -52,6 +55,12 @@ def _write_manifest(extension_dir: Path, identifier: str, **overrides) -> Path:
     return manifest_path
 
 
+def _write_builtin(root: Path, source: str = "VALUE = 1\n") -> Path:
+    extension_dir = _write_extension(root, "builtin", source)
+    _write_manifest(extension_dir, "builtin")
+    return extension_dir
+
+
 def _fresh_plugin_manager() -> pluggy.PluginManager:
     pm = pluggy.PluginManager("cfms")
     pm.add_hookspecs(extension_manager.ServerHookSpecs)
@@ -76,13 +85,14 @@ def restore_extension_modules():
 def test_root_python_files_are_ignored(monkeypatch, tmp_path):
     pm = _fresh_plugin_manager()
     monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
 
     (tmp_path / "root_file_ext.py").write_text(
         "raise RuntimeError('root file should not be loaded')\n",
         encoding="utf-8",
     )
 
-    extension_manager.load_extensions_from_directory(tmp_path)
+    extension_manager.load_extensions_from_directory(tmp_path, [])
 
     assert not pm.has_plugin("root_file_ext")
     assert "root_file_ext" not in sys.modules
@@ -91,9 +101,11 @@ def test_root_python_files_are_ignored(monkeypatch, tmp_path):
 def test_directory_extension_entrypoint_is_loaded(monkeypatch, tmp_path):
     pm = _fresh_plugin_manager()
     monkeypatch.setattr(extension_manager, "pm", pm)
-    _write_extension(tmp_path, "sample_ext", "VALUE = 42\n")
+    _write_builtin(tmp_path)
+    extension_dir = _write_extension(tmp_path, "different_folder", "VALUE = 42\n")
+    _write_manifest(extension_dir, "sample_ext")
 
-    extension_manager.load_extensions_from_directory(tmp_path)
+    extension_manager.load_extensions_from_directory(tmp_path, ["sample_ext"])
 
     assert pm.has_plugin("sample_ext")
     assert pm.get_plugin("sample_ext").VALUE == 42
@@ -102,9 +114,10 @@ def test_directory_extension_entrypoint_is_loaded(monkeypatch, tmp_path):
 def test_directory_without_entrypoint_is_skipped(monkeypatch, tmp_path):
     pm = _fresh_plugin_manager()
     monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
     (tmp_path / "missing_entry_ext").mkdir()
 
-    extension_manager.load_extensions_from_directory(tmp_path)
+    extension_manager.load_extensions_from_directory(tmp_path, [])
 
     assert not pm.has_plugin("missing_entry_ext")
     assert "missing_entry_ext" not in sys.modules
@@ -199,9 +212,8 @@ def test_builtin_extension_loads_quietly_and_is_not_loaded_twice(monkeypatch, tm
     )
 
     counter_path = tmp_path / "counter.txt"
-    _write_extension(
+    _write_builtin(
         tmp_path,
-        "builtin",
         "\n".join(
             [
                 "from pathlib import Path",
@@ -213,12 +225,75 @@ def test_builtin_extension_loads_quietly_and_is_not_loaded_twice(monkeypatch, tm
         ),
     )
 
-    extension_manager.load_builtin_extension(tmp_path)
-    extension_manager.load_extensions_from_directory(tmp_path)
+    extension_manager.load_extensions_from_directory(tmp_path, [])
+    extension_manager.load_extensions_from_directory(tmp_path, [])
 
     assert pm.has_plugin("builtin")
     assert counter_path.read_text(encoding="utf-8") == "1"
     assert info_messages == []
+
+
+def test_disabled_extension_is_not_imported(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    extension_dir = _write_extension(
+        tmp_path, "disabled_folder", "raise RuntimeError('must not import')\n"
+    )
+    _write_manifest(extension_dir, "disabled_ext")
+
+    extension_manager.load_extensions_from_directory(tmp_path, [])
+
+    assert not pm.has_plugin("disabled_ext")
+    assert "disabled_ext" not in sys.modules
+
+
+def test_extensions_are_registered_in_configuration_order(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    first = _write_extension(tmp_path, "z_folder")
+    second = _write_extension(tmp_path, "a_folder")
+    _write_manifest(first, "first_ext")
+    _write_manifest(second, "second_ext")
+
+    extension_manager.load_extensions_from_directory(
+        tmp_path, ["first_ext", "second_ext"]
+    )
+
+    registered = [name for name, _plugin in pm.list_name_plugin()]
+    assert registered == ["builtin", "first_ext", "second_ext"]
+
+
+def test_missing_configured_extension_is_rejected(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+
+    with pytest.raises(
+        extension_manager.ExtensionDiscoveryError,
+        match="Configured extensions were not found: missing_ext",
+    ):
+        extension_manager.load_extensions_from_directory(tmp_path, ["missing_ext"])
+
+
+def test_enabled_extension_import_failure_is_fatal(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    extension_dir = _write_extension(
+        tmp_path, "broken_folder", "raise RuntimeError('broken extension')\n"
+    )
+    _write_manifest(extension_dir, "sample_ext")
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match="Failed to load extension 'sample_ext'",
+    ):
+        extension_manager.load_extensions_from_directory(tmp_path, ["sample_ext"])
+
+    assert not pm.has_plugin("sample_ext")
+    assert "sample_ext" not in sys.modules
 
 
 def test_collect_extension_flags_returns_sorted_unique_strings(monkeypatch):
