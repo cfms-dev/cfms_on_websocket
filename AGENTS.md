@@ -21,6 +21,7 @@
 - Do not define a separate function that merely wraps or forwards to a single operation without adding reusable domain semantics, validation, state management, or meaningful composition; inline the operation at its call site.
 - Use `datetime.datetime.now(datetime.UTC).date()` instead of `datetime.date.today()` so the current date has an explicit timezone basis.
 - Use the `datetime.UTC` alias (or the corresponding module alias, such as `dt.UTC`) instead of `datetime.timezone.utc`.
+- Keep annotations that reference `TYPE_CHECKING`-only imports as explicit strings on Pluggy hook specifications and implementations, because Pluggy inspects hook signatures and Python 3.14 evaluates those annotations at registration time.
 - Do not insert redundant comments.
 - Avoid anti-patterns when coding.
 - Observe the DRY principle.

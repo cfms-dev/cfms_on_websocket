@@ -205,8 +205,8 @@ def ext_register_extension_flags() -> set[str]:
 @hookimpl
 def ext_post_request(
     action: str,
-    handler: ConnectionHandler,
-    callback: Result | None,
+    handler: "ConnectionHandler",
+    callback: "Result | None",
     time_cost: float,
 ) -> None:
     del time_cost
@@ -249,5 +249,5 @@ def ext_post_request(
                 "Automatic lockdown activated after suspected credential-guessing "
                 "activity"
             )
-    except Exception:  # noqa: BLE001 - detector failures must not break authentication.
+    except Exception:  # detector failures must not break authentication.
         logger.exception("Failed to evaluate automatic brute-force lockdown")

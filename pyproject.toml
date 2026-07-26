@@ -81,6 +81,7 @@ extend-select = ["I", "UP"] # , "D"
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]  # allow `import *` in `__init__.py` for better package structuring
 "src/include/database/models/*" = ["E711", "E712", "UP037"] # allow `== None`, `== True`, and quoted ORM forward references
+"src/include/extensions/*" = ["UP037"] # pluggy evaluates hook annotations at runtime
 "src/include/extensions/manager.py" = ["UP037"] # pluggy evaluates hook annotations at runtime
 "src/maintenance/operations/backups.py" = ["UP037"] # imported lazily to avoid loading backup providers
 "tests/*" = ["E722", "F841"]  # allow bare `except:` in tests for better error detection
