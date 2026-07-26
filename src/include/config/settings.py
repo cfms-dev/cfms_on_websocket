@@ -16,7 +16,8 @@ import os
 import pathlib
 import secrets
 import threading
-from typing import Any, Final, overload
+from collections.abc import Iterator, Mapping
+from typing import Any, Final
 
 from loguru import logger
 from tomlkit import TOMLDocument, dumps, parse
@@ -86,7 +87,7 @@ class _ConfigEventHandler(FileSystemEventHandler):
         self._schedule_reload()
 
 
-class GlobalConfig:
+class GlobalConfig(Mapping[str, Any]):
     """Thread-safe global configuration backed by a TOML file.
 
     Watches the config file's *directory* so that atomic write patterns
@@ -191,19 +192,13 @@ class GlobalConfig:
         with self._lock:
             return self._data[key]
 
-    @overload
-    def get(self, key: str, /) -> Any | None: ...
-
-    @overload
-    def get[T](self, key: str, default: T, /) -> Any | T: ...
-
-    def get(self, key: str, default: Any = None, /) -> Any:
+    def __iter__(self) -> Iterator[str]:
         with self._lock:
-            return self._data.get(key, default)
+            return iter(tuple(self._data))
 
-    def __contains__(self, key: str):
+    def __len__(self) -> int:
         with self._lock:
-            return key in self._data
+            return len(self._data)
 
     def __repr__(self):
         with self._lock:

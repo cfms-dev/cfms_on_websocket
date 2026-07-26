@@ -51,10 +51,11 @@ configuration. The hook runs when an extension is loaded and whenever the global
 configuration is reloaded. It should raise `ConfigValidationError` for invalid
 values; a failed reload leaves the previous configuration active.
 
-Extensions that own background services may implement `ext_on_server_start()` and
-`ext_on_server_stop()`. Start runs after the database, providers, and request
-handlers are ready. Stop runs whenever the serving loop exits, including startup
-failures, and implementations must be idempotent.
+Extensions that own background services may implement `ext_on_startup()` and
+`ext_on_shutdown()`. Startup runs after the database, providers, and request
+handlers are ready. Shutdown runs whenever the serving loop exits, including
+startup failures, and implementations must be idempotent. The startup hook may
+accept the bound `server` when it needs access to the WebSocket server itself.
 
 ## Automatic brute-force lockdown
 

@@ -1,8 +1,10 @@
+import threading
 from typing import cast
 
 from loguru import logger as log
 from sqlalchemy import update
 from sqlalchemy.engine import Engine
+from websockets.sync.server import Server
 
 from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from include.config.settings import global_config
@@ -16,9 +18,10 @@ from include.extensions.manager import collect_extension_flags, hookimpl
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
-from include.transport.server_runtime import server_runtime
 
 logger = log.bind(name="builtin")
+_active_server_lock = threading.Lock()
+_active_server: Server | None = None
 
 
 class RequestServerInfoHandler(RequestHandler):
@@ -69,8 +72,30 @@ class RequestShutdownHandler(RequestHandler):
 
         handler.conclude_request(200, {}, "Server is shutting down")
         logger.info("Server is shutting down")
-        if not server_runtime.request_shutdown():
+        with _active_server_lock:
+            server = _active_server
+        if server is None:
             logger.error("Shutdown requested while no WebSocket server is active")
+        else:
+            server.shutdown()
+
+
+@hookimpl
+def ext_on_startup(server: Server) -> None:
+    global _active_server
+
+    with _active_server_lock:
+        if _active_server is not None:
+            raise RuntimeError("A WebSocket server is already active")
+        _active_server = server
+
+
+@hookimpl
+def ext_on_shutdown() -> None:
+    global _active_server
+
+    with _active_server_lock:
+        _active_server = None
 
 
 @hookimpl

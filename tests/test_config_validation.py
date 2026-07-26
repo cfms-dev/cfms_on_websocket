@@ -1,4 +1,5 @@
 import threading
+from collections.abc import Mapping
 
 import pytest
 from tomlkit import parse
@@ -226,6 +227,19 @@ require_client_cert = false
 
     assert config.reload() is False
     assert config._data is previous_data
+
+
+def test_global_config_implements_read_only_mapping_contract():
+    config = object.__new__(GlobalConfig)
+    config._data = parse("[server]\nport = 8765")
+    config._lock = threading.Lock()
+
+    assert isinstance(config, Mapping)
+    assert len(config) == 1
+    assert list(config) == ["server"]
+    assert "server" in config
+    assert config.get("missing", "fallback") == "fallback"
+    assert config["server"]["port"] == 8765
 
 
 def test_invalid_toml_is_reported_as_configuration_error():

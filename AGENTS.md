@@ -15,8 +15,10 @@
 - Determine the host machine's operating system at first. Do not run Linux-only commands on Windows, nor vice versa.
 
 ## Coding style guidelines
+- Prefer standard-library abstractions and existing project facilities over custom interfaces, wrappers, or utilities when they satisfy the required semantics; introduce new abstractions only when existing ones do not fit.
 - When introducing dependencies in your code, do not simply add the import statement in the middle of the code; instead, place it at the beginning of the file.
 - Combine nested context managers with the same lifetime into a single `with` statement.
+- Do not define a separate function that merely wraps or forwards to a single operation without adding reusable domain semantics, validation, state management, or meaningful composition; inline the operation at its call site.
 - Use `datetime.datetime.now(datetime.UTC).date()` instead of `datetime.date.today()` so the current date has an explicit timezone basis.
 - Use the `datetime.UTC` alias (or the corresponding module alias, such as `dt.UTC`) instead of `datetime.timezone.utc`.
 - Do not insert redundant comments.

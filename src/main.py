@@ -53,7 +53,6 @@ from include.transport.router import (
     handle_connection,
     whitelisted_functions,
 )
-from include.transport.server_runtime import server_runtime
 
 # fix
 os.makedirs(ROOT_ABSPATH / "content" / "logs", exist_ok=True)
@@ -386,15 +385,6 @@ def prepare_logger():
     )
 
 
-def _serve_with_extensions(server) -> None:
-    """Run the server while guaranteeing extension lifecycle cleanup."""
-    server_runtime.serve(
-        server,
-        pm.hook.ext_on_server_start,
-        pm.hook.ext_on_server_stop,
-    )
-
-
 def main():
     prepare_logger()
 
@@ -494,11 +484,15 @@ def main():
                 if server.socket.family == socket.AF_INET6
                 else bound_host
             )
-            logger.info(
-                "CFMS WebSocket server started at "
-                f"wss://{display_host}:{bound_address[1]}"
-            )
-            _serve_with_extensions(server)
+            try:
+                pm.hook.ext_on_startup(server=server)
+                logger.info(
+                    "CFMS WebSocket server started at "
+                    f"wss://{display_host}:{bound_address[1]}"
+                )
+                server.serve_forever()
+            finally:
+                pm.hook.ext_on_shutdown()
     finally:
         global_config.stop()
 
