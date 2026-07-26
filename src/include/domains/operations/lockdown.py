@@ -36,6 +36,7 @@ class LockdownTransition:
 
 class LockdownStateManager:
     _CACHE_KEY = "system:lockdown"
+    _LAST_DISABLED_CACHE_KEY = "system:lockdown:last_disabled"
 
     def __init__(self, cache: CachingProvider | None = None) -> None:
         self._cache = cache
@@ -73,7 +74,18 @@ class LockdownStateManager:
                 reason=reason,
             )
         except orjson.JSONDecodeError, KeyError, TypeError, ValueError:
-            return LockdownState()
+            logger.error("Invalid cached lockdown state; failing closed")
+            return LockdownState(enabled=True)
+
+    def get_last_disabled_at(self) -> float:
+        value = self.cache.get(self._LAST_DISABLED_CACHE_KEY)
+        if value is None:
+            return 0.0
+        try:
+            return float(value)
+        except TypeError, ValueError:
+            logger.warning("Ignoring invalid lockdown disable timestamp")
+            return 0.0
 
     def set_state(self, state: LockdownState) -> LockdownState:
         if state.enabled:
@@ -103,6 +115,8 @@ class LockdownStateManager:
         return self.set_state(LockdownState(enabled=True, reason=reason))
 
     def disable(self) -> LockdownState:
+        if not self.cache.set(self._LAST_DISABLED_CACHE_KEY, time.time()):
+            raise RuntimeError("Failed to record lockdown disable timestamp")
         return self.set_state(LockdownState())
 
 

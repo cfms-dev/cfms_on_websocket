@@ -33,6 +33,14 @@ def test_lockdown_state_reads_legacy_enabled_flag() -> None:
     assert LockdownStateManager(cache).get_state() == LockdownState(enabled=True)
 
 
+def test_invalid_cached_state_fails_closed() -> None:
+    cache = MemoryCachingProvider()
+    cache.set(LockdownStateManager._CACHE_KEY, b"invalid")
+    manager = LockdownStateManager(cache)
+
+    assert manager.get_state() == LockdownState(enabled=True)
+
+
 def test_unlocked_state_rejects_a_reason() -> None:
     with pytest.raises(ValueError, match="reason requires lockdown"):
         LockdownState(reason="Invalid")
@@ -109,3 +117,26 @@ def test_apply_lockdown_disable_broadcasts_unlocked_state(monkeypatch) -> None:
     assert transition.state == LockdownState()
     assert transition.applied is True
     assert broadcasts == [LockdownState()]
+
+
+def test_disable_records_timestamp_before_clearing_lockdown(monkeypatch) -> None:
+    class ObservingCache(MemoryCachingProvider):
+        reset_marker_at_delete = None
+
+        def delete(self, key: str) -> None:
+            if key == LockdownStateManager._CACHE_KEY:
+                self.reset_marker_at_delete = self.get(
+                    LockdownStateManager._LAST_DISABLED_CACHE_KEY
+                )
+            super().delete(key)
+
+    cache = ObservingCache()
+    manager = LockdownStateManager(cache)
+    manager.enable("Automatic")
+    monkeypatch.setattr(lockdown.time, "time", lambda: 1234.5)
+
+    manager.disable()
+
+    assert cache.reset_marker_at_delete == 1234.5
+    assert manager.get_last_disabled_at() == 1234.5
+    assert manager.get_state() == LockdownState()

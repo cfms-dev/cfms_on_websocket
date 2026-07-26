@@ -68,7 +68,11 @@ def detector_database(monkeypatch):
     testing_session = sessionmaker(bind=engine)
     monkeypatch.setattr(extension, "Session", testing_session)
     monkeypatch.setattr(extension, "_STARTED_AT", 0.0)
-    monkeypatch.setattr(extension, "_last_manual_unlock", lambda: 0.0)
+    monkeypatch.setattr(
+        extension.lockdown_state_manager,
+        "get_last_disabled_at",
+        lambda: 0.0,
+    )
 
     with testing_session.begin() as session:
         for username in ("alice", "bob"):
@@ -215,18 +219,27 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
     assert audits == [(policy, stats, 4)]
 
 
-def test_manual_unlock_resets_detector_window(monkeypatch):
-    calls = []
-    monkeypatch.setattr(extension, "_record_manual_unlock", lambda: calls.append(True))
+def test_window_stats_exclude_failures_before_last_unlock(
+    detector_database, monkeypatch
+):
+    with detector_database.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", 949)
+        _audit_failure(session, "alice", "192.0.2.2", 950)
 
-    extension.ext_post_request(
-        "lockdown",
-        SimpleNamespace(data={"status": False}, remote_address="192.0.2.1"),
-        Result(code=0),
-        0.1,
+    monkeypatch.setattr(
+        extension.lockdown_state_manager,
+        "get_last_disabled_at",
+        lambda: 950.0,
     )
 
-    assert calls == [True]
+    stats = extension._collect_window_stats(
+        "alice",
+        extension.BruteForceLockdownPolicy(window_seconds=100),
+        now=1000,
+    )
+
+    assert stats.failure_count == 1
+    assert stats.window_started_at == 950.0
 
 
 def test_automatic_audit_contains_only_aggregate_details(monkeypatch):

@@ -17,7 +17,6 @@ from include.domains.operations.lockdown import (
     lockdown_state_manager,
 )
 from include.extensions.manager import hookimpl
-from include.providers.manager import ProviderManager
 
 if TYPE_CHECKING:
     from include.transport.connection import ConnectionHandler
@@ -28,7 +27,6 @@ logger = log.bind(name="brute_force_lockdown")
 DEFAULT_REASON = (
     "Automatic security lockdown: suspected credential-guessing attack detected."
 )
-RESET_CACHE_KEY = "extension:brute_force_lockdown:last_manual_unlock"
 _STARTED_AT = time.time()
 _detection_lock = threading.Lock()
 
@@ -128,21 +126,6 @@ class FailureWindowStats:
         )
 
 
-def _last_manual_unlock() -> float:
-    value = ProviderManager().caching.get(RESET_CACHE_KEY)
-    if value is None:
-        return 0.0
-    try:
-        return float(value)
-    except TypeError, ValueError:
-        logger.warning("Ignoring invalid brute-force lockdown reset marker")
-        return 0.0
-
-
-def _record_manual_unlock() -> None:
-    ProviderManager().caching.set(RESET_CACHE_KEY, time.time())
-
-
 def _collect_window_stats(
     username: str,
     policy: BruteForceLockdownPolicy,
@@ -151,7 +134,7 @@ def _collect_window_stats(
     window_started_at = max(
         now - policy.window_seconds,
         _STARTED_AT,
-        _last_manual_unlock(),
+        lockdown_state_manager.get_last_disabled_at(),
     )
     with Session() as session:
         if (
@@ -228,15 +211,6 @@ def ext_post_request(
 ) -> None:
     del time_cost
     try:
-        if (
-            action == "lockdown"
-            and callback is not None
-            and callback.code == 0
-            and handler.data.get("status") is False
-        ):
-            _record_manual_unlock()
-            return
-
         if action != "login" or callback is None or callback.code != 401:
             return
         if not isinstance(callback.target, str) or not callback.target:
