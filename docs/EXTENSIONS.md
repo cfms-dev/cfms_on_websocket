@@ -51,6 +51,11 @@ configuration. The hook runs when an extension is loaded and whenever the global
 configuration is reloaded. It should raise `ConfigValidationError` for invalid
 values; a failed reload leaves the previous configuration active.
 
+Extensions that own background services may implement `ext_on_server_start()` and
+`ext_on_server_stop()`. Start runs after the database, providers, and request
+handlers are ready. Stop runs whenever the serving loop exits, including startup
+failures, and implementations must be idempotent.
+
 ## Automatic brute-force lockdown
 
 Enable the optional `brute_force_lockdown` extension to escalate a service-wide

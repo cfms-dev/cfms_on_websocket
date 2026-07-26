@@ -53,6 +53,7 @@ from include.transport.router import (
     handle_connection,
     whitelisted_functions,
 )
+from include.transport.server_runtime import server_runtime
 
 # fix
 os.makedirs(ROOT_ABSPATH / "content" / "logs", exist_ok=True)
@@ -385,6 +386,15 @@ def prepare_logger():
     )
 
 
+def _serve_with_extensions(server) -> None:
+    """Run the server while guaranteeing extension lifecycle cleanup."""
+    server_runtime.serve(
+        server,
+        pm.hook.ext_on_server_start,
+        pm.hook.ext_on_server_stop,
+    )
+
+
 def main():
     prepare_logger()
 
@@ -467,24 +477,30 @@ def main():
         host, global_config["server"]["dualstack_ipv6"]
     )
 
-    with serve(
-        handle_connection,
-        host,
-        port,
-        ssl=ssl_context,
-        family=socket_family,
-        dualstack_ipv6=dualstack_ipv6,
-        process_request=global_process_request,
-    ) as server:
-        bound_address = server.socket.getsockname()
-        bound_host = bound_address[0]
-        display_host = (
-            f"[{bound_host}]" if server.socket.family == socket.AF_INET6 else bound_host
-        )
-        logger.info(
-            f"CFMS WebSocket server started at wss://{display_host}:{bound_address[1]}"
-        )
-        server.serve_forever()
+    try:
+        with serve(
+            handle_connection,
+            host,
+            port,
+            ssl=ssl_context,
+            family=socket_family,
+            dualstack_ipv6=dualstack_ipv6,
+            process_request=global_process_request,
+        ) as server:
+            bound_address = server.socket.getsockname()
+            bound_host = bound_address[0]
+            display_host = (
+                f"[{bound_host}]"
+                if server.socket.family == socket.AF_INET6
+                else bound_host
+            )
+            logger.info(
+                "CFMS WebSocket server started at "
+                f"wss://{display_host}:{bound_address[1]}"
+            )
+            _serve_with_extensions(server)
+    finally:
+        global_config.stop()
 
 
 if __name__ == "__main__":

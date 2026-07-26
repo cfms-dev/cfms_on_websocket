@@ -257,6 +257,24 @@ class ServerHookSpecs(ABC):
 
     @hookspec
     @abstractmethod
+    def ext_on_server_start(self) -> None:
+        """Start extension-owned background services.
+
+        This hook runs after the database, providers, and request handlers are
+        ready, immediately before the server enters its serving loop.
+        """
+
+    @hookspec
+    @abstractmethod
+    def ext_on_server_stop(self) -> None:
+        """Stop extension-owned background services.
+
+        Implementations must be idempotent because this hook also runs when a
+        server-start hook raises after another extension has already started.
+        """
+
+    @hookspec
+    @abstractmethod
     def ext_on_connect(
         self, websocket: websockets.sync.server.ServerConnection
     ) -> None:
