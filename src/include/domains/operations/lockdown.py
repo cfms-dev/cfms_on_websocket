@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import orjson
 from loguru import logger as log
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 
 from include.config.constants import GLOBAL_BROADCAST_EVENT_CHANNEL
@@ -139,8 +139,20 @@ def _publish_lockdown_state(state: LockdownState) -> None:
 def _cancel_pending_file_tasks() -> int:
     from include.database.models.files import FileTask, FileTaskStatus
     from include.database.session import Session
+    from include.domains.documents.file_task_signals import (
+        publish_cancelled_file_tasks,
+    )
 
     with Session.begin() as session:
+        task_ids = list(
+            session.scalars(
+                select(FileTask.id).where(
+                    FileTask.status.in_(
+                        (FileTaskStatus.PENDING, FileTaskStatus.IN_PROGRESS)
+                    )
+                )
+            ).all()
+        )
         result = cast(
             CursorResult[Any],
             session.execute(
@@ -153,7 +165,8 @@ def _cancel_pending_file_tasks() -> int:
                 .values(status=FileTaskStatus.CANCELLED)
             ),
         )
-        return result.rowcount or 0
+    publish_cancelled_file_tasks(task_ids)
+    return result.rowcount or 0
 
 
 def apply_lockdown(

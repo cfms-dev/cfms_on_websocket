@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import os
+import threading
 import time
 
 import jsonschema
@@ -21,13 +22,14 @@ from include.config.constants import (
 )
 from include.config.settings import global_config
 from include.config.validation import DocumentUploadPolicy
-from include.database.models.files import File, FileTask, TransferMode
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.session import Session
 from include.domains.documents.commands.file_tasks import (
     claim_file_task,
     complete_file_task,
     release_file_task,
 )
+from include.domains.documents.file_task_signals import watch_file_task
 from include.extensions.manager import pm
 from include.messages import Messages as smsg
 from include.observability.exception_logging import log_exception_with_id
@@ -36,6 +38,12 @@ from include.transport.client_address import get_client_ip
 from include.transport.multiplexing import FrameType, Stream
 
 logger = log.bind(name="conn")
+
+
+class FileTaskEnded(ConnectionError):
+    def __init__(self, status: FileTaskStatus) -> None:
+        self.status = status
+        super().__init__(f"File task ended with status {status.name.lower()}")
 
 
 # JSON Schema for the top-level request envelope.
@@ -135,6 +143,45 @@ class ConnectionHandler:
             )
         return log_id
 
+    @staticmethod
+    def _get_file_task_status(task_id: str) -> FileTaskStatus:
+        with Session() as session:
+            task = session.get(FileTask, task_id)
+            if task is None:
+                return FileTaskStatus.CANCELLED
+            return FileTaskStatus(task.status)
+
+    def _ensure_file_task_active(
+        self, task_id: str, cancelled: threading.Event
+    ) -> None:
+        now = time.monotonic()
+        last_checks = getattr(self, "_file_task_last_checks", None)
+        if last_checks is None:
+            last_checks = self._file_task_last_checks = {}
+        if not cancelled.is_set() and now - last_checks.get(task_id, 0.0) < 1.0:
+            return
+        status = self._get_file_task_status(task_id)
+        last_checks[task_id] = now
+        if status != FileTaskStatus.IN_PROGRESS:
+            raise FileTaskEnded(status)
+
+    def _recv_file_task_frame(
+        self,
+        task_id: str,
+        cancelled: threading.Event,
+        idle_timeout: float,
+    ):
+        deadline = time.monotonic() + idle_timeout
+        while True:
+            self._ensure_file_task_active(task_id, cancelled)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("File transfer idle timeout")
+            try:
+                return self.stream.recv(timeout=min(1.0, remaining))
+            except TimeoutError:
+                continue
+
     def send_file(self, task_id: str, offset: int) -> None:
         """
         Sends a file associated with the given task ID to the client over a websocket connection using AES encryption.
@@ -170,6 +217,35 @@ class ConnectionHandler:
             stored_file_size = file.size
             encryption_key = file_task.encryption_key
 
+        with watch_file_task(task_id) as cancelled:
+            try:
+                self._send_claimed_file(
+                    task_id,
+                    offset,
+                    file_id,
+                    file_path,
+                    stored_file_size,
+                    encryption_key,
+                    cancelled,
+                )
+            except FileTaskEnded as exc:
+                self.conclude_request(
+                    410,
+                    {"task_status": exc.status.name.lower()},
+                    "Task is no longer available",
+                )
+
+    def _send_claimed_file(
+        self,
+        task_id: str,
+        offset: int,
+        file_id: str,
+        file_path: str,
+        stored_file_size: int | None,
+        encryption_key: str | None,
+        cancelled: threading.Event,
+    ) -> None:
+
         self.logger.info(f"Task {task_id}: preparing to send file (id: {file_id}).")
 
         file_size = ProviderManager().storage.getsize(file_path)
@@ -199,7 +275,11 @@ class ConnectionHandler:
             )
         )
 
-        received_response = self.stream.recv()
+        received_response = self._recv_file_task_frame(
+            task_id,
+            cancelled,
+            DocumentUploadPolicy.from_config().idle_timeout_seconds,
+        )
         if received_response.data != b"ready":
             self.logger.error(
                 "Client did not acknowledge readiness for file "
@@ -243,7 +323,7 @@ class ConnectionHandler:
                 if not complete_file_task(session, task_id):
                     self.conclude_request(
                         410,
-                        {"task_status": file_task.status.name.lower()},
+                        {"task_status": FileTaskStatus(file_task.status).name.lower()},
                         "Task ended",
                     )
                     return
@@ -290,6 +370,8 @@ class ConnectionHandler:
                             {},
                             "File is not seekable, cannot resume from non-zero offset",
                         )
+                        with Session.begin() as session:
+                            release_file_task(session, task_id)
                         return
 
                     file.seek(offset)
@@ -299,6 +381,7 @@ class ConnectionHandler:
                     chunk_index = 0
 
                 while True:
+                    self._ensure_file_task_active(task_id, cancelled)
                     chunk = file.read(chunk_size)
                     if not chunk:
                         break
@@ -359,6 +442,8 @@ class ConnectionHandler:
             with Session.begin() as session:
                 release_file_task(session, task_id)
             return
+        except FileTaskEnded:
+            raise
         except Exception as e:  # noqa: BLE001 - report unexpected transfer failures to the client.
             with Session.begin() as session:
                 release_file_task(session, task_id)
@@ -390,6 +475,27 @@ class ConnectionHandler:
             file_id = file.id
             file_path = file.path
 
+        with watch_file_task(task_id) as cancelled:
+            try:
+                self._receive_claimed_file(task_id, file_id, file_path, cancelled)
+            except FileTaskEnded as exc:
+                try:
+                    ProviderManager().storage.remove(file_path)
+                except FileNotFoundError:
+                    pass
+                self.conclude_request(
+                    410,
+                    {"task_status": exc.status.name.lower()},
+                    "Task is no longer available",
+                )
+
+    def _receive_claimed_file(
+        self,
+        task_id: str,
+        file_id: str,
+        file_path: str,
+        cancelled: threading.Event,
+    ) -> None:
         handshake_msg = {
             "action": "transfer_file",
             "data": {},
@@ -406,7 +512,9 @@ class ConnectionHandler:
         policy = DocumentUploadPolicy.from_config()
         try:
             task_info = orjson.loads(
-                self.stream.recv(timeout=policy.idle_timeout_seconds).data
+                self._recv_file_task_frame(
+                    task_id, cancelled, policy.idle_timeout_seconds
+                ).data
             )
         except Exception:
             with Session.begin() as session:
@@ -474,7 +582,7 @@ class ConnectionHandler:
                     ProviderManager().storage.remove(file_path)
                     self.conclude_request(
                         410,
-                        {"task_status": file_task.status.name.lower()},
+                        {"task_status": FileTaskStatus(file_task.status).name.lower()},
                         "Task ended",
                     )
                     return
@@ -492,7 +600,9 @@ class ConnectionHandler:
                 hasher = hashlib.sha256()
                 received_size = 0
                 while received_size < file_size:
-                    data = self.stream.recv(timeout=policy.idle_timeout_seconds).data
+                    data = self._recv_file_task_frame(
+                        task_id, cancelled, policy.idle_timeout_seconds
+                    ).data
                     if not data:
                         break
 
@@ -548,7 +658,7 @@ class ConnectionHandler:
                     ProviderManager().storage.remove(file_path)
                     self.conclude_request(
                         410,
-                        {"task_status": file_task.status.name.lower()},
+                        {"task_status": FileTaskStatus(file_task.status).name.lower()},
                         "Task ended",
                     )
                     return
@@ -563,6 +673,9 @@ class ConnectionHandler:
             )
 
             self.conclude_request(200, {}, "File received successfully")
+
+        except FileTaskEnded:
+            raise
 
         except ConnectionError:
             self.logger.info("File reception aborted: Connection closed")

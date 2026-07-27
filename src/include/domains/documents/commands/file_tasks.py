@@ -1,7 +1,7 @@
 import time
 from typing import Any, cast
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -119,3 +119,27 @@ def release_file_task(
         ),
     )
     return next_status if result.rowcount == 1 else None
+
+
+def cancel_file_tasks_for_files(session: Session, file_ids: set[str]) -> list[str]:
+    if not file_ids:
+        return []
+    task_ids = list(
+        session.scalars(
+            select(FileTask.id).where(
+                FileTask.file_id.in_(file_ids),
+                FileTask.status.in_(ACTIVE_FILE_TASK_STATUSES),
+            )
+        ).all()
+    )
+    if not task_ids:
+        return []
+    session.execute(
+        update(FileTask)
+        .where(
+            FileTask.id.in_(task_ids),
+            FileTask.status.in_(ACTIVE_FILE_TASK_STATUSES),
+        )
+        .values(status=FileTaskStatus.CANCELLED)
+    )
+    return task_ids

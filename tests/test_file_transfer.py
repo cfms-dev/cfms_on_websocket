@@ -138,7 +138,7 @@ class _FakeDownloadStream:
     def send(self, data, frame_type=None, **_kwargs):
         self.sent_payloads.append(_SentPayload(data, frame_type))
 
-    def recv(self):
+    def recv(self, timeout=None):
         return self.responses.pop(0)
 
 
@@ -147,9 +147,9 @@ class _AssertingDownloadStream(_FakeDownloadStream):
         super().__init__()
         self.tracker = tracker
 
-    def recv(self):
+    def recv(self, timeout=None):
         assert self.tracker.active == 0
-        return super().recv()
+        return super().recv(timeout)
 
 
 class _FakeUploadStream:
@@ -160,7 +160,7 @@ class _FakeUploadStream:
     def send(self, data, frame_type=None, **_kwargs):
         self.sent_payloads.append(_SentPayload(data, frame_type))
 
-    def recv(self):
+    def recv(self, timeout=None):
         return self.responses.pop(0)
 
 
@@ -169,9 +169,9 @@ class _AssertingUploadStream(_FakeUploadStream):
         super().__init__(frames)
         self.tracker = tracker
 
-    def recv(self):
+    def recv(self, timeout=None):
         assert self.tracker.active == 0
-        return super().recv()
+        return super().recv(timeout)
 
 
 def _new_transfer_handler(connection_handler_cls, stream):

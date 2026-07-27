@@ -42,15 +42,22 @@ from include.domains.access.authorization.compiled_rules import (
     get_access_rules_list,
 )
 from include.domains.access.permissions import Permissions
-from include.domains.documents.commands.file_tasks import serialize_file_task
+from include.domains.documents.commands.file_tasks import (
+    cancel_file_tasks_for_files,
+    serialize_file_task,
+)
 from include.domains.documents.commands.name_conflicts import (
     NodeNameConflictError,
     describe_node_name_conflict,
     get_target_folder_and_check_write,
     node_name_mutation,
 )
+from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
+)
+from include.domains.documents.queries.file_references import (
+    find_unreachable_document_file_ids,
 )
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
@@ -527,6 +534,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
+        cancelled_task_ids: list[str] = []
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -547,8 +555,16 @@ class RequestDeleteDocumentHandler(RequestHandler):
             document.status_operation_id = (
                 f"OP_DEL_{secrets.token_hex(8)}_{int(time.time())}"
             )
+            unreachable_file_ids = find_unreachable_document_file_ids(
+                session, [document_id]
+            )
+            cancelled_task_ids = cancel_file_tasks_for_files(
+                session, unreachable_file_ids
+            )
             mark_document_modified(document, user.username)
             session.commit()
+
+        publish_cancelled_file_tasks(cancelled_task_ids)
 
         handler.conclude_request(200, {}, "Document successfully deleted")
         return Result(code=0, target=document_id, username=handler.username)
