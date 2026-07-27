@@ -52,6 +52,7 @@ from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
     node_name_mutation,
 )
+from include.domains.documents.creation_limits import check_document_creation_limits
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
@@ -340,6 +341,28 @@ class RequestCreateDocumentHandler(RequestHandler):
                     code=err_code,
                     target=folder_id,
                     data={"title": title},
+                    username=handler.username,
+                )
+
+            limit_decision = check_document_creation_limits(
+                session, user.username, handler.remote_address
+            )
+            if not limit_decision.allowed:
+                session.commit()
+                data = {
+                    "scope": limit_decision.scope,
+                    "limit": limit_decision.limit,
+                    "retry_after_seconds": limit_decision.retry_after_seconds,
+                }
+                handler.conclude_request(
+                    429,
+                    data,
+                    "Document creation limit exceeded. Please try again later.",
+                )
+                return Result(
+                    code=429,
+                    target=folder_id,
+                    data={"title": title, **data},
                     username=handler.username,
                 )
 

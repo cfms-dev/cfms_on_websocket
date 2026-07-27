@@ -11,6 +11,9 @@ from include.database.models.files import File, FileTask, FileTaskStatus, Transf
 from include.database.session import Session
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.file_tasks import ACTIVE_FILE_TASK_STATUSES
+from include.domains.documents.creation_limits import (
+    cleanup_document_creation_throttles,
+)
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 
 logger = log.bind(name="upload_lifecycle")
@@ -162,6 +165,7 @@ class UploadLifecycleService:
         while not self._stop_event.is_set():
             try:
                 expire_abandoned_uploads()
+                cleanup_document_creation_throttles()
             except Exception:
                 logger.exception("Failed to clean up abandoned uploads")
             interval = DocumentUploadPolicy.from_config().cleanup_interval_seconds

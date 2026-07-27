@@ -26,3 +26,15 @@ class AuditEntry(Base):
     logged_time: Mapped[float | None] = mapped_column(
         Float, nullable=False, default=time.time, index=True
     )
+
+
+class DocumentCreationThrottle(Base):
+    __tablename__ = "document_creation_throttles"
+
+    scope: Mapped[str] = mapped_column(VARCHAR(16), primary_key=True)
+    identity: Mapped[str] = mapped_column(VARCHAR(256), primary_key=True)
+    window_started_at: Mapped[float] = mapped_column(Float, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_attempt: Mapped[float] = mapped_column(
+        Float, nullable=False, default=time.time, index=True
+    )
