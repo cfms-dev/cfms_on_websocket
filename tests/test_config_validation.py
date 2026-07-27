@@ -196,6 +196,17 @@ def test_empty_pepper_warning_is_centralized():
     assert "`pepper`" in get_config_warnings(config)[0]
 
 
+def test_obsolete_document_name_duplicate_option_warns_and_is_ignored():
+    config = _valid_config()
+    config["document"] = {"allow_name_duplicate": True}
+
+    warnings = get_config_warnings(config)
+
+    assert len(warnings) == 1
+    assert "obsolete and ignored" in warnings[0]
+    assert "unique names" in warnings[0]
+
+
 def test_invalid_reload_keeps_previous_configuration(tmp_path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(

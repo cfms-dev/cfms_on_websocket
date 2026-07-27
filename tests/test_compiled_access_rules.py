@@ -115,6 +115,8 @@ def access_rule_session(monkeypatch, tmp_path):
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     with SessionLocal() as session:
+        session.add(models.Folder(id="/", name="/", inherit=False))
+        session.commit()
         yield models, session
 
 

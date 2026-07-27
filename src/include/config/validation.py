@@ -197,6 +197,15 @@ def parse_config_document(source: str) -> TOMLDocument:
 def get_config_warnings(config: _ConfigSource) -> tuple[str, ...]:
     security = _section(config, "security")
     warnings = []
+    try:
+        document = config["document"]
+    except KeyError:
+        document = {}
+    if isinstance(document, Mapping) and "allow_name_duplicate" in document:
+        warnings.append(
+            "`document.allow_name_duplicate` is obsolete and ignored; active "
+            "documents and directories must have unique names within a directory"
+        )
     if not security.get("pepper"):
         warnings.append(
             "Setting the value for `pepper` to empty in the configuration file can "

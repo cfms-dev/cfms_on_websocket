@@ -5,7 +5,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
-from include.config.settings import global_config
 from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
 from include.messages import Messages as smsg
@@ -94,9 +93,6 @@ def handle_name_duplicate(
     Returns: (has_conflict, error_code, error_data, error_message).
     If no conflict, returns (False, 0, {}, "").
     """
-    if global_config["document"]["allow_name_duplicate"]:
-        return False, 0, {}, ""
-
     if not folder_id:
         folder_id = ROOT_DIRECTORY_ID
 

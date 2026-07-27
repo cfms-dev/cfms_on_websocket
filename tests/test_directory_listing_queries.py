@@ -88,6 +88,8 @@ def directory_session(directory_models):
     )
     SessionLocal = sessionmaker(bind=engine)
     with SessionLocal() as session:
+        session.add(directory_models.Folder(id="/", name="/", inherit=False))
+        session.commit()
         yield session
 
 
@@ -636,11 +638,12 @@ def test_node_rules_allow_handles_missing_empty_and_read_rules(
             row[0]
             for row in directory_session.query(directory_models.Node.id)
             .filter(
+                directory_models.Node.id != "/",
                 directory_models.node_rules_allow(
                     literal("directory"),
                     directory_models.Node.id,
                     user,
-                )
+                ),
             )
             .all()
         }

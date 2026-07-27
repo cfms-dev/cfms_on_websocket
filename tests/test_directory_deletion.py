@@ -38,6 +38,8 @@ def test_mark_nodes_deleted_updates_node_table_for_joined_inheritance(
     SessionLocal = sessionmaker(bind=engine)
 
     with SessionLocal() as session:
+        session.add(models.Folder(id="/", name="/", inherit=False))
+        session.commit()
         folder = models.Folder(id="folder-1", name="folder")
         document = models.Document(id="document-1", title="document", folder=folder)
         session.add_all([folder, document])
@@ -81,6 +83,8 @@ def test_deleting_revision_sets_document_and_child_revision_references_null(
     SessionLocal = sessionmaker(bind=engine)
 
     with SessionLocal() as session:
+        session.add(models.Folder(id="/", name="/", inherit=False))
+        session.commit()
         document = models.Document(id="document-1", title="document")
         first_file = models.File(id="file-1", path="/missing/file-1", active=True)
         second_file = models.File(id="file-2", path="/missing/file-2", active=True)

@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from rich.progress import Progress, TaskID
 from sqlalchemy import DateTime, Table, exists, func, insert, or_, select, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import CORE_VERSION, ROOT_ABSPATH
@@ -172,7 +173,6 @@ INSERT_ORDER = (
 
 DEFERRED_COLUMNS = {
     "users": ("preference_dek_id",),
-    "folders": ("parent_id",),
     "documents": ("current_revision_id",),
     "document_revisions": ("parent_revision_id",),
     "nodes": ("access_rule_set_id",),
@@ -180,7 +180,6 @@ DEFERRED_COLUMNS = {
 
 DEFERRED_UPDATE_ORDER = (
     ("users", "username", ("preference_dek_id",)),
-    ("folders", "id", ("parent_id",)),
     ("document_revisions", "id", ("parent_revision_id",)),
     ("documents", "id", ("current_revision_id",)),
     ("nodes", "id", ("access_rule_set_id",)),
@@ -842,7 +841,10 @@ def _export_tables(
                 verbose_only=True,
             )
             table = metadata_tables[table_name]
-            columns = [column.name for column in table.columns]
+            stored_columns = [
+                column for column in table.columns if column.computed is None
+            ]
+            columns = [column.name for column in stored_columns]
             rows_path = tables_dir / f"{table_name}.jsonl"
             row_count = 0
             order_by = [column for column in table.primary_key.columns]
@@ -869,7 +871,7 @@ def _export_tables(
             with rows_path.open("wb") as f:
                 for row in connection.execute(statement).mappings():
                     encoded = {}
-                    for column in table.columns:
+                    for column in stored_columns:
                         value = row[column.name]
                         if (
                             table_name == "nodes"
@@ -1375,14 +1377,24 @@ def _restore_database(
     legacy_banned_subnet_reasons = _load_legacy_banned_subnet_reasons(
         extract_dir, manifest
     )
+    legacy_node_namespace = _load_legacy_node_namespace(extract_dir, manifest)
     deferred_updates: dict[str, list[dict[str, Any]]] = {
         table_name: [] for table_name in DEFERRED_COLUMNS if table_name in table_names
     }
 
     with session_factory.begin() as session:
         connection = session.connection()
-        _restore_legacy_nodes_if_needed(connection, extract_dir, manifest, tables)
+        restored_node_tables = _restore_node_tables(
+            connection,
+            extract_dir,
+            manifest,
+            tables,
+            deferred_updates,
+            legacy_node_namespace,
+        )
         for table_index, table_name in enumerate(table_names, start=1):
+            if table_name in restored_node_tables:
+                continue
             LOGGER.debug(
                 "Restoring table %s (%d/%d)",
                 table_name,
@@ -1434,7 +1446,14 @@ def _restore_database(
                         row[column_name] = None
                 insert_rows.append(row)
             if insert_rows:
-                connection.execute(insert(table), insert_rows)
+                try:
+                    connection.execute(insert(table), insert_rows)
+                except IntegrityError as exc:
+                    if table_name != "nodes" or not _is_node_name_conflict(exc):
+                        raise
+                    raise BackupFormatError(
+                        "Backup contains active sibling nodes with duplicate names"
+                    ) from exc
             LOGGER.debug("Restored table %s with %d row(s)", table_name, len(rows))
 
         for table_name, pk_name, column_names in DEFERRED_UPDATE_ORDER:
@@ -1462,20 +1481,151 @@ def _restore_database(
             LOGGER.debug("Converted legacy JSON access rules during database restore")
 
 
-def _restore_legacy_nodes_if_needed(
+def _restore_node_tables(
     connection,
     extract_dir: Path,
     manifest: dict[str, Any],
     tables: Mapping[str, Table],
-) -> None:
-    if "nodes" in manifest.get("tables", {}):
-        return
+    deferred_updates: dict[str, list[dict[str, Any]]],
+    legacy_namespace: dict[str, dict[str, Any]],
+) -> set[str]:
+    table_names = manifest.get("tables", {})
+    node_table_names = {"nodes", "folders", "documents"} & set(table_names)
+    if not node_table_names:
+        return set()
 
+    if "nodes" in table_names:
+        node_rows = {
+            str(row["id"]): row
+            for row in _load_table_rows(extract_dir, manifest, tables["nodes"])
+        }
+        for node_id, namespace in legacy_namespace.items():
+            row = node_rows.get(node_id)
+            if row is None:
+                continue
+            if row.get("name") is None:
+                row["name"] = namespace["name"]
+            if node_id != "/" and row.get("parent_id") is None:
+                row["parent_id"] = namespace["parent_id"]
+    else:
+        node_rows = _load_legacy_node_rows(extract_dir, manifest)
+
+    folder_rows = {
+        str(row["id"]): row
+        for row in (
+            _load_table_rows(extract_dir, manifest, tables["folders"])
+            if "folders" in table_names
+            else []
+        )
+    }
+    document_rows = {
+        str(row["id"]): row
+        for row in (
+            _load_table_rows(extract_dir, manifest, tables["documents"])
+            if "documents" in table_names
+            else []
+        )
+    }
+
+    if node_rows and "/" not in node_rows:
+        node_rows["/"] = {
+            "id": "/",
+            "type": "directory",
+            "inherit": True,
+            "status": 0,
+            "status_operation_id": None,
+            "access_rule_set_id": None,
+            "name": "/",
+            "parent_id": None,
+        }
+    if node_rows and "/" not in folder_rows:
+        folder_rows["/"] = {"id": "/", "created_time": 0.0}
+
+    folder_node_ids = {
+        node_id for node_id, row in node_rows.items() if row["type"] == "directory"
+    }
+    document_node_ids = {
+        node_id for node_id, row in node_rows.items() if row["type"] == "document"
+    }
+    if folder_node_ids != set(folder_rows):
+        raise BackupFormatError("Backup node and folder rows do not match")
+    if document_node_ids != set(document_rows):
+        raise BackupFormatError("Backup node and document rows do not match")
+
+    pending_folders = set(folder_node_ids)
+    restored_folders: set[str] = set()
+    while pending_folders:
+        ready = sorted(
+            node_id
+            for node_id in pending_folders
+            if node_id == "/" or node_rows[node_id]["parent_id"] in restored_folders
+        )
+        if not ready:
+            raise BackupFormatError(
+                "Backup folder hierarchy contains a cycle or missing parent"
+            )
+        for node_id in ready:
+            _insert_restored_node(
+                connection,
+                tables["nodes"],
+                node_rows[node_id],
+                deferred_updates,
+            )
+            connection.execute(insert(tables["folders"]), folder_rows[node_id])
+            restored_folders.add(node_id)
+            pending_folders.remove(node_id)
+
+    for node_id in sorted(document_node_ids):
+        node_row = node_rows[node_id]
+        if node_row["parent_id"] not in restored_folders:
+            raise BackupFormatError(
+                f"Backup document {node_id!r} references a missing folder"
+            )
+        _insert_restored_node(
+            connection,
+            tables["nodes"],
+            node_row,
+            deferred_updates,
+        )
+        document_row = document_rows[node_id]
+        deferred_updates.setdefault("documents", []).append(document_row.copy())
+        insert_row = document_row.copy()
+        insert_row["current_revision_id"] = None
+        connection.execute(insert(tables["documents"]), insert_row)
+
+    return node_table_names
+
+
+def _insert_restored_node(
+    connection,
+    table: Table,
+    row: dict[str, Any],
+    deferred_updates: dict[str, list[dict[str, Any]]],
+) -> None:
+    deferred_updates.setdefault("nodes", []).append(row.copy())
+    insert_row = row.copy()
+    insert_row["access_rule_set_id"] = None
+    try:
+        connection.execute(insert(table), insert_row)
+    except IntegrityError as exc:
+        if not _is_node_name_conflict(exc):
+            raise
+        raise BackupFormatError(
+            "Backup contains an active sibling name conflict while restoring "
+            f"{row['type']}:{row['id']} under parent {row['parent_id']!r} "
+            f"with name {row['name']!r}"
+        ) from exc
+
+
+def _load_legacy_node_rows(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     node_rows: dict[str, dict[str, Any]] = {}
     for table_name, node_type in (("folders", "directory"), ("documents", "document")):
-        if table_name not in manifest.get("tables", {}):
+        table_manifest = manifest.get("tables", {}).get(table_name)
+        if table_manifest is None:
             continue
-        table_manifest = manifest["tables"][table_name]
         path = _safe_payload_path(extract_dir, f"tables/{table_name}.jsonl")
         with path.open("rb") as f:
             rows = [orjson.loads(line) for line in f if line.strip()]
@@ -1490,16 +1640,65 @@ def _restore_legacy_nodes_if_needed(
                 raise BackupFormatError(
                     f"Duplicate document/folder node id in backup: {node_id!r}"
                 )
+            parent_id = row.get("parent_id", row.get("folder_id"))
+            if node_id != "/" and parent_id is None:
+                parent_id = "/"
             node_rows[node_id] = {
                 "id": node_id,
                 "type": node_type,
                 "inherit": row.get("inherit", True),
                 "status": row.get("status", 0),
                 "status_operation_id": row.get("status_operation_id"),
+                "access_rule_set_id": None,
+                "name": row.get("name", row.get("title")),
+                "parent_id": parent_id,
             }
+    return node_rows
 
-    if node_rows:
-        connection.execute(insert(tables["nodes"]), list(node_rows.values()))
+
+def _load_legacy_node_namespace(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    namespace: dict[str, dict[str, Any]] = {}
+    layouts = {
+        "folders": ("name", "parent_id"),
+        "documents": ("title", "folder_id"),
+    }
+    for table_name, (name_column, parent_column) in layouts.items():
+        table_manifest = manifest.get("tables", {}).get(table_name)
+        if table_manifest is None:
+            continue
+        columns = table_manifest.get("columns")
+        if columns is not None and name_column not in columns:
+            continue
+        path = _safe_payload_path(extract_dir, f"tables/{table_name}.jsonl")
+        row_count = 0
+        with path.open("rb") as f:
+            for line_number, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = orjson.loads(line)
+                except orjson.JSONDecodeError as exc:
+                    raise BackupFormatError(
+                        f"Invalid JSON row in {path} at line {line_number}"
+                    ) from exc
+                row_count += 1
+                namespace[str(row["id"])] = {
+                    "name": row.get(name_column),
+                    "parent_id": (
+                        row.get(parent_column)
+                        if row["id"] == "/" or row.get(parent_column) is not None
+                        else "/"
+                    ),
+                }
+        if row_count != table_manifest["rows"]:
+            raise BackupFormatError(
+                f"Row count mismatch for table {table_name!r}: "
+                f"manifest says {table_manifest['rows']}, payload has {row_count}"
+            )
+    return namespace
 
 
 def _build_missing_compiled_rule_set_mapping(
@@ -1784,6 +1983,8 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
 
     decoded = {}
     for column in table.columns:
+        if column.computed is not None:
+            continue
         if column.name not in row:
             decoded[column.name] = None
             continue
@@ -1805,6 +2006,15 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
                 raise BackupFormatError("Invalid comment digest in backup")
         decoded[column.name] = value
     return decoded
+
+
+def _is_node_name_conflict(exc: IntegrityError) -> bool:
+    message = str(exc.orig).lower()
+    return (
+        "uq_nodes_active_parent_name" in message
+        or "nodes.active_parent_id, nodes.name" in message
+        or "nodes.name, nodes.active_parent_id" in message
+    )
 
 
 def _validate_manifest(manifest: dict[str, Any]) -> None:

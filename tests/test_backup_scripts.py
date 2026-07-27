@@ -363,46 +363,47 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
         )
         connection.execute(
             insert(tables["nodes"]),
-            [
-                {
-                    "id": "/",
-                    "type": "directory",
-                    "inherit": True,
-                    "status": 0,
-                    "status_operation_id": None,
-                },
-                {
-                    "id": "folder-1",
-                    "type": "directory",
-                    "inherit": True,
-                    "status": 0,
-                    "status_operation_id": None,
-                },
-                {
-                    "id": "doc-1",
-                    "type": "document",
-                    "inherit": True,
-                    "status": 1,
-                    "status_operation_id": "soft-delete-op",
-                },
-            ],
+            {
+                "id": "/",
+                "type": "directory",
+                "name": "/",
+                "parent_id": None,
+                "inherit": True,
+                "status": 0,
+                "status_operation_id": None,
+            },
         )
         connection.execute(
             insert(tables["folders"]),
-            [
-                {
-                    "id": "/",
-                    "name": "/",
-                    "created_time": now,
-                    "parent_id": None,
-                },
-                {
-                    "id": "folder-1",
-                    "name": "Folder",
-                    "created_time": now,
-                    "parent_id": "/",
-                },
-            ],
+            {"id": "/", "created_time": now},
+        )
+        connection.execute(
+            insert(tables["nodes"]),
+            {
+                "id": "folder-1",
+                "type": "directory",
+                "name": "Folder",
+                "parent_id": "/",
+                "inherit": True,
+                "status": 0,
+                "status_operation_id": None,
+            },
+        )
+        connection.execute(
+            insert(tables["folders"]),
+            {"id": "folder-1", "created_time": now},
+        )
+        connection.execute(
+            insert(tables["nodes"]),
+            {
+                "id": "doc-1",
+                "type": "document",
+                "name": "Document",
+                "parent_id": "folder-1",
+                "inherit": True,
+                "status": 1,
+                "status_operation_id": "soft-delete-op",
+            },
         )
         _insert_compiled_rule(
             connection,
@@ -418,9 +419,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             insert(tables["documents"]),
             {
                 "id": "doc-1",
-                "title": "Document",
                 "created_time": now,
-                "folder_id": "folder-1",
                 "current_revision_id": None,
             },
         )
@@ -931,9 +930,9 @@ def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
         ("folder-legacy", "read"),
     ]
     assert [row["node_id"] for row in rule_sets] == ["doc-legacy", "folder-legacy"]
-    assert {row["id"]: row["access_rule_set_id"] for row in nodes} == {
-        row["node_id"]: row["id"] for row in rule_sets
-    }
+    assert {
+        row["id"]: row["access_rule_set_id"] for row in nodes if row["id"] != "/"
+    } == {row["node_id"]: row["id"] for row in rule_sets}
     assert [row["group_name"] for row in memberships] == ["sysop"]
     assert [row["permission"] for row in rights] == ["list_users"]
 
@@ -959,6 +958,8 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
                 {
                     "id": "backup-empty-rules",
                     "type": "directory",
+                    "name": "Backup Empty Rules",
+                    "parent_id": "/",
                     "inherit": True,
                     "status": 0,
                     "status_operation_id": None,
@@ -967,6 +968,8 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
                 {
                     "id": "backup-inactive-rules",
                     "type": "directory",
+                    "name": "Backup Inactive Rules",
+                    "parent_id": "/",
                     "inherit": True,
                     "status": 0,
                     "status_operation_id": None,
@@ -979,15 +982,11 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
             [
                 {
                     "id": "backup-empty-rules",
-                    "name": "Backup Empty Rules",
                     "created_time": 1_700_000_010.0,
-                    "parent_id": None,
                 },
                 {
                     "id": "backup-inactive-rules",
-                    "name": "Backup Inactive Rules",
                     "created_time": 1_700_000_011.0,
-                    "parent_id": None,
                 },
             ],
         )
@@ -1039,6 +1038,7 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
         staging_dir / "tables" / "compiled_access_rule_sets.jsonl"
     )
     exported_nodes = _read_jsonl(staging_dir / "tables" / "nodes.jsonl")
+    assert all("active_parent_id" not in row for row in exported_nodes)
     assert {row["id"] for row in exported_rule_sets} == {
         "rule-set-doc-1",
         "rule-set-folder-1",
@@ -1051,6 +1051,123 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
         "backup-empty-rules": None,
         "backup-inactive-rules": None,
     }
+
+
+def test_backup_with_nodes_and_legacy_subtype_names_is_upgraded(
+    backup_context, tmp_path
+):
+    from maintenance.backup.core import (
+        BACKUP_FORMAT_VERSION,
+        _restore_database,
+        _validate_manifest,
+    )
+
+    base = backup_context.Base
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "legacy-node-payload"
+    tables_dir = extract_dir / "tables"
+    tables_dir.mkdir(parents=True)
+
+    rows_by_table = {
+        "nodes": [
+            {"id": "/", "type": "directory", "inherit": True, "status": 0},
+            {"id": "folder-old", "type": "directory", "inherit": True, "status": 0},
+            {"id": "doc-old", "type": "document", "inherit": True, "status": 0},
+        ],
+        "folders": [
+            {"id": "/", "name": "/", "parent_id": None, "created_time": 1.0},
+            {
+                "id": "folder-old",
+                "name": "Archive",
+                "parent_id": "/",
+                "created_time": 2.0,
+            },
+        ],
+        "documents": [
+            {
+                "id": "doc-old",
+                "title": "Report",
+                "folder_id": "folder-old",
+                "created_time": 3.0,
+                "current_revision_id": None,
+            }
+        ],
+    }
+    for table_name, rows in rows_by_table.items():
+        _write_jsonl(tables_dir / f"{table_name}.jsonl", rows)
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["documents"],
+        "tables": {
+            table_name: {"columns": list(rows[0]), "rows": len(rows)}
+            for table_name, rows in rows_by_table.items()
+        },
+        "files": [],
+        "configuration": {},
+    }
+
+    _validate_manifest(manifest)
+    _restore_database(extract_dir, manifest, target_session)
+
+    nodes = base.metadata.tables["nodes"]
+    with target_engine.connect() as connection:
+        restored = {
+            row["id"]: (row["name"], row["parent_id"])
+            for row in connection.execute(select(nodes)).mappings()
+        }
+    assert restored == {
+        "/": ("/", None),
+        "folder-old": ("Archive", "/"),
+        "doc-old": ("Report", "folder-old"),
+    }
+
+
+def test_legacy_backup_rejects_active_cross_type_duplicate(backup_context, tmp_path):
+    from maintenance.backup.core import (
+        BACKUP_FORMAT_VERSION,
+        _restore_database,
+        _validate_manifest,
+    )
+
+    base = backup_context.Base
+    _, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "duplicate-payload"
+    tables_dir = extract_dir / "tables"
+    tables_dir.mkdir(parents=True)
+    rows_by_table = {
+        "folders": [
+            {"id": "/", "name": "/", "parent_id": None, "created_time": 1.0},
+            {"id": "folder", "name": "Same", "parent_id": "/", "created_time": 2.0},
+        ],
+        "documents": [
+            {
+                "id": "document",
+                "title": "Same",
+                "folder_id": "/",
+                "created_time": 3.0,
+                "current_revision_id": None,
+            }
+        ],
+    }
+    for table_name, rows in rows_by_table.items():
+        _write_jsonl(tables_dir / f"{table_name}.jsonl", rows)
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["documents"],
+        "tables": {
+            table_name: {"columns": list(rows[0]), "rows": len(rows)}
+            for table_name, rows in rows_by_table.items()
+        },
+        "files": [],
+        "configuration": {},
+    }
+
+    _validate_manifest(manifest)
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="document:document.*parent '/'.*name 'Same'",
+    ):
+        _restore_database(extract_dir, manifest, target_session)
 
 
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):

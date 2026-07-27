@@ -36,13 +36,6 @@ trusted_proxy_networks = ["127.0.0.1/32", "::1/128"]
 file_chunk_size = 2097152 # 2MB
 # Setting the chunk size too high may cause transfer failures depending on client configuration
 
-[document]
-# Whether to allow multiple documents with the same name in the same directory.
-# 
-# If set to false after previously being true, existing duplicate documents will be kept,
-# but new uploads with duplicate names will be rejected.
-allow_name_duplicate = false
-
 [security]
 # Pepper used for password hashing
 pepper = ""
