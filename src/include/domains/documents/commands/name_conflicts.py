@@ -1,3 +1,7 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
@@ -5,6 +9,52 @@ from include.config.settings import global_config
 from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
 from include.messages import Messages as smsg
+
+NODE_NAME_UNIQUE_CONSTRAINT = "uq_nodes_active_parent_name"
+
+
+class NodeNameConflictError(RuntimeError):
+    def __init__(self, parent_id: str, name: str) -> None:
+        super().__init__(f"Node name {name!r} is already used under {parent_id!r}")
+        self.parent_id = parent_id
+        self.name = name
+
+
+def is_node_name_conflict(exc: IntegrityError) -> bool:
+    original = exc.orig
+    message = str(original)
+    lower_message = message.lower()
+    if NODE_NAME_UNIQUE_CONSTRAINT in lower_message:
+        return True
+
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    diagnostic = getattr(original, "diag", None)
+    if (
+        sqlstate == "23505"
+        and getattr(diagnostic, "constraint_name", None) == NODE_NAME_UNIQUE_CONSTRAINT
+    ):
+        return True
+
+    error_args = getattr(original, "args", ())
+    if error_args and error_args[0] == 1062:
+        return NODE_NAME_UNIQUE_CONSTRAINT in lower_message
+
+    sqlite_error_name = getattr(original, "sqlite_errorname", "")
+    return sqlite_error_name in {"SQLITE_CONSTRAINT", "SQLITE_CONSTRAINT_UNIQUE"} and (
+        "nodes.active_parent_id, nodes.name" in lower_message
+        or "nodes.name, nodes.active_parent_id" in lower_message
+    )
+
+
+@contextmanager
+def node_name_mutation(session: Session, parent_id: str, name: str) -> Iterator[None]:
+    try:
+        yield
+    except IntegrityError as exc:
+        if not is_node_name_conflict(exc):
+            raise
+        session.rollback()
+        raise NodeNameConflictError(parent_id, name) from exc
 
 
 def get_target_folder_and_check_write(
