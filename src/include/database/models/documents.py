@@ -11,7 +11,7 @@ __all__ = [
 
 import secrets
 import time
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from itertools import batched
 from typing import TYPE_CHECKING, ClassVar, Literal, cast
 from warnings import deprecated
@@ -55,8 +55,10 @@ if TYPE_CHECKING:
     from include.database.models.access import CompiledAccessRuleSet
     from include.database.models.identity import User
 
-_DOCUMENT_NODE_TYPE = "document"
-_DIRECTORY_NODE_TYPE = "directory"
+
+class NodeType(StrEnum):
+    DOCUMENT = "document"
+    DIRECTORY = "directory"
 
 
 class EntityStatus(IntEnum):
@@ -106,7 +108,7 @@ class Node(Base):
             (
                 (id == ROOT_DIRECTORY_ID)
                 & parent_id.is_(None)
-                & (type == _DIRECTORY_NODE_TYPE)
+                & (type == NodeType.DIRECTORY.value)
             )
             | ((id != ROOT_DIRECTORY_ID) & parent_id.is_not(None)),
             name="ck_nodes_root_parent",
@@ -193,8 +195,8 @@ class Node(Base):
 
         """
         _TARGET_TYPE_MAPPING = {
-            "folders": _DIRECTORY_NODE_TYPE,
-            "documents": _DOCUMENT_NODE_TYPE,
+            "folders": NodeType.DIRECTORY.value,
+            "documents": NodeType.DOCUMENT.value,
         }
 
         _session = object_session(user)
@@ -293,7 +295,7 @@ class Folder(Node):  # Document folder.
     )
 
     __mapper_args__: ClassVar[dict[str, object]] = {
-        "polymorphic_identity": _DIRECTORY_NODE_TYPE,
+        "polymorphic_identity": NodeType.DIRECTORY.value,
         "inherit_condition": id == Node.id,
     }
 
@@ -391,7 +393,7 @@ class Document(Node):
         return latest_revision is not None
 
     __mapper_args__: ClassVar[dict[str, str]] = {
-        "polymorphic_identity": _DOCUMENT_NODE_TYPE
+        "polymorphic_identity": NodeType.DOCUMENT.value
     }
 
     def get_latest_revision(self) -> DocumentRevision:
