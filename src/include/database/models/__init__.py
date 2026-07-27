@@ -19,7 +19,7 @@ from include.database.models.documents import (
     Folder,
     Node,
 )
-from include.database.models.files import File, FileTask, TransferMode
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import (
     User,
     UserGroup,
@@ -55,6 +55,7 @@ __all__ = [
     "EntityStatus",
     "File",
     "FileTask",
+    "FileTaskStatus",
     "Folder",
     "LoginThrottle",
     "Node",

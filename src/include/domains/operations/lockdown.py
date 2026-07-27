@@ -137,17 +137,20 @@ def _publish_lockdown_state(state: LockdownState) -> None:
 
 
 def _cancel_pending_file_tasks() -> int:
-    from include.database.models.files import FileTask
+    from include.database.models.files import FileTask, FileTaskStatus
     from include.database.session import Session
 
-    now = time.time()
     with Session.begin() as session:
         result = cast(
             CursorResult[Any],
             session.execute(
                 update(FileTask)
-                .where(FileTask.status == 0, FileTask.end_time >= now)
-                .values(status=2)
+                .where(
+                    FileTask.status.in_(
+                        (FileTaskStatus.PENDING, FileTaskStatus.IN_PROGRESS)
+                    )
+                )
+                .values(status=FileTaskStatus.CANCELLED)
             ),
         )
         return result.rowcount or 0

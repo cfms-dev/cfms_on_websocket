@@ -8,6 +8,7 @@ from include.config.settings import GlobalConfig
 from include.config.validation import (
     AuthThrottlePolicy,
     ConfigValidationError,
+    DocumentUploadPolicy,
     get_config_warnings,
     get_enabled_extensions,
     get_trusted_proxy_networks,
@@ -187,6 +188,31 @@ def test_policy_is_built_from_validated_config():
     policy = AuthThrottlePolicy.from_config(config)
 
     assert policy.ip_failure_threshold == 42
+
+
+def test_document_upload_policy_defaults_and_overrides():
+    config = _valid_config()
+    assert DocumentUploadPolicy.from_config(config).start_timeout_seconds == 3600
+
+    config["document"] = {"upload": {"creation_rate_per_user": 500}}
+    assert DocumentUploadPolicy.from_config(config).creation_rate_per_user == 500
+
+
+@pytest.mark.parametrize(
+    "upload",
+    [
+        {"start_timeout_seconds": 0},
+        {"idle_timeout_seconds": True},
+        {"idle_timeout_seconds": 10, "max_duration_seconds": 5},
+        {"start_timeout_seconds": 10, "max_duration_seconds": 10},
+    ],
+)
+def test_document_upload_policy_rejects_invalid_values(upload):
+    config = _valid_config()
+    config["document"] = {"upload": upload}
+
+    with pytest.raises(ConfigValidationError, match="document.upload"):
+        validate_config(config)
 
 
 def test_empty_pepper_warning_is_centralized():

@@ -292,6 +292,69 @@ def test_create_file_task_is_persisted_by_caller_commit(file_task_context) -> No
         assert task.file_id == "committed-file"
 
 
+def test_upload_task_lifecycle_uses_two_stage_deadline(
+    file_task_context, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+    from include.domains.documents.commands import file_tasks
+
+    task_id, _file_id = _create_file_task(
+        file_task_context, "uploads/lifecycle.bin", mode=TransferMode.UPLOAD
+    )
+    monkeypatch.setattr(file_tasks.time, "time", lambda: 1000.0)
+
+    with file_task_context.session.begin() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        task.start_time = 900.0
+        task.end_time = 4500.0
+
+    with file_task_context.session.begin() as session:
+        claimed = file_tasks.claim_file_task(
+            session, task_id, TransferMode.UPLOAD, now=1000.0
+        )
+        assert claimed is not None
+        hard_deadline = claimed.end_time
+        assert claimed.status == FileTaskStatus.IN_PROGRESS
+        assert claimed.start_time == 1000.0
+
+    with file_task_context.session.begin() as session:
+        assert (
+            file_tasks.release_file_task(session, task_id, now=1001.0)
+            == FileTaskStatus.PENDING
+        )
+
+    with file_task_context.session.begin() as session:
+        claimed = file_tasks.claim_file_task(
+            session, task_id, TransferMode.UPLOAD, now=1002.0
+        )
+        assert claimed is not None
+        assert claimed.start_time == 1000.0
+        assert claimed.end_time == hard_deadline
+        assert file_tasks.complete_file_task(session, task_id) is True
+        assert file_tasks.complete_file_task(session, task_id) is False
+
+
+def test_claim_marks_due_task_expired(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+    from include.domains.documents.commands.file_tasks import claim_file_task
+
+    task_id, _file_id = _create_file_task(
+        file_task_context, "uploads/expired.bin", mode=TransferMode.UPLOAD
+    )
+    with file_task_context.session.begin() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        task.end_time = 10.0
+
+    with file_task_context.session.begin() as session:
+        assert claim_file_task(session, task_id, TransferMode.UPLOAD, now=11.0) is None
+
+    with file_task_context.session() as session:
+        assert (
+            session.get(file_task_context.FileTask, task_id).status
+            == FileTaskStatus.EXPIRED
+        )
+
+
 class TestFileTransfer:
     @pytest.mark.asyncio
     async def test_upload_and_download_file(

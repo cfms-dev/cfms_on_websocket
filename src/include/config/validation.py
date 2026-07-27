@@ -13,6 +13,7 @@ from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 __all__ = [
     "AuthThrottlePolicy",
     "ConfigValidationError",
+    "DocumentUploadPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
     "get_trusted_proxy_networks",
@@ -158,6 +159,58 @@ class AuthThrottlePolicy:
         return policy
 
 
+@dataclass(frozen=True)
+class DocumentUploadPolicy:
+    start_timeout_seconds: int = 3600
+    max_duration_seconds: int = 86400
+    idle_timeout_seconds: int = 300
+    cleanup_interval_seconds: int = 60
+    max_pending_documents_per_creator: int = 16
+    creation_rate_window_seconds: int = 600
+    creation_rate_per_user: int = 300
+    creation_rate_per_ip: int = 1000
+
+    @classmethod
+    def from_config(cls, config: _ConfigSource | None = None) -> DocumentUploadPolicy:
+        if config is None:
+            from include.config.settings import global_config
+
+            config = global_config
+
+        try:
+            document = config["document"]
+        except KeyError:
+            document = {}
+        if not isinstance(document, Mapping):
+            raise ConfigValidationError("document must be a table")
+
+        upload = document.get("upload", {})
+        if not isinstance(upload, Mapping):
+            raise ConfigValidationError("document.upload must be a table")
+
+        values = {
+            field.name: upload.get(field.name, field.default) for field in fields(cls)
+        }
+        policy = cls(**values)
+        for field in fields(cls):
+            value = getattr(policy, field.name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigValidationError(
+                    f"document.upload.{field.name} must be a positive integer"
+                )
+        if policy.idle_timeout_seconds > policy.max_duration_seconds:
+            raise ConfigValidationError(
+                "document.upload.idle_timeout_seconds must not exceed "
+                "document.upload.max_duration_seconds"
+            )
+        if policy.start_timeout_seconds >= policy.max_duration_seconds:
+            raise ConfigValidationError(
+                "document.upload.start_timeout_seconds must be less than "
+                "document.upload.max_duration_seconds"
+            )
+        return policy
+
+
 def _validate_client_certificate_config(config: _ConfigSource) -> None:
     security = _section(config, "security")
     require_client_cert = security.get("require_client_cert", False)
@@ -178,6 +231,7 @@ def validate_config(config: _ConfigSource) -> None:
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
+    DocumentUploadPolicy.from_config(config)
     _validate_client_certificate_config(config)
 
     from include.extensions.manager import validate_extension_config

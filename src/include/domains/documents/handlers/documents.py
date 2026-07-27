@@ -24,6 +24,7 @@ from include.config.constants import (
     FILE_TASK_DEFAULT_DURATION_SECONDS,
     ROOT_DIRECTORY_ID,
 )
+from include.config.validation import DocumentUploadPolicy
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -32,7 +33,7 @@ from include.database.models.documents import (
     EntityStatus,
     Folder,
 )
-from include.database.models.files import File, FileTask, TransferMode
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
@@ -41,6 +42,7 @@ from include.domains.access.authorization.compiled_rules import (
     get_access_rules_list,
 )
 from include.domains.access.permissions import Permissions
+from include.domains.documents.commands.file_tasks import serialize_file_task
 from include.domains.documents.commands.name_conflicts import (
     NodeNameConflictError,
     describe_node_name_conflict,
@@ -80,24 +82,22 @@ def create_file_task(
         raise ValueError("File can not be None when creating a file task")
 
     now = time.time()
+    duration = (
+        DocumentUploadPolicy.from_config().start_timeout_seconds
+        if transfer_mode == TransferMode.UPLOAD
+        else FILE_TASK_DEFAULT_DURATION_SECONDS
+    )
     task = FileTask(
         file_id=file.id,
-        status=0,
+        status=FileTaskStatus.PENDING,
         mode=transfer_mode,
         start_time=now,
-        end_time=now + FILE_TASK_DEFAULT_DURATION_SECONDS,
+        end_time=now + duration,
     )
     session.add(task)
     session.flush()
 
-    return {
-        "task_id": task.id,
-        "provider": "native",  # Literal['native', ...]
-        "start_time": task.start_time,
-        "end_time": task.end_time,
-        # Only download tasks support resume
-        "supports_resume": transfer_mode == TransferMode.DOWNLOAD,
-    }
+    return serialize_file_task(task)
 
 
 def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
@@ -646,7 +646,19 @@ class RequestDownloadFileHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
                 return
 
-            if task.status != 0 or task.mode != 0:
+            task_status = FileTaskStatus(task.status)
+            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+                handler.conclude_request(
+                    410,
+                    {"task_status": task_status.name.lower()},
+                    "Task is no longer available",
+                )
+                return
+
+            if (
+                task_status != FileTaskStatus.PENDING
+                or task.mode != TransferMode.DOWNLOAD
+            ):
                 handler.conclude_request(
                     400, {}, "Task is not in a valid state for download"
                 )
@@ -655,9 +667,14 @@ class RequestDownloadFileHandler(RequestHandler):
             if task.start_time > time.time() or (
                 task.end_time and task.end_time < time.time()
             ):
-                handler.conclude_request(
-                    400, {}, "Task is either not started yet or has already ended"
-                )
+                if task.end_time and task.end_time <= time.time():
+                    task.status = FileTaskStatus.EXPIRED
+                    session.commit()
+                    handler.conclude_request(
+                        410, {"task_status": "expired"}, "Task has expired"
+                    )
+                else:
+                    handler.conclude_request(400, {}, "Task has not started yet")
                 return
 
         # The server still needs to send one more response.
@@ -685,7 +702,25 @@ class RequestUploadFileHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
                 return
 
-            if task.status != 0 or task.mode != 1:
+            task_status = FileTaskStatus(task.status)
+            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+                handler.conclude_request(
+                    410,
+                    {"task_status": task_status.name.lower()},
+                    "Task is no longer available",
+                )
+                return
+
+            if task_status == FileTaskStatus.IN_PROGRESS:
+                handler.conclude_request(
+                    409, {"task_status": "in_progress"}, "Upload is already in progress"
+                )
+                return
+
+            if (
+                task_status != FileTaskStatus.PENDING
+                or task.mode != TransferMode.UPLOAD
+            ):
                 handler.conclude_request(
                     400, {}, "Task is not in a valid state for upload"
                 )
@@ -694,9 +729,14 @@ class RequestUploadFileHandler(RequestHandler):
             if task.start_time > time.time() or (
                 task.end_time and task.end_time < time.time()
             ):
-                handler.conclude_request(
-                    400, {}, "Task is either not started yet or has already ended"
-                )
+                if task.end_time and task.end_time <= time.time():
+                    task.status = FileTaskStatus.EXPIRED
+                    session.commit()
+                    handler.conclude_request(
+                        410, {"task_status": "expired"}, "Task has expired"
+                    )
+                else:
+                    handler.conclude_request(400, {}, "Task has not started yet")
                 return
 
         # The server needs to send one response.
