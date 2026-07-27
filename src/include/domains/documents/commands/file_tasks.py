@@ -24,6 +24,42 @@ def serialize_file_task(task: FileTask) -> dict[str, Any]:
     }
 
 
+def expire_file_task_if_due(
+    session: Session, task_id: str, *, now: float | None = None
+) -> FileTaskStatus | None:
+    if now is None:
+        now = time.time()
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return None
+
+    status = FileTaskStatus(task.status)
+    if (
+        status not in ACTIVE_FILE_TASK_STATUSES
+        or task.end_time is None
+        or task.end_time > now
+    ):
+        return status
+
+    result = cast(
+        CursorResult[Any],
+        session.execute(
+            update(FileTask)
+            .where(
+                FileTask.id == task_id,
+                FileTask.status.in_(ACTIVE_FILE_TASK_STATUSES),
+                FileTask.end_time.is_not(None),
+                FileTask.end_time <= now,
+            )
+            .values(status=FileTaskStatus.EXPIRED)
+        ),
+    )
+    session.expire(task)
+    if result.rowcount == 1:
+        return FileTaskStatus.EXPIRED
+    return FileTaskStatus(task.status)
+
+
 def claim_file_task(
     session: Session,
     task_id: str,
@@ -36,11 +72,9 @@ def claim_file_task(
     task = session.get(FileTask, task_id)
     if task is None or task.mode != transfer_mode:
         return None
-    if task.status != FileTaskStatus.PENDING:
+    if expire_file_task_if_due(session, task_id, now=now) != FileTaskStatus.PENDING:
         return None
-    if task.start_time > now or (task.end_time is not None and task.end_time <= now):
-        task.status = FileTaskStatus.EXPIRED
-        session.flush()
+    if task.start_time > now:
         return None
 
     values: dict[Any, Any] = {FileTask.status: FileTaskStatus.IN_PROGRESS}

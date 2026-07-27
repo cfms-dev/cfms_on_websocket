@@ -355,6 +355,28 @@ def test_claim_marks_due_task_expired(file_task_context) -> None:
         )
 
 
+def test_active_transfer_check_marks_due_task_expired(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    task_id, _file_id = _create_file_task(
+        file_task_context,
+        "uploads/active-expired.bin",
+        mode=TransferMode.UPLOAD,
+        status=FileTaskStatus.IN_PROGRESS,
+    )
+    with file_task_context.session.begin() as session:
+        session.get(file_task_context.FileTask, task_id).end_time = 1.0
+
+    status = file_task_context.ConnectionHandler._get_file_task_status(task_id)
+
+    assert status == FileTaskStatus.EXPIRED
+    with file_task_context.session() as session:
+        assert (
+            session.get(file_task_context.FileTask, task_id).status
+            == FileTaskStatus.EXPIRED
+        )
+
+
 def test_transfer_claim_race_reports_expired_status(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
 

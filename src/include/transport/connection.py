@@ -27,6 +27,7 @@ from include.database.session import Session
 from include.domains.documents.commands.file_tasks import (
     claim_file_task,
     complete_file_task,
+    expire_file_task_if_due,
     release_file_task,
 )
 from include.domains.documents.file_task_signals import watch_file_task
@@ -145,11 +146,9 @@ class ConnectionHandler:
 
     @staticmethod
     def _get_file_task_status(task_id: str) -> FileTaskStatus:
-        with Session() as session:
-            task = session.get(FileTask, task_id)
-            if task is None:
-                return FileTaskStatus.CANCELLED
-            return FileTaskStatus(task.status)
+        with Session() as session, session.begin():
+            status = expire_file_task_if_due(session, task_id)
+        return FileTaskStatus.CANCELLED if status is None else status
 
     def _ensure_file_task_active(
         self, task_id: str, cancelled: threading.Event
