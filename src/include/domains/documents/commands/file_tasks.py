@@ -17,7 +17,7 @@ ACTIVE_FILE_TASK_STATUSES = (
 def serialize_file_task(task: FileTask) -> dict[str, Any]:
     return {
         "task_id": task.id,
-        "provider": "native",
+        "provider": "native",  # reserved for future use
         "start_time": task.start_time,
         "end_time": task.end_time,
         "supports_resume": task.mode == TransferMode.DOWNLOAD,
