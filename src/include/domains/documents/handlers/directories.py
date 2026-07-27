@@ -30,6 +30,9 @@ from include.domains.documents.commands.name_conflicts import (
     describe_subtree_restore_name_conflict,
     node_name_mutation,
 )
+from include.domains.documents.handlers.name_conflicts import (
+    respond_to_node_name_conflict,
+)
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
 from include.domains.documents.queries.listing import (
     count_active_directory_children,
@@ -423,15 +426,12 @@ class RequestCreateDirectoryHandler(RequestHandler):
                         "Directory already exists",
                     )
                     return Result(code=0, target=parent_id, username=handler.username)
-                handler.conclude_request(409, payload, message)
-                result_data = {"name": name}
-                if "duplicate_id" in payload:
-                    result_data["duplicate_id"] = payload["duplicate_id"]
-                return Result(
-                    code=409,
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
                     target=parent_id,
-                    data=result_data,
-                    username=handler.username,
+                    result_data={"name": name},
                 )
 
             handler.conclude_request(
@@ -617,16 +617,12 @@ class RequestRenameDirectoryHandler(RequestHandler):
                 payload, message = describe_node_name_conflict(
                     session, this_user, parent_id, new_name
                 )
-                payload.pop("entity", None)
-                handler.conclude_request(409, payload, message)
-                result_data = {"title": new_name}
-                if "duplicate_id" in payload:
-                    result_data["duplicate_id"] = payload["duplicate_id"]
-                return Result(
-                    code=409,
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
                     target=folder_id,
-                    data=result_data,
-                    username=handler.username,
+                    result_data={"title": new_name},
                 )
 
             handler.conclude_request(
@@ -714,16 +710,12 @@ class RequestMoveDirectoryHandler(RequestHandler):
                 payload, message = describe_node_name_conflict(
                     session, user, target_folder_id, name
                 )
-                payload.pop("entity", None)
-                handler.conclude_request(409, payload, message)
-                result_data = {"title": name}
-                if "duplicate_id" in payload:
-                    result_data["duplicate_id"] = payload["duplicate_id"]
-                return Result(
-                    code=409,
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
                     target=folder_id,
-                    data=result_data,
-                    username=handler.username,
+                    result_data={"title": name},
                 )
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
@@ -995,16 +987,12 @@ class RequestRestoreDirectoryHandler(RequestHandler):
                     db_parent_id,
                     final_name,
                 )
-                payload.pop("entity", None)
-                handler.conclude_request(409, payload, message)
-                result_data = {}
-                if "duplicate_id" in payload:
-                    result_data["duplicate_id"] = payload["duplicate_id"]
-                return Result(
-                    code=409,
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
                     target=folder_id,
-                    data=result_data,
-                    username=handler.username,
+                    result_data={},
                 )
 
             handler.conclude_request(

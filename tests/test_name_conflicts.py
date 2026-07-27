@@ -198,3 +198,42 @@ def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None
         )
 
     assert payload["duplicate_id"] == "winner"
+
+
+@pytest.mark.parametrize("duplicate_id", [None, "winner"])
+def test_conflict_response_hides_entity_and_propagates_visible_winner(
+    duplicate_id,
+) -> None:
+    from include.domains.documents.handlers.name_conflicts import (
+        respond_to_node_name_conflict,
+    )
+
+    responses = []
+    handler = SimpleNamespace(
+        username="requester",
+        conclude_request=lambda *args: responses.append(args),
+    )
+    entity = object()
+    payload = {"type": "directory", "id": duplicate_id, "entity": entity}
+    if duplicate_id is not None:
+        payload["duplicate_id"] = duplicate_id
+    result_data = {"title": "Report"}
+
+    result = respond_to_node_name_conflict(
+        handler,
+        payload,
+        "Name conflict",
+        target="parent",
+        result_data=result_data,
+    )
+
+    assert responses == [(409, payload, "Name conflict")]
+    assert "entity" not in payload
+    assert result.code == 409
+    assert result.target == "parent"
+    assert result.username == "requester"
+    assert result.data == {
+        "title": "Report",
+        **({"duplicate_id": duplicate_id} if duplicate_id is not None else {}),
+    }
+    assert result_data == {"title": "Report"}

@@ -47,6 +47,9 @@ from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
     node_name_mutation,
 )
+from include.domains.documents.handlers.name_conflicts import (
+    respond_to_node_name_conflict,
+)
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
@@ -105,29 +108,6 @@ def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
 
 def mark_document_modified(document: Document, username: str) -> None:
     get_or_create_document_metadata(document).last_modified_by_username = username
-
-
-def _respond_to_document_name_conflict(
-    handler: ConnectionHandler,
-    session: ORMSession,
-    user: User,
-    parent_id: str,
-    name: str,
-    *,
-    target: str,
-    result_data: dict[str, Any],
-) -> Result:
-    payload, message = describe_node_name_conflict(session, user, parent_id, name)
-    payload.pop("entity", None)
-    handler.conclude_request(409, payload, message)
-    if "duplicate_id" in payload:
-        result_data = {**result_data, "duplicate_id": payload["duplicate_id"]}
-    return Result(
-        code=409,
-        target=target,
-        data=result_data,
-        username=handler.username,
-    )
 
 
 def serialize_document_metadata(document: Document) -> dict:
@@ -412,12 +392,13 @@ class RequestCreateDocumentHandler(RequestHandler):
                 )
 
             except NodeNameConflictError:
-                return _respond_to_document_name_conflict(
+                payload, message = describe_node_name_conflict(
+                    session, user, folder_id, title
+                )
+                return respond_to_node_name_conflict(
                     handler,
-                    session,
-                    user,
-                    folder_id,
-                    title,
+                    payload,
+                    message,
                     target=folder_id,
                     result_data={"title": title},
                 )
@@ -625,12 +606,13 @@ class RequestRenameDocumentHandler(RequestHandler):
                     mark_document_modified(document, this_user.username)
                     session.commit()
             except NodeNameConflictError:
-                return _respond_to_document_name_conflict(
+                payload, message = describe_node_name_conflict(
+                    session, this_user, parent_id, new_title
+                )
+                return respond_to_node_name_conflict(
                     handler,
-                    session,
-                    this_user,
-                    parent_id,
-                    new_title,
+                    payload,
+                    message,
                     target=parent_id,
                     result_data={"title": old_title},
                 )
@@ -890,12 +872,13 @@ class RequestMoveDocumentHandler(RequestHandler):
                     mark_document_modified(document, user.username)
                     session.commit()
             except NodeNameConflictError:
-                return _respond_to_document_name_conflict(
+                payload, message = describe_node_name_conflict(
+                    session, user, target_folder_id, title
+                )
+                return respond_to_node_name_conflict(
                     handler,
-                    session,
-                    user,
-                    target_folder_id,
-                    title,
+                    payload,
+                    message,
                     target=source_folder_id,
                     result_data={"title": title},
                 )
@@ -1041,12 +1024,13 @@ class RequestRestoreDocumentHandler(RequestHandler):
                     mark_document_modified(document, user.username)
                     session.commit()
             except NodeNameConflictError:
-                return _respond_to_document_name_conflict(
+                payload, message = describe_node_name_conflict(
+                    session, user, db_folder_id, final_title
+                )
+                return respond_to_node_name_conflict(
                     handler,
-                    session,
-                    user,
-                    db_folder_id,
-                    final_title,
+                    payload,
+                    message,
                     target=doc_id,
                     result_data={},
                 )
