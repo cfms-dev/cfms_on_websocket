@@ -55,6 +55,9 @@ if TYPE_CHECKING:
     from include.database.models.access import CompiledAccessRuleSet
     from include.database.models.identity import User
 
+_DOCUMENT_NODE_TYPE = "document"
+_DIRECTORY_NODE_TYPE = "directory"
+
 
 class EntityStatus(IntEnum):
     OK = 0
@@ -92,14 +95,19 @@ class Node(Base):
     active_parent_id: Mapped[str | None] = mapped_column(
         VARCHAR(255),
         Computed(
-            "CASE WHEN status = 1 THEN NULL ELSE parent_id END",
+            f"CASE WHEN status = {EntityStatus.DELETED.value} "
+            "THEN NULL ELSE parent_id END",
             persisted=True,
         ),
         nullable=True,
     )
     __table_args__ = (
         CheckConstraint(
-            ((id == ROOT_DIRECTORY_ID) & parent_id.is_(None) & (type == "directory"))
+            (
+                (id == ROOT_DIRECTORY_ID)
+                & parent_id.is_(None)
+                & (type == _DIRECTORY_NODE_TYPE)
+            )
             | ((id != ROOT_DIRECTORY_ID) & parent_id.is_not(None)),
             name="ck_nodes_root_parent",
         ),
@@ -184,7 +192,10 @@ class Node(Base):
             - If no access rules are defined, access is granted by default.
 
         """
-        _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
+        _TARGET_TYPE_MAPPING = {
+            "folders": _DIRECTORY_NODE_TYPE,
+            "documents": _DOCUMENT_NODE_TYPE,
+        }
 
         _session = object_session(user)
         if not _session:
@@ -282,7 +293,7 @@ class Folder(Node):  # Document folder.
     )
 
     __mapper_args__: ClassVar[dict[str, object]] = {
-        "polymorphic_identity": "directory",
+        "polymorphic_identity": _DIRECTORY_NODE_TYPE,
         "inherit_condition": id == Node.id,
     }
 
@@ -379,7 +390,9 @@ class Document(Node):
             return False
         return latest_revision is not None
 
-    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "document"}
+    __mapper_args__: ClassVar[dict[str, str]] = {
+        "polymorphic_identity": _DOCUMENT_NODE_TYPE
+    }
 
     def get_latest_revision(self) -> DocumentRevision:
         """Return the latest active revision.

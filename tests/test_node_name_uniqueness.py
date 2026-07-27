@@ -190,7 +190,7 @@ def test_node_namespace_ddl_is_portable(dialect_name: str) -> None:
     from sqlalchemy.dialects import mysql, postgresql, sqlite
 
     from include.config.constants import ROOT_DIRECTORY_ID
-    from include.database.models.documents import Node
+    from include.database.models.documents import EntityStatus, Node
 
     dialects = {
         "sqlite": sqlite.dialect(),
@@ -203,3 +203,4 @@ def test_node_namespace_ddl_is_portable(dialect_name: str) -> None:
     assert "uq_nodes_active_parent_name" in ddl
     assert "ck_nodes_root_parent" in ddl
     assert repr(ROOT_DIRECTORY_ID) in ddl
+    assert f"status = {EntityStatus.DELETED.value}" in ddl
