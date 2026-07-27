@@ -18,6 +18,7 @@ from include.database.models.files import File, FileTask, FileTaskStatus, Transf
 from include.database.models.operations import DocumentCreationThrottle
 
 _creation_limit_lock = threading.Lock()
+_last_cleanup_monotonic = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,10 +130,24 @@ def check_document_creation_limits(
     *,
     now: float | None = None,
 ) -> CreationLimitDecision:
+    global _last_cleanup_monotonic
+
     if now is None:
         now = time.time()
     policy = DocumentUploadPolicy.from_config()
     with _creation_limit_lock:
+        if (
+            time.monotonic() - _last_cleanup_monotonic
+            >= policy.creation_rate_window_seconds
+        ):
+            cutoff = now - policy.creation_rate_window_seconds
+            session.execute(
+                delete(DocumentCreationThrottle).where(
+                    DocumentCreationThrottle.last_attempt < cutoff
+                )
+            )
+            _last_cleanup_monotonic = time.monotonic()
+
         account_row = _lock_throttle_row(session, "account", username, now)
         account_decision = _consume_window(
             account_row,
@@ -182,18 +197,3 @@ def check_document_creation_limits(
                 ),
             )
         return CreationLimitDecision(True)
-
-
-def cleanup_document_creation_throttles(now: float | None = None) -> int:
-    if now is None:
-        now = time.time()
-    cutoff = now - DocumentUploadPolicy.from_config().creation_rate_window_seconds
-    from include.database.session import Session as SessionFactory
-
-    with SessionFactory.begin() as session:
-        result = session.execute(
-            delete(DocumentCreationThrottle).where(
-                DocumentCreationThrottle.last_attempt < cutoff
-            )
-        )
-        return result.rowcount or 0

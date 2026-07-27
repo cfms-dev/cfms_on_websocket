@@ -114,7 +114,7 @@ start_timeout_seconds = 3600
 max_duration_seconds = 86400
 # Abort an upload when no frame arrives within this interval.
 idle_timeout_seconds = 300
-# How often abandoned uploads and stale throttle rows are reclaimed.
+# Minimum interval between opportunistic abandoned-upload cleanup batches.
 cleanup_interval_seconds = 60
 # Maximum number of empty, not-yet-uploaded documents per creator.
 max_pending_documents_per_creator = 16

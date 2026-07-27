@@ -44,6 +44,7 @@ from include.domains.access.authorization.compiled_rules import (
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import (
     cancel_file_tasks_for_files,
+    expire_file_task_if_due,
     serialize_file_task,
 )
 from include.domains.documents.commands.name_conflicts import (
@@ -51,6 +52,10 @@ from include.domains.documents.commands.name_conflicts import (
     describe_node_name_conflict,
     get_target_folder_and_check_write,
     node_name_mutation,
+)
+from include.domains.documents.commands.upload_cleanup import (
+    maybe_reclaim_abandoned_uploads,
+    try_reclaim_abandoned_uploads,
 )
 from include.domains.documents.creation_limits import check_document_creation_limits
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
@@ -320,6 +325,9 @@ class RequestCreateDocumentHandler(RequestHandler):
             handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
             return
 
+        maybe_reclaim_abandoned_uploads()
+        try_reclaim_abandoned_uploads(folder_id=folder_id, title=title)
+
         with Session() as session:
             user = User.get_existing(session, handler.username)
 
@@ -470,6 +478,9 @@ class RequestUploadDocumentHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
 
+        maybe_reclaim_abandoned_uploads()
+        try_reclaim_abandoned_uploads(document_id=document_id)
+
         with Session() as session:
             document = session.get(Document, document_id)
             this_user = User.get_existing(session, handler.username)
@@ -498,13 +509,8 @@ class RequestUploadDocumentHandler(RequestHandler):
                     .first()
                 )
                 if existing_task is not None:
-                    status = FileTaskStatus(existing_task.status)
-                    now = time.time()
-                    if (
-                        existing_task.end_time is not None
-                        and existing_task.end_time <= now
-                    ):
-                        existing_task.status = FileTaskStatus.EXPIRED
+                    status = expire_file_task_if_due(session, existing_task.id)
+                    if status == FileTaskStatus.EXPIRED:
                         session.commit()
                         handler.conclude_request(
                             410,

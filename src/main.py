@@ -38,8 +38,10 @@ from include.database.models.files import File
 from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
+from include.domains.documents.commands.upload_cleanup import (
+    try_reclaim_abandoned_uploads,
+)
 from include.domains.documents.file_task_signals import on_file_task_event
-from include.domains.documents.upload_lifecycle import upload_lifecycle_service
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
@@ -471,7 +473,7 @@ def main():
         host, global_config["server"]["dualstack_ipv6"]
     )
 
-    upload_lifecycle_service.start()
+    try_reclaim_abandoned_uploads()
     try:
         with serve(
             handle_connection,
@@ -499,7 +501,6 @@ def main():
             finally:
                 pm.hook.ext_on_shutdown()
     finally:
-        upload_lifecycle_service.stop()
         global_config.stop()
 
 

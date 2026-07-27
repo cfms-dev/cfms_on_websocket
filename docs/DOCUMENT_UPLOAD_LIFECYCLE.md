@@ -38,13 +38,19 @@ hour to start and 24 hours to finish. While connected, five minutes without an
 incoming frame aborts the stream; the task can be reclaimed if its hard deadline
 has not passed.
 
-The background lifecycle service runs immediately at startup and then at the
-configured cleanup interval. It conditionally claims overdue tasks so multiple
-instances cannot perform the same cleanup. For an abandoned later revision, it
-removes only that inactive revision and repairs `current_revision`. If a
-document has never acquired an active revision, it permanently purges the empty
-document shell and releases the name. Deferred storage cleanup runs only after
-the database transaction commits.
+Task deadlines are enforced whenever a task is claimed and while an active
+transfer is running. This makes the hard transfer deadline part of the task
+state machine instead of depending on a periodic background thread.
+
+Abandoned upload resources are reclaimed separately. The server performs one
+sweep at startup, targets the affected document or name before creating another
+upload reservation, and opportunistically processes a bounded batch at the
+configured cleanup interval when document upload requests arrive. A task that
+has already been marked `EXPIRED` remains eligible for this later reclamation.
+For an abandoned later revision, cleanup removes only that inactive revision
+and repairs `current_revision`. If a document has never acquired an active
+revision, it permanently purges the empty document shell and releases the name.
+Deferred storage cleanup runs only after the database transaction commits.
 
 Calling `upload_document` repeatedly does not refresh a lease. An existing
 pending upload task is returned unchanged, and an upload already in progress is
@@ -92,8 +98,9 @@ creation_rate_per_ip = 1000
 Use shorter start deadlines and lower reservation caps when names are scarce or
 abuse is common. Increase the hard deadline for reliably authenticated users
 who upload large files over slow links. Keep the idle timeout long enough for
-normal network jitter, and keep cleanup frequent enough that expired names are
-released promptly without creating excessive database work.
+normal network jitter. Cleanup of the document or name being accessed is not
+delayed; the interval controls only bounded opportunistic sweeps of unrelated
+expired uploads.
 
 On upgrade, existing pending uploads receive a 24-hour grace period, so old
 reservations are not removed immediately. The migration adds a status check

@@ -144,3 +144,36 @@ def test_pending_document_limit_uses_creator_and_live_uploads(
         assert creation_limits.check_document_creation_limits(
             session, "alice", "203.0.113.1", now=101.0
         ).allowed
+
+
+def test_limit_check_opportunistically_removes_stale_rows(
+    creation_limit_context, monkeypatch
+):
+    creation_limits, models, session_factory, _policy = creation_limit_context
+    monkeypatch.setattr(creation_limits, "_last_cleanup_monotonic", 0.0)
+    monkeypatch.setattr(creation_limits.time, "monotonic", lambda: 1000.0)
+
+    with session_factory.begin() as session:
+        session.add(
+            models.DocumentCreationThrottle(
+                scope="account",
+                identity="stale",
+                window_started_at=1.0,
+                attempts=1,
+                last_attempt=1.0,
+            )
+        )
+
+    with session_factory.begin() as session:
+        assert creation_limits.check_document_creation_limits(
+            session, "alice", "203.0.113.1", now=1000.0
+        ).allowed
+
+    with session_factory() as session:
+        assert (
+            session.get(
+                models.DocumentCreationThrottle,
+                {"scope": "account", "identity": "stale"},
+            )
+            is None
+        )
