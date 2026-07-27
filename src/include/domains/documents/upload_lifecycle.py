@@ -24,6 +24,7 @@ class UploadCleanupResult:
     expired_tasks: int = 0
     removed_revisions: int = 0
     removed_documents: int = 0
+    storage_cleanup_failures: int = 0
 
 
 def _has_live_upload_for_document(
@@ -121,19 +122,20 @@ def expire_abandoned_uploads(now: float | None = None) -> UploadCleanupResult:
                 session.delete(revision)
                 removed_revisions += 1
 
+    storage_cleanup_failures = int(session.info.pop("deferred_delete_failure_count", 0))
     publish_cancelled_file_tasks(expired_task_ids)
     result = UploadCleanupResult(
         expired_tasks=len(expired_task_ids),
         removed_revisions=removed_revisions,
         removed_documents=removed_documents,
+        storage_cleanup_failures=storage_cleanup_failures,
     )
-    if result.expired_tasks:
-        logger.info(
-            "Expired {} file tasks; removed {} revisions and {} empty documents",
-            result.expired_tasks,
-            result.removed_revisions,
-            result.removed_documents,
-        )
+    logger.bind(
+        expired_tasks=result.expired_tasks,
+        removed_revisions=result.removed_revisions,
+        removed_documents=result.removed_documents,
+        storage_cleanup_failures=result.storage_cleanup_failures,
+    ).info("Upload lifecycle cleanup completed")
     return result
 
 

@@ -165,6 +165,29 @@ class ConnectionHandler:
         if status != FileTaskStatus.IN_PROGRESS:
             raise FileTaskEnded(status)
 
+    def _conclude_file_task_claim_failure(self, task_id: str) -> None:
+        with Session() as session:
+            task = session.get(FileTask, task_id)
+            if task is None:
+                self.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
+                return
+            status = FileTaskStatus(task.status)
+        if status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+            self.conclude_request(
+                410,
+                {"task_status": status.name.lower()},
+                "Task is no longer available",
+            )
+            return
+        if status == FileTaskStatus.IN_PROGRESS:
+            self.conclude_request(
+                409,
+                {"task_status": "in_progress"},
+                "Task is already in progress",
+            )
+            return
+        self.conclude_request(400, {}, "Task cannot be claimed")
+
     def _recv_file_task_frame(
         self,
         task_id: str,
@@ -204,18 +227,21 @@ class ConnectionHandler:
             None
         """
 
-        with Session.begin() as session:
+        with Session() as session, session.begin():
             file_task = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
-            if file_task is None:
-                raise ValueError(f"File transfer task cannot be claimed: {task_id}")
-            file = session.get(File, file_task.file_id)
-            if not file:
-                raise ValueError(f"File not found for file_id: {file_task.file_id}")
+            if file_task is not None:
+                file = session.get(File, file_task.file_id)
+                if not file:
+                    raise ValueError(f"File not found for file_id: {file_task.file_id}")
 
-            file_id = file.id
-            file_path = file.path
-            stored_file_size = file.size
-            encryption_key = file_task.encryption_key
+                file_id = file.id
+                file_path = file.path
+                stored_file_size = file.size
+                encryption_key = file_task.encryption_key
+
+        if file_task is None:
+            self._conclude_file_task_claim_failure(task_id)
+            return
 
         with watch_file_task(task_id) as cancelled:
             try:
@@ -286,7 +312,7 @@ class ConnectionHandler:
                 f"transfer: {received_response}"
             )
             self.conclude_request(400, {}, "Client not ready for file transfer")
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             return
 
@@ -295,7 +321,7 @@ class ConnectionHandler:
                 f"Invalid offset: {offset} (exceeds file size: {file_size})"
             )
             self.conclude_request(400, {}, "Invalid offset: exceeds file size")
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             return
 
@@ -308,13 +334,13 @@ class ConnectionHandler:
                 {},
                 "Invalid offset: must be a multiple of chunk_size or zero",
             )
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             return
 
         if file_size == 0:
             self.logger.info("Empty file, no need to send")
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 file_task = session.get(FileTask, task_id)
                 if not file_task:
                     raise ValueError(
@@ -345,7 +371,7 @@ class ConnectionHandler:
         else:
             aes_key = get_random_bytes(32)
             encoded_key = base64.b64encode(aes_key).decode()
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 file_task = session.get(FileTask, task_id)
                 if not file_task:
                     raise ValueError(
@@ -370,7 +396,7 @@ class ConnectionHandler:
                             {},
                             "File is not seekable, cannot resume from non-zero offset",
                         )
-                        with Session.begin() as session:
+                        with Session() as session, session.begin():
                             release_file_task(session, task_id)
                         return
 
@@ -407,7 +433,7 @@ class ConnectionHandler:
                     )
                     chunk_index += 1
 
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 file_task = session.get(FileTask, task_id)
                 if not file_task:
                     raise ValueError(
@@ -439,13 +465,13 @@ class ConnectionHandler:
             ConnectionClosedError,
         ):
             self.logger.info("File transmission aborted: Connection closed")
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             return
         except FileTaskEnded:
             raise
         except Exception as e:  # noqa: BLE001 - report unexpected transfer failures to the client.
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.report_error(e, context=f"Error sending file {file_path}")
             return
@@ -465,15 +491,18 @@ class ConnectionHandler:
             None
         """
 
-        with Session.begin() as session:
+        with Session() as session, session.begin():
             file_task = claim_file_task(session, task_id, TransferMode.UPLOAD)
-            if file_task is None:
-                raise ValueError(f"File transfer task cannot be claimed: {task_id}")
-            file = session.get(File, file_task.file_id)
-            if file is None:
-                raise ValueError(f"File not found for file_id: {file_task.file_id}")
-            file_id = file.id
-            file_path = file.path
+            if file_task is not None:
+                file = session.get(File, file_task.file_id)
+                if file is None:
+                    raise ValueError(f"File not found for file_id: {file_task.file_id}")
+                file_id = file.id
+                file_path = file.path
+
+        if file_task is None:
+            self._conclude_file_task_claim_failure(task_id)
+            return
 
         with watch_file_task(task_id) as cancelled:
             try:
@@ -517,7 +546,7 @@ class ConnectionHandler:
                 ).data
             )
         except Exception:
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             raise
 
@@ -550,7 +579,7 @@ class ConnectionHandler:
             )
         except jsonschema.ValidationError:
             self.conclude_request(400, {}, "Invalid request for file transfer")
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             return
 
@@ -569,7 +598,7 @@ class ConnectionHandler:
             self.stream.send("stop")
 
             ProviderManager().storage.fopen(file_path, "wb").close()
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 file_task = session.get(FileTask, task_id)
                 if not file_task:
                     raise ValueError(
@@ -624,7 +653,7 @@ class ConnectionHandler:
                     {},
                     f"File size mismatch: expected {file_size}, got {actual_size}",
                 )
-                with Session.begin() as session:
+                with Session() as session, session.begin():
                     release_file_task(session, task_id)
                 return
 
@@ -641,11 +670,11 @@ class ConnectionHandler:
                         {},
                         f"SHA256 mismatch: expected {sha256}, got {actual_sha256}",
                     )
-                    with Session.begin() as session:
+                    with Session() as session, session.begin():
                         release_file_task(session, task_id)
                     return
 
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 file_task = session.get(FileTask, task_id)
                 if not file_task:
                     raise ValueError(
@@ -679,7 +708,7 @@ class ConnectionHandler:
 
         except ConnectionError:
             self.logger.info("File reception aborted: Connection closed")
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             return
 
@@ -689,13 +718,13 @@ class ConnectionHandler:
                 ProviderManager().storage.remove(file_path)
             except FileNotFoundError:
                 pass
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.conclude_request(408, {}, "File upload timed out")
             return
 
         except Exception as e:  # noqa: BLE001 - report unexpected transfer failures to the client.
-            with Session.begin() as session:
+            with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.report_error(e, context=f"Error receiving file for task {task_id}")
             return

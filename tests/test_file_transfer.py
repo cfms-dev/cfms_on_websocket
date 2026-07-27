@@ -355,6 +355,29 @@ def test_claim_marks_due_task_expired(file_task_context) -> None:
         )
 
 
+def test_transfer_claim_race_reports_expired_status(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    task_id, _file_id = _create_file_task(
+        file_task_context, "expired-download.bin", mode=TransferMode.DOWNLOAD
+    )
+    with file_task_context.session.begin() as session:
+        session.get(file_task_context.FileTask, task_id).end_time = 1.0
+
+    stream = _FakeDownloadStream()
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+    handler.send_file(task_id, offset=0)
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 410
+    assert response["data"] == {"task_status": "expired"}
+    with file_task_context.session() as session:
+        assert (
+            session.get(file_task_context.FileTask, task_id).status
+            == FileTaskStatus.EXPIRED
+        )
+
+
 class TestFileTransfer:
     @pytest.mark.asyncio
     async def test_upload_and_download_file(

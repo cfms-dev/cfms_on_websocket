@@ -71,6 +71,9 @@ def _queue_deferred_file_deletion(session: Session, path: str) -> None:
                         pending_path,
                         exc,
                     )
+                    session.info["deferred_delete_failure_count"] = (
+                        session.info.get("deferred_delete_failure_count", 0) + 1
+                    )
 
         @event.listens_for(session, "after_rollback")
         def _clear_deferred_file_deletes(session: Session):

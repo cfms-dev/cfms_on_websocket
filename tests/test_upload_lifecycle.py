@@ -62,6 +62,7 @@ def test_expired_initial_upload_removes_empty_document(monkeypatch, tmp_path):
 
     assert result.expired_tasks == 1
     assert result.removed_documents == 1
+    assert result.storage_cleanup_failures == 0
     assert removed_paths == ["pending-file"]
     with SessionLocal() as session:
         assert (
