@@ -460,6 +460,60 @@ class RequestUploadDocumentHandler(RequestHandler):
                         code=403, target=document_id, username=handler.username
                     )
 
+                existing_task = (
+                    session.query(FileTask)
+                    .join(File, File.id == FileTask.file_id)
+                    .join(DocumentRevision, DocumentRevision.file_id == File.id)
+                    .filter(
+                        DocumentRevision.document_id == document_id,
+                        FileTask.mode == TransferMode.UPLOAD,
+                        FileTask.status.in_(
+                            (FileTaskStatus.PENDING, FileTaskStatus.IN_PROGRESS)
+                        ),
+                    )
+                    .order_by(FileTask.start_time.desc())
+                    .first()
+                )
+                if existing_task is not None:
+                    status = FileTaskStatus(existing_task.status)
+                    now = time.time()
+                    if (
+                        existing_task.end_time is not None
+                        and existing_task.end_time <= now
+                    ):
+                        existing_task.status = FileTaskStatus.EXPIRED
+                        session.commit()
+                        handler.conclude_request(
+                            410,
+                            {"task_status": "expired"},
+                            "Existing upload task has expired",
+                        )
+                        return Result(
+                            code=410, target=document_id, username=handler.username
+                        )
+                    if status == FileTaskStatus.IN_PROGRESS:
+                        handler.conclude_request(
+                            409,
+                            {"task_status": "in_progress"},
+                            "Upload is already in progress",
+                        )
+                        return Result(
+                            code=409, target=document_id, username=handler.username
+                        )
+
+                    task_data = serialize_file_task(existing_task)
+                    handler.conclude_request(
+                        200,
+                        {"task_data": task_data},
+                        "Existing upload task returned",
+                    )
+                    return Result(
+                        code=0,
+                        target=document_id,
+                        data=task_data,
+                        username=handler.username,
+                    )
+
                 today = datetime.datetime.now(datetime.UTC).date()
 
                 file_id = secrets.token_hex(32)
