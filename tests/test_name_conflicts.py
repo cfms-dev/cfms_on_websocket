@@ -204,7 +204,7 @@ def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None
 def test_conflict_response_hides_entity_and_propagates_visible_winner(
     duplicate_id,
 ) -> None:
-    from include.domains.documents.handlers.name_conflicts import (
+    from include.domains.documents.handlers.name_conflict_responses import (
         respond_to_node_name_conflict,
     )
 

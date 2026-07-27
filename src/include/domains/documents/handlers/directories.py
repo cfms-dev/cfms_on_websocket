@@ -30,7 +30,7 @@ from include.domains.documents.commands.name_conflicts import (
     describe_subtree_restore_name_conflict,
     node_name_mutation,
 )
-from include.domains.documents.handlers.name_conflicts import (
+from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion

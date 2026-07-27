@@ -47,7 +47,7 @@ from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
     node_name_mutation,
 )
-from include.domains.documents.handlers.name_conflicts import (
+from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
 from include.exceptions.misc import NoActiveRevisionsError
