@@ -2,12 +2,13 @@
 Tests for directory management operations.
 """
 
+import secrets
 import time
 
 import pytest
 
 from tests.test_client import CFMSTestClient
-from tests.utils import assert_success
+from tests.utils import assert_error, assert_success
 
 
 class TestDirectoryOperations:
@@ -181,6 +182,120 @@ class TestDirectoryOperations:
 
         # Should fail validation
         assert response["code"] == 400
+
+    @pytest.mark.asyncio
+    async def test_create_directory_exists_ok_requires_a_directory(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        suffix = secrets.token_hex(4)
+        directory_name = f"Exists OK Directory {suffix}"
+        created = assert_success(
+            await authenticated_client.create_directory(directory_name)
+        )
+        repeated = assert_success(
+            await authenticated_client.send_request(
+                "create_directory",
+                {"name": directory_name, "exists_ok": True},
+            )
+        )
+        assert repeated["id"] == created["id"]
+
+        document_name = f"Exists OK Document {suffix}"
+        document = await document_factory(document_name)
+        conflict = await authenticated_client.send_request(
+            "create_directory",
+            {"name": document_name, "exists_ok": True},
+        )
+        assert_error(conflict, 409)
+        assert conflict["data"]["duplicate_id"] == document["document_id"]
+
+    @pytest.mark.asyncio
+    async def test_name_conflict_does_not_disclose_unreadable_directory(
+        self,
+        authenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        name = f"Hidden Name Winner {secrets.token_hex(4)}"
+        winner = assert_success(await authenticated_client.create_directory(name))
+        assert_success(
+            await authenticated_client.send_request(
+                "set_directory_rules",
+                {
+                    "directory_id": winner["id"],
+                    "inherit_parent": False,
+                    "access_rules": {
+                        "read": [
+                            {
+                                "match": "all",
+                                "match_groups": [
+                                    {
+                                        "groups": {
+                                            "match": "all",
+                                            "require": ["sysop"],
+                                        }
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                },
+            )
+        )
+        user = await user_factory()
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                user["username"],
+                ["create_directory", "super_create_directory"],
+            )
+        )
+
+        user_client = CFMSTestClient()
+        await user_client.connect()
+        try:
+            assert_success(await user_client.login(user["username"], user["password"]))
+            conflict = await user_client.send_request(
+                "create_directory",
+                {"name": name, "exists_ok": True},
+            )
+            assert_error(conflict, 409)
+            assert conflict["data"]["id"] is None
+            assert "duplicate_id" not in conflict["data"]
+        finally:
+            await user_client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_directory_rename_and_move_conflicts_use_database_winner(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        suffix = secrets.token_hex(4)
+        source = assert_success(
+            await authenticated_client.create_directory(f"Folder Source {suffix}")
+        )
+        target = assert_success(
+            await authenticated_client.create_directory(f"Folder Target {suffix}")
+        )
+        moving_name = f"Moving Folder {suffix}"
+        moving = assert_success(
+            await authenticated_client.create_directory(
+                moving_name, parent_id=source["id"]
+            )
+        )
+        move_winner = await document_factory(moving_name, folder_id=target["id"])
+
+        move_response = await authenticated_client.move_directory(
+            moving["id"], target["id"]
+        )
+        assert_error(move_response, 409)
+        assert move_response["data"]["duplicate_id"] == move_winner["document_id"]
+
+        rename_name = f"Folder Rename Winner {suffix}"
+        rename_winner = await document_factory(rename_name, folder_id=source["id"])
+        rename_response = await authenticated_client.send_request(
+            "rename_directory",
+            {"folder_id": moving["id"], "new_name": rename_name},
+        )
+        assert_error(rename_response, 409)
+        assert rename_response["data"]["duplicate_id"] == rename_winner["document_id"]
 
     @pytest.mark.asyncio
     async def test_delete_directory(self, authenticated_client: CFMSTestClient):

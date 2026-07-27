@@ -1,3 +1,5 @@
+import secrets
+
 import pytest
 
 from tests.test_client import CFMSTestClient
@@ -67,6 +69,25 @@ class TestRecycleBin:
         assert not any(d["id"] == doc_id for d in _documents(deleted_data2))
 
     @pytest.mark.asyncio
+    async def test_document_restore_conflict_preserves_deleted_document(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        name = f"Restore Conflict {secrets.token_hex(4)}"
+        document = await document_factory(name)
+        document_id = document["document_id"]
+        assert_success(await authenticated_client.delete_document(document_id))
+        winner = assert_success(await authenticated_client.create_directory(name))
+
+        restore = await authenticated_client.restore_document(document_id)
+
+        assert_error(restore, 409)
+        assert restore["data"]["duplicate_id"] == winner["id"]
+        deleted = assert_success(
+            await authenticated_client.list_deleted_items(folder_id="/")
+        )
+        assert any(item["id"] == document_id for item in _documents(deleted))
+
+    @pytest.mark.asyncio
     async def test_directory_recycle_bin(self, authenticated_client: CFMSTestClient):
         # Create a parent directory
         parent_resp = await authenticated_client.create_directory("ParentForRecycleBin")
@@ -114,6 +135,25 @@ class TestRecycleBin:
         )
         deleted_data2 = assert_success(list_deleted2)
         assert not any(d["id"] == child_id for d in _folders(deleted_data2))
+
+    @pytest.mark.asyncio
+    async def test_directory_restore_conflict_preserves_deleted_directory(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        name = f"Directory Restore Conflict {secrets.token_hex(4)}"
+        directory = assert_success(await authenticated_client.create_directory(name))
+        directory_id = directory["id"]
+        assert_success(await authenticated_client.delete_directory(directory_id))
+        winner = await document_factory(name)
+
+        restore = await authenticated_client.restore_directory(directory_id)
+
+        assert_error(restore, 409)
+        assert restore["data"]["duplicate_id"] == winner["document_id"]
+        deleted = assert_success(
+            await authenticated_client.list_deleted_items(folder_id="/")
+        )
+        assert any(item["id"] == directory_id for item in _folders(deleted))
 
     @pytest.mark.asyncio
     async def test_list_deleted_items_with_cursor(

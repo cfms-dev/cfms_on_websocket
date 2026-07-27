@@ -42,8 +42,10 @@ from include.domains.access.authorization.compiled_rules import (
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.name_conflicts import (
+    NodeNameConflictError,
+    describe_node_name_conflict,
     get_target_folder_and_check_write,
-    handle_name_duplicate,
+    node_name_mutation,
 )
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
@@ -103,6 +105,29 @@ def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
 
 def mark_document_modified(document: Document, username: str) -> None:
     get_or_create_document_metadata(document).last_modified_by_username = username
+
+
+def _respond_to_document_name_conflict(
+    handler: ConnectionHandler,
+    session: ORMSession,
+    user: User,
+    parent_id: str,
+    name: str,
+    *,
+    target: str,
+    result_data: dict[str, Any],
+) -> Result:
+    payload, message = describe_node_name_conflict(session, user, parent_id, name)
+    payload.pop("entity", None)
+    handler.conclude_request(409, payload, message)
+    if "duplicate_id" in payload:
+        result_data = {**result_data, "duplicate_id": payload["duplicate_id"]}
+    return Result(
+        code=409,
+        target=target,
+        data=result_data,
+        username=handler.username,
+    )
 
 
 def serialize_document_metadata(document: Document) -> dict:
@@ -331,21 +356,6 @@ class RequestCreateDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, user, folder_id, title
-            )
-            if has_conflict:
-                handler.conclude_request(err_code, err_data, err_msg)
-                return Result(
-                    code=err_code,
-                    target=folder_id,
-                    data={
-                        "title": title,
-                        "duplicate_id": err_data.get("duplicate_id"),
-                    },
-                    username=handler.username,
-                )
-
             today = datetime.datetime.now(datetime.UTC).date()
             file_id = secrets.token_hex(32)
             real_filename = secrets.token_hex(32)
@@ -370,23 +380,24 @@ class RequestCreateDocumentHandler(RequestHandler):
             session.add(new_revision)
 
             try:
-                if not apply_access_rules(
-                    new_document, access_rules, user, inherit_parent
-                ):
-                    session.rollback()
-                    handler.conclude_access_denial()
-                    return Result(
-                        code=403,
-                        target=folder_id,
-                        data={"title": title},
-                        username=handler.username,
-                    )
+                with node_name_mutation(session, folder_id, title):
+                    if not apply_access_rules(
+                        new_document, access_rules, user, inherit_parent
+                    ):
+                        session.rollback()
+                        handler.conclude_access_denial()
+                        return Result(
+                            code=403,
+                            target=folder_id,
+                            data={"title": title},
+                            username=handler.username,
+                        )
 
-                new_document.current_revision = new_revision
-                task_data = create_file_task(
-                    session, new_file, transfer_mode=TransferMode.UPLOAD
-                )
-                session.commit()
+                    new_document.current_revision = new_revision
+                    task_data = create_file_task(
+                        session, new_file, transfer_mode=TransferMode.UPLOAD
+                    )
+                    session.commit()
                 handler.conclude_request(
                     200,
                     {"document_id": new_document.id, "task_data": task_data},
@@ -400,6 +411,16 @@ class RequestCreateDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
+            except NodeNameConflictError:
+                return _respond_to_document_name_conflict(
+                    handler,
+                    session,
+                    user,
+                    folder_id,
+                    title,
+                    target=folder_id,
+                    result_data={"title": title},
+                )
             except (ValueError, jsonschema.ValidationError) as exc:
                 session.rollback()
                 handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
@@ -581,9 +602,6 @@ class RequestRenameDocumentHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, username=handler.username)
 
-            parent_id = document.folder_id or ROOT_DIRECTORY_ID
-            session.query(Folder).with_for_update().filter_by(id=parent_id).first()
-
             if (
                 Permissions.RENAME_DOCUMENT not in this_user.all_permissions
                 or not document.check_access_requirements(this_user, "write")
@@ -599,29 +617,23 @@ class RequestRenameDocumentHandler(RequestHandler):
                 )
                 return
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, this_user, document.folder_id, new_title
-            )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
-                if "duplicate_id" in err_data_filtered:
-                    return Result(
-                        code=err_code,
-                        target=document.folder_id,
-                        data={
-                            "title": document.title,
-                            "duplicate_id": err_data_filtered["duplicate_id"],
-                        },
-                        username=handler.username,
-                    )
-                return Result(
-                    code=err_code, target=document.folder_id, username=handler.username
+            parent_id = document.folder_id or ROOT_DIRECTORY_ID
+            old_title = document.title
+            try:
+                with node_name_mutation(session, parent_id, new_title):
+                    document.title = new_title
+                    mark_document_modified(document, this_user.username)
+                    session.commit()
+            except NodeNameConflictError:
+                return _respond_to_document_name_conflict(
+                    handler,
+                    session,
+                    this_user,
+                    parent_id,
+                    new_title,
+                    target=parent_id,
+                    result_data={"title": old_title},
                 )
-
-            document.title = new_title
-            mark_document_modified(document, this_user.username)
-            session.commit()
 
             handler.conclude_request(
                 code=200, message="Document renamed successfully", data={}
@@ -841,12 +853,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            target_folder = (
-                session.query(Folder)
-                .with_for_update()
-                .filter_by(id=target_folder_id)
-                .first()
-            )
+            target_folder = session.get(Folder, target_folder_id)
             if not target_folder:
                 handler.conclude_request(
                     code=404, message=smsg.TARGET_DIRECTORY_NOT_FOUND, data={}
@@ -875,30 +882,23 @@ class RequestMoveDocumentHandler(RequestHandler):
                         username=handler.username,
                     )
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, user, target_folder_id, document.title
-            )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
-                if "duplicate_id" in err_data_filtered:
-                    return Result(
-                        code=err_code,
-                        target=document.folder_id,
-                        data={
-                            "title": document.title,
-                            "duplicate_id": err_data_filtered["duplicate_id"],
-                        },
-                        username=handler.username,
-                    )
-                return Result(
-                    code=err_code, target=document.folder_id, username=handler.username
+            source_folder_id = document.folder_id or ROOT_DIRECTORY_ID
+            title = document.title
+            try:
+                with node_name_mutation(session, target_folder_id, title):
+                    document.folder = target_folder
+                    mark_document_modified(document, user.username)
+                    session.commit()
+            except NodeNameConflictError:
+                return _respond_to_document_name_conflict(
+                    handler,
+                    session,
+                    user,
+                    target_folder_id,
+                    title,
+                    target=source_folder_id,
+                    result_data={"title": title},
                 )
-
-            document.folder = target_folder
-            mark_document_modified(document, user.username)
-
-            session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
         return Result(
@@ -1032,40 +1032,24 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 )
                 return Result(code=409, target=doc_id, username=handler.username)
 
-            existing_conflict = (
-                session.query(Document)
-                .with_for_update()
-                .filter(
-                    Document.folder_id == db_folder_id,
-                    Document.title == final_title,
-                    Document.status == EntityStatus.OK,
+            try:
+                with node_name_mutation(session, db_folder_id, final_title):
+                    document.status = EntityStatus.OK
+                    document.status_operation_id = None
+                    document.title = final_title
+                    document.folder_id = db_folder_id
+                    mark_document_modified(document, user.username)
+                    session.commit()
+            except NodeNameConflictError:
+                return _respond_to_document_name_conflict(
+                    handler,
+                    session,
+                    user,
+                    db_folder_id,
+                    final_title,
+                    target=doc_id,
+                    result_data={},
                 )
-                .first()
-                or session.query(Folder)
-                .with_for_update()
-                .filter(
-                    Folder.parent_id == db_folder_id,
-                    Folder.name == final_title,
-                    Folder.status == EntityStatus.OK,
-                )
-                .first()
-            )
-
-            if existing_conflict:
-                handler.conclude_request(
-                    409,
-                    {"conflict_id": existing_conflict.id},
-                    f"Conflict: An active item named '{final_title}' already exists in the destination.",
-                )
-                return Result(code=409, target=doc_id, username=handler.username)
-
-            document.status = EntityStatus.OK
-            document.status_operation_id = None
-            document.title = final_title
-            document.folder_id = db_folder_id
-            mark_document_modified(document, user.username)
-
-            session.commit()
 
             handler.conclude_request(
                 200,

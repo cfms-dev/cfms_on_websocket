@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Fixed
 
 - Prevent OIDC clients from overriding the configured redirect URI.
+- Enforce one shared active-name namespace for documents and directories at the
+  database layer, eliminating concurrent create, rename, move, and restore races.
+  Soft-deleted nodes release their names; upgrades stop and report historical
+  conflicts before changing the schema.
+- Treat the legacy `document.allow_name_duplicate` setting as obsolete and
+  ignored. Active sibling names are now always unique.
 
 ## [v0.2.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.2.0) - 2026-05-17
 

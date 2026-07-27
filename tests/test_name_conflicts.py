@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 
 @pytest.fixture(autouse=True)
@@ -89,3 +91,110 @@ def test_name_mutation_does_not_hide_other_integrity_errors() -> None:
             raise error
 
     assert caught.value is error
+
+
+@pytest.mark.parametrize("readable", [False, True])
+def test_conflict_description_hides_unreadable_winner_id(monkeypatch, readable) -> None:
+    import include.database.models  # noqa: F401
+    from include.database.models.documents import Folder
+    from include.database.session import Base
+    from include.domains.documents.commands.name_conflicts import (
+        describe_node_name_conflict,
+    )
+    from include.messages import Messages as smsg
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        Folder,
+        "check_access_requirements",
+        lambda self, user, access_type: readable,
+    )
+    with Session(engine) as session:
+        root = Folder(id="/", name="/")
+        winner = Folder(id="winner", name="Report", parent=root)
+        session.add_all([root, winner])
+        session.commit()
+
+        payload, message = describe_node_name_conflict(
+            session, SimpleNamespace(), "/", "Report"
+        )
+
+    assert payload["type"] == "directory"
+    assert payload["id"] == ("winner" if readable else None)
+    assert ("duplicate_id" in payload) is readable
+    assert ("entity" in payload) is readable
+    assert message == smsg.DIRECTORY_NAME_DUPLICATE
+
+
+def test_successful_name_mutation_does_not_prequery_sibling_names() -> None:
+    import include.database.models  # noqa: F401
+    from include.database.models.documents import Folder
+    from include.database.session import Base
+    from include.domains.documents.commands.name_conflicts import node_name_mutation
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        root = Folder(id="/", name="/")
+        session.add(root)
+        session.commit()
+
+        statements = []
+
+        def collect_statement(_conn, _cursor, statement, *_args) -> None:
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", collect_statement)
+        try:
+            with node_name_mutation(session, "/", "Report"):
+                session.add(Folder(id="created", name="Report", parent_id="/"))
+                session.commit()
+        finally:
+            event.remove(engine, "before_cursor_execute", collect_statement)
+
+    assert not [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT") and "nodes.name" in statement
+    ]
+
+
+def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None:
+    import include.database.models  # noqa: F401
+    from include.database.models.documents import EntityStatus, Folder
+    from include.database.session import Base
+    from include.domains.documents.commands.name_conflicts import (
+        describe_subtree_restore_name_conflict,
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        Folder,
+        "check_access_requirements",
+        lambda self, user, access_type: True,
+    )
+    with Session(engine) as session:
+        root = Folder(id="/", name="/")
+        parent = Folder(id="parent", name="Parent", parent=root)
+        deleted = Folder(
+            id="deleted",
+            name="Conflict",
+            parent=parent,
+            status=EntityStatus.DELETED,
+            status_operation_id="restore-op",
+        )
+        winner = Folder(id="winner", name="Conflict", parent=parent)
+        session.add_all([root, parent, deleted, winner])
+        session.commit()
+
+        payload, _ = describe_subtree_restore_name_conflict(
+            session,
+            SimpleNamespace(),
+            "restore-op",
+            "/",
+            "unrelated-root-name",
+        )
+
+    assert payload["duplicate_id"] == "winner"

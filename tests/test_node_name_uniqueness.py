@@ -115,11 +115,19 @@ def test_only_root_may_have_no_parent() -> None:
             )
 
 
-def test_concurrent_creates_have_one_winner(tmp_path) -> None:
-    from include.database.models.documents import Folder
+@pytest.mark.parametrize(
+    ("first_type", "second_type"),
+    [
+        ("document", "document"),
+        ("directory", "directory"),
+        ("document", "directory"),
+    ],
+)
+def test_concurrent_creates_have_one_winner(tmp_path, first_type, second_type) -> None:
+    from include.database.models.documents import Document, Folder
 
     engine = create_engine(
-        f"sqlite:///{tmp_path / 'node-names.db'}",
+        f"sqlite:///{tmp_path / f'{first_type}-{second_type}.db'}",
         connect_args={"timeout": 10},
     )
     _create_schema(engine)
@@ -129,10 +137,16 @@ def test_concurrent_creates_have_one_winner(tmp_path) -> None:
 
     barrier = Barrier(2)
 
+    node_types = (first_type, second_type)
+
     def create_sibling(index: int) -> bool:
         with Session(engine) as session:
             root = session.get(Folder, "/")
-            session.add(Folder(id=f"folder-{index}", name="Concurrent", parent=root))
+            if node_types[index] == "directory":
+                node = Folder(id=f"node-{index}", name="Concurrent", parent=root)
+            else:
+                node = Document(id=f"node-{index}", title="Concurrent", folder=root)
+            session.add(node)
             barrier.wait()
             try:
                 session.commit()
@@ -145,6 +159,30 @@ def test_concurrent_creates_have_one_winner(tmp_path) -> None:
         results = list(executor.map(create_sibling, range(2)))
 
     assert sorted(results) == [False, True]
+
+
+@pytest.mark.parametrize(
+    ("statement", "index_name"),
+    [
+        (
+            "SELECT id FROM nodes WHERE parent_id = '/' AND status = 0 "
+            "ORDER BY lower(name), id",
+            "ix_nodes_parent_status_lower_name_id",
+        ),
+        (
+            "SELECT id FROM nodes WHERE status = 0 ORDER BY lower(name), id",
+            "ix_nodes_status_lower_name_id",
+        ),
+    ],
+)
+def test_name_pagination_queries_use_node_indexes(statement, index_name) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    _create_schema(engine)
+
+    with engine.connect() as connection:
+        plan = connection.exec_driver_sql(f"EXPLAIN QUERY PLAN {statement}").all()
+
+    assert any(index_name in row[-1] for row in plan)
 
 
 @pytest.mark.parametrize("dialect_name", ["sqlite", "mysql", "postgresql"])

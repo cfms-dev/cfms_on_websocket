@@ -1,11 +1,12 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
-from include.database.models.documents import Document, Folder
+from include.database.models.documents import Document, EntityStatus, Folder, Node
 from include.database.models.identity import User
 from include.messages import Messages as smsg
 
@@ -60,16 +61,14 @@ def get_target_folder_and_check_write(
     session: Session, user: User, target_folder_id: str | None, super_permission: str
 ) -> tuple[Folder | None, int, str]:
     """
-    Looks up the target folder, locks it, and checks write access.
+    Looks up the target folder and checks write access.
     Returns (folder_object, error_code, error_message).
     If valid, error_code is 0.
     """
     if not target_folder_id:
         target_folder_id = ROOT_DIRECTORY_ID
 
-    target_folder = (
-        session.query(Folder).with_for_update().filter_by(id=target_folder_id).first()
-    )
+    target_folder = session.get(Folder, target_folder_id)
     if not target_folder:
         return None, 404, smsg.TARGET_DIRECTORY_NOT_FOUND
 
@@ -84,97 +83,83 @@ def get_target_folder_and_check_write(
     return target_folder, 0, ""
 
 
-def handle_name_duplicate(
-    session: Session, user: User, folder_id: str | None, title: str
-) -> tuple[bool, int, dict, str]:
-    """
-    Checks if a document or folder with `title` exists under `folder_id`.
-    If yes, safely deletes deleted documents or returns conflict details.
-    Returns: (has_conflict, error_code, error_data, error_message).
-    If no conflict, returns (False, 0, {}, "").
-    """
-    if not folder_id:
-        folder_id = ROOT_DIRECTORY_ID
-
-    existing_doc = (
-        session.query(Document)
-        .with_for_update()
-        .filter_by(folder_id=folder_id, title=title)
-        .first()
+def describe_node_name_conflict(
+    session: Session, user: User, parent_id: str, name: str
+) -> tuple[dict, str]:
+    winner = (
+        session.query(Node)
+        .execution_options(include_deleted=True)
+        .filter(
+            Node.parent_id == parent_id,
+            Node.name == name,
+            Node.status != EntityStatus.DELETED,
+        )
+        .one_or_none()
     )
-    existing_folder = (
-        session.query(Folder)
-        .with_for_update()
-        .filter_by(parent_id=folder_id, name=title)
-        .first()
-    )
+    if winner is None:
+        raise RuntimeError(
+            f"Node name conflict winner disappeared under {parent_id!r}: {name!r}"
+        )
 
-    if existing_doc:
-        if existing_doc.active:
-            resp_id = (
-                existing_doc.id
-                if existing_doc.check_access_requirements(user, "read")
-                else None
-            )
-            payload = {"type": "document", "id": resp_id}
-            if resp_id is not None:
-                payload["duplicate_id"] = resp_id
+    return _describe_node_name_conflict_winner(winner, user)
 
-            return (
-                True,
-                409,
-                payload,
-                smsg.DOCUMENT_NAME_DUPLICATE,
-            )
-        else:
-            if existing_doc.check_access_requirements(user, "write"):
-                try:
-                    existing_doc.delete_all_revisions(do_commit=False)
-                except PermissionError:
-                    return (
-                        True,
-                        500,
-                        {},
-                        "Failed to delete revisions. Perhaps a file task is in progress?",
-                    )
-                session.delete(existing_doc)
-                # Let caller commit
-            else:
-                resp_id = (
-                    existing_doc.id
-                    if existing_doc.check_access_requirements(user, "read")
-                    else None
-                )
-                payload = {"type": "document", "id": resp_id}
-                if resp_id is not None:
-                    payload["duplicate_id"] = resp_id
 
-                return (
-                    True,
-                    409,
-                    payload,
-                    getattr(
-                        smsg,
-                        "DENIED_FOR_DOC_NAME_DUPLICATE",
-                        smsg.DOCUMENT_NAME_DUPLICATE,
+def describe_subtree_restore_name_conflict(
+    session: Session,
+    user: User,
+    status_operation_id: str | None,
+    parent_id: str,
+    name: str,
+) -> tuple[dict, str]:
+    if status_operation_id:
+        restoring = Node.__table__.alias("restoring_nodes")
+        winner = Node.__table__.alias("winning_nodes")
+        winner_id = session.execute(
+            select(winner.c.id)
+            .select_from(
+                winner.join(
+                    restoring,
+                    and_(
+                        winner.c.parent_id == restoring.c.parent_id,
+                        winner.c.name == restoring.c.name,
                     ),
                 )
+            )
+            .where(
+                restoring.c.status_operation_id == status_operation_id,
+                restoring.c.status == EntityStatus.DELETED,
+                winner.c.status != EntityStatus.DELETED,
+                winner.c.id != restoring.c.id,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if winner_id is not None:
+            winning_node = session.get(
+                Node,
+                winner_id,
+                execution_options={"include_deleted": True},
+            )
+            if winning_node is not None:
+                return _describe_node_name_conflict_winner(winning_node, user)
 
-    elif existing_folder:
-        resp_id = (
-            existing_folder.id
-            if existing_folder.check_access_requirements(user, "read")
-            else None
-        )
-        payload = {"type": "directory", "id": resp_id, "entity": existing_folder}
-        if resp_id is not None:
-            payload["duplicate_id"] = resp_id
+    return describe_node_name_conflict(session, user, parent_id, name)
 
-        return (
-            True,
-            409,
-            payload,
-            smsg.DIRECTORY_NAME_DUPLICATE,
-        )
 
-    return False, 0, {}, ""
+def _describe_node_name_conflict_winner(winner: Node, user: User) -> tuple[dict, str]:
+
+    readable = winner.check_access_requirements(user, "read")
+    visible_id = winner.id if readable else None
+    if isinstance(winner, Document):
+        payload = {"type": "document", "id": visible_id}
+        message = smsg.DOCUMENT_NAME_DUPLICATE
+    elif isinstance(winner, Folder):
+        payload = {"type": "directory", "id": visible_id}
+        if readable:
+            payload["entity"] = winner
+        message = smsg.DIRECTORY_NAME_DUPLICATE
+    else:
+        raise RuntimeError(f"Unsupported conflicting node type: {winner.type!r}")
+
+    if visible_id is not None:
+        payload["duplicate_id"] = visible_id
+    return payload, message

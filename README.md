@@ -70,6 +70,12 @@ Alembic to handle database migrations.
 Alembic is designed for sqlite databases, and we don't guarantee that other types 
 of databases can be successfully upgraded via these revisions.
 
+3. Document and directory names share one namespace within each directory.
+Active names must be unique; soft-deleted items release their names. The database
+migration stops before making schema changes if it finds historical duplicate
+names or invalid parent links, so resolve the reported records and retry. The old
+`document.allow_name_duplicate` option is ignored.
+
 If you have not used Alembic yet, please run the command below **before** you 
 checkout new changes:
 

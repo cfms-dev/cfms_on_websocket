@@ -63,6 +63,7 @@ from include.database.session import Base, Session, engine
 from include.domains.access.authorization.compiled_rules import (
     compile_access_rule,
 )
+from include.domains.documents.commands.name_conflicts import is_node_name_conflict
 from include.domains.operations.comments import CommentStore
 from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
@@ -1449,7 +1450,7 @@ def _restore_database(
                 try:
                     connection.execute(insert(table), insert_rows)
                 except IntegrityError as exc:
-                    if table_name != "nodes" or not _is_node_name_conflict(exc):
+                    if table_name != "nodes" or not is_node_name_conflict(exc):
                         raise
                     raise BackupFormatError(
                         "Backup contains active sibling nodes with duplicate names"
@@ -1608,7 +1609,7 @@ def _insert_restored_node(
     try:
         connection.execute(insert(table), insert_row)
     except IntegrityError as exc:
-        if not _is_node_name_conflict(exc):
+        if not is_node_name_conflict(exc):
             raise
         raise BackupFormatError(
             "Backup contains an active sibling name conflict while restoring "
@@ -2006,15 +2007,6 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
                 raise BackupFormatError("Invalid comment digest in backup")
         decoded[column.name] = value
     return decoded
-
-
-def _is_node_name_conflict(exc: IntegrityError) -> bool:
-    message = str(exc.orig).lower()
-    return (
-        "uq_nodes_active_parent_name" in message
-        or "nodes.active_parent_id, nodes.name" in message
-        or "nodes.name, nodes.active_parent_id" in message
-    )
 
 
 def _validate_manifest(manifest: dict[str, Any]) -> None:
