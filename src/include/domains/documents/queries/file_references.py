@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from itertools import islice
 from typing import Any, cast
 
-from sqlalchemy import MetaData, Table, func, select, union_all
+from sqlalchemy import Column, MetaData, Table, func, inspect, select, union_all
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -42,22 +42,37 @@ def _get_file_references(engine: Engine) -> list[tuple[Table, str]]:
     if cache_key in _CACHED_REFS:
         return _CACHED_REFS[cache_key]
 
-    meta = MetaData()
-    meta.reflect(bind=engine)
-
-    refs: list[tuple[Table, str]] = []
+    inspector = inspect(engine)
     files_table_name = "files"
-    for table in meta.tables.values():
-        for col in table.columns:
-            for fk in col.foreign_keys:
-                if fk.column.table.name != files_table_name:
-                    continue
-                # Skip FK relationships with CASCADE delete — those rows are
-                # dependent metadata, not independent references.
-                ondelete = (fk.ondelete or "").upper()
-                if ondelete == "CASCADE":
-                    continue
-                refs.append((table, col.name))
+    reference_columns: dict[str, set[str]] = {}
+    for table_name in inspector.get_table_names():
+        for fk in inspector.get_foreign_keys(table_name):
+            if fk["referred_table"] != files_table_name:
+                continue
+            # Skip FK relationships with CASCADE delete — those rows are
+            # dependent metadata, not independent references.
+            ondelete = (fk.get("options", {}).get("ondelete") or "").upper()
+            if ondelete == "CASCADE":
+                continue
+            reference_columns.setdefault(table_name, set()).update(
+                fk["constrained_columns"]
+            )
+
+    meta = MetaData()
+    refs: list[tuple[Table, str]] = []
+    for table_name, column_names in reference_columns.items():
+        reflected_columns = {
+            column["name"]: column for column in inspector.get_columns(table_name)
+        }
+        table = Table(
+            table_name,
+            meta,
+            *(
+                Column(column_name, reflected_columns[column_name]["type"])
+                for column_name in sorted(column_names)
+            ),
+        )
+        refs.extend((table, column_name) for column_name in sorted(column_names))
 
     _CACHED_REFS[cache_key] = refs
     return refs
