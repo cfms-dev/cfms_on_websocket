@@ -72,31 +72,6 @@ def _default_node_parent_id(context) -> str | None:
 
 class Node(Base):
     __tablename__ = "nodes"
-    __table_args__ = (
-        CheckConstraint(
-            "(id = '/' AND parent_id IS NULL AND type = 'directory') OR "
-            "(id <> '/' AND parent_id IS NOT NULL)",
-            name="ck_nodes_root_parent",
-        ),
-        UniqueConstraint(
-            "active_parent_id",
-            "name",
-            name="uq_nodes_active_parent_name",
-        ),
-        Index(
-            "ix_nodes_parent_status_lower_name_id",
-            "parent_id",
-            "status",
-            text("lower(name)"),
-            "id",
-        ),
-        Index(
-            "ix_nodes_status_lower_name_id",
-            "status",
-            text("lower(name)"),
-            "id",
-        ),
-    )
 
     id: Mapped[str] = mapped_column(
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
@@ -121,6 +96,31 @@ class Node(Base):
             persisted=True,
         ),
         nullable=True,
+    )
+    __table_args__ = (
+        CheckConstraint(
+            ((id == ROOT_DIRECTORY_ID) & parent_id.is_(None) & (type == "directory"))
+            | ((id != ROOT_DIRECTORY_ID) & parent_id.is_not(None)),
+            name="ck_nodes_root_parent",
+        ),
+        UniqueConstraint(
+            "active_parent_id",
+            "name",
+            name="uq_nodes_active_parent_name",
+        ),
+        Index(
+            "ix_nodes_parent_status_lower_name_id",
+            "parent_id",
+            "status",
+            text("lower(name)"),
+            "id",
+        ),
+        Index(
+            "ix_nodes_status_lower_name_id",
+            "status",
+            text("lower(name)"),
+            "id",
+        ),
     )
 
     # Whether to inherit access rules from parent folders.

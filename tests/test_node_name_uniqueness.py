@@ -189,6 +189,7 @@ def test_name_pagination_queries_use_node_indexes(statement, index_name) -> None
 def test_node_namespace_ddl_is_portable(dialect_name: str) -> None:
     from sqlalchemy.dialects import mysql, postgresql, sqlite
 
+    from include.config.constants import ROOT_DIRECTORY_ID
     from include.database.models.documents import Node
 
     dialects = {
@@ -201,3 +202,4 @@ def test_node_namespace_ddl_is_portable(dialect_name: str) -> None:
     assert "GENERATED ALWAYS AS" in ddl
     assert "uq_nodes_active_parent_name" in ddl
     assert "ck_nodes_root_parent" in ddl
+    assert repr(ROOT_DIRECTORY_ID) in ddl
