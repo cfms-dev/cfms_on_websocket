@@ -14,12 +14,27 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add two-stage upload leases, abandoned-upload cleanup, and configurable
+  per-creator reservation and document-creation limits.
+- Add explicit pending, in-progress, completed, cancelled, and expired file-task
+  lifecycle states.
 - Add versioned extension manifests and identifier-based extension activation.
 - Add non-persistent lockdown reasons to lockdown responses, events, and server information.
 - Expose account status in user information responses.
 
+### Changed
+
+- Increase the protocol version to 18. Cancelled or expired transfer requests
+  now return `410` with `data.task_status`; concurrent upload claims return
+  `409`; document creation limits return `429` with limit details.
+- Repeated `upload_document` calls reuse the pending initial upload instead of
+  creating another revision or extending its lease.
+
 ### Fixed
 
+- Cancel pending and active file transfers when the last live reference is
+  removed by document, revision, directory, or lockdown operations, while
+  preserving transfers for files still referenced elsewhere.
 - Prevent OIDC clients from overriding the configured redirect URI.
 - Enforce one shared active-name namespace for documents and directories at the
   database layer, eliminating concurrent create, rename, move, and restore races.
