@@ -736,7 +736,10 @@ class RequestGetUserAvatarHandler(RequestHandler):
             avatar = user_to_get.avatar
 
             if avatar:
-                avatar_task_data = create_file_task(avatar, TransferMode.DOWNLOAD)
+                avatar_task_data = create_file_task(
+                    session, avatar, TransferMode.DOWNLOAD
+                )
+                session.commit()
                 handler.conclude_request(
                     200, {"task_data": avatar_task_data}, smsg.SUCCESS
                 )
@@ -1118,7 +1121,7 @@ class RequestSetPasswdHandler(RequestHandler):
 
             try:
                 _same = _password_hasher.verify(user.pass_hash, new_passwd)
-            except (VerifyMismatchError, VerificationError, InvalidHashError):
+            except VerifyMismatchError, VerificationError, InvalidHashError:
                 _same = False
 
             if _same:

@@ -143,7 +143,8 @@ class RequestGetRevisionHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, username=handler.username)
 
-            task_data = create_file_task(revision.file)
+            task_data = create_file_task(session, revision.file)
+            session.commit()
 
         handler.conclude_request(200, {"task_data": task_data}, smsg.SUCCESS)
         return Result(code=200, target=revision_id, username=handler.username)

@@ -258,6 +258,40 @@ def _create_file_task(context, path, mode, status=0):
         return task.id, file.id
 
 
+def test_create_file_task_participates_in_caller_transaction(
+    file_task_context,
+) -> None:
+    from include.domains.documents.handlers.documents import create_file_task
+
+    with file_task_context.session() as session:
+        file = file_task_context.File(id="atomic-file", path="uploads/atomic.bin")
+        session.add(file)
+
+        task_data = create_file_task(session, file, transfer_mode=1)
+
+        assert session.get(file_task_context.FileTask, task_data["task_id"]) is not None
+        session.rollback()
+
+    with file_task_context.session() as session:
+        assert session.get(file_task_context.File, "atomic-file") is None
+        assert session.get(file_task_context.FileTask, task_data["task_id"]) is None
+
+
+def test_create_file_task_is_persisted_by_caller_commit(file_task_context) -> None:
+    from include.domains.documents.handlers.documents import create_file_task
+
+    with file_task_context.session() as session:
+        file = file_task_context.File(id="committed-file", path="uploads/committed.bin")
+        session.add(file)
+        task_data = create_file_task(session, file, transfer_mode=1)
+        session.commit()
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_data["task_id"])
+        assert task is not None
+        assert task.file_id == "committed-file"
+
+
 class TestFileTransfer:
     @pytest.mark.asyncio
     async def test_upload_and_download_file(

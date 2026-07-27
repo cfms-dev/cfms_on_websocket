@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 import jsonschema
+from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import (
     FILE_TASK_DEFAULT_DURATION_SECONDS,
@@ -51,11 +52,14 @@ from include.transport.request_handler import RequestHandler, Result
 
 
 def create_file_task(
-    file: File, transfer_mode: TransferMode = TransferMode.DOWNLOAD
+    session: ORMSession,
+    file: File,
+    transfer_mode: TransferMode = TransferMode.DOWNLOAD,
 ) -> dict[str, Any]:
     """Creates a new file processing task for the specified file.
 
     Args:
+        session: Transaction that owns the file and the new task.
         file (File): The file object for which the task is to be generated.
 
     Returns:
@@ -67,29 +71,28 @@ def create_file_task(
         Returns None if the file with the given file_id does not exist.
 
     """
-    with Session() as session:
-        if not file:
-            raise ValueError("File can not be None when creating a file task")
+    if not file:
+        raise ValueError("File can not be None when creating a file task")
 
-        now = time.time()
-        task = FileTask(
-            file_id=file.id,
-            status=0,
-            mode=transfer_mode,
-            start_time=now,
-            end_time=now + FILE_TASK_DEFAULT_DURATION_SECONDS,
-        )
-        session.add(task)
-        session.commit()
+    now = time.time()
+    task = FileTask(
+        file_id=file.id,
+        status=0,
+        mode=transfer_mode,
+        start_time=now,
+        end_time=now + FILE_TASK_DEFAULT_DURATION_SECONDS,
+    )
+    session.add(task)
+    session.flush()
 
-        return {
-            "task_id": task.id,
-            "provider": "native",  # Literal['native', ...]
-            "start_time": task.start_time,
-            "end_time": task.end_time,
-            # Only download tasks support resume
-            "supports_resume": transfer_mode == TransferMode.DOWNLOAD,
-        }
+    return {
+        "task_id": task.id,
+        "provider": "native",  # Literal['native', ...]
+        "start_time": task.start_time,
+        "end_time": task.end_time,
+        # Only download tasks support resume
+        "supports_resume": transfer_mode == TransferMode.DOWNLOAD,
+    }
 
 
 def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
@@ -265,10 +268,12 @@ class RequestGetDocumentHandler(RequestHandler):
                 )
                 return Result(code=4041, target=document_id, username=handler.username)
 
+            task_data = create_file_task(session, latest_revision.file)
+            session.commit()
             data = {
                 "document_id": document.id,
                 "title": document.title,
-                "task_data": create_file_task(latest_revision.file),
+                "task_data": task_data,
             }
 
             handler.conclude_request(200, data, "Document successfully fetched")
@@ -378,11 +383,10 @@ class RequestCreateDocumentHandler(RequestHandler):
                     )
 
                 new_document.current_revision = new_revision
-                session.commit()
-
                 task_data = create_file_task(
-                    new_revision.file, transfer_mode=TransferMode.UPLOAD
+                    session, new_file, transfer_mode=TransferMode.UPLOAD
                 )
+                session.commit()
                 handler.conclude_request(
                     200,
                     {"document_id": new_document.id, "task_data": task_data},
@@ -490,13 +494,12 @@ class RequestUploadDocumentHandler(RequestHandler):
                 mark_document_modified(document, this_user.username)
 
                 document.current_revision = new_revision
+                task_data = create_file_task(session, new_file, TransferMode.UPLOAD)
                 session.commit()
 
             else:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, username=handler.username)
-
-            task_data = create_file_task(new_file, TransferMode.UPLOAD)
 
         handler.conclude_request(
             200, {"task_data": task_data}, "Task successfully created"
