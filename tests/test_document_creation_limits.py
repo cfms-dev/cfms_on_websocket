@@ -81,6 +81,34 @@ def test_account_creation_rate_uses_fixed_window(creation_limit_context):
         assert row.attempts == 1
 
 
+def test_rate_limit_bypass_does_not_consume_rate_counters(
+    creation_limit_context,
+):
+    creation_limits, models, session_factory, _policy = creation_limit_context
+
+    with session_factory.begin() as session:
+        for now in (100.0, 101.0, 102.0):
+            assert creation_limits.check_document_creation_limits(
+                session,
+                "alice",
+                "203.0.113.1",
+                bypass_rate_limit=True,
+                now=now,
+            ).allowed
+
+    with session_factory() as session:
+        account_row = session.get(
+            models.DocumentCreationThrottle,
+            {"scope": "account", "identity": "alice"},
+        )
+        ip_row = session.get(
+            models.DocumentCreationThrottle,
+            {"scope": "ip", "identity": "203.0.113.1"},
+        )
+        assert account_row.attempts == 0
+        assert ip_row is None
+
+
 def test_pending_document_limit_uses_creator_and_live_uploads(
     creation_limit_context, monkeypatch
 ):
@@ -131,7 +159,11 @@ def test_pending_document_limit_uses_creator_and_live_uploads(
 
     with session_factory.begin() as session:
         decision = creation_limits.check_document_creation_limits(
-            session, "alice", "203.0.113.1", now=100.0
+            session,
+            "alice",
+            "203.0.113.1",
+            bypass_rate_limit=True,
+            now=100.0,
         )
     assert decision.allowed is False
     assert decision.scope == "pending_documents"

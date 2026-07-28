@@ -353,7 +353,13 @@ class RequestCreateDocumentHandler(RequestHandler):
                 )
 
             limit_decision = check_document_creation_limits(
-                session, user.username, handler.remote_address
+                session,
+                user.username,
+                handler.remote_address,
+                bypass_rate_limit=(
+                    Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT
+                    in user.all_permissions
+                ),
             )
             if not limit_decision.allowed:
                 session.commit()

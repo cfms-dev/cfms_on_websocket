@@ -163,6 +163,7 @@ def server_init():
             {"permission": Permissions.RENAME_GROUP},
             {"permission": Permissions.SET_GROUP_PERMISSIONS},
             {"permission": Permissions.BYPASS_LOCKDOWN},
+            {"permission": Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT},
             {"permission": Permissions.APPLY_LOCKDOWN},
             {"permission": Permissions.VIEW_AUDIT_LOGS},
             {"permission": Permissions.MANAGE_ACCESS},

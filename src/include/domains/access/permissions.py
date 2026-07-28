@@ -65,6 +65,7 @@ class Permissions(StrEnum):
     VIEW_ACCESS_ENTRIES = "view_access_entries"
     APPLY_LOCKDOWN = "apply_lockdown"
     BYPASS_LOCKDOWN = "bypass_lockdown"
+    BYPASS_DOCUMENT_CREATION_RATE_LIMIT = "bypass_document_creation_rate_limit"
     BLOCK = "block"
     UNBLOCK = "unblock"
     LIST_USER_BLOCKS = "list_user_blocks"

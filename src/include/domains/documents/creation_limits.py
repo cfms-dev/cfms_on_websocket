@@ -128,6 +128,7 @@ def check_document_creation_limits(
     username: str,
     ip_address: str,
     *,
+    bypass_rate_limit: bool = False,
     now: float | None = None,
 ) -> CreationLimitDecision:
     global _last_cleanup_monotonic
@@ -149,24 +150,25 @@ def check_document_creation_limits(
             _last_cleanup_monotonic = time.monotonic()
 
         account_row = _lock_throttle_row(session, "account", username, now)
-        account_decision = _consume_window(
-            account_row,
-            now=now,
-            window_seconds=policy.creation_rate_window_seconds,
-            limit=policy.creation_rate_per_user,
-        )
-        ip_row = _lock_throttle_row(session, "ip", ip_address, now)
-        ip_decision = _consume_window(
-            ip_row,
-            now=now,
-            window_seconds=policy.creation_rate_window_seconds,
-            limit=policy.creation_rate_per_ip,
-        )
-        session.flush()
-        if not account_decision.allowed:
-            return account_decision
-        if not ip_decision.allowed:
-            return ip_decision
+        if not bypass_rate_limit:
+            account_decision = _consume_window(
+                account_row,
+                now=now,
+                window_seconds=policy.creation_rate_window_seconds,
+                limit=policy.creation_rate_per_user,
+            )
+            ip_row = _lock_throttle_row(session, "ip", ip_address, now)
+            ip_decision = _consume_window(
+                ip_row,
+                now=now,
+                window_seconds=policy.creation_rate_window_seconds,
+                limit=policy.creation_rate_per_ip,
+            )
+            session.flush()
+            if not account_decision.allowed:
+                return account_decision
+            if not ip_decision.allowed:
+                return ip_decision
 
         pending_count = count_pending_documents(session, username, now)
         if pending_count >= policy.max_pending_documents_per_creator:
