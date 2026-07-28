@@ -67,6 +67,9 @@ class _SentPayload:
 
 
 class _FakeLogger:
+    def bind(self, **_kwargs):
+        return self
+
     def info(self, *_args, **_kwargs):
         pass
 
@@ -179,6 +182,7 @@ def _new_transfer_handler(connection_handler_cls, stream):
     handler = connection_handler_cls.__new__(connection_handler_cls)
     handler.stream = stream
     handler.logger = _FakeLogger()
+    handler.remote_address = "203.0.113.1"
     return handler
 
 
@@ -205,6 +209,8 @@ def file_task_context(monkeypatch, tmp_path):
     import include.transport.connection as connection_handler
     from include.config.constants import FILE_TRANSFER_MIN_CHUNK_SIZE
     from include.database.models.files import File, FileDeduplicationTask, FileTask
+    from include.database.models.identity import User
+    from include.database.models.operations import RateLimitBucket, RiskIPAccount
     from include.database.session import Base
     from include.extensions.builtin._file_deduplication import (
         schedule_file_deduplication,
@@ -215,9 +221,12 @@ def file_task_context(monkeypatch, tmp_path):
     Base.metadata.create_all(
         engine,
         tables=[
+            cast(Table, User.__table__),
             cast(Table, File.__table__),
             cast(Table, FileTask.__table__),
             cast(Table, FileDeduplicationTask.__table__),
+            cast(Table, RateLimitBucket.__table__),
+            cast(Table, RiskIPAccount.__table__),
         ],
     )
     TestingSession = sessionmaker(bind=engine)
@@ -251,6 +260,8 @@ def file_task_context(monkeypatch, tmp_path):
         File=File,
         FileDeduplicationTask=FileDeduplicationTask,
         FileTask=FileTask,
+        RateLimitBucket=RateLimitBucket,
+        User=User,
         FILE_TRANSFER_MIN_CHUNK_SIZE=FILE_TRANSFER_MIN_CHUNK_SIZE,
     )
 
@@ -305,6 +316,28 @@ def test_create_file_task_is_persisted_by_caller_commit(file_task_context) -> No
         task = session.get(file_task_context.FileTask, task_data["task_id"])
         assert task is not None
         assert task.file_id == "committed-file"
+
+
+def test_download_task_records_issuer_without_binding_bearer(file_task_context) -> None:
+    from include.domains.documents.handlers.documents import create_file_task
+
+    with file_task_context.session.begin() as session:
+        session.add(
+            file_task_context.User(
+                username="alice", pass_hash="unused", created_time=1.0
+            )
+        )
+        file = file_task_context.File(id="download-file", path="download.bin")
+        session.add(file)
+        task_data = create_file_task(
+            session,
+            file,
+            issued_by_username="alice",
+        )
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_data["task_id"])
+        assert task.issued_by_username == "alice"
 
 
 def test_upload_task_lifecycle_uses_two_stage_deadline(
@@ -376,6 +409,7 @@ def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
     assert claimed.file_id == file_id
     assert claimed.file_path == "snapshot.bin"
     assert claimed.stored_file_size == 123
+    assert claimed.issued_by_username is None
     assert claimed.encryption_key == "sensitive-key"
     assert "sensitive-key" not in repr(claimed)
     with pytest.raises(FrozenInstanceError):
@@ -508,6 +542,56 @@ def test_missing_transfer_task_reports_not_found(file_task_context) -> None:
     response = _sent_json_messages(stream)[-1]
     assert response["code"] == 404
     assert response["data"] == {}
+
+
+def test_download_limit_denial_releases_claimed_task(
+    file_task_context, monkeypatch
+) -> None:
+    from include.config.validation import DocumentDownloadRiskPolicy
+    from include.database.models.files import FileTaskStatus, TransferMode
+    from include.domains.documents import download_limits
+
+    policy = DocumentDownloadRiskPolicy(
+        mode="enforce",
+        task_capacity=1,
+        task_refill_tokens=1,
+    )
+    monkeypatch.setattr(
+        download_limits.DocumentDownloadRiskPolicy,
+        "from_config",
+        classmethod(lambda _cls: policy),
+    )
+    task_id, _file_id = _create_file_task(
+        file_task_context,
+        "rate-limited.bin",
+        mode=TransferMode.DOWNLOAD,
+    )
+    now = time.time()
+    with file_task_context.session.begin() as session:
+        session.add(
+            file_task_context.RateLimitBucket(
+                namespace="download_transfer",
+                scope="task",
+                identity=task_id,
+                tokens=0.0,
+                last_refill_at=now,
+                denial_count=0,
+                last_attempt=now,
+            )
+        )
+
+    stream = _FakeDownloadStream()
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+    handler.send_file(task_id, offset=0)
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 429
+    assert response["data"]["scope"] == "task"
+    assert "risk" not in response["data"]
+    with file_task_context.session() as session:
+        assert session.get(file_task_context.FileTask, task_id).status == (
+            FileTaskStatus.PENDING
+        )
 
 
 def test_concurrent_upload_reports_conflict(file_task_context) -> None:

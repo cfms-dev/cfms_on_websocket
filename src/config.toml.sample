@@ -141,6 +141,35 @@ elevated_cost = 3
 high_cost = 10
 state_retention_seconds = 86400
 
+[document.download.risk_control]
+# Download limits start in observation mode. Shadow decisions are logged but do
+# not reject task issuance or transfer starts until mode is changed to "enforce".
+mode = "observe"
+refill_period_seconds = 600
+issue_account_capacity = 60
+issue_account_refill_tokens = 300
+issue_ip_capacity = 200
+issue_ip_refill_tokens = 1000
+transfer_account_capacity = 60
+transfer_account_refill_tokens = 300
+transfer_ip_capacity = 200
+transfer_ip_refill_tokens = 1000
+# A single bearer task may start five times immediately and refills ten starts
+# over its one-hour lifetime.
+task_capacity = 5
+task_refill_tokens = 10
+task_refill_period_seconds = 3600
+new_account_seconds = 604800
+ip_account_window_seconds = 600
+ip_accounts_elevated = 4
+ip_accounts_high = 10
+denial_window_seconds = 600
+denials_elevated = 1
+denials_high = 3
+elevated_cost = 3
+high_cost = 10
+state_retention_seconds = 86400
+
 [database]
 # Database type to use ("sqlite" or "mysql")
 type = "sqlite"

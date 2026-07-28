@@ -227,6 +227,7 @@ class FileTask(Base):
     __table_args__ = (
         CheckConstraint("status IN (0, 1, 2, 3, 4)", name="ck_file_tasks_status_value"),
         Index("ix_file_tasks_file_id_mode_status", "file_id", "mode", "status"),
+        Index("ix_file_tasks_mode_status_end_time", "mode", "status", "end_time"),
     )
     id: Mapped[str] = mapped_column(
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
@@ -243,12 +244,14 @@ class FileTask(Base):
     start_time: Mapped[float] = mapped_column(Float, nullable=False)
     end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Not adding a username column is by design since we take the possibility
-    # that a task ID may be forwarded to someone else by the original user.
-    #
-    # We believe that a sufficiently long random ID is sufficient to solve the
-    # problem of guessing, and that leaking the task ID to others is the user's
-    # fault, not ours.
+    issued_by_username: Mapped[str | None] = mapped_column(
+        VARCHAR(256),
+        ForeignKey("users.username", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Attribution does not bind the bearer task to this account. A sufficiently
+    # long random task ID remains the transfer credential and may be forwarded.
 
     # Encryption key will be generated when a download task is initiated for
     # the first time.

@@ -9,6 +9,7 @@ from include.config.validation import (
     AuthThrottlePolicy,
     ConfigValidationError,
     DocumentCreationRiskPolicy,
+    DocumentDownloadRiskPolicy,
     DocumentUploadPolicy,
     get_config_warnings,
     get_enabled_extensions,
@@ -209,6 +210,43 @@ def test_document_creation_risk_policy_defaults():
     assert policy.account_refill_tokens == 300
     assert policy.ip_capacity == 200
     assert policy.ip_refill_tokens == 1000
+
+
+def test_document_download_risk_policy_defaults_and_overrides():
+    config = _valid_config()
+    policy = DocumentDownloadRiskPolicy.from_config(config)
+
+    assert policy.mode == "observe"
+    assert policy.issue_account_refill_tokens == 300
+    assert policy.transfer_ip_refill_tokens == 1000
+    assert policy.task_capacity == 5
+    assert policy.task_refill_tokens == 10
+
+    config["document"] = {
+        "download": {"risk_control": {"mode": "enforce", "task_capacity": 8}}
+    }
+    policy = DocumentDownloadRiskPolicy.from_config(config)
+    assert policy.mode == "enforce"
+    assert policy.task_capacity == 8
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("mode", "disabled", "must be 'observe' or 'enforce'"),
+        ("issue_account_capacity", 0, "positive integer"),
+        ("ip_accounts_high", 4, "must be less than"),
+        ("denials_high", 1, "must be less than"),
+        ("high_cost", 201, "at least high_cost"),
+        ("state_retention_seconds", 3599, "cover every risk-control window"),
+    ],
+)
+def test_download_risk_policy_validates_settings(setting, value, message):
+    config = _valid_config()
+    config["document"] = {"download": {"risk_control": {setting: value}}}
+
+    with pytest.raises(ConfigValidationError, match=message):
+        validate_config(config)
 
 
 def test_legacy_creation_rate_settings_are_ignored():

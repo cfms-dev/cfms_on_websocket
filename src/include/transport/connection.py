@@ -23,13 +23,19 @@ from include.config.constants import (
 from include.config.settings import global_config
 from include.config.validation import DocumentUploadPolicy
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
+from include.database.models.identity import User
 from include.database.session import Session
+from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import (
     ClaimedFileTask,
     claim_file_task,
     complete_file_task,
     expire_file_task_if_due,
     release_file_task,
+)
+from include.domains.documents.download_limits import (
+    DownloadLimitDecision,
+    check_download_transfer_limits,
 )
 from include.domains.documents.file_task_signals import watch_file_task
 from include.extensions.manager import pm
@@ -234,9 +240,42 @@ class ConnectionHandler:
 
         with Session() as session, session.begin():
             claimed = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
+            if claimed is not None:
+                issuer = (
+                    session.get(User, claimed.issued_by_username)
+                    if claimed.issued_by_username is not None
+                    else None
+                )
+                limit_decision = check_download_transfer_limits(
+                    session,
+                    issuer.username if issuer is not None else None,
+                    self.remote_address,
+                    task_id,
+                    account_created_at=(
+                        issuer.created_time if issuer is not None else None
+                    ),
+                    bypass_rate_limit=(
+                        issuer is not None
+                        and Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT
+                        in issuer.all_permissions
+                    ),
+                )
+                if not limit_decision.allowed:
+                    release_file_task(session, task_id)
 
         if claimed is None:
             self._conclude_file_task_claim_failure(task_id, TransferMode.DOWNLOAD)
+            return
+        if not limit_decision.allowed:
+            self.conclude_request(
+                429,
+                {
+                    "scope": limit_decision.scope,
+                    "limit": limit_decision.limit,
+                    "retry_after_seconds": limit_decision.retry_after_seconds,
+                },
+                "Download transfer limit exceeded. Please try again later.",
+            )
             return
 
         with watch_file_task(task_id) as cancelled:
@@ -245,6 +284,7 @@ class ConnectionHandler:
                     claimed,
                     offset,
                     cancelled,
+                    limit_decision,
                 )
             except FileTaskEnded as exc:
                 self.conclude_request(
@@ -258,6 +298,7 @@ class ConnectionHandler:
         claimed: ClaimedFileTask,
         offset: int,
         cancelled: threading.Event,
+        limit_decision: DownloadLimitDecision,
     ) -> None:
         task_id = claimed.task_id
         file_id = claimed.file_id
@@ -275,6 +316,20 @@ class ConnectionHandler:
                 session.commit()
 
         self.logger.info(f"Calculation complete. File size: {file_size}")
+        self.logger.bind(
+            name="document_download_transfer",
+            task_id=task_id,
+            issued_by_username=claimed.issued_by_username,
+            remote_address=self.remote_address,
+            remaining_bytes=max(0, file_size - offset),
+            active_downloads=limit_decision.active_downloads,
+            risk_level=(
+                limit_decision.risk_level.value
+                if limit_decision.risk_level is not None
+                else None
+            ),
+            would_block=limit_decision.would_block,
+        ).info("Document download transfer started")
 
         chunk_size = global_config["server"]["file_chunk_size"]
         total_chunks = (file_size + chunk_size - 1) // chunk_size

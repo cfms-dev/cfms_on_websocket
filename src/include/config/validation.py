@@ -14,6 +14,7 @@ __all__ = [
     "AuthThrottlePolicy",
     "ConfigValidationError",
     "DocumentCreationRiskPolicy",
+    "DocumentDownloadRiskPolicy",
     "DocumentUploadPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
@@ -321,6 +322,107 @@ class DocumentCreationRiskPolicy:
         return policy
 
 
+@dataclass(frozen=True)
+class DocumentDownloadRiskPolicy:
+    mode: str = "observe"
+    refill_period_seconds: int = 600
+    issue_account_capacity: int = 60
+    issue_account_refill_tokens: int = 300
+    issue_ip_capacity: int = 200
+    issue_ip_refill_tokens: int = 1000
+    transfer_account_capacity: int = 60
+    transfer_account_refill_tokens: int = 300
+    transfer_ip_capacity: int = 200
+    transfer_ip_refill_tokens: int = 1000
+    task_capacity: int = 5
+    task_refill_tokens: int = 10
+    task_refill_period_seconds: int = 3600
+    new_account_seconds: int = 7 * 24 * 60 * 60
+    ip_account_window_seconds: int = 600
+    ip_accounts_elevated: int = 4
+    ip_accounts_high: int = 10
+    denial_window_seconds: int = 600
+    denials_elevated: int = 1
+    denials_high: int = 3
+    elevated_cost: int = 3
+    high_cost: int = 10
+    state_retention_seconds: int = 86400
+
+    @classmethod
+    def from_config(
+        cls, config: _ConfigSource | None = None
+    ) -> DocumentDownloadRiskPolicy:
+        if config is None:
+            from include.config.settings import global_config
+
+            config = global_config
+
+        try:
+            document = config["document"]
+        except KeyError:
+            document = {}
+        if not isinstance(document, Mapping):
+            raise ConfigValidationError("document must be a table")
+
+        download = document.get("download", {})
+        if not isinstance(download, Mapping):
+            raise ConfigValidationError("document.download must be a table")
+        risk_control = download.get("risk_control", {})
+        if not isinstance(risk_control, Mapping):
+            raise ConfigValidationError(
+                "document.download.risk_control must be a table"
+            )
+
+        policy = cls(
+            **{
+                field.name: risk_control.get(field.name, field.default)
+                for field in fields(cls)
+            }
+        )
+        path = "document.download.risk_control"
+        if policy.mode not in {"observe", "enforce"}:
+            raise ConfigValidationError(f"{path}.mode must be 'observe' or 'enforce'")
+        for field in fields(cls):
+            if field.name == "mode":
+                continue
+            value = getattr(policy, field.name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigValidationError(
+                    f"{path}.{field.name} must be a positive integer"
+                )
+
+        for lower_name, upper_name in (
+            ("ip_accounts_elevated", "ip_accounts_high"),
+            ("denials_elevated", "denials_high"),
+        ):
+            if getattr(policy, lower_name) >= getattr(policy, upper_name):
+                raise ConfigValidationError(
+                    f"{path}.{lower_name} must be less than {upper_name}"
+                )
+
+        risk_capacities = (
+            policy.issue_account_capacity,
+            policy.issue_ip_capacity,
+            policy.transfer_account_capacity,
+            policy.transfer_ip_capacity,
+        )
+        if min(risk_capacities) < policy.high_cost:
+            raise ConfigValidationError(
+                f"{path} account and IP bucket capacities must be at least high_cost"
+            )
+        required_retention = max(
+            policy.refill_period_seconds,
+            policy.task_refill_period_seconds,
+            policy.ip_account_window_seconds,
+            policy.denial_window_seconds,
+        )
+        if policy.state_retention_seconds < required_retention:
+            raise ConfigValidationError(
+                f"{path}.state_retention_seconds must cover every risk-control window"
+            )
+        return policy
+
+
 def _validate_client_certificate_config(config: _ConfigSource) -> None:
     security = _section(config, "security")
     require_client_cert = security.get("require_client_cert", False)
@@ -343,6 +445,7 @@ def validate_config(config: _ConfigSource) -> None:
     AuthThrottlePolicy.from_config(config)
     DocumentUploadPolicy.from_config(config)
     DocumentCreationRiskPolicy.from_config(config)
+    DocumentDownloadRiskPolicy.from_config(config)
     _validate_client_certificate_config(config)
 
     from include.extensions.manager import validate_extension_config

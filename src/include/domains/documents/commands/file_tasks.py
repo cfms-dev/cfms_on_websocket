@@ -21,6 +21,7 @@ class ClaimedFileTask:
     file_id: str
     file_path: str
     stored_file_size: int | None
+    issued_by_username: str | None
     encryption_key: str | None = field(repr=False)
 
 
@@ -128,6 +129,7 @@ def claim_file_task(
         stored_file_size=(
             file.size if transfer_mode == TransferMode.DOWNLOAD else None
         ),
+        issued_by_username=task.issued_by_username,
         encryption_key=(
             task.encryption_key if transfer_mode == TransferMode.DOWNLOAD else None
         ),

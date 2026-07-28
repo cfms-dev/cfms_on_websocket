@@ -58,6 +58,7 @@ from include.domains.documents.commands.upload_cleanup import (
     try_reclaim_abandoned_uploads,
 )
 from include.domains.documents.creation_limits import check_document_creation_limits
+from include.domains.documents.download_limits import check_download_issue_limits
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
@@ -78,6 +79,8 @@ def create_file_task(
     session: ORMSession,
     file: File,
     transfer_mode: TransferMode = TransferMode.DOWNLOAD,
+    *,
+    issued_by_username: str | None = None,
 ) -> dict[str, Any]:
     """Creates a new file processing task for the specified file.
 
@@ -109,6 +112,7 @@ def create_file_task(
         mode=transfer_mode,
         start_time=now,
         end_time=now + duration,
+        issued_by_username=issued_by_username,
     )
     session.add(task)
     session.flush()
@@ -291,7 +295,40 @@ class RequestGetDocumentHandler(RequestHandler):
                 )
                 return Result(code=4041, target=document_id, username=handler.username)
 
-            task_data = create_file_task(session, latest_revision.file)
+            limit_decision = check_download_issue_limits(
+                session,
+                user.username,
+                handler.remote_address,
+                account_created_at=user.created_time,
+                bypass_rate_limit=(
+                    Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT
+                    in user.all_permissions
+                ),
+            )
+            if not limit_decision.allowed:
+                session.commit()
+                data = {
+                    "scope": limit_decision.scope,
+                    "limit": limit_decision.limit,
+                    "retry_after_seconds": limit_decision.retry_after_seconds,
+                }
+                handler.conclude_request(
+                    429,
+                    data,
+                    "Download request limit exceeded. Please try again later.",
+                )
+                return Result(
+                    code=429,
+                    target=document_id,
+                    data=data,
+                    username=handler.username,
+                )
+
+            task_data = create_file_task(
+                session,
+                latest_revision.file,
+                issued_by_username=user.username,
+            )
             session.commit()
             data = {
                 "document_id": document.id,

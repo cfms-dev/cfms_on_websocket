@@ -5,6 +5,7 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import cancel_file_tasks_for_files
+from include.domains.documents.download_limits import check_download_issue_limits
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.documents import (
     create_file_task,
@@ -148,7 +149,40 @@ class RequestGetRevisionHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, username=handler.username)
 
-            task_data = create_file_task(session, revision.file)
+            limit_decision = check_download_issue_limits(
+                session,
+                user.username,
+                handler.remote_address,
+                account_created_at=user.created_time,
+                bypass_rate_limit=(
+                    Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT
+                    in user.all_permissions
+                ),
+            )
+            if not limit_decision.allowed:
+                session.commit()
+                data = {
+                    "scope": limit_decision.scope,
+                    "limit": limit_decision.limit,
+                    "retry_after_seconds": limit_decision.retry_after_seconds,
+                }
+                handler.conclude_request(
+                    429,
+                    data,
+                    "Download request limit exceeded. Please try again later.",
+                )
+                return Result(
+                    code=429,
+                    target=revision_id,
+                    data=data,
+                    username=handler.username,
+                )
+
+            task_data = create_file_task(
+                session,
+                revision.file,
+                issued_by_username=user.username,
+            )
             session.commit()
 
         handler.conclude_request(200, {"task_data": task_data}, smsg.SUCCESS)
