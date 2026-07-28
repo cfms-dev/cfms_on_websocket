@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ def directory_models(protected_test_config):
         os.chdir(src_path)
         import include.database.models.access as blocking
         import include.database.models.keyrings as keyring
+        import include.domains.documents.handlers.documents as document_handlers
         from include.database.models.documents import (
             Document,
             DocumentRevision,
@@ -53,6 +55,7 @@ def directory_models(protected_test_config):
         CompiledAccessRuleSet=blocking.CompiledAccessRuleSet,
         Document=Document,
         DocumentRevision=DocumentRevision,
+        document_handlers=document_handlers,
         EntityStatus=EntityStatus,
         File=File,
         Folder=Folder,
@@ -199,6 +202,94 @@ def test_document_active_does_not_load_all_revisions_when_current_is_active(
 
     assert loaded_document.active is True
     assert loaded_document.get_latest_revision().id == revision.id
+
+
+def test_document_info_reads_revision_and_file_consistently_during_deduplication(
+    directory_models, tmp_path, monkeypatch
+):
+    database_path = tmp_path / "document-info.db"
+    engine = create_engine(f"sqlite:///{database_path}")
+    directory_models.Base.metadata.create_all(
+        engine,
+        tables=[
+            directory_models.File.__table__,
+            directory_models.CompiledAccessRuleSet.__table__,
+            directory_models.CompiledAccessRule.__table__,
+            directory_models.CompiledAccessRuleGroup.__table__,
+            directory_models.CompiledAccessRuleRight.__table__,
+            directory_models.CompiledAccessRuleMembership.__table__,
+            directory_models.Node.__table__,
+            directory_models.Folder.__table__,
+            directory_models.Document.__table__,
+            directory_models.DocumentRevision.__table__,
+        ],
+    )
+    testing_session = sessionmaker(bind=engine)
+
+    with testing_session() as session, session.begin():
+        session.add(directory_models.Folder(id="/", name="/", inherit=False))
+        document = directory_models.Document(id="doc", title="doc")
+        canonical = _file(directory_models, "canonical", active=True, size=7)
+        source = _file(directory_models, "source", active=True, size=7)
+        session.add_all([document, canonical, source])
+        session.flush()
+        revision = directory_models.DocumentRevision(
+            id="revision",
+            document_id=document.id,
+            file_id=source.id,
+            created_time=1.0,
+        )
+        session.add(revision)
+        session.flush()
+        document.current_revision_id = revision.id
+
+    remapped = False
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def remap_before_file_read(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        nonlocal remapped
+        if remapped or "files" not in statement.lower():
+            return
+        remapped = True
+        with sqlite3.connect(database_path) as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(
+                "UPDATE document_revisions SET file_id = ? WHERE id = ?",
+                ("canonical", "revision"),
+            )
+            connection.execute("UPDATE files SET active = 0 WHERE id = ?", ("source",))
+            connection.commit()
+
+    user = SimpleNamespace(all_permissions=set())
+    monkeypatch.setattr(directory_models.document_handlers, "Session", testing_session)
+    monkeypatch.setattr(
+        directory_models.document_handlers.User,
+        "get_existing",
+        classmethod(lambda _cls, _session, _username: user),
+    )
+    monkeypatch.setattr(
+        directory_models.Document,
+        "check_access_requirements",
+        lambda _document, _user, access_type="read": access_type == "read",
+    )
+
+    handler = SimpleNamespace(
+        data={"document_id": "doc"},
+        username="admin",
+        conclude_request=lambda code, data, message: responses.append(
+            {"code": code, "data": data, "message": message}
+        ),
+    )
+    responses = []
+
+    directory_models.document_handlers.RequestGetDocumentInfoHandler().handle(handler)
+
+    assert remapped is True
+    assert responses[0]["code"] == 200
+    assert responses[0]["data"]["size"] == 7
+    engine.dispose()
 
 
 def test_fetch_latest_active_revisions_batches_without_lazy_revision_loads(

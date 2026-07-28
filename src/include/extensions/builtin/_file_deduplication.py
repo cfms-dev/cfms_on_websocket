@@ -343,7 +343,6 @@ def process_one_file_deduplication_task() -> bool:
     if claim is None:
         return False
 
-    started = time.monotonic()
     try:
         with Session() as session:
             task = _get_claimed_task(session, claim)
@@ -358,11 +357,6 @@ def process_one_file_deduplication_task() -> bool:
             _process_storage_delete(claim)
     except Exception as error:
         _reschedule_failed_task(claim, error)
-    finally:
-        logger.bind(
-            file_id=claim.file_id,
-            duration_seconds=time.monotonic() - started,
-        ).info("File deduplication task attempt finished")
 
     return True
 

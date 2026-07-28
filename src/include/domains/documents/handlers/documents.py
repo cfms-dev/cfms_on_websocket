@@ -65,6 +65,9 @@ from include.domains.documents.handlers.name_conflict_responses import (
 from include.domains.documents.queries.file_references import (
     find_unreachable_document_file_ids,
 )
+from include.domains.documents.queries.listing import (
+    fetch_latest_active_revisions_by_document,
+)
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
@@ -167,9 +170,10 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, username=handler.username)
 
-            try:
-                document.get_latest_revision()
-            except NoActiveRevisionsError:
+            latest_revision = fetch_latest_active_revisions_by_document(
+                session, [document.id]
+            ).get(document.id)
+            if latest_revision is None:
                 handler.conclude_request(
                     404, {}, "No active revisions found for this document"
                 )
@@ -194,9 +198,9 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 "document_id": document.id,
                 "parent_id": document.folder_id,
                 "title": document.title,
-                "size": document.get_latest_revision().file.size,
+                "size": latest_revision.file.size,
                 "created_time": document.created_time,
-                "last_modified": document.get_latest_revision().created_time,
+                "last_modified": latest_revision.created_time,
                 "access_rules": access_rules,
                 "info_code": info_code,
             }
@@ -278,9 +282,10 @@ class RequestGetDocumentHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, username=handler.username)
 
-            try:
-                latest_revision = document.get_latest_revision()
-            except NoActiveRevisionsError:
+            latest_revision = fetch_latest_active_revisions_by_document(
+                session, [document.id]
+            ).get(document.id)
+            if latest_revision is None:
                 handler.conclude_request(
                     404, {}, "No active revisions found for this document"
                 )

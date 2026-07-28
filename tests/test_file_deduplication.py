@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from loguru import logger as log
 from sqlalchemy import Column, ForeignKey, MetaData, String, Table, create_engine, event
 from sqlalchemy.orm import sessionmaker
 
@@ -177,8 +178,12 @@ def _add_duplicate_pair(context, *, live_download=False):
         )
 
 
-def test_non_duplicate_file_completes_without_storage_deletion(deduplication_context):
+def test_non_duplicate_file_completes_quietly_without_storage_deletion(
+    deduplication_context,
+):
     context = deduplication_context
+    messages = []
+    sink_id = log.add(lambda message: messages.append(message.record["message"]))
     context.storage.objects.add("only.bin")
     with context.session() as session, session.begin():
         session.add(
@@ -201,12 +206,16 @@ def test_non_duplicate_file_completes_without_storage_deletion(deduplication_con
             )
         )
 
-    assert context.module.process_one_file_deduplication_task() is True
+    try:
+        assert context.module.process_one_file_deduplication_task() is True
+    finally:
+        log.remove(sink_id)
 
     with context.session() as session:
         assert session.get(context.File, "only").active is True
         assert session.get(context.Task, "only") is None
     assert context.storage.objects == {"only.bin"}
+    assert messages == []
 
 
 def test_duplicate_references_and_storage_are_reclaimed(deduplication_context):
