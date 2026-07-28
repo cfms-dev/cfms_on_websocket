@@ -25,6 +25,7 @@ from include.config.validation import DocumentUploadPolicy
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.session import Session
 from include.domains.documents.commands.file_tasks import (
+    ClaimedFileTask,
     claim_file_task,
     complete_file_task,
     expire_file_task_if_due,
@@ -164,7 +165,9 @@ class ConnectionHandler:
         if status != FileTaskStatus.IN_PROGRESS:
             raise FileTaskEnded(status)
 
-    def _conclude_file_task_claim_failure(self, task_id: str) -> None:
+    def _conclude_file_task_claim_failure(
+        self, task_id: str, transfer_mode: TransferMode
+    ) -> None:
         with Session() as session:
             task = session.get(FileTask, task_id)
             if task is None:
@@ -178,10 +181,13 @@ class ConnectionHandler:
                 "Task is no longer available",
             )
             return
-        if status == FileTaskStatus.IN_PROGRESS:
+        if (
+            status == FileTaskStatus.IN_PROGRESS
+            and transfer_mode == TransferMode.UPLOAD
+        ):
             self.conclude_request(
                 409,
-                {"task_status": "in_progress"},
+                {"task_status": status.name.lower()},
                 "Task is already in progress",
             )
             return
@@ -227,30 +233,17 @@ class ConnectionHandler:
         """
 
         with Session() as session, session.begin():
-            file_task = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
-            if file_task is not None:
-                file = session.get(File, file_task.file_id)
-                if not file:
-                    raise ValueError(f"File not found for file_id: {file_task.file_id}")
+            claimed = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
 
-                file_id = file.id
-                file_path = file.path
-                stored_file_size = file.size
-                encryption_key = file_task.encryption_key
-
-        if file_task is None:
-            self._conclude_file_task_claim_failure(task_id)
+        if claimed is None:
+            self._conclude_file_task_claim_failure(task_id, TransferMode.DOWNLOAD)
             return
 
         with watch_file_task(task_id) as cancelled:
             try:
                 self._send_claimed_file(
-                    task_id,
+                    claimed,
                     offset,
-                    file_id,
-                    file_path,
-                    stored_file_size,
-                    encryption_key,
                     cancelled,
                 )
             except FileTaskEnded as exc:
@@ -262,19 +255,18 @@ class ConnectionHandler:
 
     def _send_claimed_file(
         self,
-        task_id: str,
+        claimed: ClaimedFileTask,
         offset: int,
-        file_id: str,
-        file_path: str,
-        stored_file_size: int | None,
-        encryption_key: str | None,
         cancelled: threading.Event,
     ) -> None:
+        task_id = claimed.task_id
+        file_id = claimed.file_id
+        file_path = claimed.file_path
 
         self.logger.info(f"Task {task_id}: preparing to send file (id: {file_id}).")
 
         file_size = ProviderManager().storage.getsize(file_path)
-        if stored_file_size != file_size:
+        if claimed.stored_file_size != file_size:
             with Session() as session:
                 file = session.get(File, file_id)
                 if not file:
@@ -365,8 +357,8 @@ class ConnectionHandler:
             )
             return
 
-        if encryption_key:
-            aes_key = base64.b64decode(encryption_key)
+        if claimed.encryption_key:
+            aes_key = base64.b64decode(claimed.encryption_key)
         else:
             aes_key = get_random_bytes(32)
             encoded_key = base64.b64encode(aes_key).decode()
@@ -491,24 +483,18 @@ class ConnectionHandler:
         """
 
         with Session() as session, session.begin():
-            file_task = claim_file_task(session, task_id, TransferMode.UPLOAD)
-            if file_task is not None:
-                file = session.get(File, file_task.file_id)
-                if file is None:
-                    raise ValueError(f"File not found for file_id: {file_task.file_id}")
-                file_id = file.id
-                file_path = file.path
+            claimed = claim_file_task(session, task_id, TransferMode.UPLOAD)
 
-        if file_task is None:
-            self._conclude_file_task_claim_failure(task_id)
+        if claimed is None:
+            self._conclude_file_task_claim_failure(task_id, TransferMode.UPLOAD)
             return
 
         with watch_file_task(task_id) as cancelled:
             try:
-                self._receive_claimed_file(task_id, file_id, file_path, cancelled)
+                self._receive_claimed_file(claimed, cancelled)
             except FileTaskEnded as exc:
                 try:
-                    ProviderManager().storage.remove(file_path)
+                    ProviderManager().storage.remove(claimed.file_path)
                 except FileNotFoundError:
                     pass
                 self.conclude_request(
@@ -519,11 +505,12 @@ class ConnectionHandler:
 
     def _receive_claimed_file(
         self,
-        task_id: str,
-        file_id: str,
-        file_path: str,
+        claimed: ClaimedFileTask,
         cancelled: threading.Event,
     ) -> None:
+        task_id = claimed.task_id
+        file_id = claimed.file_id
+        file_path = claimed.file_path
         handshake_msg = {
             "action": "transfer_file",
             "data": {},

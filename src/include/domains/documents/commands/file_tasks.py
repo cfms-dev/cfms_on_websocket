@@ -1,4 +1,5 @@
 import time
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from sqlalchemy import select, update
@@ -12,6 +13,15 @@ ACTIVE_FILE_TASK_STATUSES = (
     FileTaskStatus.PENDING,
     FileTaskStatus.IN_PROGRESS,
 )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaimedFileTask:
+    task_id: str
+    file_id: str
+    file_path: str
+    stored_file_size: int | None
+    encryption_key: str | None = field(repr=False)
 
 
 def serialize_file_task(task: FileTask) -> dict[str, Any]:
@@ -66,7 +76,7 @@ def claim_file_task(
     transfer_mode: TransferMode,
     *,
     now: float | None = None,
-) -> FileTask | None:
+) -> ClaimedFileTask | None:
     if now is None:
         now = time.time()
     task = session.get(FileTask, task_id)
@@ -109,8 +119,21 @@ def claim_file_task(
     if result.rowcount != 1:
         session.expire(task)
         return None
+
+    file = task.file
+    claimed = ClaimedFileTask(
+        task_id=task.id,
+        file_id=file.id,
+        file_path=file.path,
+        stored_file_size=(
+            file.size if transfer_mode == TransferMode.DOWNLOAD else None
+        ),
+        encryption_key=(
+            task.encryption_key if transfer_mode == TransferMode.DOWNLOAD else None
+        ),
+    )
     session.expire(task)
-    return task
+    return claimed
 
 
 def complete_file_task(session: Session, task_id: str) -> bool:

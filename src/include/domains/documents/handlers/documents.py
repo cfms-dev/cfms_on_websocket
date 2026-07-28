@@ -746,43 +746,6 @@ class RequestDownloadFileHandler(RequestHandler):
         task_id: str = handler.data["task_id"]
         offset: int = handler.data.get("offset", 0)
 
-        with Session() as session:
-            task = session.get(FileTask, task_id)
-            if not task:
-                handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
-                return
-
-            task_status = FileTaskStatus(task.status)
-            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
-                handler.conclude_request(
-                    410,
-                    {"task_status": task_status.name.lower()},
-                    "Task is no longer available",
-                )
-                return
-
-            if (
-                task_status != FileTaskStatus.PENDING
-                or task.mode != TransferMode.DOWNLOAD
-            ):
-                handler.conclude_request(
-                    400, {}, "Task is not in a valid state for download"
-                )
-                return
-
-            if task.start_time > time.time() or (
-                task.end_time and task.end_time < time.time()
-            ):
-                if task.end_time and task.end_time <= time.time():
-                    task.status = FileTaskStatus.EXPIRED
-                    session.commit()
-                    handler.conclude_request(
-                        410, {"task_status": "expired"}, "Task has expired"
-                    )
-                else:
-                    handler.conclude_request(400, {}, "Task has not started yet")
-                return
-
         # The server still needs to send one more response.
         handler.send_file(task_id, offset)
 
@@ -801,49 +764,6 @@ class RequestUploadFileHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         task_id = handler.data["task_id"]
-
-        with Session() as session:
-            task = session.get(FileTask, task_id)
-            if not task:
-                handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
-                return
-
-            task_status = FileTaskStatus(task.status)
-            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
-                handler.conclude_request(
-                    410,
-                    {"task_status": task_status.name.lower()},
-                    "Task is no longer available",
-                )
-                return
-
-            if task_status == FileTaskStatus.IN_PROGRESS:
-                handler.conclude_request(
-                    409, {"task_status": "in_progress"}, "Upload is already in progress"
-                )
-                return
-
-            if (
-                task_status != FileTaskStatus.PENDING
-                or task.mode != TransferMode.UPLOAD
-            ):
-                handler.conclude_request(
-                    400, {}, "Task is not in a valid state for upload"
-                )
-                return
-
-            if task.start_time > time.time() or (
-                task.end_time and task.end_time < time.time()
-            ):
-                if task.end_time and task.end_time <= time.time():
-                    task.status = FileTaskStatus.EXPIRED
-                    session.commit()
-                    handler.conclude_request(
-                        410, {"task_status": "expired"}, "Task has expired"
-                    )
-                else:
-                    handler.conclude_request(400, {}, "Task has not started yet")
-                return
 
         # The server needs to send one response.
         handler.receive_file(task_id)

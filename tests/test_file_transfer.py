@@ -6,7 +6,7 @@ import sqlite3
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -328,9 +328,12 @@ def test_upload_task_lifecycle_uses_two_stage_deadline(
             session, task_id, TransferMode.UPLOAD, now=1000.0
         )
         assert claimed is not None
-        hard_deadline = claimed.end_time
-        assert claimed.status == FileTaskStatus.IN_PROGRESS
-        assert claimed.start_time == 1000.0
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        hard_deadline = task.end_time
+        assert task.status == FileTaskStatus.IN_PROGRESS
+        assert task.start_time == 1000.0
 
     with file_task_context.session.begin() as session:
         assert (
@@ -343,10 +346,91 @@ def test_upload_task_lifecycle_uses_two_stage_deadline(
             session, task_id, TransferMode.UPLOAD, now=1002.0
         )
         assert claimed is not None
-        assert claimed.start_time == 1000.0
-        assert claimed.end_time == hard_deadline
         assert file_tasks.complete_file_task(session, task_id) is True
         assert file_tasks.complete_file_task(session, task_id) is False
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.start_time == 1000.0
+        assert task.end_time == hard_deadline
+
+
+def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+    from include.domains.documents.commands.file_tasks import claim_file_task
+
+    task_id, file_id = _create_file_task(
+        file_task_context, "snapshot.bin", mode=TransferMode.DOWNLOAD
+    )
+    with file_task_context.session.begin() as session:
+        file = session.get(file_task_context.File, file_id)
+        file.size = 123
+        task = session.get(file_task_context.FileTask, task_id)
+        task.encryption_key = "sensitive-key"
+
+    with file_task_context.session.begin() as session:
+        claimed = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
+
+    assert claimed is not None
+    assert claimed.task_id == task_id
+    assert claimed.file_id == file_id
+    assert claimed.file_path == "snapshot.bin"
+    assert claimed.stored_file_size == 123
+    assert claimed.encryption_key == "sensitive-key"
+    assert "sensitive-key" not in repr(claimed)
+    with pytest.raises(FrozenInstanceError):
+        claimed.file_path = "changed.bin"
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.IN_PROGRESS
+
+
+def test_claim_rejects_invalid_or_competing_requests(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+    from include.domains.documents.commands.file_tasks import claim_file_task
+
+    upload_task_id, _file_id = _create_file_task(
+        file_task_context, "claim-once.bin", mode=TransferMode.UPLOAD
+    )
+    future_task_id, _file_id = _create_file_task(
+        file_task_context, "future.bin", mode=TransferMode.UPLOAD
+    )
+    with file_task_context.session.begin() as session:
+        upload_task = session.get(file_task_context.FileTask, upload_task_id)
+        upload_task.start_time = 50.0
+        upload_task.end_time = 500.0
+        future_task = session.get(file_task_context.FileTask, future_task_id)
+        future_task.start_time = 200.0
+        future_task.end_time = 500.0
+
+    with file_task_context.session.begin() as session:
+        assert (
+            claim_file_task(session, "missing-task", TransferMode.UPLOAD, now=100.0)
+            is None
+        )
+        assert (
+            claim_file_task(session, upload_task_id, TransferMode.DOWNLOAD, now=100.0)
+            is None
+        )
+        assert (
+            claim_file_task(session, future_task_id, TransferMode.UPLOAD, now=100.0)
+            is None
+        )
+        assert (
+            claim_file_task(session, upload_task_id, TransferMode.UPLOAD, now=100.0)
+            is not None
+        )
+        assert (
+            claim_file_task(session, upload_task_id, TransferMode.UPLOAD, now=100.0)
+            is None
+        )
+
+    with file_task_context.session() as session:
+        assert (
+            session.get(file_task_context.FileTask, upload_task_id).status
+            == FileTaskStatus.IN_PROGRESS
+        )
 
 
 def test_claim_marks_due_task_expired(file_task_context) -> None:
@@ -413,6 +497,99 @@ def test_transfer_claim_race_reports_expired_status(file_task_context) -> None:
             session.get(file_task_context.FileTask, task_id).status
             == FileTaskStatus.EXPIRED
         )
+
+
+def test_missing_transfer_task_reports_not_found(file_task_context) -> None:
+    stream = _FakeDownloadStream()
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.send_file("missing-task", offset=0)
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 404
+    assert response["data"] == {}
+
+
+def test_concurrent_upload_reports_conflict(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    task_id, _file_id = _create_file_task(
+        file_task_context,
+        "uploads/in-progress.bin",
+        mode=TransferMode.UPLOAD,
+        status=FileTaskStatus.IN_PROGRESS,
+    )
+    stream = _FakeUploadStream([])
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.receive_file(task_id)
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 409
+    assert response["data"] == {"task_status": "in_progress"}
+
+
+def test_concurrent_download_remains_bad_request(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    task_id, _file_id = _create_file_task(
+        file_task_context,
+        "in-progress-download.bin",
+        mode=TransferMode.DOWNLOAD,
+        status=FileTaskStatus.IN_PROGRESS,
+    )
+    stream = _FakeDownloadStream()
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.send_file(task_id, offset=0)
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 400
+    assert response["data"] == {}
+
+
+def test_wrong_mode_and_future_task_report_bad_request(file_task_context) -> None:
+    from include.database.models.files import TransferMode
+
+    upload_task_id, _file_id = _create_file_task(
+        file_task_context, "wrong-mode.bin", mode=TransferMode.UPLOAD
+    )
+    future_task_id, _file_id = _create_file_task(
+        file_task_context, "future-download.bin", mode=TransferMode.DOWNLOAD
+    )
+    with file_task_context.session.begin() as session:
+        future_task = session.get(file_task_context.FileTask, future_task_id)
+        future_task.start_time = time.time() + 60
+        future_task.end_time = future_task.start_time + 60
+
+    for task_id in (upload_task_id, future_task_id):
+        stream = _FakeDownloadStream()
+        handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+        handler.send_file(task_id, offset=0)
+
+        response = _sent_json_messages(stream)[-1]
+        assert response["code"] == 400
+        assert response["data"] == {}
+
+
+def test_file_request_handlers_delegate_claiming(file_task_context) -> None:
+    from include.domains.documents.handlers.documents import (
+        RequestDownloadFileHandler,
+        RequestUploadFileHandler,
+    )
+
+    calls = []
+    handler = SimpleNamespace(
+        data={"task_id": "task", "offset": 64},
+        send_file=lambda task_id, offset: calls.append(("download", task_id, offset)),
+        receive_file=lambda task_id: calls.append(("upload", task_id)),
+    )
+
+    RequestDownloadFileHandler().handle(handler)
+    RequestUploadFileHandler().handle(handler)
+
+    assert calls == [("download", "task", 64), ("upload", "task")]
 
 
 class TestFileTransfer:
