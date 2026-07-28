@@ -36,13 +36,6 @@ trusted_proxy_networks = ["127.0.0.1/32", "::1/128"]
 file_chunk_size = 2097152 # 2MB
 # Setting the chunk size too high may cause transfer failures depending on client configuration
 
-[document]
-# Whether to allow multiple documents with the same name in the same directory.
-# 
-# If set to false after previously being true, existing duplicate documents will be kept,
-# but new uploads with duplicate names will be rejected.
-allow_name_duplicate = false
-
 [security]
 # Pepper used for password hashing
 pepper = ""
@@ -113,6 +106,40 @@ default_groups = ["user"]
 # This may cause significant performance issues if the hierarchy is too deep. 
 # Alternatively, you can disable this and ensure access rules are set correctly on every directory.
 enable_access_recursive_check = true
+
+[document.upload]
+# Time allowed to begin an upload after its task is created.
+start_timeout_seconds = 3600
+# Hard deadline applied after an upload starts.
+max_duration_seconds = 86400
+# Abort an upload when no frame arrives within this interval.
+idle_timeout_seconds = 300
+# Minimum interval between opportunistic abandoned-upload cleanup batches.
+cleanup_interval_seconds = 60
+# Maximum number of empty, not-yet-uploaded documents per creator.
+max_pending_documents_per_creator = 16
+
+[document.upload.creation_risk_control]
+# Adaptive document-creation risk control. Use "observe" to log decisions without
+# enforcing rate denials. Pending-document limits are always enforced.
+mode = "enforce"
+refill_period_seconds = 600
+account_capacity = 60
+account_refill_tokens = 300
+ip_capacity = 200
+ip_refill_tokens = 1000
+new_account_seconds = 604800
+pending_elevated_ratio = 0.5
+pending_high_ratio = 0.75
+ip_account_window_seconds = 600
+ip_accounts_elevated = 4
+ip_accounts_high = 10
+denial_window_seconds = 600
+denials_elevated = 1
+denials_high = 3
+elevated_cost = 3
+high_cost = 10
+state_retention_seconds = 86400
 
 [database]
 # Database type to use ("sqlite" or "mysql")

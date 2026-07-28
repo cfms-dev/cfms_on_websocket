@@ -21,6 +21,7 @@ being counted were committed in earlier transactions.
 """
 
 import sys
+import warnings
 from itertools import batched
 from pathlib import Path
 from typing import Any
@@ -379,6 +380,23 @@ class TestCountFileReferences:
         assert len(_CACHED_REFS) == 0
 
         eng.dispose()
+
+    def test_unrelated_expression_index_does_not_warn(self, engine):
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE indexed_names (id INTEGER PRIMARY KEY, name TEXT)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX ix_indexed_names_lower_name "
+                "ON indexed_names (lower(name))"
+            )
+
+        _clear_file_references_cache()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            refs = _get_file_references(engine)
+
+        assert refs
 
     # ---------- Return type guarantees ------------------------------------
 

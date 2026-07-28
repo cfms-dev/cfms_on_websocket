@@ -18,11 +18,13 @@ import time
 from typing import Any
 
 import jsonschema
+from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import (
     FILE_TASK_DEFAULT_DURATION_SECONDS,
     ROOT_DIRECTORY_ID,
 )
+from include.config.validation import DocumentUploadPolicy
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -31,7 +33,7 @@ from include.database.models.documents import (
     EntityStatus,
     Folder,
 )
-from include.database.models.files import File, FileTask, TransferMode
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
@@ -40,9 +42,28 @@ from include.domains.access.authorization.compiled_rules import (
     get_access_rules_list,
 )
 from include.domains.access.permissions import Permissions
+from include.domains.documents.commands.file_tasks import (
+    cancel_file_tasks_for_files,
+    expire_file_task_if_due,
+    serialize_file_task,
+)
 from include.domains.documents.commands.name_conflicts import (
+    NodeNameConflictError,
+    describe_node_name_conflict,
     get_target_folder_and_check_write,
-    handle_name_duplicate,
+    node_name_mutation,
+)
+from include.domains.documents.commands.upload_cleanup import (
+    maybe_reclaim_abandoned_uploads,
+    try_reclaim_abandoned_uploads,
+)
+from include.domains.documents.creation_limits import check_document_creation_limits
+from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
+from include.domains.documents.handlers.name_conflict_responses import (
+    respond_to_node_name_conflict,
+)
+from include.domains.documents.queries.file_references import (
+    find_unreachable_document_file_ids,
 )
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
@@ -51,11 +72,14 @@ from include.transport.request_handler import RequestHandler, Result
 
 
 def create_file_task(
-    file: File, transfer_mode: TransferMode = TransferMode.DOWNLOAD
+    session: ORMSession,
+    file: File,
+    transfer_mode: TransferMode = TransferMode.DOWNLOAD,
 ) -> dict[str, Any]:
     """Creates a new file processing task for the specified file.
 
     Args:
+        session: Transaction that owns the file and the new task.
         file (File): The file object for which the task is to be generated.
 
     Returns:
@@ -67,29 +91,26 @@ def create_file_task(
         Returns None if the file with the given file_id does not exist.
 
     """
-    with Session() as session:
-        if not file:
-            raise ValueError("File can not be None when creating a file task")
+    if not file:
+        raise ValueError("File can not be None when creating a file task")
 
-        now = time.time()
-        task = FileTask(
-            file_id=file.id,
-            status=0,
-            mode=transfer_mode,
-            start_time=now,
-            end_time=now + FILE_TASK_DEFAULT_DURATION_SECONDS,
-        )
-        session.add(task)
-        session.commit()
+    now = time.time()
+    duration = (
+        DocumentUploadPolicy.from_config().start_timeout_seconds
+        if transfer_mode == TransferMode.UPLOAD
+        else FILE_TASK_DEFAULT_DURATION_SECONDS
+    )
+    task = FileTask(
+        file_id=file.id,
+        status=FileTaskStatus.PENDING,
+        mode=transfer_mode,
+        start_time=now,
+        end_time=now + duration,
+    )
+    session.add(task)
+    session.flush()
 
-        return {
-            "task_id": task.id,
-            "provider": "native",  # Literal['native', ...]
-            "start_time": task.start_time,
-            "end_time": task.end_time,
-            # Only download tasks support resume
-            "supports_resume": transfer_mode == TransferMode.DOWNLOAD,
-        }
+    return serialize_file_task(task)
 
 
 def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
@@ -265,10 +286,12 @@ class RequestGetDocumentHandler(RequestHandler):
                 )
                 return Result(code=4041, target=document_id, username=handler.username)
 
+            task_data = create_file_task(session, latest_revision.file)
+            session.commit()
             data = {
                 "document_id": document.id,
                 "title": document.title,
-                "task_data": create_file_task(latest_revision.file),
+                "task_data": task_data,
             }
 
             handler.conclude_request(200, data, "Document successfully fetched")
@@ -302,6 +325,9 @@ class RequestCreateDocumentHandler(RequestHandler):
             handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
             return
 
+        maybe_reclaim_abandoned_uploads()
+        try_reclaim_abandoned_uploads(folder_id=folder_id, title=title)
+
         with Session() as session:
             user = User.get_existing(session, handler.username)
 
@@ -326,18 +352,32 @@ class RequestCreateDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, user, folder_id, title
+            limit_decision = check_document_creation_limits(
+                session,
+                user.username,
+                handler.remote_address,
+                account_created_at=user.created_time,
+                bypass_rate_limit=(
+                    Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT
+                    in user.all_permissions
+                ),
             )
-            if has_conflict:
-                handler.conclude_request(err_code, err_data, err_msg)
+            if not limit_decision.allowed:
+                session.commit()
+                data = {
+                    "scope": limit_decision.scope,
+                    "limit": limit_decision.limit,
+                    "retry_after_seconds": limit_decision.retry_after_seconds,
+                }
+                handler.conclude_request(
+                    429,
+                    data,
+                    "Document creation limit exceeded. Please try again later.",
+                )
                 return Result(
-                    code=err_code,
+                    code=429,
                     target=folder_id,
-                    data={
-                        "title": title,
-                        "duplicate_id": err_data.get("duplicate_id"),
-                    },
+                    data={"title": title, **data},
                     username=handler.username,
                 )
 
@@ -365,24 +405,24 @@ class RequestCreateDocumentHandler(RequestHandler):
             session.add(new_revision)
 
             try:
-                if not apply_access_rules(
-                    new_document, access_rules, user, inherit_parent
-                ):
-                    session.rollback()
-                    handler.conclude_access_denial()
-                    return Result(
-                        code=403,
-                        target=folder_id,
-                        data={"title": title},
-                        username=handler.username,
+                with node_name_mutation(session, folder_id, title):
+                    if not apply_access_rules(
+                        new_document, access_rules, user, inherit_parent
+                    ):
+                        session.rollback()
+                        handler.conclude_access_denial()
+                        return Result(
+                            code=403,
+                            target=folder_id,
+                            data={"title": title},
+                            username=handler.username,
+                        )
+
+                    new_document.current_revision = new_revision
+                    task_data = create_file_task(
+                        session, new_file, transfer_mode=TransferMode.UPLOAD
                     )
-
-                new_document.current_revision = new_revision
-                session.commit()
-
-                task_data = create_file_task(
-                    new_revision.file, transfer_mode=TransferMode.UPLOAD
-                )
+                    session.commit()
                 handler.conclude_request(
                     200,
                     {"document_id": new_document.id, "task_data": task_data},
@@ -396,6 +436,17 @@ class RequestCreateDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
+            except NodeNameConflictError:
+                payload, message = describe_node_name_conflict(
+                    session, user, folder_id, title
+                )
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
+                    target=folder_id,
+                    result_data={"title": title},
+                )
             except (ValueError, jsonschema.ValidationError) as exc:
                 session.rollback()
                 handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
@@ -434,6 +485,9 @@ class RequestUploadDocumentHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
 
+        maybe_reclaim_abandoned_uploads()
+        try_reclaim_abandoned_uploads(document_id=document_id)
+
         with Session() as session:
             document = session.get(Document, document_id)
             this_user = User.get_existing(session, handler.username)
@@ -445,6 +499,55 @@ class RequestUploadDocumentHandler(RequestHandler):
                     handler.conclude_access_denial()
                     return Result(
                         code=403, target=document_id, username=handler.username
+                    )
+
+                existing_task = (
+                    session.query(FileTask)
+                    .join(File, File.id == FileTask.file_id)
+                    .join(DocumentRevision, DocumentRevision.file_id == File.id)
+                    .filter(
+                        DocumentRevision.document_id == document_id,
+                        FileTask.mode == TransferMode.UPLOAD,
+                        FileTask.status.in_(
+                            (FileTaskStatus.PENDING, FileTaskStatus.IN_PROGRESS)
+                        ),
+                    )
+                    .order_by(FileTask.start_time.desc())
+                    .first()
+                )
+                if existing_task is not None:
+                    status = expire_file_task_if_due(session, existing_task.id)
+                    if status == FileTaskStatus.EXPIRED:
+                        session.commit()
+                        handler.conclude_request(
+                            410,
+                            {"task_status": "expired"},
+                            "Existing upload task has expired",
+                        )
+                        return Result(
+                            code=410, target=document_id, username=handler.username
+                        )
+                    if status == FileTaskStatus.IN_PROGRESS:
+                        handler.conclude_request(
+                            409,
+                            {"task_status": "in_progress"},
+                            "Upload is already in progress",
+                        )
+                        return Result(
+                            code=409, target=document_id, username=handler.username
+                        )
+
+                    task_data = serialize_file_task(existing_task)
+                    handler.conclude_request(
+                        200,
+                        {"task_data": task_data},
+                        "Existing upload task returned",
+                    )
+                    return Result(
+                        code=0,
+                        target=document_id,
+                        data=task_data,
+                        username=handler.username,
                     )
 
                 today = datetime.datetime.now(datetime.UTC).date()
@@ -490,13 +593,12 @@ class RequestUploadDocumentHandler(RequestHandler):
                 mark_document_modified(document, this_user.username)
 
                 document.current_revision = new_revision
+                task_data = create_file_task(session, new_file, TransferMode.UPLOAD)
                 session.commit()
 
             else:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, username=handler.username)
-
-            task_data = create_file_task(new_file, TransferMode.UPLOAD)
 
         handler.conclude_request(
             200, {"task_data": task_data}, "Task successfully created"
@@ -522,6 +624,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
+        cancelled_task_ids: list[str] = []
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -542,8 +645,16 @@ class RequestDeleteDocumentHandler(RequestHandler):
             document.status_operation_id = (
                 f"OP_DEL_{secrets.token_hex(8)}_{int(time.time())}"
             )
+            unreachable_file_ids = find_unreachable_document_file_ids(
+                session, [document_id]
+            )
+            cancelled_task_ids = cancel_file_tasks_for_files(
+                session, unreachable_file_ids
+            )
             mark_document_modified(document, user.username)
             session.commit()
+
+        publish_cancelled_file_tasks(cancelled_task_ids)
 
         handler.conclude_request(200, {}, "Document successfully deleted")
         return Result(code=0, target=document_id, username=handler.username)
@@ -578,9 +689,6 @@ class RequestRenameDocumentHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, username=handler.username)
 
-            parent_id = document.folder_id or ROOT_DIRECTORY_ID
-            session.query(Folder).with_for_update().filter_by(id=parent_id).first()
-
             if (
                 Permissions.RENAME_DOCUMENT not in this_user.all_permissions
                 or not document.check_access_requirements(this_user, "write")
@@ -596,29 +704,24 @@ class RequestRenameDocumentHandler(RequestHandler):
                 )
                 return
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, this_user, document.folder_id, new_title
-            )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
-                if "duplicate_id" in err_data_filtered:
-                    return Result(
-                        code=err_code,
-                        target=document.folder_id,
-                        data={
-                            "title": document.title,
-                            "duplicate_id": err_data_filtered["duplicate_id"],
-                        },
-                        username=handler.username,
-                    )
-                return Result(
-                    code=err_code, target=document.folder_id, username=handler.username
+            parent_id = document.folder_id or ROOT_DIRECTORY_ID
+            old_title = document.title
+            try:
+                with node_name_mutation(session, parent_id, new_title):
+                    document.title = new_title
+                    mark_document_modified(document, this_user.username)
+                    session.commit()
+            except NodeNameConflictError:
+                payload, message = describe_node_name_conflict(
+                    session, this_user, parent_id, new_title
                 )
-
-            document.title = new_title
-            mark_document_modified(document, this_user.username)
-            session.commit()
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
+                    target=parent_id,
+                    result_data={"title": old_title},
+                )
 
             handler.conclude_request(
                 code=200, message="Document renamed successfully", data={}
@@ -649,7 +752,19 @@ class RequestDownloadFileHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
                 return
 
-            if task.status != 0 or task.mode != 0:
+            task_status = FileTaskStatus(task.status)
+            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+                handler.conclude_request(
+                    410,
+                    {"task_status": task_status.name.lower()},
+                    "Task is no longer available",
+                )
+                return
+
+            if (
+                task_status != FileTaskStatus.PENDING
+                or task.mode != TransferMode.DOWNLOAD
+            ):
                 handler.conclude_request(
                     400, {}, "Task is not in a valid state for download"
                 )
@@ -658,9 +773,14 @@ class RequestDownloadFileHandler(RequestHandler):
             if task.start_time > time.time() or (
                 task.end_time and task.end_time < time.time()
             ):
-                handler.conclude_request(
-                    400, {}, "Task is either not started yet or has already ended"
-                )
+                if task.end_time and task.end_time <= time.time():
+                    task.status = FileTaskStatus.EXPIRED
+                    session.commit()
+                    handler.conclude_request(
+                        410, {"task_status": "expired"}, "Task has expired"
+                    )
+                else:
+                    handler.conclude_request(400, {}, "Task has not started yet")
                 return
 
         # The server still needs to send one more response.
@@ -688,7 +808,25 @@ class RequestUploadFileHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
                 return
 
-            if task.status != 0 or task.mode != 1:
+            task_status = FileTaskStatus(task.status)
+            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+                handler.conclude_request(
+                    410,
+                    {"task_status": task_status.name.lower()},
+                    "Task is no longer available",
+                )
+                return
+
+            if task_status == FileTaskStatus.IN_PROGRESS:
+                handler.conclude_request(
+                    409, {"task_status": "in_progress"}, "Upload is already in progress"
+                )
+                return
+
+            if (
+                task_status != FileTaskStatus.PENDING
+                or task.mode != TransferMode.UPLOAD
+            ):
                 handler.conclude_request(
                     400, {}, "Task is not in a valid state for upload"
                 )
@@ -697,9 +835,14 @@ class RequestUploadFileHandler(RequestHandler):
             if task.start_time > time.time() or (
                 task.end_time and task.end_time < time.time()
             ):
-                handler.conclude_request(
-                    400, {}, "Task is either not started yet or has already ended"
-                )
+                if task.end_time and task.end_time <= time.time():
+                    task.status = FileTaskStatus.EXPIRED
+                    session.commit()
+                    handler.conclude_request(
+                        410, {"task_status": "expired"}, "Task has expired"
+                    )
+                else:
+                    handler.conclude_request(400, {}, "Task has not started yet")
                 return
 
         # The server needs to send one response.
@@ -838,12 +981,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            target_folder = (
-                session.query(Folder)
-                .with_for_update()
-                .filter_by(id=target_folder_id)
-                .first()
-            )
+            target_folder = session.get(Folder, target_folder_id)
             if not target_folder:
                 handler.conclude_request(
                     code=404, message=smsg.TARGET_DIRECTORY_NOT_FOUND, data={}
@@ -872,30 +1010,24 @@ class RequestMoveDocumentHandler(RequestHandler):
                         username=handler.username,
                     )
 
-            has_conflict, err_code, err_data, err_msg = handle_name_duplicate(
-                session, user, target_folder_id, document.title
-            )
-            if has_conflict:
-                err_data_filtered = {k: v for k, v in err_data.items() if k != "entity"}
-                handler.conclude_request(err_code, err_data_filtered, err_msg)
-                if "duplicate_id" in err_data_filtered:
-                    return Result(
-                        code=err_code,
-                        target=document.folder_id,
-                        data={
-                            "title": document.title,
-                            "duplicate_id": err_data_filtered["duplicate_id"],
-                        },
-                        username=handler.username,
-                    )
-                return Result(
-                    code=err_code, target=document.folder_id, username=handler.username
+            source_folder_id = document.folder_id or ROOT_DIRECTORY_ID
+            title = document.title
+            try:
+                with node_name_mutation(session, target_folder_id, title):
+                    document.folder = target_folder
+                    mark_document_modified(document, user.username)
+                    session.commit()
+            except NodeNameConflictError:
+                payload, message = describe_node_name_conflict(
+                    session, user, target_folder_id, title
                 )
-
-            document.folder = target_folder
-            mark_document_modified(document, user.username)
-
-            session.commit()
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
+                    target=source_folder_id,
+                    result_data={"title": title},
+                )
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
         return Result(
@@ -1029,40 +1161,25 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 )
                 return Result(code=409, target=doc_id, username=handler.username)
 
-            existing_conflict = (
-                session.query(Document)
-                .with_for_update()
-                .filter(
-                    Document.folder_id == db_folder_id,
-                    Document.title == final_title,
-                    Document.status == EntityStatus.OK,
+            try:
+                with node_name_mutation(session, db_folder_id, final_title):
+                    document.status = EntityStatus.OK
+                    document.status_operation_id = None
+                    document.title = final_title
+                    document.folder_id = db_folder_id
+                    mark_document_modified(document, user.username)
+                    session.commit()
+            except NodeNameConflictError:
+                payload, message = describe_node_name_conflict(
+                    session, user, db_folder_id, final_title
                 )
-                .first()
-                or session.query(Folder)
-                .with_for_update()
-                .filter(
-                    Folder.parent_id == db_folder_id,
-                    Folder.name == final_title,
-                    Folder.status == EntityStatus.OK,
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
+                    target=doc_id,
+                    result_data={},
                 )
-                .first()
-            )
-
-            if existing_conflict:
-                handler.conclude_request(
-                    409,
-                    {"conflict_id": existing_conflict.id},
-                    f"Conflict: An active item named '{final_title}' already exists in the destination.",
-                )
-                return Result(code=409, target=doc_id, username=handler.username)
-
-            document.status = EntityStatus.OK
-            document.status_operation_id = None
-            document.title = final_title
-            document.folder_id = db_folder_id
-            mark_document_modified(document, user.username)
-
-            session.commit()
 
             handler.conclude_request(
                 200,

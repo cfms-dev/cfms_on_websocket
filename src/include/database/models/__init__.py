@@ -19,7 +19,7 @@ from include.database.models.documents import (
     Folder,
     Node,
 )
-from include.database.models.files import File, FileTask, TransferMode
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import (
     User,
     UserGroup,
@@ -29,7 +29,11 @@ from include.database.models.identity import (
     UserStatus,
 )
 from include.database.models.keyrings import UserKey
-from include.database.models.operations import AuditEntry
+from include.database.models.operations import (
+    AuditEntry,
+    DocumentCreationIPAccount,
+    DocumentCreationRateBucket,
+)
 from include.database.models.security import (
     AccountThrottle,
     BannedSubnet,
@@ -52,9 +56,12 @@ __all__ = [
     "DocumentMetadataTag",
     "DocumentRevision",
     "DocumentRevisionStatus",
+    "DocumentCreationIPAccount",
+    "DocumentCreationRateBucket",
     "EntityStatus",
     "File",
     "FileTask",
+    "FileTaskStatus",
     "Folder",
     "LoginThrottle",
     "Node",

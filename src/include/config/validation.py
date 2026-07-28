@@ -13,6 +13,8 @@ from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 __all__ = [
     "AuthThrottlePolicy",
     "ConfigValidationError",
+    "DocumentCreationRiskPolicy",
+    "DocumentUploadPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
     "get_trusted_proxy_networks",
@@ -158,6 +160,167 @@ class AuthThrottlePolicy:
         return policy
 
 
+@dataclass(frozen=True)
+class DocumentUploadPolicy:
+    start_timeout_seconds: int = 3600
+    max_duration_seconds: int = 86400
+    idle_timeout_seconds: int = 300
+    cleanup_interval_seconds: int = 60
+    max_pending_documents_per_creator: int = 16
+
+    @classmethod
+    def from_config(cls, config: _ConfigSource | None = None) -> DocumentUploadPolicy:
+        if config is None:
+            from include.config.settings import global_config
+
+            config = global_config
+
+        try:
+            document = config["document"]
+        except KeyError:
+            document = {}
+        if not isinstance(document, Mapping):
+            raise ConfigValidationError("document must be a table")
+
+        upload = document.get("upload", {})
+        if not isinstance(upload, Mapping):
+            raise ConfigValidationError("document.upload must be a table")
+
+        values = {
+            field.name: upload.get(field.name, field.default) for field in fields(cls)
+        }
+        policy = cls(**values)
+        for field in fields(cls):
+            value = getattr(policy, field.name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigValidationError(
+                    f"document.upload.{field.name} must be a positive integer"
+                )
+        if policy.idle_timeout_seconds > policy.max_duration_seconds:
+            raise ConfigValidationError(
+                "document.upload.idle_timeout_seconds must not exceed "
+                "document.upload.max_duration_seconds"
+            )
+        if policy.start_timeout_seconds >= policy.max_duration_seconds:
+            raise ConfigValidationError(
+                "document.upload.start_timeout_seconds must be less than "
+                "document.upload.max_duration_seconds"
+            )
+        return policy
+
+
+@dataclass(frozen=True)
+class DocumentCreationRiskPolicy:
+    mode: str = "enforce"
+    refill_period_seconds: int = 600
+    account_capacity: int = 60
+    account_refill_tokens: int = 300
+    ip_capacity: int = 200
+    ip_refill_tokens: int = 1000
+    new_account_seconds: int = 7 * 24 * 60 * 60
+    pending_elevated_ratio: float = 0.5
+    pending_high_ratio: float = 0.75
+    ip_account_window_seconds: int = 600
+    ip_accounts_elevated: int = 4
+    ip_accounts_high: int = 10
+    denial_window_seconds: int = 600
+    denials_elevated: int = 1
+    denials_high: int = 3
+    elevated_cost: int = 3
+    high_cost: int = 10
+    state_retention_seconds: int = 86400
+
+    @classmethod
+    def from_config(
+        cls, config: _ConfigSource | None = None
+    ) -> DocumentCreationRiskPolicy:
+        if config is None:
+            from include.config.settings import global_config
+
+            config = global_config
+
+        try:
+            document = config["document"]
+        except KeyError:
+            document = {}
+        if not isinstance(document, Mapping):
+            raise ConfigValidationError("document must be a table")
+
+        upload = document.get("upload", {})
+        if not isinstance(upload, Mapping):
+            raise ConfigValidationError("document.upload must be a table")
+
+        risk_control = upload.get("creation_risk_control")
+        if risk_control is None:
+            risk_control = {}
+        if not isinstance(risk_control, Mapping):
+            raise ConfigValidationError(
+                "document.upload.creation_risk_control must be a table"
+            )
+        values = {
+            field.name: risk_control.get(field.name, field.default)
+            for field in fields(cls)
+        }
+
+        policy = cls(**values)
+        if policy.mode not in {"observe", "enforce"}:
+            raise ConfigValidationError(
+                "document.upload.creation_risk_control.mode must be 'observe' or "
+                "'enforce'"
+            )
+
+        ratio_names = {"pending_elevated_ratio", "pending_high_ratio"}
+        for field in fields(cls):
+            if field.name == "mode":
+                continue
+            value = getattr(policy, field.name)
+            if field.name in ratio_names:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int | float)
+                    or not 0 < value <= 1
+                ):
+                    raise ConfigValidationError(
+                        f"document.upload.creation_risk_control.{field.name} must "
+                        "be a number greater than 0 and at most 1"
+                    )
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigValidationError(
+                    f"document.upload.creation_risk_control.{field.name} must be "
+                    "a positive integer"
+                )
+
+        ordered_thresholds = (
+            ("pending_elevated_ratio", "pending_high_ratio"),
+            ("ip_accounts_elevated", "ip_accounts_high"),
+            ("denials_elevated", "denials_high"),
+        )
+        for lower_name, upper_name in ordered_thresholds:
+            if getattr(policy, lower_name) >= getattr(policy, upper_name):
+                raise ConfigValidationError(
+                    "document.upload.creation_risk_control."
+                    f"{lower_name} must be less than {upper_name}"
+                )
+
+        if min(policy.account_capacity, policy.ip_capacity) < policy.high_cost:
+            raise ConfigValidationError(
+                "document.upload.creation_risk_control bucket capacities must be "
+                "at least high_cost"
+            )
+        required_retention = max(
+            policy.refill_period_seconds,
+            policy.ip_account_window_seconds,
+            policy.denial_window_seconds,
+        )
+        if policy.state_retention_seconds < required_retention:
+            raise ConfigValidationError(
+                "document.upload.creation_risk_control.state_retention_seconds must "
+                "cover every risk-control window"
+            )
+        return policy
+
+
 def _validate_client_certificate_config(config: _ConfigSource) -> None:
     security = _section(config, "security")
     require_client_cert = security.get("require_client_cert", False)
@@ -178,6 +341,8 @@ def validate_config(config: _ConfigSource) -> None:
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
+    DocumentUploadPolicy.from_config(config)
+    DocumentCreationRiskPolicy.from_config(config)
     _validate_client_certificate_config(config)
 
     from include.extensions.manager import validate_extension_config
@@ -197,6 +362,15 @@ def parse_config_document(source: str) -> TOMLDocument:
 def get_config_warnings(config: _ConfigSource) -> tuple[str, ...]:
     security = _section(config, "security")
     warnings = []
+    try:
+        document = config["document"]
+    except KeyError:
+        document = {}
+    if isinstance(document, Mapping) and "allow_name_duplicate" in document:
+        warnings.append(
+            "`document.allow_name_duplicate` is obsolete and ignored; active "
+            "documents and directories must have unique names within a directory"
+        )
     if not security.get("pepper"):
         warnings.append(
             "Setting the value for `pepper` to empty in the configuration file can "

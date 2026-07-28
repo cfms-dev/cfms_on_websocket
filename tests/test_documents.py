@@ -195,6 +195,67 @@ class TestDocumentOperations:
             response = await authenticated_client.get_document_info(doc_id)
             assert_success(response)
 
+    @pytest.mark.asyncio
+    async def test_shared_namespace_and_soft_delete_release(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        name = f"Shared Namespace {secrets.token_hex(4)}"
+        document = await document_factory(name)
+        document_id = document["document_id"]
+
+        duplicate_folder = await authenticated_client.create_directory(name)
+        assert_error(duplicate_folder, 409)
+        assert duplicate_folder["data"]["duplicate_id"] == document_id
+
+        assert_success(await authenticated_client.delete_document(document_id))
+        folder = assert_success(await authenticated_client.create_directory(name))
+        folder_id = folder["id"]
+        assert_success(await authenticated_client.delete_directory(folder_id))
+
+        replacement = await document_factory(name)
+        replacement_id = replacement["document_id"]
+        assert_success(await authenticated_client.delete_document(replacement_id))
+        assert_success(await authenticated_client.purge_document(replacement_id))
+        assert_success(await authenticated_client.purge_directory(folder_id))
+        assert_success(await authenticated_client.purge_document(document_id))
+
+    @pytest.mark.asyncio
+    async def test_document_rename_and_move_conflicts_use_database_winner(
+        self, authenticated_client: CFMSTestClient, document_factory
+    ):
+        suffix = secrets.token_hex(4)
+        source = assert_success(
+            await authenticated_client.create_directory(f"Move Source {suffix}")
+        )
+        target = assert_success(
+            await authenticated_client.create_directory(f"Move Target {suffix}")
+        )
+        title = f"Moving Document {suffix}"
+        document = await document_factory(title, folder_id=source["id"])
+        document_id = document["document_id"]
+        move_winner = assert_success(
+            await authenticated_client.create_directory(title, parent_id=target["id"])
+        )
+
+        move_response = await authenticated_client.send_request(
+            "move_document",
+            {"document_id": document_id, "target_folder_id": target["id"]},
+        )
+        assert_error(move_response, 409)
+        assert move_response["data"]["duplicate_id"] == move_winner["id"]
+
+        rename_title = f"Rename Winner {suffix}"
+        rename_winner = assert_success(
+            await authenticated_client.create_directory(
+                rename_title, parent_id=source["id"]
+            )
+        )
+        rename_response = await authenticated_client.rename_document(
+            document_id, rename_title
+        )
+        assert_error(rename_response, 409)
+        assert rename_response["data"]["duplicate_id"] == rename_winner["id"]
+
 
 class TestDocumentWithoutAuth:
     @pytest.mark.asyncio

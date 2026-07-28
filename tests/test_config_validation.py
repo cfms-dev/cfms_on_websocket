@@ -8,6 +8,8 @@ from include.config.settings import GlobalConfig
 from include.config.validation import (
     AuthThrottlePolicy,
     ConfigValidationError,
+    DocumentCreationRiskPolicy,
+    DocumentUploadPolicy,
     get_config_warnings,
     get_enabled_extensions,
     get_trusted_proxy_networks,
@@ -189,11 +191,117 @@ def test_policy_is_built_from_validated_config():
     assert policy.ip_failure_threshold == 42
 
 
+def test_document_upload_policy_defaults_and_overrides():
+    config = _valid_config()
+    assert DocumentUploadPolicy.from_config(config).start_timeout_seconds == 3600
+
+    config["document"] = {"upload": {"max_pending_documents_per_creator": 8}}
+    assert (
+        DocumentUploadPolicy.from_config(config).max_pending_documents_per_creator == 8
+    )
+
+
+def test_document_creation_risk_policy_defaults():
+    policy = DocumentCreationRiskPolicy.from_config(_valid_config())
+
+    assert policy.mode == "enforce"
+    assert policy.account_capacity == 60
+    assert policy.account_refill_tokens == 300
+    assert policy.ip_capacity == 200
+    assert policy.ip_refill_tokens == 1000
+
+
+def test_legacy_creation_rate_settings_are_ignored():
+    config = _valid_config()
+    config["document"] = {
+        "upload": {
+            "creation_rate_window_seconds": 300,
+            "creation_rate_per_user": 50,
+            "creation_rate_per_ip": 125,
+        }
+    }
+
+    validate_config(config)
+    policy = DocumentCreationRiskPolicy.from_config(config)
+
+    assert policy == DocumentCreationRiskPolicy()
+    assert get_config_warnings(config) == ()
+
+
+def test_new_creation_risk_settings_override_ignored_legacy_settings():
+    config = _valid_config()
+    config["document"] = {
+        "upload": {
+            "creation_rate_per_user": 50,
+            "creation_risk_control": {
+                "account_refill_tokens": 75,
+                "ip_refill_tokens": 250,
+            },
+        }
+    }
+
+    validate_config(config)
+    policy = DocumentCreationRiskPolicy.from_config(config)
+
+    assert policy.account_refill_tokens == 75
+    assert policy.ip_refill_tokens == 250
+    assert get_config_warnings(config) == ()
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("mode", "disabled", "must be 'observe' or 'enforce'"),
+        ("account_capacity", 0, "positive integer"),
+        ("pending_elevated_ratio", 1.1, "at most 1"),
+        ("pending_high_ratio", 0.25, "must be less than"),
+        ("ip_accounts_high", 4, "must be less than"),
+        ("denials_high", 1, "must be less than"),
+        ("high_cost", 201, "at least high_cost"),
+        ("state_retention_seconds", 599, "cover every risk-control window"),
+    ],
+)
+def test_creation_risk_policy_validates_settings(setting, value, message):
+    config = _valid_config()
+    config["document"] = {"upload": {"creation_risk_control": {setting: value}}}
+
+    with pytest.raises(ConfigValidationError, match=message):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "upload",
+    [
+        {"start_timeout_seconds": 0},
+        {"idle_timeout_seconds": True},
+        {"idle_timeout_seconds": 10, "max_duration_seconds": 5},
+        {"start_timeout_seconds": 10, "max_duration_seconds": 10},
+    ],
+)
+def test_document_upload_policy_rejects_invalid_values(upload):
+    config = _valid_config()
+    config["document"] = {"upload": upload}
+
+    with pytest.raises(ConfigValidationError, match="document.upload"):
+        validate_config(config)
+
+
 def test_empty_pepper_warning_is_centralized():
     config = _valid_config()
     config["security"]["pepper"] = ""
 
     assert "`pepper`" in get_config_warnings(config)[0]
+
+
+def test_obsolete_document_name_duplicate_option_warns_and_is_ignored():
+    config = _valid_config()
+    config["document"] = {"allow_name_duplicate": True}
+
+    warnings = get_config_warnings(config)
+
+    assert len(warnings) == 1
+    assert "obsolete and ignored" in warnings[0]
+    assert "unique names" in warnings[0]
 
 
 def test_invalid_reload_keeps_previous_configuration(tmp_path):

@@ -436,8 +436,8 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
     matched_documents = (
         select(
             document_table.c.id,
-            document_table.c.title,
-            document_table.c.folder_id,
+            node_table.c.name,
+            node_table.c.parent_id,
             document_table.c.created_time,
             document_table.c.current_revision_id,
             node_table.c.inherit,
@@ -555,9 +555,9 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
     return (
         select(
             matched_documents.c.id.label("id"),
-            matched_documents.c.title.label("name"),
-            func.lower(matched_documents.c.title).label("name_sort_key"),
-            matched_documents.c.folder_id.label("parent_id"),
+            matched_documents.c.name.label("name"),
+            func.lower(matched_documents.c.name).label("name_sort_key"),
+            matched_documents.c.parent_id.label("parent_id"),
             matched_documents.c.created_time.label("created_time"),
             matched_documents.c.inherit.label("inherit"),
             effective_ranked.c.revision_created_time.label("last_modified"),
@@ -833,7 +833,7 @@ def _search_candidate_selectable(
         document_details = _effective_active_revision_details_subquery(
             [
                 Node.__table__.c.status != EntityStatus.DELETED,
-                Document.__table__.c.title.ilike(like_pattern),
+                Node.__table__.c.name.ilike(like_pattern),
             ]
         )
         selects.append(
@@ -866,7 +866,7 @@ def _search_ancestor_cte(candidates):
             candidates.c.type.label("object_type"),
             candidates.c.id.label("object_id"),
             folder_table.c.id.label("node_id"),
-            folder_table.c.parent_id.label("parent_id"),
+            node_table.c.parent_id.label("parent_id"),
             node_table.c.inherit.label("inherit"),
         )
         .select_from(
@@ -884,7 +884,7 @@ def _search_ancestor_cte(candidates):
             ancestors.c.object_type,
             ancestors.c.object_id,
             parent_folder.c.id,
-            parent_folder.c.parent_id,
+            parent_node.c.parent_id,
             parent_node.c.inherit,
         )
         .select_from(
@@ -1037,7 +1037,7 @@ def fetch_search_candidate_rows(
         document_details = _effective_active_revision_details_subquery(
             [
                 Node.__table__.c.status != EntityStatus.DELETED,
-                Document.__table__.c.title.ilike(like_pattern),
+                Node.__table__.c.name.ilike(like_pattern),
             ]
         )
         primary_column = _search_primary_column(document_details, sort_by)

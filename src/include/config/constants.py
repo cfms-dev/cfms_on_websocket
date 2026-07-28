@@ -6,6 +6,7 @@ __all__ = [
     "DEFAULT_TOKEN_EXPIRY_SECONDS",
     "DEFAULT_TRUSTED_PROXY_NETWORKS",
     "FILE_TASK_DEFAULT_DURATION_SECONDS",
+    "FILE_TASK_EVENT_CHANNEL",
     "FILE_TRANSFER_MAX_CHUNK_SIZE",
     "FILE_TRANSFER_MIN_CHUNK_SIZE",
     "GLOBAL_BROADCAST_EVENT_CHANNEL",
@@ -28,13 +29,14 @@ from pathlib import Path
 from include.config.version import Version
 
 CORE_VERSION = Version("0.4.0.260725_alpha")
-PROTOCOL_VERSION = 17
+PROTOCOL_VERSION = 18
 
 ROOT_ABSPATH = Path(__file__).resolve().parents[2]
 
 # Event bus channels
 GLOBAL_BROADCAST_EVENT_CHANNEL = "system:broadcast"
 LOGIN_GUARD_EVENT_CHANNEL = "security:login_guard"
+FILE_TASK_EVENT_CHANNEL = "documents:file_tasks"
 
 AVAILABLE_ACCESS_TYPES = ["read", "write", "move", "manage"]
 AVAILABLE_BLOCK_TYPES: set = {"read", "write", "move"}

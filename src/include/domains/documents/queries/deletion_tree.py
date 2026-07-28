@@ -53,17 +53,17 @@ def fetch_subtree_for_deletion(
 
     subtree_sql = text(f"""
         WITH RECURSIVE subtree(id, parent_id, status) AS (
-            SELECT f.id, f.parent_id, n.status
+            SELECT f.id, n.parent_id, n.status
             FROM folders f
             INNER JOIN nodes n ON n.id = f.id
             WHERE f.id = :root_id
 
             UNION ALL
 
-            SELECT f.id, f.parent_id, n.status
+            SELECT f.id, n.parent_id, n.status
             FROM folders f
             INNER JOIN nodes n ON n.id = f.id
-            INNER JOIN subtree s ON f.parent_id = s.id
+            INNER JOIN subtree s ON n.parent_id = s.id
             WHERE 1=1 {status_filter}
         )
         SELECT id FROM subtree WHERE id != :root_id

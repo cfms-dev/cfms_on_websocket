@@ -11,16 +11,31 @@ __all__ = [
 
 import secrets
 import time
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from itertools import batched
 from typing import TYPE_CHECKING, ClassVar, Literal, cast
 from warnings import deprecated
 
-from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import (
+    VARCHAR,
+    Boolean,
+    CheckConstraint,
+    Computed,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 from sqlalchemy.orm.session import object_session
 
-from include.config.constants import QUERY_CHUNK_SIZE, USERNAME_DATABASE_MAX_LENGTH
+from include.config.constants import (
+    QUERY_CHUNK_SIZE,
+    ROOT_DIRECTORY_ID,
+    USERNAME_DATABASE_MAX_LENGTH,
+)
 from include.config.settings import global_config
 from include.database.models.files import (
     File,
@@ -41,10 +56,23 @@ if TYPE_CHECKING:
     from include.database.models.identity import User
 
 
+class NodeType(StrEnum):
+    DOCUMENT = "document"
+    DIRECTORY = "directory"
+
+
 class EntityStatus(IntEnum):
     OK = 0
     DELETED = 1
     LOCKED = 2
+
+
+def _default_node_parent_id(context) -> str | None:
+    return (
+        None
+        if context.get_current_parameters().get("id") == ROOT_DIRECTORY_ID
+        else ROOT_DIRECTORY_ID
+    )
 
 
 class Node(Base):
@@ -54,6 +82,56 @@ class Node(Base):
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
     )
     type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False, index=True)
+    parent_id: Mapped[str | None] = mapped_column(
+        VARCHAR(255),
+        ForeignKey(
+            "folders.id",
+            name="fk_nodes_parent_id_folders",
+            ondelete="CASCADE",
+            use_alter=True,
+        ),
+        nullable=True,
+        default=_default_node_parent_id,
+    )
+    active_parent_id: Mapped[str | None] = mapped_column(
+        VARCHAR(255),
+        Computed(
+            f"CASE WHEN status = {EntityStatus.DELETED.value} "
+            "THEN NULL ELSE parent_id END",
+            persisted=True,
+        ),
+        nullable=True,
+    )
+    __table_args__ = (
+        CheckConstraint(
+            (
+                (id == ROOT_DIRECTORY_ID)
+                & parent_id.is_(None)
+                & (type == NodeType.DIRECTORY.value)
+            )
+            | ((id != ROOT_DIRECTORY_ID) & parent_id.is_not(None)),
+            name="ck_nodes_root_parent",
+        ),
+        UniqueConstraint(
+            "active_parent_id",
+            "name",
+            name="uq_nodes_active_parent_name",
+        ),
+        Index(
+            "ix_nodes_parent_status_lower_name_id",
+            "parent_id",
+            "status",
+            text("lower(name)"),
+            "id",
+        ),
+        Index(
+            "ix_nodes_status_lower_name_id",
+            "status",
+            text("lower(name)"),
+            "id",
+        ),
+    )
 
     # Whether to inherit access rules from parent folders.
     # Useful when enabling recursion check.
@@ -116,7 +194,10 @@ class Node(Base):
             - If no access rules are defined, access is granted by default.
 
         """
-        _TARGET_TYPE_MAPPING = {"folders": "directory", "documents": "document"}
+        _TARGET_TYPE_MAPPING = {
+            "folders": NodeType.DIRECTORY.value,
+            "documents": NodeType.DOCUMENT.value,
+        }
 
         _session = object_session(user)
         if not _session:
@@ -191,35 +272,32 @@ class Folder(Node):  # Document folder.
         ForeignKey("nodes.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    name: Mapped[str] = mapped_column(
-        VARCHAR(255), nullable=False, index=True
-    )  # Folder name.
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
-    parent_id: Mapped[str | None] = mapped_column(
-        VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE")
-    )  # Parent folder ID.
     parent: Mapped[Folder | None] = relationship(
         "Folder",
         back_populates="children",
         remote_side=[id],
-        foreign_keys=[parent_id],
+        foreign_keys=[Node.parent_id],
     )
     children: Mapped[list[Folder]] = relationship(
         "Folder",
         back_populates="parent",
         cascade="all, delete-orphan",
-        foreign_keys=[parent_id],
+        foreign_keys=[Node.parent_id],
     )
     documents: Mapped[list[Document]] = relationship(
         "Document",
         back_populates="folder",
         cascade="all, delete-orphan",
-        foreign_keys="[Document.folder_id]",
+        foreign_keys="[Node.parent_id]",
     )
 
-    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "directory"}
+    __mapper_args__: ClassVar[dict[str, object]] = {
+        "polymorphic_identity": NodeType.DIRECTORY.value,
+        "inherit_condition": id == Node.id,
+    }
 
     @property
     @deprecated("Use count_active_directory_children instead.")
@@ -263,19 +341,15 @@ class Document(Node):
         ForeignKey("nodes.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    title: Mapped[str] = mapped_column(
-        VARCHAR(255), nullable=False, default="Untitled Document", index=True
-    )  # Document name.
+    title = synonym("name")
+    folder_id = synonym("parent_id")
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
-    folder_id: Mapped[str | None] = mapped_column(
-        VARCHAR(255), ForeignKey("folders.id", ondelete="CASCADE"), nullable=True
-    )  # Folder ID that owns the document.
     folder: Mapped[Folder | None] = relationship(
         "Folder",
         back_populates="documents",
-        foreign_keys=[folder_id],
+        foreign_keys=[Node.parent_id],
     )
 
     current_revision_id: Mapped[str | None] = mapped_column(
@@ -318,7 +392,9 @@ class Document(Node):
             return False
         return latest_revision is not None
 
-    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "document"}
+    __mapper_args__: ClassVar[dict[str, str]] = {
+        "polymorphic_identity": NodeType.DOCUMENT.value
+    }
 
     def get_latest_revision(self) -> DocumentRevision:
         """Return the latest active revision.

@@ -4,9 +4,14 @@ from include.database.models.documents import Document, DocumentRevision
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.documents.commands.file_tasks import cancel_file_tasks_for_files
+from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.documents import (
     create_file_task,
     mark_document_modified,
+)
+from include.domains.documents.queries.file_references import (
+    find_unreachable_revision_file_ids,
 )
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
@@ -143,7 +148,8 @@ class RequestGetRevisionHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, username=handler.username)
 
-            task_data = create_file_task(revision.file)
+            task_data = create_file_task(session, revision.file)
+            session.commit()
 
         handler.conclude_request(200, {"task_data": task_data}, smsg.SUCCESS)
         return Result(code=200, target=revision_id, username=handler.username)
@@ -211,6 +217,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
 
         revision_id = handler.data["id"]
 
+        cancelled_task_ids: list[str] = []
         with Session() as session:
             user = User.get_existing(session, handler.username)
             revision = session.get(DocumentRevision, revision_id)
@@ -239,10 +246,18 @@ class RequestDeleteRevisionHandler(RequestHandler):
                 for child_rev in revision.child_revisions:
                     child_rev.parent_revision = revision.parent_revision
 
+                unreachable_file_ids = find_unreachable_revision_file_ids(
+                    session, [revision_id]
+                )
+                cancelled_task_ids = cancel_file_tasks_for_files(
+                    session, unreachable_file_ids
+                )
                 revision.before_delete()
                 mark_document_modified(document, user.username)
                 session.delete(revision)
             session.commit()
+
+        publish_cancelled_file_tasks(cancelled_task_ids)
 
         handler.conclude_request(200, {}, "Revision deleted successfully")
         return Result(code=200, target=revision_id, username=handler.username)

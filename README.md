@@ -53,6 +53,20 @@ Extensions are discovered through versioned `manifest.toml` files and are
 enabled by identifier in `config.toml`. See the [extension guide](docs/EXTENSIONS.md)
 for the manifest schema, activation rules, and migration instructions.
 
+## Document Upload Lifecycle
+
+Document upload reservations expire if transfer does not start in time. Once an
+upload is claimed, it receives a separate hard deadline and is also subject to
+an inactivity timeout. Abandoned initial uploads are purged so their document
+names become available again. Per-creator reservation limits and per-account and
+per-IP creation limits protect the namespace from abuse.
+
+Deleting a document cancels transfers only when the underlying file is no longer
+reachable from another active document, a user avatar, or an extension-owned
+foreign-key reference. See the
+[document upload lifecycle guide](docs/DOCUMENT_UPLOAD_LIFECYCLE.md) for states,
+client errors, configuration, and upgrade behavior.
+
 ## Run
 ```bash
 python main.py # DO NOT use `-O`!
@@ -69,6 +83,12 @@ Alembic to handle database migrations.
 2. Configs and generated revisions in `/src/include/alembic/versions/` of 
 Alembic is designed for sqlite databases, and we don't guarantee that other types 
 of databases can be successfully upgraded via these revisions.
+
+3. Document and directory names share one namespace within each directory.
+Active names must be unique; soft-deleted items release their names. The database
+migration stops before making schema changes if it finds historical duplicate
+names or invalid parent links, so resolve the reported records and retry. The old
+`document.allow_name_duplicate` option is ignored.
 
 If you have not used Alembic yet, please run the command below **before** you 
 checkout new changes:
