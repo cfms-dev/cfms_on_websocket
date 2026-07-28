@@ -1,14 +1,17 @@
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import random
+import shutil
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
 from subprocess import Popen
+from tempfile import TemporaryDirectory
 
 from tests.support.server import ServerLogCapture, start_server, stop_server
 from tests.support.test_config import (
@@ -98,6 +101,28 @@ async def timed_call(stats: LoadStats, fn: Callable[[], Awaitable[dict]]) -> Non
         stats.record_error(exc, latency_ms)
 
 
+async def timed_upload(
+    stats: LoadStats,
+    client: CFMSTestClient,
+    task_id: str,
+    payload_path: Path,
+) -> None:
+    start = time.perf_counter()
+    try:
+        await client.upload_file_to_server(task_id, str(payload_path))
+        stats.record_success((time.perf_counter() - start) * 1000)
+    except Exception as exc:
+        stats.record_error(exc, (time.perf_counter() - start) * 1000)
+
+
+def write_unique_payload(
+    path: Path, payload_size: int, worker_id: int, sequence: int
+) -> None:
+    digest = hashlib.sha256(f"{worker_id}:{sequence}".encode()).digest()
+    repeats, remainder = divmod(payload_size, len(digest))
+    path.write_bytes(digest * repeats + digest[:remainder])
+
+
 async def run_worker(
     worker_id: int,
     settings: ServerTestSettings,
@@ -105,6 +130,8 @@ async def run_worker(
     deadline: float,
     ramp_up: float,
     per_worker_interval: float,
+    payload_size: int,
+    payload_dir: Path,
 ) -> LoadStats:
     stats = LoadStats()
     if ramp_up > 0:
@@ -117,14 +144,22 @@ async def run_worker(
     )
     await client.connect()
     try:
-        if scenario in {"auth-read", "mixed"}:
+        if scenario in {"auth-read", "mixed", "upload-unique", "upload-duplicate"}:
             password = (
                 (settings.src_dir / "admin_password.txt")
                 .read_text(encoding="utf-8")
                 .strip()
             )
-            await timed_call(stats, lambda: client.login("admin", password))
+            if scenario.startswith("upload-"):
+                login_response = await client.login("admin", password)
+                if login_response.get("code") != 200:
+                    raise RuntimeError(
+                        f"Upload benchmark login failed: {login_response.get('code')}"
+                    )
+            else:
+                await timed_call(stats, lambda: client.login("admin", password))
 
+        sequence = 0
         while time.perf_counter() < deadline:
             if scenario == "server-info":
                 await timed_call(stats, client.server_info)
@@ -148,6 +183,27 @@ async def run_worker(
                 else:
                     name = f"LoadDir_{worker_id}_{time.time_ns()}"
                     await timed_call(stats, lambda: client.create_directory(name))
+            elif scenario in {"upload-unique", "upload-duplicate"}:
+                create_response = await client.create_document(
+                    f"LoadDoc_{scenario}_{worker_id}_{sequence}_{time.time_ns()}"
+                )
+                if create_response.get("code") != 200:
+                    stats.record_error(f"code_{create_response.get('code')}", None)
+                else:
+                    if scenario == "upload-unique":
+                        payload_path = payload_dir / f"unique-{worker_id}.bin"
+                        write_unique_payload(
+                            payload_path, payload_size, worker_id, sequence
+                        )
+                    else:
+                        payload_path = payload_dir / "duplicate.bin"
+                    await timed_upload(
+                        stats,
+                        client,
+                        create_response["data"]["task_data"]["task_id"],
+                        payload_path,
+                    )
+                sequence += 1
             else:
                 raise ValueError(f"Unknown scenario: {scenario}")
 
@@ -174,6 +230,9 @@ def prepare_managed_server(
         path = src_dir / name
         if path.exists():
             path.unlink()
+    storage_path = src_dir / "content" / "files"
+    if storage_path.exists():
+        shutil.rmtree(storage_path)
     (src_dir / "content" / "ssl").mkdir(parents=True, exist_ok=True)
     (src_dir / "content" / "logs").mkdir(parents=True, exist_ok=True)
     process, logs = start_server(settings)
@@ -188,6 +247,11 @@ async def run_load(args) -> dict:
     server = None
 
     if managed:
+        if not args.managed_reset:
+            raise RuntimeError(
+                "Managed mode deletes src/app.db and src/content/files; "
+                "rerun in a disposable worktree with --managed-reset"
+            )
         settings, backup, server = prepare_managed_server(src_dir)
     else:
         settings = ServerTestSettings(
@@ -201,28 +265,40 @@ async def run_load(args) -> dict:
         )
 
     try:
-        start = time.perf_counter()
-        deadline = start + args.duration
-        per_worker_interval = args.users / args.rate if args.rate else 0
-        ramp_step = args.ramp_up / max(args.users - 1, 1)
-        worker_stats = await asyncio.gather(
-            *[
-                run_worker(
-                    worker_id,
-                    settings,
-                    args.scenario,
-                    deadline,
-                    ramp_step,
-                    per_worker_interval,
-                )
-                for worker_id in range(args.users)
-            ]
-        )
-        elapsed = time.perf_counter() - start
+        with TemporaryDirectory(prefix="cfms-upload-load-") as payload_directory:
+            payload_dir = Path(payload_directory)
+            (payload_dir / "duplicate.bin").write_bytes(b"d" * args.payload_size)
+            start = time.perf_counter()
+            deadline = start + args.duration
+            per_worker_interval = args.users / args.rate if args.rate else 0
+            ramp_step = args.ramp_up / max(args.users - 1, 1)
+            worker_stats = await asyncio.gather(
+                *[
+                    run_worker(
+                        worker_id,
+                        settings,
+                        args.scenario,
+                        deadline,
+                        ramp_step,
+                        per_worker_interval,
+                        args.payload_size,
+                        payload_dir,
+                    )
+                    for worker_id in range(args.users)
+                ]
+            )
+            elapsed = time.perf_counter() - start
         total = LoadStats()
         for stats in worker_stats:
             total.merge(stats)
-        return summarize(total, elapsed, args.scenario, args.users)
+        result = summarize(total, elapsed, args.scenario, args.users)
+        result["parameters"] = {
+            "duration_seconds": args.duration,
+            "ramp_up_seconds": args.ramp_up,
+            "rate": args.rate,
+            "payload_size_bytes": args.payload_size,
+        }
+        return result
     finally:
         if server is not None:
             process, logs = server
@@ -239,14 +315,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rate", type=float, default=0, help="Global request rate cap")
     parser.add_argument(
         "--scenario",
-        choices=["server-info", "auth-read", "mixed"],
+        choices=[
+            "server-info",
+            "auth-read",
+            "mixed",
+            "upload-unique",
+            "upload-duplicate",
+        ],
         default="server-info",
     )
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     parser.add_argument("--no-ssl", action="store_true")
+    parser.add_argument(
+        "--managed-reset",
+        action="store_true",
+        help="Allow managed mode to reset runtime database and file storage",
+    )
+    parser.add_argument("--payload-size", type=int, default=256 * 1024)
     parser.add_argument("--json", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.payload_size <= 0:
+        parser.error("--payload-size must be positive")
+    if args.scenario == "upload-unique" and args.payload_size < 32:
+        parser.error("upload-unique requires --payload-size of at least 32 bytes")
+    return args
 
 
 def main() -> None:
