@@ -8,6 +8,7 @@ from include.config.settings import GlobalConfig
 from include.config.validation import (
     AuthThrottlePolicy,
     ConfigValidationError,
+    DocumentCreationRiskPolicy,
     DocumentUploadPolicy,
     get_config_warnings,
     get_enabled_extensions,
@@ -196,6 +197,70 @@ def test_document_upload_policy_defaults_and_overrides():
 
     config["document"] = {"upload": {"creation_rate_per_user": 500}}
     assert DocumentUploadPolicy.from_config(config).creation_rate_per_user == 500
+
+
+def test_document_creation_risk_policy_defaults():
+    policy = DocumentCreationRiskPolicy.from_config(_valid_config())
+
+    assert policy.mode == "enforce"
+    assert policy.account_capacity == 60
+    assert policy.account_refill_tokens == 300
+    assert policy.ip_capacity == 200
+    assert policy.ip_refill_tokens == 1000
+
+
+def test_legacy_creation_rate_settings_map_to_token_bucket_policy():
+    config = _valid_config()
+    config["document"] = {
+        "upload": {
+            "creation_rate_window_seconds": 300,
+            "creation_rate_per_user": 50,
+            "creation_rate_per_ip": 125,
+        }
+    }
+
+    policy = DocumentCreationRiskPolicy.from_config(config)
+
+    assert policy.refill_period_seconds == 300
+    assert policy.account_refill_tokens == 50
+    assert policy.account_capacity == 10
+    assert policy.ip_refill_tokens == 125
+    assert policy.ip_capacity == 25
+    assert "deprecated" in get_config_warnings(config)[0]
+
+
+def test_creation_risk_policy_rejects_legacy_and_new_settings_together():
+    config = _valid_config()
+    config["document"] = {
+        "upload": {
+            "creation_rate_per_user": 50,
+            "creation_risk_control": {},
+        }
+    }
+
+    with pytest.raises(ConfigValidationError, match="cannot be combined"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("mode", "disabled", "must be 'observe' or 'enforce'"),
+        ("account_capacity", 0, "positive integer"),
+        ("pending_elevated_ratio", 1.1, "at most 1"),
+        ("pending_high_ratio", 0.25, "must be less than"),
+        ("ip_accounts_high", 4, "must be less than"),
+        ("denials_high", 1, "must be less than"),
+        ("high_cost", 201, "at least high_cost"),
+        ("state_retention_seconds", 599, "cover every risk-control window"),
+    ],
+)
+def test_creation_risk_policy_validates_settings(setting, value, message):
+    config = _valid_config()
+    config["document"] = {"upload": {"creation_risk_control": {setting: value}}}
+
+    with pytest.raises(ConfigValidationError, match=message):
+        validate_config(config)
 
 
 @pytest.mark.parametrize(
