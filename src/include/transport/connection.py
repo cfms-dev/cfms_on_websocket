@@ -24,6 +24,10 @@ from include.config.settings import global_config
 from include.config.validation import DocumentUploadPolicy
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.session import Session
+from include.domains.documents.commands.file_deduplication import (
+    release_file_deduplication,
+    schedule_file_deduplication,
+)
 from include.domains.documents.commands.file_tasks import (
     claim_file_task,
     complete_file_task,
@@ -693,6 +697,8 @@ class ConnectionHandler:
                 file.sha256 = sha256
                 file.size = actual_size
                 file.active = True
+                if sha256:
+                    schedule_file_deduplication(session, file_id)
 
             pm.hook.ext_on_file_uploaded(id=file_id, path=file_path, sha256=sha256)
 
@@ -701,6 +707,9 @@ class ConnectionHandler:
             )
 
             self.conclude_request(200, {}, "File received successfully")
+
+            if sha256:
+                release_file_deduplication(file_id)
 
         except FileTaskEnded:
             raise

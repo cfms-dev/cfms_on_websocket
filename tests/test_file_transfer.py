@@ -4,6 +4,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -203,13 +204,18 @@ def file_task_context(monkeypatch, tmp_path):
 
     import include.transport.connection as connection_handler
     from include.config.constants import FILE_TRANSFER_MIN_CHUNK_SIZE
-    from include.database.models.files import File, FileTask
+    from include.database.models.files import File, FileDeduplicationTask, FileTask
     from include.database.session import Base
     from include.transport.multiplexing import FrameType
 
     engine = create_engine(f"sqlite:///{tmp_path / 'file_tasks.db'}")
     Base.metadata.create_all(
-        engine, tables=[cast(Table, File.__table__), cast(Table, FileTask.__table__)]
+        engine,
+        tables=[
+            cast(Table, File.__table__),
+            cast(Table, FileTask.__table__),
+            cast(Table, FileDeduplicationTask.__table__),
+        ],
     )
     TestingSession = sessionmaker(bind=engine)
 
@@ -218,6 +224,9 @@ def file_task_context(monkeypatch, tmp_path):
         connection_handler,
         "ProviderManager",
         lambda: _FakeProviderManager(_FakeStorage(tmp_path)),
+    )
+    monkeypatch.setattr(
+        connection_handler, "release_file_deduplication", lambda _file_id: True
     )
     monkeypatch.setattr(
         connection_handler,
@@ -232,6 +241,7 @@ def file_task_context(monkeypatch, tmp_path):
 
     return SimpleNamespace(
         session=TestingSession,
+        connection=connection_handler,
         ConnectionHandler=connection_handler.ConnectionHandler,
         FrameType=FrameType,
         File=File,
@@ -640,3 +650,114 @@ def test_upload_does_not_hold_db_session_while_receiving_chunks(
     handler.receive_file(task_id)
 
     assert tracker.active == 0
+
+
+def test_upload_confirms_before_releasing_deduplication(file_task_context, monkeypatch):
+    context = file_task_context
+    relative_path = "uploads/deferred-confirmation.bin"
+    task_id, file_id = _create_file_task(context, relative_path, mode=1)
+    payload = b"c" * context.FILE_TRANSFER_MIN_CHUNK_SIZE
+    transfer_request = orjson.dumps(
+        {
+            "action": "transfer_file",
+            "data": {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "file_size": len(payload),
+                "max_chunk_size": context.FILE_TRANSFER_MIN_CHUNK_SIZE,
+            },
+        }
+    )
+    stream = _FakeUploadStream([transfer_request, payload])
+    handler = _new_transfer_handler(context.ConnectionHandler, stream)
+    release_entered = threading.Event()
+    allow_release = threading.Event()
+
+    def on_uploaded(**_kwargs):
+        assert not any(
+            message.get("code") == 200 for message in _sent_json_messages(stream)
+        )
+
+    def release_deduplication(released_file_id):
+        assert released_file_id == file_id
+        assert any(
+            message.get("code") == 200 for message in _sent_json_messages(stream)
+        )
+        release_entered.set()
+        assert allow_release.wait(2)
+        return True
+
+    monkeypatch.setattr(
+        context.connection,
+        "pm",
+        SimpleNamespace(
+            hook=SimpleNamespace(
+                ext_on_empty_file_uploaded=lambda **_kwargs: None,
+                ext_on_file_uploaded=on_uploaded,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        context.connection, "release_file_deduplication", release_deduplication
+    )
+
+    transfer_thread = threading.Thread(target=handler.receive_file, args=(task_id,))
+    transfer_thread.start()
+    assert release_entered.wait(2)
+    assert transfer_thread.is_alive()
+    assert any(message.get("code") == 200 for message in _sent_json_messages(stream))
+    allow_release.set()
+    transfer_thread.join(2)
+    assert not transfer_thread.is_alive()
+
+    from include.database.models.files import FileDeduplicationTask
+
+    with context.session() as session:
+        assert session.get(FileDeduplicationTask, file_id) is not None
+
+
+def test_duplicate_and_unique_upload_confirmation_p95_are_close(file_task_context):
+    context = file_task_context
+    chunk_size = context.FILE_TRANSFER_MIN_CHUNK_SIZE
+
+    def upload_once(label, index, payload):
+        relative_path = f"uploads/latency-{label}-{index}.bin"
+        task_id, _file_id = _create_file_task(context, relative_path, mode=1)
+        stream = _FakeUploadStream(
+            [
+                orjson.dumps(
+                    {
+                        "action": "transfer_file",
+                        "data": {
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                            "file_size": len(payload),
+                            "max_chunk_size": chunk_size,
+                        },
+                    }
+                ),
+                payload,
+            ]
+        )
+        handler = _new_transfer_handler(context.ConnectionHandler, stream)
+        started = time.perf_counter()
+        handler.receive_file(task_id)
+        elapsed = time.perf_counter() - started
+        assert any(
+            message.get("code") == 200 for message in _sent_json_messages(stream)
+        )
+        return elapsed
+
+    for index in range(5):
+        upload_once("warmup", index, bytes([index]) * chunk_size)
+
+    duplicate_payload = b"d" * chunk_size
+    duplicate_times = [
+        upload_once("duplicate", index, duplicate_payload) for index in range(30)
+    ]
+    unique_times = [
+        upload_once("unique", index, bytes([index]) * chunk_size) for index in range(30)
+    ]
+
+    p95_index = 28
+    duplicate_p95 = sorted(duplicate_times)[p95_index]
+    unique_p95 = sorted(unique_times)[p95_index]
+    assert abs(duplicate_p95 - unique_p95) <= max(0.1, unique_p95 * 0.1)

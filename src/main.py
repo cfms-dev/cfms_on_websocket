@@ -38,6 +38,10 @@ from include.database.models.files import File
 from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
+from include.domains.documents.commands.file_deduplication import (
+    start_file_deduplication_worker,
+    stop_file_deduplication_worker,
+)
 from include.domains.documents.commands.upload_cleanup import (
     try_reclaim_abandoned_uploads,
 )
@@ -475,6 +479,7 @@ def main():
     )
 
     try_reclaim_abandoned_uploads()
+    start_file_deduplication_worker()
     try:
         with serve(
             handle_connection,
@@ -502,6 +507,7 @@ def main():
             finally:
                 pm.hook.ext_on_shutdown()
     finally:
+        stop_file_deduplication_worker()
         global_config.stop()
 
 

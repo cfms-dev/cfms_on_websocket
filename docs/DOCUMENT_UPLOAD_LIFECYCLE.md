@@ -52,6 +52,31 @@ and repairs `current_revision`. If a document has never acquired an active
 revision, it permanently purges the empty document shell and releases the name.
 Deferred storage cleanup runs only after the database transaction commits.
 
+## Deferred file deduplication
+
+For non-empty uploads with a verified SHA-256 digest, upload completion also
+persists a deduplication task in the same transaction. The task is initially
+held for five minutes so extension upload hooks can run first. After the server
+sends the successful upload response, it releases the task immediately; if the
+process exits first, the recovery deadline makes the task eligible without
+client intervention.
+
+Each server instance runs one deduplication worker. Workers use database leases
+and compare-and-set claims, so SQLite and clustered database deployments share
+the same recovery behavior. The oldest active file by `(created_time, id)` is
+the canonical copy. Reference migration commits before the duplicate object is
+removed from storage. Pending downloads are redirected to the canonical file,
+while an already-running download keeps the inactive source file alive until
+the transfer ends.
+
+Merge and storage failures are retried with bounded exponential backoff. A
+crash after reference migration resumes at storage deletion, and deleting an
+already-missing object is treated as success. Consequently, upload success
+means the verified file is readable; it does not promise that redundant
+storage has already been reclaimed. Worker logs include source and canonical
+IDs, retry delays, lease recovery, and storage cleanup failures. Upgrades do
+not enqueue historical files automatically.
+
 Calling `upload_document` repeatedly does not refresh a lease. An existing
 pending upload task is returned unchanged, and an upload already in progress is
 reported as a conflict. At most one non-terminal upload revision is retained for

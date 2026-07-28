@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add durable, leased background file deduplication with crash recovery and
+  retryable storage cleanup.
 - Add adaptive document-creation risk control using persistent account and IP
   token buckets, explainable risk levels, observe/enforce modes, and a
   `bypass_document_creation_rate_limit` permission granted to `sysop` by
@@ -28,6 +30,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Return successful non-empty uploads before duplicate reference migration and
+  physical deletion, keeping duplicate and unique confirmation latency close.
 - Replace fixed-window document-creation limits with risk-weighted continuous
   refill while preserving the protocol 18 `429` response shape. The adaptive
   `creation_risk_control` table is now the only active rate-policy interface.
