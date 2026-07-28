@@ -1,9 +1,11 @@
 # Document Upload Lifecycle
 
-CFMS treats a `FileTask` as a capability for transferring one file. It does not
-store a document or revision owner on the task. When a document or revision is
-deleted, the server instead checks whether the file remains reachable from any
-active document, user avatar, or extension-owned non-cascading foreign key.
+CFMS treats a `FileTask` as a capability for transferring one file. A download
+task records the account that issued it for risk attribution, but that field is
+not ownership or an authentication binding: possession of the task credential
+is still sufficient to use or resume the download. When a document or revision
+is deleted, the server instead checks whether the file remains reachable from
+any active document, user avatar, or extension-owned non-cascading foreign key.
 Only tasks for files that become unreachable are cancelled.
 
 This resource-reachability rule is important for deduplicated files: deleting
@@ -167,7 +169,7 @@ consumption, but still acquire that account lock and remain subject to the
 pending-document hard limit. New installations and upgrades grant this
 permission to the `sysop` group by default.
 
-Protocol version 18 adds these responses:
+Protocol version 18 added these responses:
 
 - `410`: a cancelled or expired task, with `data.task_status` set to
   `cancelled` or `expired`.
@@ -186,9 +188,46 @@ configured refill period at the request's risk level. Risk levels and reasons
 are intentionally omitted from client responses and are emitted only in the
 server's structured logs.
 
+## Download risk controls
+
+Protocol version 19 applies a separate adaptive policy to downloads at two
+boundaries:
+
+- `get_document` and `get_revision` consume task-issuance tokens for the
+  authenticated account and effective source IP after access checks succeed.
+- `download_file` first validates and claims the bearer task, then consumes
+  transfer-start tokens for the issuing account (when it still exists), the
+  current source IP, and the individual task. A denied start atomically returns
+  the task to `PENDING`, so it can be retried within its existing deadline.
+
+Invalid task credentials do not consume tokens. Existing tasks without issuer
+attribution remain valid and use only the current IP and task buckets. A task's
+issuer is used for account risk and the bypass permission; it does not restrict
+who may present the bearer credential.
+
+Account and IP risk uses account age, recent account fanout from the source IP,
+and recent denials. One signal selects elevated risk; a high threshold or two
+signals select high risk. Normal, elevated, and high requests cost one, three,
+and ten account/IP tokens by default. Every transfer start or resume consumes
+one task token regardless of risk. The default task bucket permits a burst of
+five starts and refills ten starts per hour.
+
+Download limiting defaults to `observe`: the server maintains shadow buckets
+and logs decisions but does not reject task issuance or transfer starts. In
+`enforce` mode, a rejection returns `429` with `data.scope` (`account`, `ip`, or
+`task`), `data.limit`, and `data.retry_after_seconds`. Risk levels and reasons
+remain server-only. Users with `bypass_document_download_rate_limit` skip
+download token consumption; new installations and upgrades grant this
+permission to `sysop` by default.
+
+Transfer-start logs include remaining bytes and the current number of active
+downloads. These values are observability signals only: the policy does not
+charge per byte, shape bandwidth continuously, or impose a hard concurrency
+cap.
+
 ## Configuration
 
-All settings are hot-reloaded from `[document.upload]`:
+Upload settings are hot-reloaded from `[document.upload]`:
 
 ```toml
 [document.upload]
@@ -219,6 +258,36 @@ high_cost = 10
 state_retention_seconds = 86400
 ```
 
+Download risk settings are independently hot-reloaded from
+`[document.download.risk_control]`:
+
+```toml
+[document.download.risk_control]
+mode = "observe"
+refill_period_seconds = 600
+issue_account_capacity = 60
+issue_account_refill_tokens = 300
+issue_ip_capacity = 200
+issue_ip_refill_tokens = 1000
+transfer_account_capacity = 60
+transfer_account_refill_tokens = 300
+transfer_ip_capacity = 200
+transfer_ip_refill_tokens = 1000
+task_capacity = 5
+task_refill_tokens = 10
+task_refill_period_seconds = 3600
+new_account_seconds = 604800
+ip_account_window_seconds = 600
+ip_accounts_elevated = 4
+ip_accounts_high = 10
+denial_window_seconds = 600
+denials_elevated = 1
+denials_high = 3
+elevated_cost = 3
+high_cost = 10
+state_retention_seconds = 86400
+```
+
 Use shorter start deadlines and lower reservation caps when names are scarce or
 abuse is common. Increase the hard deadline for reliably authenticated users
 who upload large files over slow links. Keep the idle timeout long enough for
@@ -226,28 +295,29 @@ normal network jitter. Cleanup of the document or name being accessed is not
 delayed; the interval controls bounded opportunistic sweeps of unrelated
 expired uploads and the minimum interval between stale risk-state cleanups.
 
-Set `mode = "observe"` before enforcing a new policy in production. Observe
+Keep `mode = "observe"` before enforcing a new policy in production. Observe
 mode maintains the same shadow buckets and denial history and logs
 `risk_level`, `risk_reasons`, and `would_block`, but allows requests that would
-be rejected only by the rate policy. The pending-document hard limit is still
-enforced. Review elevated/high decisions and `would_block` events, adjust the
-thresholds if necessary, and then hot-reload `mode = "enforce"`. Switching modes
-does not clear accumulated bucket state.
+be rejected only by the corresponding rate policy. The pending-document hard
+limit is still enforced. Review elevated/high decisions and `would_block`
+events, adjust the thresholds if necessary, and then hot-reload
+`mode = "enforce"`. Switching modes does not clear accumulated bucket state.
 
 `document.upload.creation_risk_control` is the only active configuration
 interface for document-creation rate policy. If the table is omitted, the
 adaptive policy uses the defaults shown above.
 
-On upgrade, existing pending uploads retain their original lifecycle. Back up
-the database and run `uv run alembic upgrade head`. The migration grants the
-rate-bypass permission to an existing `sysop` group, replaces fixed-window
-counters with empty token buckets, and creates the rolling IP/account signal
-table. The old counters cannot be reliably converted because deployments may
-use different limits, so their transient state is intentionally reset.
+On upgrade, existing pending uploads and downloads retain their original
+lifecycle. Back up the database and run `uv run alembic upgrade head`. The
+migrations move existing document-creation bucket and IP/account state into
+shared namespaced tables, add download-task issuer attribution, and grant the
+download rate-bypass permission to an existing `sysop` group. Existing adaptive
+document-creation state is preserved under the `document_creation` namespace.
 
-Risk-control tables are transient and excluded from backups. Downgrade removes
-their state and recreates an empty fixed-window table; it cannot reconstruct old
-counter values. To roll back enforcement without downgrading, use observe mode.
+Risk-control tables are transient and excluded from backups. Downgrading the
+shared tables restores only the document-creation namespace to the previous
+schema and discards download state. To roll back enforcement without
+downgrading, use observe mode.
 
 The design follows established resumable-upload expiry and termination
 patterns: [tus expiration and termination](https://tus.io/protocols/resumable-upload),

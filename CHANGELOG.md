@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add adaptive download controls at task issuance and transfer start, with
+  persistent account, IP, and bearer-task token buckets, observe/enforce modes,
+  structured risk telemetry, and a `bypass_document_download_rate_limit`
+  permission granted to `sysop` by default.
 - Add durable, leased background file deduplication with crash recovery and
   retryable storage cleanup.
 - Add adaptive document-creation risk control using persistent account and IP
@@ -30,6 +34,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Increase the protocol version to 19. Download-limit responses use `429` with
+  account, IP, or task scope while preserving bearer capability and resumable
+  transfer semantics.
+- Unify document creation and download rate state in namespaced persistent
+  tables while preserving existing adaptive creation state across migration.
 - Keep durable file-deduplication scheduling and worker lifecycle in the
   always-enabled `builtin` extension, with core uploads exposing transactional
   and post-response hooks.
