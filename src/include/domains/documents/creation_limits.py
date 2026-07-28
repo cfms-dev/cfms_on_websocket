@@ -1,11 +1,9 @@
 import math
-import threading
 import time
 from dataclasses import dataclass
 
 from loguru import logger
-from sqlalchemy import delete, exists, func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from include.config.validation import (
@@ -19,18 +17,25 @@ from include.database.models.documents import (
     EntityStatus,
 )
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
-from include.database.models.operations import (
-    DocumentCreationIPAccount,
-    DocumentCreationRateBucket,
-)
 from include.domains.documents.creation_risk import (
     CreationRiskAssessment,
     CreationRiskLevel,
     CreationRiskSignals,
     assess_creation_risk,
 )
+from include.domains.security.guards.rate_limits import (
+    cleanup_rate_limit_state,
+    consume_bucket,
+    count_ip_accounts,
+    lock_rate_bucket,
+    rate_limit_lock,
+    record_denial,
+    record_ip_account,
+    refresh_denials,
+    touch_rate_bucket,
+)
 
-_creation_limit_lock = threading.Lock()
+_RISK_NAMESPACE = "document_creation"
 _last_cleanup_monotonic = 0.0
 
 
@@ -43,124 +48,6 @@ class CreationLimitDecision:
     risk_level: CreationRiskLevel | None = None
     risk_reasons: tuple[str, ...] = ()
     would_block: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _BucketDecision:
-    allowed: bool
-    scope: str
-    effective_limit: int
-    retry_after_seconds: int
-
-
-def _lock_bucket(
-    session: Session,
-    scope: str,
-    identity: str,
-    now: float,
-    capacity: int,
-) -> DocumentCreationRateBucket:
-    statement = select(DocumentCreationRateBucket).where(
-        DocumentCreationRateBucket.scope == scope,
-        DocumentCreationRateBucket.identity == identity,
-    )
-    if session.get_bind().dialect.name != "sqlite":
-        statement = statement.with_for_update()
-    row = session.scalar(statement)
-    if row is not None:
-        return row
-    try:
-        with session.begin_nested():
-            row = DocumentCreationRateBucket(
-                scope=scope,
-                identity=identity,
-                tokens=float(capacity),
-                last_refill_at=now,
-                denial_count=0,
-                last_denied_at=None,
-                last_attempt=now,
-            )
-            session.add(row)
-            session.flush()
-        return row
-    except IntegrityError:
-        row = session.scalar(statement)
-        if row is None:
-            raise
-        return row
-
-
-def _record_ip_account(
-    session: Session, ip_address: str, username: str, now: float
-) -> None:
-    row = session.get(DocumentCreationIPAccount, (ip_address, username))
-    if row is not None:
-        row.last_attempt = now
-        return
-    try:
-        with session.begin_nested():
-            session.add(
-                DocumentCreationIPAccount(
-                    ip_address=ip_address,
-                    username=username,
-                    last_attempt=now,
-                )
-            )
-            session.flush()
-    except IntegrityError:
-        row = session.get(DocumentCreationIPAccount, (ip_address, username))
-        if row is None:
-            raise
-        row.last_attempt = now
-
-
-def _refresh_denials(
-    row: DocumentCreationRateBucket, now: float, window_seconds: int
-) -> None:
-    if row.last_denied_at is None or now - row.last_denied_at > window_seconds:
-        row.denial_count = 0
-        row.last_denied_at = None
-
-
-def _record_denial(
-    row: DocumentCreationRateBucket, now: float, window_seconds: int
-) -> None:
-    _refresh_denials(row, now, window_seconds)
-    row.denial_count += 1
-    row.last_denied_at = now
-    row.last_attempt = now
-
-
-def _consume_bucket(
-    row: DocumentCreationRateBucket,
-    *,
-    now: float,
-    capacity: int,
-    refill_tokens: int,
-    refill_period_seconds: int,
-    cost: int,
-) -> _BucketDecision:
-    if now > row.last_refill_at:
-        refill_rate = refill_tokens / refill_period_seconds
-        row.tokens = min(
-            float(capacity),
-            row.tokens + (now - row.last_refill_at) * refill_rate,
-        )
-        row.last_refill_at = now
-    else:
-        refill_rate = refill_tokens / refill_period_seconds
-    row.tokens = min(row.tokens, float(capacity))
-    row.last_attempt = now
-    effective_limit = max(1, refill_tokens // cost)
-    if row.tokens >= cost:
-        row.tokens -= cost
-        return _BucketDecision(True, row.scope, effective_limit, 0)
-    return _BucketDecision(
-        False,
-        row.scope,
-        effective_limit,
-        max(1, math.ceil((cost - row.tokens) / refill_rate)),
-    )
 
 
 def count_pending_documents(session: Session, creator_username: str, now: float) -> int:
@@ -255,17 +142,11 @@ def _maybe_cleanup(
     monotonic_now = time.monotonic()
     if monotonic_now - _last_cleanup_monotonic < upload_policy.cleanup_interval_seconds:
         return
-    session.execute(
-        delete(DocumentCreationIPAccount).where(
-            DocumentCreationIPAccount.last_attempt
-            < now - risk_policy.ip_account_window_seconds
-        )
-    )
-    session.execute(
-        delete(DocumentCreationRateBucket).where(
-            DocumentCreationRateBucket.last_attempt
-            < now - risk_policy.state_retention_seconds
-        )
+    cleanup_rate_limit_state(
+        session,
+        _RISK_NAMESPACE,
+        ip_account_cutoff=now - risk_policy.ip_account_window_seconds,
+        bucket_cutoff=now - risk_policy.state_retention_seconds,
     )
     _last_cleanup_monotonic = monotonic_now
 
@@ -284,24 +165,17 @@ def check_document_creation_limits(
     upload_policy = DocumentUploadPolicy.from_config()
     risk_policy = DocumentCreationRiskPolicy.from_config()
 
-    with _creation_limit_lock:
+    with rate_limit_lock:
         _maybe_cleanup(session, now, upload_policy, risk_policy)
-        account_bucket = _lock_bucket(
+        account_bucket = lock_rate_bucket(
             session,
+            _RISK_NAMESPACE,
             "account",
             username,
             now,
             risk_policy.account_capacity,
         )
-        session.execute(
-            update(DocumentCreationRateBucket)
-            .where(
-                DocumentCreationRateBucket.scope == "account",
-                DocumentCreationRateBucket.identity == username,
-            )
-            .values(last_attempt=now)
-        )
-        account_bucket.last_attempt = now
+        touch_rate_bucket(session, account_bucket, now)
         session.flush()
         pending_count = count_pending_documents(session, username, now)
         pending_decision = _pending_limit_decision(
@@ -314,25 +188,22 @@ def check_document_creation_limits(
         if bypass_rate_limit:
             return pending_decision or CreationLimitDecision(True)
 
-        ip_bucket = _lock_bucket(
+        ip_bucket = lock_rate_bucket(
             session,
+            _RISK_NAMESPACE,
             "ip",
             ip_address,
             now,
             risk_policy.ip_capacity,
         )
-        _record_ip_account(session, ip_address, username, now)
-        _refresh_denials(account_bucket, now, risk_policy.denial_window_seconds)
-        _refresh_denials(ip_bucket, now, risk_policy.denial_window_seconds)
-        ip_account_count = int(
-            session.scalar(
-                select(func.count(DocumentCreationIPAccount.username)).where(
-                    DocumentCreationIPAccount.ip_address == ip_address,
-                    DocumentCreationIPAccount.last_attempt
-                    >= now - risk_policy.ip_account_window_seconds,
-                )
-            )
-            or 0
+        record_ip_account(session, _RISK_NAMESPACE, ip_address, username, now)
+        refresh_denials(account_bucket, now, risk_policy.denial_window_seconds)
+        refresh_denials(ip_bucket, now, risk_policy.denial_window_seconds)
+        ip_account_count = count_ip_accounts(
+            session,
+            _RISK_NAMESPACE,
+            ip_address,
+            now - risk_policy.ip_account_window_seconds,
         )
         assessment = assess_creation_risk(
             CreationRiskSignals(
@@ -352,7 +223,7 @@ def check_document_creation_limits(
             risk_policy,
         )
         cost = _risk_cost(assessment, risk_policy)
-        account_decision = _consume_bucket(
+        account_decision = consume_bucket(
             account_bucket,
             now=now,
             capacity=risk_policy.account_capacity,
@@ -360,7 +231,7 @@ def check_document_creation_limits(
             refill_period_seconds=risk_policy.refill_period_seconds,
             cost=cost,
         )
-        ip_decision = _consume_bucket(
+        ip_decision = consume_bucket(
             ip_bucket,
             now=now,
             capacity=risk_policy.ip_capacity,
@@ -375,8 +246,8 @@ def check_document_creation_limits(
         ]
         would_block = bool(denied)
         if would_block:
-            _record_denial(account_bucket, now, risk_policy.denial_window_seconds)
-            _record_denial(ip_bucket, now, risk_policy.denial_window_seconds)
+            record_denial(account_bucket, now, risk_policy.denial_window_seconds)
+            record_denial(ip_bucket, now, risk_policy.denial_window_seconds)
         session.flush()
 
         if assessment.level != CreationRiskLevel.NORMAL or would_block:

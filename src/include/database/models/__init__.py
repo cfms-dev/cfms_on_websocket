@@ -38,8 +38,8 @@ from include.database.models.identity import (
 from include.database.models.keyrings import UserKey
 from include.database.models.operations import (
     AuditEntry,
-    DocumentCreationIPAccount,
-    DocumentCreationRateBucket,
+    RateLimitBucket,
+    RiskIPAccount,
 )
 from include.database.models.security import (
     AccountThrottle,
@@ -63,8 +63,6 @@ __all__ = [
     "DocumentMetadataTag",
     "DocumentRevision",
     "DocumentRevisionStatus",
-    "DocumentCreationIPAccount",
-    "DocumentCreationRateBucket",
     "EntityStatus",
     "File",
     "FileDeduplicationPhase",
@@ -75,6 +73,8 @@ __all__ = [
     "LoginThrottle",
     "Node",
     "ObjectAccessEntry",
+    "RateLimitBucket",
+    "RiskIPAccount",
     "TrafficThrottle",
     "TransferMode",
     "User",

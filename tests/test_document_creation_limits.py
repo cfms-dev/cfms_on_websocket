@@ -252,13 +252,13 @@ def test_rate_limit_bypass_preserves_pending_hard_limit(
     assert decision.scope == "pending_documents"
     with session_factory() as session:
         account_bucket = session.get(
-            models.DocumentCreationRateBucket, ("account", "alice")
+            models.RateLimitBucket, ("document_creation", "account", "alice")
         )
         assert account_bucket.tokens == 6
         assert (
             session.get(
-                models.DocumentCreationIPAccount,
-                ("203.0.113.1", "alice"),
+                models.RiskIPAccount,
+                ("document_creation", "203.0.113.1", "alice"),
             )
             is None
         )
@@ -271,7 +271,8 @@ def test_cleanup_removes_stale_risk_state(creation_limit_context, monkeypatch):
     with session_factory.begin() as session:
         session.add_all(
             [
-                models.DocumentCreationRateBucket(
+                models.RateLimitBucket(
+                    namespace="document_creation",
                     scope="account",
                     identity="stale",
                     tokens=1.0,
@@ -279,7 +280,8 @@ def test_cleanup_removes_stale_risk_state(creation_limit_context, monkeypatch):
                     denial_count=0,
                     last_attempt=1.0,
                 ),
-                models.DocumentCreationIPAccount(
+                models.RiskIPAccount(
+                    namespace="document_creation",
                     ip_address="198.51.100.1",
                     username="stale",
                     last_attempt=1.0,
@@ -290,12 +292,16 @@ def test_cleanup_removes_stale_risk_state(creation_limit_context, monkeypatch):
         assert _check(creation_limits, session).allowed
     with session_factory() as session:
         assert (
-            session.get(models.DocumentCreationRateBucket, ("account", "stale")) is None
+            session.get(
+                models.RateLimitBucket,
+                ("document_creation", "account", "stale"),
+            )
+            is None
         )
         assert (
             session.get(
-                models.DocumentCreationIPAccount,
-                ("198.51.100.1", "stale"),
+                models.RiskIPAccount,
+                ("document_creation", "198.51.100.1", "stale"),
             )
             is None
         )
@@ -321,7 +327,9 @@ def test_reduced_capacity_caps_existing_balance(creation_limit_context, monkeypa
     with session_factory.begin() as session:
         assert _check(creation_limits, session).allowed
     with session_factory() as session:
-        bucket = session.get(models.DocumentCreationRateBucket, ("account", "alice"))
+        bucket = session.get(
+            models.RateLimitBucket, ("document_creation", "account", "alice")
+        )
         assert bucket.tokens == 2
 
 

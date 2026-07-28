@@ -575,10 +575,10 @@ def _dump_backup_tables(base, db_engine) -> dict[str, list[dict]]:
 def _backup_table_names(base) -> set[str]:
     excluded = {
         "account_throttles",
-        "document_creation_ip_accounts",
-        "document_creation_rate_buckets",
         "file_tasks",
         "login_throttles",
+        "rate_limit_buckets",
+        "risk_ip_accounts",
         "traffic_throttles",
     }
     return set(base.metadata.tables) - excluded
@@ -642,17 +642,11 @@ def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context)
     assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
 
 
-def test_only_current_document_creation_risk_tables_are_excluded(backup_context):
-    excluded = {
-        table_name
-        for table_name in backup_context.backup_core.EXCLUDED_TABLE_NAMES
-        if table_name.startswith("document_creation_")
-    }
+def test_shared_risk_state_tables_are_excluded(backup_context):
+    excluded = backup_context.backup_core.EXCLUDED_TABLE_NAMES
 
-    assert excluded == {
-        "document_creation_ip_accounts",
-        "document_creation_rate_buckets",
-    }
+    assert "rate_limit_buckets" in excluded
+    assert "risk_ip_accounts" in excluded
 
 
 def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
@@ -759,11 +753,11 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         account_throttles = connection.execute(
             select(base.metadata.tables["account_throttles"])
         ).all()
-        creation_rate_buckets = connection.execute(
-            select(base.metadata.tables["document_creation_rate_buckets"])
+        rate_limit_buckets = connection.execute(
+            select(base.metadata.tables["rate_limit_buckets"])
         ).all()
-        creation_ip_accounts = connection.execute(
-            select(base.metadata.tables["document_creation_ip_accounts"])
+        risk_ip_accounts = connection.execute(
+            select(base.metadata.tables["risk_ip_accounts"])
         ).all()
         login_throttles = connection.execute(
             select(base.metadata.tables["login_throttles"])
@@ -778,8 +772,8 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         assert len(rule_sets) == 2
         assert file_tasks == []
         assert account_throttles == []
-        assert creation_rate_buckets == []
-        assert creation_ip_accounts == []
+        assert rate_limit_buckets == []
+        assert risk_ip_accounts == []
         assert login_throttles == []
         assert traffic_throttles == []
 

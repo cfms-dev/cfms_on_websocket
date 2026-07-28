@@ -28,9 +28,10 @@ class AuditEntry(Base):
     )
 
 
-class DocumentCreationRateBucket(Base):
-    __tablename__ = "document_creation_rate_buckets"
+class RateLimitBucket(Base):
+    __tablename__ = "rate_limit_buckets"
 
+    namespace: Mapped[str] = mapped_column(VARCHAR(64), primary_key=True)
     scope: Mapped[str] = mapped_column(VARCHAR(16), primary_key=True)
     identity: Mapped[str] = mapped_column(VARCHAR(256), primary_key=True)
     tokens: Mapped[float] = mapped_column(Float, nullable=False)
@@ -42,9 +43,10 @@ class DocumentCreationRateBucket(Base):
     )
 
 
-class DocumentCreationIPAccount(Base):
-    __tablename__ = "document_creation_ip_accounts"
+class RiskIPAccount(Base):
+    __tablename__ = "risk_ip_accounts"
 
+    namespace: Mapped[str] = mapped_column(VARCHAR(64), primary_key=True)
     ip_address: Mapped[str] = mapped_column(VARCHAR(45), primary_key=True)
     username: Mapped[str] = mapped_column(VARCHAR(256), primary_key=True)
     last_attempt: Mapped[float] = mapped_column(
