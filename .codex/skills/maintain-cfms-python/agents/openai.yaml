@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain CFMS Python"
+  short_description: "Project-aware Python maintenance guardrails"
+  default_prompt: "Use $maintain-cfms-python to implement or review a Python change without weakening architecture or tests."
