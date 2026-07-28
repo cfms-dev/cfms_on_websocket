@@ -22,7 +22,7 @@ from include.database.session import Session
 from include.domains.documents.queries.file_references import _get_file_references
 from include.providers.manager import ProviderManager
 
-logger = log.bind(name="file_deduplication")
+logger = log.bind(name="builtin.file_deduplication")
 
 _HOOK_RECOVERY_SECONDS = 300.0
 _LEASE_SECONDS = 300.0
@@ -84,7 +84,7 @@ def release_file_deduplication(file_id: str, *, now: float | None = None) -> boo
         return False
 
     if released:
-        _worker.wake()
+        file_deduplication_worker.wake()
     return released
 
 
@@ -425,12 +425,4 @@ class FileDeduplicationWorker:
         logger.info("File deduplication worker stopped")
 
 
-_worker = FileDeduplicationWorker()
-
-
-def start_file_deduplication_worker() -> None:
-    _worker.start()
-
-
-def stop_file_deduplication_worker() -> None:
-    _worker.stop()
+file_deduplication_worker = FileDeduplicationWorker()

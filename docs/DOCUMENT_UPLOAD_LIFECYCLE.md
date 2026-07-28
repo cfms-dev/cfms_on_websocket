@@ -55,16 +55,18 @@ Deferred storage cleanup runs only after the database transaction commits.
 ## Deferred file deduplication
 
 For non-empty uploads with a verified SHA-256 digest, upload completion also
-persists a deduplication task in the same transaction. The task is initially
-held for five minutes so extension upload hooks can run first. After the server
-sends the successful upload response, it releases the task immediately; if the
-process exits first, the recovery deadline makes the task eligible without
-client intervention.
+invokes the transactional upload hook. The `builtin` extension uses that hook
+to persist a deduplication task in the same transaction. The task is initially
+held for five minutes so the remaining extension upload hooks can run first.
+After the server sends the successful upload response, a response hook lets
+`builtin` release the task immediately; if the process exits first, the recovery
+deadline makes the task eligible without client intervention.
 
-Each server instance runs one deduplication worker. Workers use database leases
-and compare-and-set claims, so SQLite and clustered database deployments share
-the same recovery behavior. The oldest active file by `(created_time, id)` is
-the canonical copy. Reference migration commits before the duplicate object is
+The `builtin` extension starts one deduplication worker per server instance and
+stops it through the normal extension lifecycle. Workers use database leases and
+compare-and-set claims, so SQLite and clustered database deployments share the
+same recovery behavior. The oldest active file by `(created_time, id)` is the
+canonical copy. Reference migration commits before the duplicate object is
 removed from storage. Pending downloads are redirected to the canonical file,
 while an already-running download keeps the inactive source file alive until
 the transfer ends.

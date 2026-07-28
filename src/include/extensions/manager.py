@@ -27,6 +27,8 @@ import websockets.sync.server
 from loguru import logger as log
 
 if TYPE_CHECKING:
+    from sqlalchemy.orm import Session as OrmSession
+
     from include.transport.connection import ConnectionHandler
     from include.transport.request_handler import RequestHandler, Result
 
@@ -320,6 +322,22 @@ class ServerHookSpecs(ABC):
 
     @hookspec
     @abstractmethod
+    def ext_before_file_upload_commit(
+        self,
+        session: "OrmSession",
+        id: str,
+        path: str,
+        sha256: str,
+    ) -> None:
+        """Run inside a non-empty upload's completion transaction.
+
+        Extensions may persist work through ``session`` so that it commits or
+        rolls back atomically with the completed upload. Implementations must
+        not commit or close the supplied session.
+        """
+
+    @hookspec
+    @abstractmethod
     def ext_on_file_uploaded(self, id: str, path: str, sha256: str) -> None:
         """
         Triggered when a file is uploaded to the server, providing the
@@ -327,6 +345,15 @@ class ServerHookSpecs(ABC):
 
         This can be used to implement features like file deduplication,
         virus scanning, or triggering post-upload processing.
+        """
+
+    @hookspec
+    @abstractmethod
+    def ext_post_file_upload_response(self, id: str, path: str, sha256: str) -> None:
+        """Run after a non-empty upload's success response has been sent.
+
+        Implementations must handle their own failures because the upload is
+        already complete and acknowledged to the client.
         """
 
     @hookspec

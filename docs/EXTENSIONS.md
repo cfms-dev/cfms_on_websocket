@@ -57,6 +57,19 @@ handlers are ready. Shutdown runs whenever the serving loop exits, including
 startup failures, and implementations must be idempotent. The startup hook may
 accept the bound `server` when it needs access to the WebSocket server itself.
 
+Non-empty uploads expose three ordered extension points. The
+`ext_before_file_upload_commit(session, id, path, sha256)` hook runs inside the
+upload completion transaction; implementations may add database work through
+the supplied session but must not commit or close it. After that transaction
+commits, `ext_on_file_uploaded(id, path, sha256)` retains its existing position
+before the success response. Finally,
+`ext_post_file_upload_response(id, path, sha256)` runs after the response has
+been sent and must not attempt to change the completed client result.
+
+The `builtin` extension uses these hooks together with its startup and shutdown
+hooks to own durable file deduplication. Core upload handling publishes the
+lifecycle events but does not schedule or run deduplication itself.
+
 ## Automatic brute-force lockdown
 
 Enable the optional `brute_force_lockdown` extension to escalate a service-wide

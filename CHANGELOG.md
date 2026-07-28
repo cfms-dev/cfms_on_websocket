@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Keep durable file-deduplication scheduling and worker lifecycle in the
+  always-enabled `builtin` extension, with core uploads exposing transactional
+  and post-response hooks.
 - Return successful non-empty uploads before duplicate reference migration and
   physical deletion, keeping duplicate and unique confirmation latency close.
 - Replace fixed-window document-creation limits with risk-weighted continuous

@@ -206,6 +206,9 @@ def file_task_context(monkeypatch, tmp_path):
     from include.config.constants import FILE_TRANSFER_MIN_CHUNK_SIZE
     from include.database.models.files import File, FileDeduplicationTask, FileTask
     from include.database.session import Base
+    from include.extensions.builtin._file_deduplication import (
+        schedule_file_deduplication,
+    )
     from include.transport.multiplexing import FrameType
 
     engine = create_engine(f"sqlite:///{tmp_path / 'file_tasks.db'}")
@@ -226,15 +229,16 @@ def file_task_context(monkeypatch, tmp_path):
         lambda: _FakeProviderManager(_FakeStorage(tmp_path)),
     )
     monkeypatch.setattr(
-        connection_handler, "release_file_deduplication", lambda _file_id: True
-    )
-    monkeypatch.setattr(
         connection_handler,
         "pm",
         SimpleNamespace(
             hook=SimpleNamespace(
+                ext_before_file_upload_commit=lambda session, id, **_kwargs: (
+                    schedule_file_deduplication(session, id)
+                ),
                 ext_on_empty_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_uploaded=lambda **_kwargs: None,
+                ext_post_file_upload_response=lambda **_kwargs: None,
             )
         ),
     )
@@ -245,6 +249,7 @@ def file_task_context(monkeypatch, tmp_path):
         ConnectionHandler=connection_handler.ConnectionHandler,
         FrameType=FrameType,
         File=File,
+        FileDeduplicationTask=FileDeduplicationTask,
         FileTask=FileTask,
         FILE_TRANSFER_MIN_CHUNK_SIZE=FILE_TRANSFER_MIN_CHUNK_SIZE,
     )
@@ -671,14 +676,30 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
     handler = _new_transfer_handler(context.ConnectionHandler, stream)
     release_entered = threading.Event()
     allow_release = threading.Event()
+    lifecycle = []
+
+    def before_commit(session, id, **_kwargs):
+        assert id == file_id
+        lifecycle.append("before_commit")
+        session.add(
+            context.FileDeduplicationTask(
+                file_id=id,
+                phase=0,
+                available_at=time.time() + 300,
+                attempts=0,
+                created_time=time.time(),
+            )
+        )
 
     def on_uploaded(**_kwargs):
+        lifecycle.append("uploaded")
         assert not any(
             message.get("code") == 200 for message in _sent_json_messages(stream)
         )
 
-    def release_deduplication(released_file_id):
-        assert released_file_id == file_id
+    def after_response(id, **_kwargs):
+        assert id == file_id
+        lifecycle.append("after_response")
         assert any(
             message.get("code") == 200 for message in _sent_json_messages(stream)
         )
@@ -691,13 +712,12 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
         "pm",
         SimpleNamespace(
             hook=SimpleNamespace(
+                ext_before_file_upload_commit=before_commit,
                 ext_on_empty_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_uploaded=on_uploaded,
+                ext_post_file_upload_response=after_response,
             )
         ),
-    )
-    monkeypatch.setattr(
-        context.connection, "release_file_deduplication", release_deduplication
     )
 
     transfer_thread = threading.Thread(target=handler.receive_file, args=(task_id,))
@@ -708,11 +728,136 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
     allow_release.set()
     transfer_thread.join(2)
     assert not transfer_thread.is_alive()
-
-    from include.database.models.files import FileDeduplicationTask
+    assert lifecycle == ["before_commit", "uploaded", "after_response"]
 
     with context.session() as session:
-        assert session.get(FileDeduplicationTask, file_id) is not None
+        assert session.get(context.FileDeduplicationTask, file_id) is not None
+
+
+def test_upload_hook_write_rolls_back_with_completion(file_task_context, monkeypatch):
+    context = file_task_context
+    relative_path = "uploads/commit-hook-rollback.bin"
+    task_id, file_id = _create_file_task(context, relative_path, mode=1)
+    payload = b"r" * context.FILE_TRANSFER_MIN_CHUNK_SIZE
+    stream = _FakeUploadStream(
+        [
+            orjson.dumps(
+                {
+                    "action": "transfer_file",
+                    "data": {
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "file_size": len(payload),
+                        "max_chunk_size": context.FILE_TRANSFER_MIN_CHUNK_SIZE,
+                    },
+                }
+            ),
+            payload,
+        ]
+    )
+    handler = _new_transfer_handler(context.ConnectionHandler, stream)
+
+    def fail_before_commit(session, id, **_kwargs):
+        session.add(
+            context.FileDeduplicationTask(
+                file_id=id,
+                phase=0,
+                available_at=time.time() + 300,
+                attempts=0,
+                created_time=time.time(),
+            )
+        )
+        session.flush()
+        raise RuntimeError("commit hook failure")
+
+    monkeypatch.setattr(
+        context.connection,
+        "pm",
+        SimpleNamespace(
+            hook=SimpleNamespace(
+                ext_before_file_upload_commit=fail_before_commit,
+                ext_on_empty_file_uploaded=lambda **_kwargs: None,
+                ext_on_file_uploaded=lambda **_kwargs: None,
+                ext_post_file_upload_response=lambda **_kwargs: None,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "report_error",
+        lambda _error, **_kwargs: handler.conclude_request(
+            500, {}, "commit hook failure"
+        ),
+    )
+
+    handler.receive_file(task_id)
+
+    assert [
+        response["code"]
+        for response in _sent_json_messages(stream)
+        if "code" in response
+    ] == [500]
+    with context.session() as session:
+        file = session.get(context.File, file_id)
+        task = session.get(context.FileTask, task_id)
+        assert file.active is False
+        assert file.sha256 is None
+        assert task.status == 0
+        assert session.get(context.FileDeduplicationTask, file_id) is None
+
+
+def test_post_upload_response_hook_failure_does_not_send_second_response(
+    file_task_context, monkeypatch
+):
+    context = file_task_context
+    relative_path = "uploads/post-response-failure.bin"
+    task_id, _file_id = _create_file_task(context, relative_path, mode=1)
+    payload = b"p" * context.FILE_TRANSFER_MIN_CHUNK_SIZE
+    stream = _FakeUploadStream(
+        [
+            orjson.dumps(
+                {
+                    "action": "transfer_file",
+                    "data": {
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "file_size": len(payload),
+                        "max_chunk_size": context.FILE_TRANSFER_MIN_CHUNK_SIZE,
+                    },
+                }
+            ),
+            payload,
+        ]
+    )
+    handler = _new_transfer_handler(context.ConnectionHandler, stream)
+    reported = []
+
+    def fail_after_response(**_kwargs):
+        raise RuntimeError("post-upload failure")
+
+    monkeypatch.setattr(
+        context.connection,
+        "pm",
+        SimpleNamespace(
+            hook=SimpleNamespace(
+                ext_before_file_upload_commit=lambda **_kwargs: None,
+                ext_on_empty_file_uploaded=lambda **_kwargs: None,
+                ext_on_file_uploaded=lambda **_kwargs: None,
+                ext_post_file_upload_response=fail_after_response,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "report_error",
+        lambda error, **kwargs: reported.append((error, kwargs)),
+    )
+
+    handler.receive_file(task_id)
+
+    responses = _sent_json_messages(stream)
+    assert [response["code"] for response in responses if "code" in response] == [200]
+    assert len(reported) == 1
+    assert str(reported[0][0]) == "post-upload failure"
+    assert reported[0][1]["send_to_client"] is False
 
 
 def test_duplicate_and_unique_upload_confirmation_p95_are_close(file_task_context):

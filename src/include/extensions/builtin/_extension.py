@@ -1,7 +1,11 @@
 import threading
+from typing import TYPE_CHECKING
 
 from loguru import logger as log
 from websockets.sync.server import Server
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from include.config.settings import global_config
@@ -13,6 +17,12 @@ from include.extensions.manager import collect_extension_flags, hookimpl
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
+
+from ._file_deduplication import (
+    file_deduplication_worker,
+    release_file_deduplication,
+    schedule_file_deduplication,
+)
 
 logger = log.bind(name="builtin")
 _active_server_lock = threading.Lock()
@@ -83,14 +93,27 @@ def ext_on_startup(server: Server) -> None:
         if _active_server is not None:
             raise RuntimeError("A WebSocket server is already active")
         _active_server = server
+    try:
+        file_deduplication_worker.start()
+    except Exception:
+        try:
+            file_deduplication_worker.stop()
+        finally:
+            with _active_server_lock:
+                if _active_server is server:
+                    _active_server = None
+        raise
 
 
 @hookimpl
 def ext_on_shutdown() -> None:
     global _active_server
 
-    with _active_server_lock:
-        _active_server = None
+    try:
+        file_deduplication_worker.stop()
+    finally:
+        with _active_server_lock:
+            _active_server = None
 
 
 @hookimpl
@@ -106,3 +129,20 @@ def ext_post_request(
     time_cost: float,
 ) -> None:
     logger.debug(f"Handled action '{action}' in {time_cost:.3f} seconds")
+
+
+@hookimpl
+def ext_before_file_upload_commit(
+    session: "OrmSession",
+    id: str,
+    path: str,
+    sha256: str,
+) -> None:
+    if sha256:
+        schedule_file_deduplication(session, id)
+
+
+@hookimpl
+def ext_post_file_upload_response(id: str, path: str, sha256: str) -> None:
+    if sha256:
+        release_file_deduplication(id)
