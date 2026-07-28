@@ -19,7 +19,14 @@ from include.database.models.documents import (
     Folder,
     Node,
 )
-from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
+from include.database.models.files import (
+    File,
+    FileDeduplicationPhase,
+    FileDeduplicationTask,
+    FileTask,
+    FileTaskStatus,
+    TransferMode,
+)
 from include.database.models.identity import (
     User,
     UserGroup,
@@ -60,6 +67,8 @@ __all__ = [
     "DocumentCreationRateBucket",
     "EntityStatus",
     "File",
+    "FileDeduplicationPhase",
+    "FileDeduplicationTask",
     "FileTask",
     "FileTaskStatus",
     "Folder",

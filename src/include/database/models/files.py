@@ -11,6 +11,7 @@ from sqlalchemy import (
     CheckConstraint,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Text,
     event,
@@ -36,6 +37,11 @@ class FileTaskStatus(IntEnum):
     CANCELLED = 2
     IN_PROGRESS = 3
     EXPIRED = 4
+
+
+class FileDeduplicationPhase(IntEnum):
+    MERGE = 0
+    STORAGE_DELETE = 1
 
 
 def _queue_deferred_file_deletion(session: Session, path: str) -> None:
@@ -83,6 +89,15 @@ def _queue_deferred_file_deletion(session: Session, path: str) -> None:
 
 class File(Base):
     __tablename__ = "files"
+    __table_args__ = (
+        Index(
+            "ix_files_sha256_active_created_time_id",
+            "sha256",
+            "active",
+            "created_time",
+            "id",
+        ),
+    )
     id: Mapped[str] = mapped_column(
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
     )
@@ -211,6 +226,7 @@ class FileTask(Base):
     __tablename__ = "file_tasks"
     __table_args__ = (
         CheckConstraint("status IN (0, 1, 2, 3, 4)", name="ck_file_tasks_status_value"),
+        Index("ix_file_tasks_file_id_mode_status", "file_id", "mode", "status"),
     )
     id: Mapped[str] = mapped_column(
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
@@ -251,3 +267,34 @@ class FileTask(Base):
             f"FileTask(id={self.id!r}, "
             f"file_id={self.file_id!r}, status={self.status!r})"
         )
+
+
+class FileDeduplicationTask(Base):
+    __tablename__ = "file_deduplication_tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "phase IN (0, 1)", name="ck_file_deduplication_tasks_phase_value"
+        ),
+        Index(
+            "ix_file_deduplication_tasks_available_lease",
+            "available_at",
+            "lease_expires_at",
+        ),
+    )
+
+    file_id: Mapped[str] = mapped_column(
+        VARCHAR(255),
+        ForeignKey("files.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    phase: Mapped[FileDeduplicationPhase] = mapped_column(
+        Integer, nullable=False, default=FileDeduplicationPhase.MERGE
+    )
+    available_at: Mapped[float] = mapped_column(Float, nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    lease_expires_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_time: Mapped[float] = mapped_column(
+        Float, nullable=False, default=lambda: time.time()
+    )

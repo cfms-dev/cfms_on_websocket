@@ -105,7 +105,9 @@ class User(Base):
     )
     nickname: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
-    avatar_id: Mapped[str | None] = mapped_column(ForeignKey("files.id"), nullable=True)
+    avatar_id: Mapped[str | None] = mapped_column(
+        ForeignKey("files.id"), nullable=True, index=True
+    )
     avatar: Mapped["File | None"] = relationship("File")
 
     last_login: Mapped[float | None] = mapped_column(Float)

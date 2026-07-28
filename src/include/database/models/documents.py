@@ -522,7 +522,7 @@ class DocumentRevision(Base):
     document_id: Mapped[str] = mapped_column(
         VARCHAR(255), ForeignKey("documents.id"), nullable=False
     )
-    file_id: Mapped[str] = mapped_column(ForeignKey("files.id"))
+    file_id: Mapped[str] = mapped_column(ForeignKey("files.id"), index=True)
     created_time: Mapped[float] = mapped_column(
         Float, nullable=False, default=lambda: time.time()
     )
