@@ -29,7 +29,11 @@ from include.database.models.identity import (
     UserStatus,
 )
 from include.database.models.keyrings import UserKey
-from include.database.models.operations import AuditEntry, DocumentCreationThrottle
+from include.database.models.operations import (
+    AuditEntry,
+    DocumentCreationIPAccount,
+    DocumentCreationRateBucket,
+)
 from include.database.models.security import (
     AccountThrottle,
     BannedSubnet,
@@ -52,7 +56,8 @@ __all__ = [
     "DocumentMetadataTag",
     "DocumentRevision",
     "DocumentRevisionStatus",
-    "DocumentCreationThrottle",
+    "DocumentCreationIPAccount",
+    "DocumentCreationRateBucket",
     "EntityStatus",
     "File",
     "FileTask",

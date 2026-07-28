@@ -356,6 +356,7 @@ class RequestCreateDocumentHandler(RequestHandler):
                 session,
                 user.username,
                 handler.remote_address,
+                account_created_at=user.created_time,
                 bypass_rate_limit=(
                     Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT
                     in user.all_permissions

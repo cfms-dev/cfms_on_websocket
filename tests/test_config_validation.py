@@ -195,8 +195,10 @@ def test_document_upload_policy_defaults_and_overrides():
     config = _valid_config()
     assert DocumentUploadPolicy.from_config(config).start_timeout_seconds == 3600
 
-    config["document"] = {"upload": {"creation_rate_per_user": 500}}
-    assert DocumentUploadPolicy.from_config(config).creation_rate_per_user == 500
+    config["document"] = {"upload": {"max_pending_documents_per_creator": 8}}
+    assert (
+        DocumentUploadPolicy.from_config(config).max_pending_documents_per_creator == 8
+    )
 
 
 def test_document_creation_risk_policy_defaults():
@@ -227,6 +229,21 @@ def test_legacy_creation_rate_settings_map_to_token_bucket_policy():
     assert policy.ip_refill_tokens == 125
     assert policy.ip_capacity == 25
     assert "deprecated" in get_config_warnings(config)[0]
+
+
+def test_low_legacy_rate_still_supports_high_risk_request_cost():
+    config = _valid_config()
+    config["document"] = {
+        "upload": {
+            "creation_rate_per_user": 5,
+            "creation_rate_per_ip": 5,
+        }
+    }
+
+    policy = DocumentCreationRiskPolicy.from_config(config)
+
+    assert policy.account_capacity == policy.high_cost
+    assert policy.ip_capacity == policy.high_cost
 
 
 def test_creation_risk_policy_rejects_legacy_and_new_settings_together():

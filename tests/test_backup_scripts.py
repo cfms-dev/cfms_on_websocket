@@ -575,6 +575,9 @@ def _dump_backup_tables(base, db_engine) -> dict[str, list[dict]]:
 def _backup_table_names(base) -> set[str]:
     excluded = {
         "account_throttles",
+        "document_creation_ip_accounts",
+        "document_creation_rate_buckets",
+        "document_creation_throttles",
         "file_tasks",
         "login_throttles",
         "traffic_throttles",
@@ -744,6 +747,12 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         account_throttles = connection.execute(
             select(base.metadata.tables["account_throttles"])
         ).all()
+        creation_rate_buckets = connection.execute(
+            select(base.metadata.tables["document_creation_rate_buckets"])
+        ).all()
+        creation_ip_accounts = connection.execute(
+            select(base.metadata.tables["document_creation_ip_accounts"])
+        ).all()
         login_throttles = connection.execute(
             select(base.metadata.tables["login_throttles"])
         ).all()
@@ -757,6 +766,8 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         assert len(rule_sets) == 2
         assert file_tasks == []
         assert account_throttles == []
+        assert creation_rate_buckets == []
+        assert creation_ip_accounts == []
         assert login_throttles == []
         assert traffic_throttles == []
 

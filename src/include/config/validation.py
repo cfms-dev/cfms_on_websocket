@@ -167,9 +167,6 @@ class DocumentUploadPolicy:
     idle_timeout_seconds: int = 300
     cleanup_interval_seconds: int = 60
     max_pending_documents_per_creator: int = 16
-    creation_rate_window_seconds: int = 600
-    creation_rate_per_user: int = 300
-    creation_rate_per_ip: int = 1000
 
     @classmethod
     def from_config(cls, config: _ConfigSource | None = None) -> DocumentUploadPolicy:
@@ -283,13 +280,15 @@ class DocumentCreationRiskPolicy:
                 and not isinstance(account_refill, bool)
                 and account_refill > 0
             ):
-                values["account_capacity"] = max(1, (account_refill + 4) // 5)
+                values["account_capacity"] = max(
+                    cls.high_cost, (account_refill + 4) // 5
+                )
             if (
                 isinstance(ip_refill, int)
                 and not isinstance(ip_refill, bool)
                 and ip_refill > 0
             ):
-                values["ip_capacity"] = max(1, (ip_refill + 4) // 5)
+                values["ip_capacity"] = max(cls.high_cost, (ip_refill + 4) // 5)
         else:
             if not isinstance(risk_control, Mapping):
                 raise ConfigValidationError(
