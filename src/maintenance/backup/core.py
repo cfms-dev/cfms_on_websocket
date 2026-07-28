@@ -141,7 +141,6 @@ EXCLUDED_TABLE_NAMES = frozenset(
         "account_throttles",
         "document_creation_ip_accounts",
         "document_creation_rate_buckets",
-        "document_creation_throttles",
         "file_tasks",
         "login_throttles",
         "traffic_throttles",
@@ -1973,9 +1972,7 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
     if table.name == "banned_subnets":
         created_at = row.get("created_at")
         if isinstance(created_at, str):
-            parsed_created_at = dt.datetime.fromisoformat(
-                created_at.replace("Z", "+00:00")
-            )
+            parsed_created_at = dt.datetime.fromisoformat(created_at)
             if parsed_created_at.tzinfo is None:
                 parsed_created_at = parsed_created_at.replace(tzinfo=dt.UTC)
             created_at = parsed_created_at.timestamp()

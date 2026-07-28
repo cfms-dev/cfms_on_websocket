@@ -250,54 +250,17 @@ class DocumentCreationRiskPolicy:
         if not isinstance(upload, Mapping):
             raise ConfigValidationError("document.upload must be a table")
 
-        legacy_names = (
-            "creation_rate_window_seconds",
-            "creation_rate_per_user",
-            "creation_rate_per_ip",
-        )
         risk_control = upload.get("creation_risk_control")
-        if risk_control is not None and any(name in upload for name in legacy_names):
-            raise ConfigValidationError(
-                "document.upload creation_risk_control cannot be combined with "
-                "legacy creation_rate_* settings"
-            )
-
         if risk_control is None:
-            refill_period = upload.get(
-                "creation_rate_window_seconds", cls.refill_period_seconds
+            risk_control = {}
+        if not isinstance(risk_control, Mapping):
+            raise ConfigValidationError(
+                "document.upload.creation_risk_control must be a table"
             )
-            account_refill = upload.get(
-                "creation_rate_per_user", cls.account_refill_tokens
-            )
-            ip_refill = upload.get("creation_rate_per_ip", cls.ip_refill_tokens)
-            values = {
-                "refill_period_seconds": refill_period,
-                "account_refill_tokens": account_refill,
-                "ip_refill_tokens": ip_refill,
-            }
-            if (
-                isinstance(account_refill, int)
-                and not isinstance(account_refill, bool)
-                and account_refill > 0
-            ):
-                values["account_capacity"] = max(
-                    cls.high_cost, (account_refill + 4) // 5
-                )
-            if (
-                isinstance(ip_refill, int)
-                and not isinstance(ip_refill, bool)
-                and ip_refill > 0
-            ):
-                values["ip_capacity"] = max(cls.high_cost, (ip_refill + 4) // 5)
-        else:
-            if not isinstance(risk_control, Mapping):
-                raise ConfigValidationError(
-                    "document.upload.creation_risk_control must be a table"
-                )
-            values = {
-                field.name: risk_control.get(field.name, field.default)
-                for field in fields(cls)
-            }
+        values = {
+            field.name: risk_control.get(field.name, field.default)
+            for field in fields(cls)
+        }
 
         policy = cls(**values)
         if policy.mode not in {"observe", "enforce"}:
@@ -408,18 +371,6 @@ def get_config_warnings(config: _ConfigSource) -> tuple[str, ...]:
             "`document.allow_name_duplicate` is obsolete and ignored; active "
             "documents and directories must have unique names within a directory"
         )
-    if isinstance(document, Mapping):
-        upload = document.get("upload", {})
-        legacy_rate_names = {
-            "creation_rate_window_seconds",
-            "creation_rate_per_user",
-            "creation_rate_per_ip",
-        }
-        if isinstance(upload, Mapping) and legacy_rate_names & upload.keys():
-            warnings.append(
-                "`document.upload.creation_rate_*` settings are deprecated; use "
-                "`document.upload.creation_risk_control` instead"
-            )
     if not security.get("pepper"):
         warnings.append(
             "Setting the value for `pepper` to empty in the configuration file can "

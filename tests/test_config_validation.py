@@ -211,7 +211,7 @@ def test_document_creation_risk_policy_defaults():
     assert policy.ip_refill_tokens == 1000
 
 
-def test_legacy_creation_rate_settings_map_to_token_bucket_policy():
+def test_legacy_creation_rate_settings_are_ignored():
     config = _valid_config()
     config["document"] = {
         "upload": {
@@ -221,42 +221,31 @@ def test_legacy_creation_rate_settings_map_to_token_bucket_policy():
         }
     }
 
+    validate_config(config)
     policy = DocumentCreationRiskPolicy.from_config(config)
 
-    assert policy.refill_period_seconds == 300
-    assert policy.account_refill_tokens == 50
-    assert policy.account_capacity == 10
-    assert policy.ip_refill_tokens == 125
-    assert policy.ip_capacity == 25
-    assert "deprecated" in get_config_warnings(config)[0]
+    assert policy == DocumentCreationRiskPolicy()
+    assert get_config_warnings(config) == ()
 
 
-def test_low_legacy_rate_still_supports_high_risk_request_cost():
-    config = _valid_config()
-    config["document"] = {
-        "upload": {
-            "creation_rate_per_user": 5,
-            "creation_rate_per_ip": 5,
-        }
-    }
-
-    policy = DocumentCreationRiskPolicy.from_config(config)
-
-    assert policy.account_capacity == policy.high_cost
-    assert policy.ip_capacity == policy.high_cost
-
-
-def test_creation_risk_policy_rejects_legacy_and_new_settings_together():
+def test_new_creation_risk_settings_override_ignored_legacy_settings():
     config = _valid_config()
     config["document"] = {
         "upload": {
             "creation_rate_per_user": 50,
-            "creation_risk_control": {},
+            "creation_risk_control": {
+                "account_refill_tokens": 75,
+                "ip_refill_tokens": 250,
+            },
         }
     }
 
-    with pytest.raises(ConfigValidationError, match="cannot be combined"):
-        validate_config(config)
+    validate_config(config)
+    policy = DocumentCreationRiskPolicy.from_config(config)
+
+    assert policy.account_refill_tokens == 75
+    assert policy.ip_refill_tokens == 250
+    assert get_config_warnings(config) == ()
 
 
 @pytest.mark.parametrize(

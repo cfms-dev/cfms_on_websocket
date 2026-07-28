@@ -29,8 +29,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Changed
 
 - Replace fixed-window document-creation limits with risk-weighted continuous
-  refill while preserving the protocol 18 `429` response shape and legacy
-  configuration compatibility.
+  refill while preserving the protocol 18 `429` response shape. The adaptive
+  `creation_risk_control` table is now the only active rate-policy interface.
 - Increase the protocol version to 18. Cancelled or expired transfer requests
   now return `410` with `data.task_status`; concurrent upload claims return
   `409`; document creation limits return `429` with limit details.

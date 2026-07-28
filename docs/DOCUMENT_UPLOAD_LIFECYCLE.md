@@ -147,12 +147,9 @@ enforced. Review elevated/high decisions and `would_block` events, adjust the
 thresholds if necessary, and then hot-reload `mode = "enforce"`. Switching modes
 does not clear accumulated bucket state.
 
-The legacy `creation_rate_window_seconds`, `creation_rate_per_user`, and
-`creation_rate_per_ip` keys remain accepted when the new table is absent. They
-map to the refill period and token amounts, while burst capacities default to
-20 percent of each quota (and never below one high-risk request). The server
-logs a deprecation warning. Mixing legacy keys with the new table is rejected
-to avoid ambiguous precedence.
+`document.upload.creation_risk_control` is the only active configuration
+interface for document-creation rate policy. If the table is omitted, the
+adaptive policy uses the defaults shown above.
 
 On upgrade, existing pending uploads retain their original lifecycle. Back up
 the database and run `uv run alembic upgrade head`. The migration grants the

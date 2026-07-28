@@ -577,7 +577,6 @@ def _backup_table_names(base) -> set[str]:
         "account_throttles",
         "document_creation_ip_accounts",
         "document_creation_rate_buckets",
-        "document_creation_throttles",
         "file_tasks",
         "login_throttles",
         "traffic_throttles",
@@ -641,6 +640,19 @@ def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context)
     legacy_key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
     assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
+
+
+def test_only_current_document_creation_risk_tables_are_excluded(backup_context):
+    excluded = {
+        table_name
+        for table_name in backup_context.backup_core.EXCLUDED_TABLE_NAMES
+        if table_name.startswith("document_creation_")
+    }
+
+    assert excluded == {
+        "document_creation_ip_accounts",
+        "document_creation_rate_buckets",
+    }
 
 
 def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
