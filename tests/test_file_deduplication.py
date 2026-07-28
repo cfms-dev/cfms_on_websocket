@@ -50,6 +50,7 @@ def deduplication_context(monkeypatch, tmp_path):
         FileTaskStatus,
         TransferMode,
     )
+    from include.database.models.identity import User
     from include.database.session import Base
     from include.domains.documents.queries.file_references import (
         _clear_file_references_cache,
@@ -68,6 +69,7 @@ def deduplication_context(monkeypatch, tmp_path):
     Base.metadata.create_all(
         engine,
         tables=[
+            User.__table__,
             File.__table__,
             FileTask.__table__,
             FileDeduplicationTask.__table__,
