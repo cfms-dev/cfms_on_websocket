@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add adaptive document-creation risk control using persistent account and IP
+  token buckets, explainable risk levels, observe/enforce modes, and a
+  `bypass_document_creation_rate_limit` permission granted to `sysop` by
+  default.
 - Add two-stage upload leases, abandoned-upload cleanup, and configurable
   per-creator reservation and document-creation limits.
 - Add explicit pending, in-progress, completed, cancelled, and expired file-task
@@ -24,6 +28,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Replace fixed-window document-creation limits with risk-weighted continuous
+  refill while preserving the protocol 18 `429` response shape and legacy
+  configuration compatibility.
 - Increase the protocol version to 18. Cancelled or expired transfer requests
   now return `410` with `data.task_status`; concurrent upload claims return
   `409`; document creation limits return `429` with limit details.

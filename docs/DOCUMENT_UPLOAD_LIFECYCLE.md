@@ -60,10 +60,25 @@ a document.
 ## Limits and client responses
 
 Each creator may hold at most 16 empty documents with live uploads by default.
-Document creation also uses persistent, cross-instance fixed windows: 300
-requests per account and 1000 per source IP in ten minutes. The account counter
-serializes the reservation-count check with creation, preventing concurrent
-requests from crossing the creator limit.
+Document creation also uses persistent, cross-instance token buckets for the
+account and source IP. At normal risk, the buckets refill at 300 requests per
+account and 1000 per IP every ten minutes, with burst capacities of 60 and 200.
+Elevated-risk requests cost three tokens and high-risk requests cost ten, giving
+effective account rates of approximately 100 and 30 requests per ten minutes.
+
+Risk classification uses account age, the creator's pending-document ratio,
+the number of accounts recently seen on the source IP, and recent rate denials.
+One elevated signal selects elevated risk. A high threshold or two elevated
+signals select high risk. The exact thresholds are configurable and are
+evaluated again for every request. Trusted-proxy handling and IP normalization
+are applied before the IP signal is recorded.
+
+The account bucket also serializes the reservation-count check with creation,
+preventing concurrent requests from crossing the creator limit. Users with the
+`bypass_document_creation_rate_limit` permission skip risk scoring and token
+consumption, but still acquire that account lock and remain subject to the
+pending-document hard limit. New installations and upgrades grant this
+permission to the `sysop` group by default.
 
 Protocol version 18 adds these responses:
 
@@ -79,6 +94,11 @@ should let the existing stream finish or disconnect before retrying. For `429`,
 they should wait at least `retry_after_seconds`; completing, deleting, or letting
 an empty document expire also releases reservation capacity.
 
+For account or IP responses, `limit` is the effective number of requests per
+configured refill period at the request's risk level. Risk levels and reasons
+are intentionally omitted from client responses and are emitted only in the
+server's structured logs.
+
 ## Configuration
 
 All settings are hot-reloaded from `[document.upload]`:
@@ -90,26 +110,68 @@ max_duration_seconds = 86400
 idle_timeout_seconds = 300
 cleanup_interval_seconds = 60
 max_pending_documents_per_creator = 16
-creation_rate_window_seconds = 600
-creation_rate_per_user = 300
-creation_rate_per_ip = 1000
+
+[document.upload.creation_risk_control]
+mode = "enforce"
+refill_period_seconds = 600
+account_capacity = 60
+account_refill_tokens = 300
+ip_capacity = 200
+ip_refill_tokens = 1000
+new_account_seconds = 604800
+pending_elevated_ratio = 0.5
+pending_high_ratio = 0.75
+ip_account_window_seconds = 600
+ip_accounts_elevated = 4
+ip_accounts_high = 10
+denial_window_seconds = 600
+denials_elevated = 1
+denials_high = 3
+elevated_cost = 3
+high_cost = 10
+state_retention_seconds = 86400
 ```
 
 Use shorter start deadlines and lower reservation caps when names are scarce or
 abuse is common. Increase the hard deadline for reliably authenticated users
 who upload large files over slow links. Keep the idle timeout long enough for
 normal network jitter. Cleanup of the document or name being accessed is not
-delayed; the interval controls only bounded opportunistic sweeps of unrelated
-expired uploads.
+delayed; the interval controls bounded opportunistic sweeps of unrelated
+expired uploads and the minimum interval between stale risk-state cleanups.
 
-On upgrade, existing pending uploads receive a 24-hour grace period, so old
-reservations are not removed immediately. The migration adds a status check
-constraint and the persistent creation-throttle table. Back up the database and
-run `uv run alembic upgrade head`; downgrade removes the new constraint and
-throttle table but cannot recreate content already purged by expiry.
+Set `mode = "observe"` before enforcing a new policy in production. Observe
+mode maintains the same shadow buckets and denial history and logs
+`risk_level`, `risk_reasons`, and `would_block`, but allows requests that would
+be rejected only by the rate policy. The pending-document hard limit is still
+enforced. Review elevated/high decisions and `would_block` events, adjust the
+thresholds if necessary, and then hot-reload `mode = "enforce"`. Switching modes
+does not clear accumulated bucket state.
+
+The legacy `creation_rate_window_seconds`, `creation_rate_per_user`, and
+`creation_rate_per_ip` keys remain accepted when the new table is absent. They
+map to the refill period and token amounts, while burst capacities default to
+20 percent of each quota (and never below one high-risk request). The server
+logs a deprecation warning. Mixing legacy keys with the new table is rejected
+to avoid ambiguous precedence.
+
+On upgrade, existing pending uploads retain their original lifecycle. Back up
+the database and run `uv run alembic upgrade head`. The migration grants the
+rate-bypass permission to an existing `sysop` group, replaces fixed-window
+counters with empty token buckets, and creates the rolling IP/account signal
+table. The old counters cannot be reliably converted because deployments may
+use different limits, so their transient state is intentionally reset.
+
+Risk-control tables are transient and excluded from backups. Downgrade removes
+their state and recreates an empty fixed-window table; it cannot reconstruct old
+counter values. To roll back enforcement without downgrading, use observe mode.
 
 The design follows established resumable-upload expiry and termination
 patterns: [tus expiration and termination](https://tus.io/protocols/resumable-upload),
 [Google Cloud resumable upload sessions](https://docs.cloud.google.com/storage/docs/resumable-uploads),
 [Amazon S3 incomplete multipart upload cleanup](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html),
 and [OWASP resource-consumption guidance](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/).
+The adaptive rate policy also follows the multi-dimensional aggregation and
+staged-enforcement patterns documented by
+[AWS WAF](https://docs.aws.amazon.com/waf/latest/developerguide/waf-rule-statement-type-rate-based.html),
+[Cloudflare](https://developers.cloudflare.com/waf/rate-limiting-rules/), and
+[Redis token-bucket guidance](https://redis.io/docs/latest/develop/use-cases/rate-limiter/).
