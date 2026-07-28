@@ -24,16 +24,21 @@ from include.domains.access.authorization.evaluation import (
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
+from include.domains.documents.commands.file_tasks import cancel_file_tasks_for_files
 from include.domains.documents.commands.name_conflicts import (
     NodeNameConflictError,
     describe_node_name_conflict,
     describe_subtree_restore_name_conflict,
     node_name_mutation,
 )
+from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
 from include.domains.documents.queries.deletion_tree import fetch_subtree_for_deletion
+from include.domains.documents.queries.file_references import (
+    find_unreachable_document_file_ids,
+)
 from include.domains.documents.queries.listing import (
     count_active_directory_children,
     directory_cursor_key,
@@ -482,6 +487,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
             return Result(code=404, target=folder_id, username=handler.username)
 
+        cancelled_task_ids: list[str] = []
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
             folder = session.get(Folder, folder_id)
@@ -516,6 +522,12 @@ class RequestDeleteDirectoryHandler(RequestHandler):
                 set(deletable_doc_ids) | set(deletable_folder_ids),
                 operation_id,
             )
+            unreachable_file_ids = find_unreachable_document_file_ids(
+                session, list(deletable_doc_ids)
+            )
+            cancelled_task_ids = cancel_file_tasks_for_files(
+                session, unreachable_file_ids
+            )
 
             # 2b. Mark the root folder as DELETED
             root_fully_deletable = (
@@ -526,6 +538,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
                 folder.status_operation_id = operation_id
 
             session.commit()
+            publish_cancelled_file_tasks(cancelled_task_ids)
 
             # construct response based on deletion result
             if failed_items:

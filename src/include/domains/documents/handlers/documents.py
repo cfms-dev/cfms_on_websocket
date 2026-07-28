@@ -24,6 +24,7 @@ from include.config.constants import (
     FILE_TASK_DEFAULT_DURATION_SECONDS,
     ROOT_DIRECTORY_ID,
 )
+from include.config.validation import DocumentUploadPolicy
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -32,7 +33,7 @@ from include.database.models.documents import (
     EntityStatus,
     Folder,
 )
-from include.database.models.files import File, FileTask, TransferMode
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.access_rules import apply_access_rules
@@ -41,14 +42,28 @@ from include.domains.access.authorization.compiled_rules import (
     get_access_rules_list,
 )
 from include.domains.access.permissions import Permissions
+from include.domains.documents.commands.file_tasks import (
+    cancel_file_tasks_for_files,
+    expire_file_task_if_due,
+    serialize_file_task,
+)
 from include.domains.documents.commands.name_conflicts import (
     NodeNameConflictError,
     describe_node_name_conflict,
     get_target_folder_and_check_write,
     node_name_mutation,
 )
+from include.domains.documents.commands.upload_cleanup import (
+    maybe_reclaim_abandoned_uploads,
+    try_reclaim_abandoned_uploads,
+)
+from include.domains.documents.creation_limits import check_document_creation_limits
+from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
+)
+from include.domains.documents.queries.file_references import (
+    find_unreachable_document_file_ids,
 )
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
@@ -80,24 +95,22 @@ def create_file_task(
         raise ValueError("File can not be None when creating a file task")
 
     now = time.time()
+    duration = (
+        DocumentUploadPolicy.from_config().start_timeout_seconds
+        if transfer_mode == TransferMode.UPLOAD
+        else FILE_TASK_DEFAULT_DURATION_SECONDS
+    )
     task = FileTask(
         file_id=file.id,
-        status=0,
+        status=FileTaskStatus.PENDING,
         mode=transfer_mode,
         start_time=now,
-        end_time=now + FILE_TASK_DEFAULT_DURATION_SECONDS,
+        end_time=now + duration,
     )
     session.add(task)
     session.flush()
 
-    return {
-        "task_id": task.id,
-        "provider": "native",  # Literal['native', ...]
-        "start_time": task.start_time,
-        "end_time": task.end_time,
-        # Only download tasks support resume
-        "supports_resume": transfer_mode == TransferMode.DOWNLOAD,
-    }
+    return serialize_file_task(task)
 
 
 def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
@@ -312,6 +325,9 @@ class RequestCreateDocumentHandler(RequestHandler):
             handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
             return
 
+        maybe_reclaim_abandoned_uploads()
+        try_reclaim_abandoned_uploads(folder_id=folder_id, title=title)
+
         with Session() as session:
             user = User.get_existing(session, handler.username)
 
@@ -333,6 +349,28 @@ class RequestCreateDocumentHandler(RequestHandler):
                     code=err_code,
                     target=folder_id,
                     data={"title": title},
+                    username=handler.username,
+                )
+
+            limit_decision = check_document_creation_limits(
+                session, user.username, handler.remote_address
+            )
+            if not limit_decision.allowed:
+                session.commit()
+                data = {
+                    "scope": limit_decision.scope,
+                    "limit": limit_decision.limit,
+                    "retry_after_seconds": limit_decision.retry_after_seconds,
+                }
+                handler.conclude_request(
+                    429,
+                    data,
+                    "Document creation limit exceeded. Please try again later.",
+                )
+                return Result(
+                    code=429,
+                    target=folder_id,
+                    data={"title": title, **data},
                     username=handler.username,
                 )
 
@@ -440,6 +478,9 @@ class RequestUploadDocumentHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
 
+        maybe_reclaim_abandoned_uploads()
+        try_reclaim_abandoned_uploads(document_id=document_id)
+
         with Session() as session:
             document = session.get(Document, document_id)
             this_user = User.get_existing(session, handler.username)
@@ -451,6 +492,55 @@ class RequestUploadDocumentHandler(RequestHandler):
                     handler.conclude_access_denial()
                     return Result(
                         code=403, target=document_id, username=handler.username
+                    )
+
+                existing_task = (
+                    session.query(FileTask)
+                    .join(File, File.id == FileTask.file_id)
+                    .join(DocumentRevision, DocumentRevision.file_id == File.id)
+                    .filter(
+                        DocumentRevision.document_id == document_id,
+                        FileTask.mode == TransferMode.UPLOAD,
+                        FileTask.status.in_(
+                            (FileTaskStatus.PENDING, FileTaskStatus.IN_PROGRESS)
+                        ),
+                    )
+                    .order_by(FileTask.start_time.desc())
+                    .first()
+                )
+                if existing_task is not None:
+                    status = expire_file_task_if_due(session, existing_task.id)
+                    if status == FileTaskStatus.EXPIRED:
+                        session.commit()
+                        handler.conclude_request(
+                            410,
+                            {"task_status": "expired"},
+                            "Existing upload task has expired",
+                        )
+                        return Result(
+                            code=410, target=document_id, username=handler.username
+                        )
+                    if status == FileTaskStatus.IN_PROGRESS:
+                        handler.conclude_request(
+                            409,
+                            {"task_status": "in_progress"},
+                            "Upload is already in progress",
+                        )
+                        return Result(
+                            code=409, target=document_id, username=handler.username
+                        )
+
+                    task_data = serialize_file_task(existing_task)
+                    handler.conclude_request(
+                        200,
+                        {"task_data": task_data},
+                        "Existing upload task returned",
+                    )
+                    return Result(
+                        code=0,
+                        target=document_id,
+                        data=task_data,
+                        username=handler.username,
                     )
 
                 today = datetime.datetime.now(datetime.UTC).date()
@@ -527,6 +617,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
+        cancelled_task_ids: list[str] = []
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
@@ -547,8 +638,16 @@ class RequestDeleteDocumentHandler(RequestHandler):
             document.status_operation_id = (
                 f"OP_DEL_{secrets.token_hex(8)}_{int(time.time())}"
             )
+            unreachable_file_ids = find_unreachable_document_file_ids(
+                session, [document_id]
+            )
+            cancelled_task_ids = cancel_file_tasks_for_files(
+                session, unreachable_file_ids
+            )
             mark_document_modified(document, user.username)
             session.commit()
+
+        publish_cancelled_file_tasks(cancelled_task_ids)
 
         handler.conclude_request(200, {}, "Document successfully deleted")
         return Result(code=0, target=document_id, username=handler.username)
@@ -646,7 +745,19 @@ class RequestDownloadFileHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
                 return
 
-            if task.status != 0 or task.mode != 0:
+            task_status = FileTaskStatus(task.status)
+            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+                handler.conclude_request(
+                    410,
+                    {"task_status": task_status.name.lower()},
+                    "Task is no longer available",
+                )
+                return
+
+            if (
+                task_status != FileTaskStatus.PENDING
+                or task.mode != TransferMode.DOWNLOAD
+            ):
                 handler.conclude_request(
                     400, {}, "Task is not in a valid state for download"
                 )
@@ -655,9 +766,14 @@ class RequestDownloadFileHandler(RequestHandler):
             if task.start_time > time.time() or (
                 task.end_time and task.end_time < time.time()
             ):
-                handler.conclude_request(
-                    400, {}, "Task is either not started yet or has already ended"
-                )
+                if task.end_time and task.end_time <= time.time():
+                    task.status = FileTaskStatus.EXPIRED
+                    session.commit()
+                    handler.conclude_request(
+                        410, {"task_status": "expired"}, "Task has expired"
+                    )
+                else:
+                    handler.conclude_request(400, {}, "Task has not started yet")
                 return
 
         # The server still needs to send one more response.
@@ -685,7 +801,25 @@ class RequestUploadFileHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
                 return
 
-            if task.status != 0 or task.mode != 1:
+            task_status = FileTaskStatus(task.status)
+            if task_status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+                handler.conclude_request(
+                    410,
+                    {"task_status": task_status.name.lower()},
+                    "Task is no longer available",
+                )
+                return
+
+            if task_status == FileTaskStatus.IN_PROGRESS:
+                handler.conclude_request(
+                    409, {"task_status": "in_progress"}, "Upload is already in progress"
+                )
+                return
+
+            if (
+                task_status != FileTaskStatus.PENDING
+                or task.mode != TransferMode.UPLOAD
+            ):
                 handler.conclude_request(
                     400, {}, "Task is not in a valid state for upload"
                 )
@@ -694,9 +828,14 @@ class RequestUploadFileHandler(RequestHandler):
             if task.start_time > time.time() or (
                 task.end_time and task.end_time < time.time()
             ):
-                handler.conclude_request(
-                    400, {}, "Task is either not started yet or has already ended"
-                )
+                if task.end_time and task.end_time <= time.time():
+                    task.status = FileTaskStatus.EXPIRED
+                    session.commit()
+                    handler.conclude_request(
+                        410, {"task_status": "expired"}, "Task has expired"
+                    )
+                else:
+                    handler.conclude_request(400, {}, "Task has not started yet")
                 return
 
         # The server needs to send one response.

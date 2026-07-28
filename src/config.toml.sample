@@ -107,6 +107,22 @@ default_groups = ["user"]
 # Alternatively, you can disable this and ensure access rules are set correctly on every directory.
 enable_access_recursive_check = true
 
+[document.upload]
+# Time allowed to begin an upload after its task is created.
+start_timeout_seconds = 3600
+# Hard deadline applied after an upload starts.
+max_duration_seconds = 86400
+# Abort an upload when no frame arrives within this interval.
+idle_timeout_seconds = 300
+# Minimum interval between opportunistic abandoned-upload cleanup batches.
+cleanup_interval_seconds = 60
+# Maximum number of empty, not-yet-uploaded documents per creator.
+max_pending_documents_per_creator = 16
+# Fixed-window document creation limits.
+creation_rate_window_seconds = 600
+creation_rate_per_user = 300
+creation_rate_per_ip = 1000
+
 [database]
 # Database type to use ("sqlite" or "mysql")
 type = "sqlite"

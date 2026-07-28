@@ -16,7 +16,6 @@ from sqlalchemy import (
     Table,
     create_engine,
     inspect,
-    select,
 )
 
 
@@ -146,30 +145,28 @@ def test_node_name_migration_round_trip(tmp_path) -> None:
         _seed_valid(connection, tables)
         _run(connection, migration, "upgrade")
 
-        upgraded = MetaData()
-        upgraded.reflect(connection)
-        upgraded_nodes = upgraded.tables["nodes"]
+        upgraded = inspect(connection)
         assert {"name", "parent_id", "active_parent_id"} <= {
-            column["name"] for column in inspect(connection).get_columns("nodes")
+            column["name"] for column in upgraded.get_columns("nodes")
         }
-        assert "name" not in upgraded.tables["folders"].c
-        assert "title" not in upgraded.tables["documents"].c
-        assert connection.execute(
-            select(upgraded_nodes.c.name, upgraded_nodes.c.parent_id).where(
-                upgraded_nodes.c.id == "doc"
-            )
+        assert "name" not in {
+            column["name"] for column in upgraded.get_columns("folders")
+        }
+        assert "title" not in {
+            column["name"] for column in upgraded.get_columns("documents")
+        }
+        assert connection.exec_driver_sql(
+            "SELECT name, parent_id FROM nodes WHERE id = ?", ("doc",)
         ).one() == ("Report", "folder")
 
         _run(connection, migration, "downgrade")
 
-        downgraded = MetaData()
-        downgraded.reflect(connection)
-        assert "name" not in downgraded.tables["nodes"].c
-        assert connection.execute(
-            select(
-                downgraded.tables["documents"].c.title,
-                downgraded.tables["documents"].c.folder_id,
-            ).where(downgraded.tables["documents"].c.id == "doc")
+        downgraded = inspect(connection)
+        assert "name" not in {
+            column["name"] for column in downgraded.get_columns("nodes")
+        }
+        assert connection.exec_driver_sql(
+            "SELECT title, folder_id FROM documents WHERE id = ?", ("doc",)
         ).one() == ("Report", "folder")
 
     engine.dispose()

@@ -97,19 +97,6 @@ def upgrade() -> None:
             batch_op.f("ix_nodes_name"), ["name"], unique=False
         )
 
-    op.create_index(
-        "ix_nodes_parent_status_lower_name_id",
-        "nodes",
-        ["parent_id", "status", sa.text("lower(name)"), "id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_nodes_status_lower_name_id",
-        "nodes",
-        ["status", sa.text("lower(name)"), "id"],
-        unique=False,
-    )
-
     with op.batch_alter_table("documents", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_documents_title"))
         batch_op.drop_constraint(
@@ -125,6 +112,19 @@ def upgrade() -> None:
         )
         batch_op.drop_column("parent_id")
         batch_op.drop_column("name")
+
+    op.create_index(
+        "ix_nodes_parent_status_lower_name_id",
+        "nodes",
+        ["parent_id", "status", sa.text("lower(name)"), "id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_nodes_status_lower_name_id",
+        "nodes",
+        ["status", sa.text("lower(name)"), "id"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:

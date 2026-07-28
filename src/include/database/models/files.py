@@ -8,6 +8,7 @@ from sqlalchemy import (
     VARCHAR,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
     Integer,
@@ -27,6 +28,14 @@ logger = log.bind(name="database.file")
 class TransferMode(IntEnum):
     DOWNLOAD = 0
     UPLOAD = 1
+
+
+class FileTaskStatus(IntEnum):
+    PENDING = 0
+    COMPLETED = 1
+    CANCELLED = 2
+    IN_PROGRESS = 3
+    EXPIRED = 4
 
 
 def _queue_deferred_file_deletion(session: Session, path: str) -> None:
@@ -61,6 +70,9 @@ def _queue_deferred_file_deletion(session: Session, path: str) -> None:
                         "Failed to remove file after commit (orphaned file): {} — {}",
                         pending_path,
                         exc,
+                    )
+                    session.info["deferred_delete_failure_count"] = (
+                        session.info.get("deferred_delete_failure_count", 0) + 1
                     )
 
         @event.listens_for(session, "after_rollback")
@@ -197,14 +209,18 @@ class File(Base):
 
 class FileTask(Base):
     __tablename__ = "file_tasks"
+    __table_args__ = (
+        CheckConstraint("status IN (0, 1, 2, 3, 4)", name="ck_file_tasks_status_value"),
+    )
     id: Mapped[str] = mapped_column(
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
     )
     file_id: Mapped[str] = mapped_column(
         VARCHAR(255), ForeignKey("files.id", ondelete="CASCADE"), nullable=False
     )
-    # 0: pending, 1: completed, 2: cancelled.
-    status: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[FileTaskStatus] = mapped_column(
+        Integer, nullable=False, default=FileTaskStatus.PENDING
+    )
     mode: Mapped[int] = mapped_column(
         Integer, nullable=False, comment="0: download, 1: upload"
     )

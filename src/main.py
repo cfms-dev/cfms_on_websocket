@@ -20,6 +20,7 @@ import include.database.models  # noqa: F401
 from include.config.constants import (
     CORE_VERSION,
     DEFAULT_SSL_CERT_VALIDITY_DAYS,
+    FILE_TASK_EVENT_CHANNEL,
     GLOBAL_BROADCAST_EVENT_CHANNEL,
     LOGIN_GUARD_EVENT_CHANNEL,
     ROOT_ABSPATH,
@@ -37,6 +38,10 @@ from include.database.models.files import File
 from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
+from include.domains.documents.commands.upload_cleanup import (
+    try_reclaim_abandoned_uploads,
+)
+from include.domains.documents.file_task_signals import on_file_task_event
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
@@ -446,6 +451,7 @@ def main():
     ProviderManager().event_bus.subscribe(
         LOGIN_GUARD_EVENT_CHANNEL, LoginGuard.handle_event
     )
+    ProviderManager().event_bus.subscribe(FILE_TASK_EVENT_CHANNEL, on_file_task_event)
 
     # Register plugins after database initialization
     extension_root = ROOT_ABSPATH / "include" / "extensions"
@@ -467,6 +473,7 @@ def main():
         host, global_config["server"]["dualstack_ipv6"]
     )
 
+    try_reclaim_abandoned_uploads()
     try:
         with serve(
             handle_connection,

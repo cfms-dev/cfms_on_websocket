@@ -1,10 +1,15 @@
-__all__ = ["_clear_file_references_cache", "count_file_references"]
+__all__ = [
+    "_clear_file_references_cache",
+    "count_file_references",
+    "find_unreachable_document_file_ids",
+    "find_unreachable_revision_file_ids",
+]
 
 from collections.abc import Sequence
 from itertools import islice
 from typing import Any, cast
 
-from sqlalchemy import MetaData, Table, func, select, union_all
+from sqlalchemy import Column, MetaData, Table, func, inspect, select, union_all
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -37,22 +42,37 @@ def _get_file_references(engine: Engine) -> list[tuple[Table, str]]:
     if cache_key in _CACHED_REFS:
         return _CACHED_REFS[cache_key]
 
-    meta = MetaData()
-    meta.reflect(bind=engine)
-
-    refs: list[tuple[Table, str]] = []
+    inspector = inspect(engine)
     files_table_name = "files"
-    for table in meta.tables.values():
-        for col in table.columns:
-            for fk in col.foreign_keys:
-                if fk.column.table.name != files_table_name:
-                    continue
-                # Skip FK relationships with CASCADE delete — those rows are
-                # dependent metadata, not independent references.
-                ondelete = (fk.ondelete or "").upper()
-                if ondelete == "CASCADE":
-                    continue
-                refs.append((table, col.name))
+    reference_columns: dict[str, set[str]] = {}
+    for table_name in inspector.get_table_names():
+        for fk in inspector.get_foreign_keys(table_name):
+            if fk["referred_table"] != files_table_name:
+                continue
+            # Skip FK relationships with CASCADE delete — those rows are
+            # dependent metadata, not independent references.
+            ondelete = (fk.get("options", {}).get("ondelete") or "").upper()
+            if ondelete == "CASCADE":
+                continue
+            reference_columns.setdefault(table_name, set()).update(
+                fk["constrained_columns"]
+            )
+
+    meta = MetaData()
+    refs: list[tuple[Table, str]] = []
+    for table_name, column_names in reference_columns.items():
+        reflected_columns = {
+            column["name"]: column for column in inspector.get_columns(table_name)
+        }
+        table = Table(
+            table_name,
+            meta,
+            *(
+                Column(column_name, reflected_columns[column_name]["type"])
+                for column_name in sorted(column_names)
+            ),
+        )
+        refs.extend((table, column_name) for column_name in sorted(column_names))
 
     _CACHED_REFS[cache_key] = refs
     return refs
@@ -119,3 +139,107 @@ def count_file_references(
             result[k] = result.get(k, 0) + v
 
     return result
+
+
+def _find_unreachable_file_ids(
+    session: Session,
+    candidate_file_ids: set[str],
+    *,
+    excluded_document_ids: set[str] | None = None,
+    excluded_revision_ids: set[str] | None = None,
+) -> set[str]:
+    if not candidate_file_ids:
+        return set()
+
+    from include.database.models.documents import (
+        Document,
+        DocumentRevision,
+        EntityStatus,
+    )
+
+    excluded_document_ids = excluded_document_ids or set()
+    excluded_revision_ids = excluded_revision_ids or set()
+    reachable: set[str] = set()
+
+    for chunk in (
+        tuple(candidate_file_ids)[offset : offset + QUERY_CHUNK_SIZE]
+        for offset in range(0, len(candidate_file_ids), QUERY_CHUNK_SIZE)
+    ):
+        active_revision_query = (
+            select(DocumentRevision.file_id)
+            .join(Document, Document.id == DocumentRevision.document_id)
+            .execution_options(include_deleted=True)
+            .where(
+                DocumentRevision.file_id.in_(chunk),
+                Document.status != EntityStatus.DELETED,
+            )
+        )
+        if excluded_document_ids:
+            active_revision_query = active_revision_query.where(
+                DocumentRevision.document_id.not_in(excluded_document_ids)
+            )
+        if excluded_revision_ids:
+            active_revision_query = active_revision_query.where(
+                DocumentRevision.id.not_in(excluded_revision_ids)
+            )
+        reachable.update(session.scalars(active_revision_query).all())
+
+        engine = cast(Engine, session.get_bind())
+        for table, column_name in _get_file_references(engine):
+            if table.name == DocumentRevision.__tablename__:
+                continue
+            column = table.c[column_name]
+            reachable.update(
+                session.scalars(
+                    select(column).where(
+                        column.is_not(None),
+                        column.in_(chunk),
+                    )
+                ).all()
+            )
+
+    return candidate_file_ids - reachable
+
+
+def find_unreachable_document_file_ids(
+    session: Session, document_ids: Sequence[str]
+) -> set[str]:
+    from include.database.models.documents import DocumentRevision
+
+    excluded_document_ids = set(document_ids)
+    if not excluded_document_ids:
+        return set()
+    candidate_file_ids = set(
+        session.scalars(
+            select(DocumentRevision.file_id).where(
+                DocumentRevision.document_id.in_(excluded_document_ids)
+            )
+        ).all()
+    )
+    return _find_unreachable_file_ids(
+        session,
+        candidate_file_ids,
+        excluded_document_ids=excluded_document_ids,
+    )
+
+
+def find_unreachable_revision_file_ids(
+    session: Session, revision_ids: Sequence[str]
+) -> set[str]:
+    from include.database.models.documents import DocumentRevision
+
+    excluded_revision_ids = set(revision_ids)
+    if not excluded_revision_ids:
+        return set()
+    candidate_file_ids = set(
+        session.scalars(
+            select(DocumentRevision.file_id).where(
+                DocumentRevision.id.in_(excluded_revision_ids)
+            )
+        ).all()
+    )
+    return _find_unreachable_file_ids(
+        session,
+        candidate_file_ids,
+        excluded_revision_ids=excluded_revision_ids,
+    )
