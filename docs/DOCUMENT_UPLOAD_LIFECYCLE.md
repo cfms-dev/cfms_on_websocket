@@ -225,16 +225,36 @@ downloads. These values are observability signals only: the policy does not
 charge per byte, shape bandwidth continuously, or impose a hard concurrency
 cap.
 
-## File chunk negotiation and download resume
+## File chunk negotiation and transfer resume
 
 Uploads and downloads use the same initial chunk-size selection rule: the
 server chooses the smallest of the client's maximum, `[server].file_chunk_size`,
-and the direction's hard limit. Upload clients may omit `max_chunk_size` for
-compatibility, in which case their maximum defaults to the 64 KiB upload hard
-limit. Explicit upload maxima must be at least 512 bytes. The server returns the
-result in the existing `ready <chunk_size>` frame.
+and the direction's hard limit. Protocol version 21 requires upload requests to
+include `task_id`, `file_size`, `sha256`, and `max_chunk_size`; `restart` is an
+optional boolean. The upload maximum must be at least 512 bytes. The server
+returns a `transfer_file` process frame containing `file_size`, `chunk_size`,
+the authoritative resume `offset`, and whether this upload is resumable. Clients
+seek to that offset and start sending chunks without another ready exchange.
 
-Protocol version 20 requires every `download_file.data` object to include
+The negotiated size is stored in the common `FileTask.chunk_size` field and
+never changes for that task. A client maximum smaller than the stored size
+produces `409` with `data.chunk_size`. Non-empty uploads with a valid SHA-256
+retain progress after disconnects and idle timeouts. File size and digest must
+match the stored upload metadata; a mismatch returns `409` without changing the
+checkpoint. Retrying with `restart = true` explicitly discards the checkpoint
+and replaces the metadata while retaining the negotiated chunk size. Uploads
+without a digest remain supported but restart at offset zero after interruption.
+
+Local storage resumes at the last complete protocol chunk. S3 storage persists
+multipart upload IDs and resumes from contiguous committed parts. The S3 part
+size is aligned to the negotiated chunk size, is at least 5 MiB, and grows for
+large objects so no upload exceeds 10,000 parts. Consequently an interrupted S3
+transfer may retransmit the uncommitted tail of one part. Deployments using S3
+must allow create, upload, list-parts, complete, and abort multipart operations;
+an S3 lifecycle rule that aborts old incomplete multipart uploads is also
+recommended.
+
+Every `download_file.data` object must include
 `max_chunk_size` in the inclusive range 16 KiB through 2 MiB. The server chooses
 the result using the shared rule with a 2 MiB download hard limit, stores it on
 the `FileTask`, and returns it as `transfer_file.data.chunk_size` together with
@@ -250,15 +270,15 @@ The file-size offset is also accepted, allowing a client that has all encrypted
 chunks but missed the final key frame to resume without downloading the chunks
 again.
 
-The AES key is a process frame in version 20. After decrypting and verifying
+The AES key is a process frame. After decrypting and verifying
 the destination, the client sends `complete`; only then does the server mark
 the task complete and conclude the stream with `transfer_complete`. A disconnect
 before that acknowledgement releases the task and retains its key and chunk
 size for a safe resume.
 
-The database column is nullable for tasks created before the version 20
-migration. Their size is established on the first post-upgrade transfer or
-resume and then remains fixed.
+The common database column is nullable for tasks created before the migration.
+Their size is established on the first post-upgrade transfer or resume and then
+remains fixed.
 
 ## Configuration
 
