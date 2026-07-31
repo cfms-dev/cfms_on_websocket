@@ -113,19 +113,8 @@ def test_s3_resumable_upload_restores_committed_parts():
             self.parts[PartNumber] = Body.read()
             return {"ETag": f"etag-{PartNumber}"}
 
-        def list_parts(self, PartNumberMarker, **_kwargs):
-            return {
-                "Parts": [
-                    {
-                        "PartNumber": number,
-                        "ETag": f"etag-{number}",
-                        "Size": len(data),
-                    }
-                    for number, data in sorted(self.parts.items())
-                    if number > PartNumberMarker
-                ],
-                "IsTruncated": False,
-            }
+        def list_parts(self, **_kwargs):
+            return {"Parts": list(self.parts)}
 
         def complete_multipart_upload(self, Key, MultipartUpload, **_kwargs):
             if self.fail_complete_once:
@@ -142,6 +131,7 @@ def test_s3_resumable_upload_restores_committed_parts():
     chunk_size = 64 * 1024
     checkpoint_size = 5 * 1024 * 1024
     file_size = checkpoint_size + chunk_size
+    checkpoints = []
     first = s3_module.S3ResumableUpload(
         client,
         "bucket",
@@ -150,9 +140,11 @@ def test_s3_resumable_upload_restores_committed_parts():
         chunk_size,
         None,
         checkpoint_size,
+        checkpoint_callback=checkpoints.append,
     )
     first.write(b"a" * checkpoint_size)
     session_id = first.session_id
+    checkpoint_data = checkpoints[-1]
     first.close()
 
     resumed = s3_module.S3ResumableUpload(
@@ -163,12 +155,15 @@ def test_s3_resumable_upload_restores_committed_parts():
         chunk_size,
         session_id,
         checkpoint_size,
+        checkpoint_data,
+        checkpoints.append,
     )
     assert resumed.offset == checkpoint_size
     resumed.write(b"b" * chunk_size)
     client.fail_complete_once = True
     with pytest.raises(RuntimeError, match="completion interrupted"):
         resumed.finish()
+    checkpoint_data = checkpoints[-1]
     resumed.close()
 
     recovered = s3_module.S3ResumableUpload(
@@ -179,8 +174,82 @@ def test_s3_resumable_upload_restores_committed_parts():
         chunk_size,
         session_id,
         checkpoint_size,
+        checkpoint_data,
     )
     assert recovered.offset == file_size
     recovered.finish()
 
     assert client.objects["key"] == (b"a" * checkpoint_size + b"b" * chunk_size)
+
+
+def test_s3_resumable_upload_retransmits_unpersisted_remote_parts():
+    pytest.importorskip("boto3")
+    s3_module = import_module("include.providers.storage.s3")
+
+    class FakeClient:
+        def __init__(self):
+            self.parts = {}
+            self.objects = {}
+
+        def create_multipart_upload(self, **_kwargs):
+            return {"UploadId": "upload-1"}
+
+        def upload_part(self, PartNumber, Body, **_kwargs):
+            self.parts[PartNumber] = Body.read()
+            return {"ETag": f"etag-{PartNumber}-{len(self.parts[PartNumber])}"}
+
+        def list_parts(self, **_kwargs):
+            return {
+                "Parts": [
+                    {
+                        "PartNumber": number,
+                        "ETag": f"untrusted-{number}",
+                        "Size": len(data),
+                    }
+                    for number, data in self.parts.items()
+                ]
+            }
+
+        def complete_multipart_upload(self, Key, MultipartUpload, **_kwargs):
+            self.completion_manifest = MultipartUpload["Parts"]
+            self.objects[Key] = b"".join(
+                self.parts[part["PartNumber"]] for part in self.completion_manifest
+            )
+
+    client = FakeClient()
+    chunk_size = 64 * 1024
+    checkpoint_size = 5 * 1024 * 1024
+    file_size = checkpoint_size + chunk_size
+    interrupted = s3_module.S3ResumableUpload(
+        client,
+        "bucket",
+        "key",
+        file_size,
+        chunk_size,
+        None,
+        checkpoint_size,
+    )
+    interrupted.write(b"a" * checkpoint_size)
+    session_id = interrupted.session_id
+    interrupted.close()
+
+    resumed = s3_module.S3ResumableUpload(
+        client,
+        "bucket",
+        "key",
+        file_size,
+        chunk_size,
+        session_id,
+        checkpoint_size,
+        checkpoint_data=None,
+    )
+    assert resumed.offset == 0
+
+    resumed.write(b"c" * checkpoint_size)
+    resumed.write(b"d" * chunk_size)
+    resumed.finish()
+
+    assert client.objects["key"] == b"c" * checkpoint_size + b"d" * chunk_size
+    assert all(
+        not part["ETag"].startswith("untrusted-") for part in client.completion_manifest
+    )

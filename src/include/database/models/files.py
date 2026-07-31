@@ -295,6 +295,8 @@ class FileTask(Base):
     upload_checkpoint_size: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )
+    # Opaque provider state needed to resume and finalize the current session.
+    upload_checkpoint_data: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # encryption_mode: Mapped[str | None] = mapped_column(
     #     VARCHAR(32), nullable=True, default=None

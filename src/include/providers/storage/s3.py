@@ -2,13 +2,14 @@ __all__ = ["S3FileObject", "S3StorageProvider"]
 
 import base64
 import hashlib
-from collections.abc import Buffer
+from collections.abc import Buffer, Callable
 from io import UnsupportedOperation
 from tempfile import SpooledTemporaryFile
 from types import TracebackType
 from typing import Any
 
 import boto3
+import orjson
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
@@ -46,6 +47,8 @@ class S3ResumableUpload(ResumableUpload):
         chunk_size: int,
         session_id: str | None,
         checkpoint_size: int | None,
+        checkpoint_data: str | None = None,
+        checkpoint_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._client = client
         self._bucket_name = bucket_name
@@ -55,6 +58,8 @@ class S3ResumableUpload(ResumableUpload):
             file_size, chunk_size
         )
         self._parts: list[dict[str, Any]] = []
+        self.checkpoint_data = checkpoint_data
+        self._checkpoint_callback = checkpoint_callback
         self._buffer = SpooledTemporaryFile(max_size=8 * 1024 * 1024)
         self._buffer_size = 0
         self._closed = False
@@ -75,7 +80,12 @@ class S3ResumableUpload(ResumableUpload):
             return
 
         try:
-            self._load_parts()
+            self._client.list_parts(
+                Bucket=self._bucket_name,
+                Key=self._key,
+                UploadId=self.session_id,
+                MaxParts=1,
+            )
         except ClientError as error:
             if error.response.get("Error", {}).get("Code") not in {
                 "404",
@@ -93,35 +103,49 @@ class S3ResumableUpload(ResumableUpload):
             self.session_id = None
             self.offset = file_size
             self._completed = True
+            return
 
-    def _load_parts(self) -> None:
-        marker = 0
+        self._load_checkpoint()
+
+    def _load_checkpoint(self) -> None:
+        if self.checkpoint_data is None:
+            self.offset = 0
+            return
+        try:
+            parts = orjson.loads(self.checkpoint_data)
+        except orjson.JSONDecodeError as exc:
+            raise ValueError("S3 multipart upload checkpoint is invalid") from exc
+        if not isinstance(parts, list):
+            raise ValueError("S3 multipart upload checkpoint is invalid")
+
         expected_part_number = 1
         self.offset = 0
-        while True:
-            response = self._client.list_parts(
-                Bucket=self._bucket_name,
-                Key=self._key,
-                UploadId=self.session_id,
-                PartNumberMarker=marker,
-            )
-            for part in response.get("Parts", []):
+        for part in parts:
+            try:
                 part_number = part["PartNumber"]
                 part_size = part["Size"]
-                if part_number != expected_part_number or (
+                etag = part["ETag"]
+            except (KeyError, TypeError) as exc:
+                raise ValueError("S3 multipart upload checkpoint is invalid") from exc
+            if (
+                type(part_number) is not int
+                or type(part_size) is not int
+                or not isinstance(etag, str)
+                or part_number != expected_part_number
+                or (
                     part_size != self.checkpoint_size
                     and not (
                         part_size < self.checkpoint_size
                         and self.offset + part_size == self._file_size
                     )
-                ):
-                    raise ValueError("S3 multipart upload has invalid checkpoint parts")
-                self._parts.append({"PartNumber": part_number, "ETag": part["ETag"]})
-                self.offset += part_size
-                expected_part_number += 1
-            if not response.get("IsTruncated"):
-                break
-            marker = response["NextPartNumberMarker"]
+                )
+            ):
+                raise ValueError("S3 multipart upload has invalid checkpoint parts")
+            self._parts.append(
+                {"PartNumber": part_number, "ETag": etag, "Size": part_size}
+            )
+            self.offset += part_size
+            expected_part_number += 1
         if self.offset > self._file_size:
             raise ValueError("S3 upload progress exceeds the declared file size")
 
@@ -136,8 +160,17 @@ class S3ResumableUpload(ResumableUpload):
             Body=self._buffer,
             ContentLength=self._buffer_size,
         )
-        self._parts.append({"PartNumber": part_number, "ETag": response["ETag"]})
+        self._parts.append(
+            {
+                "PartNumber": part_number,
+                "ETag": response["ETag"],
+                "Size": self._buffer_size,
+            }
+        )
         self.offset += self._buffer_size
+        self.checkpoint_data = orjson.dumps(self._parts).decode()
+        if self._checkpoint_callback is not None:
+            self._checkpoint_callback(self.checkpoint_data)
         self._buffer.close()
         self._buffer = SpooledTemporaryFile(max_size=8 * 1024 * 1024)
         self._buffer_size = 0
@@ -171,7 +204,12 @@ class S3ResumableUpload(ResumableUpload):
             Bucket=self._bucket_name,
             Key=self._key,
             UploadId=self.session_id,
-            MultipartUpload={"Parts": self._parts},
+            MultipartUpload={
+                "Parts": [
+                    {"PartNumber": part["PartNumber"], "ETag": part["ETag"]}
+                    for part in self._parts
+                ]
+            },
         )
         self.session_id = None
         self._completed = True
@@ -200,6 +238,7 @@ class S3ResumableUpload(ResumableUpload):
                     raise
         self.session_id = None
         self.offset = 0
+        self.checkpoint_data = None
 
 
 class S3FileObject(FileObject):
@@ -418,6 +457,8 @@ class S3StorageProvider(StorageProvider):
         chunk_size: int,
         session_id: str | None = None,
         checkpoint_size: int | None = None,
+        checkpoint_data: str | None = None,
+        checkpoint_callback: Callable[[str], None] | None = None,
     ) -> S3ResumableUpload:
         return S3ResumableUpload(
             self._client,
@@ -427,6 +468,8 @@ class S3StorageProvider(StorageProvider):
             chunk_size,
             session_id,
             checkpoint_size,
+            checkpoint_data,
+            checkpoint_callback,
         )
 
     def abort_resumable_upload(self, path: str, session_id: str) -> None:

@@ -246,13 +246,16 @@ and replaces the metadata while retaining the negotiated chunk size. Uploads
 without a digest remain supported but restart at offset zero after interruption.
 
 Local storage resumes at the last complete protocol chunk. S3 storage persists
-multipart upload IDs and resumes from contiguous committed parts. The S3 part
+multipart upload IDs together with the authoritative part numbers and ETags
+returned by each successful upload request. `ListParts` verifies that the
+session still exists but is never used as the completion manifest. The S3 part
 size is aligned to the negotiated chunk size, is at least 5 MiB, and grows for
 large objects so no upload exceeds 10,000 parts. Consequently an interrupted S3
 transfer may retransmit the uncommitted tail of one part. Deployments using S3
 must allow create, upload, list-parts, complete, and abort multipart operations;
 an S3 lifecycle rule that aborts old incomplete multipart uploads is also
-recommended.
+recommended. An active S3 session created before authoritative manifests were
+persisted restarts from offset zero and overwrites its unrecorded parts.
 
 Every `download_file.data` object must include
 `max_chunk_size` in the inclusive range 16 KiB through 2 MiB. The server chooses

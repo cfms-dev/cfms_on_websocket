@@ -1,7 +1,7 @@
 __all__ = ["LocalFileObject", "LocalStorageProvider"]
 
 import os
-from collections.abc import Buffer
+from collections.abc import Buffer, Callable
 from contextlib import ExitStack
 from types import TracebackType
 from typing import IO, Any
@@ -30,6 +30,7 @@ class LocalResumableUpload(ResumableUpload):
             self._file.seek(self.offset)
             self.session_id = None
             self.checkpoint_size = chunk_size
+            self.checkpoint_data = None
             self._closed = False
             self._resources = resources.pop_all()
 
@@ -126,6 +127,8 @@ class LocalStorageProvider(StorageProvider):
         chunk_size: int,
         session_id: str | None = None,
         checkpoint_size: int | None = None,
+        checkpoint_data: str | None = None,
+        checkpoint_callback: Callable[[str], None] | None = None,
     ) -> LocalResumableUpload:
         return LocalResumableUpload(path, file_size, chunk_size)
 

@@ -644,6 +644,7 @@ class ConnectionHandler:
             task.upload_sha256 = None
             task.upload_session_id = None
             task.upload_checkpoint_size = None
+            task.upload_checkpoint_data = None
 
     @staticmethod
     def _storage_sha256(path: str) -> str:
@@ -725,6 +726,7 @@ class ConnectionHandler:
                 upload_sha256=None,
                 upload_session_id=None,
                 upload_checkpoint_size=None,
+                upload_checkpoint_data=None,
             )
 
         with Session() as session, session.begin():
@@ -740,9 +742,22 @@ class ConnectionHandler:
             if discard_existing:
                 task.upload_session_id = None
                 task.upload_checkpoint_size = None
+                task.upload_checkpoint_data = None
 
         storage.makedirs(os.path.dirname(file_path), exist_ok=True)
         prior_session_id = None if discard_existing else claimed.upload_session_id
+
+        def persist_checkpoint(checkpoint_data: str) -> None:
+            with Session() as session, session.begin():
+                task = session.get(FileTask, task_id)
+                if task is None:
+                    raise ValueError(
+                        f"File transfer task not found for task_id: {task_id}"
+                    )
+                if task.status != FileTaskStatus.IN_PROGRESS:
+                    raise FileTaskEnded(FileTaskStatus(task.status))
+                task.upload_checkpoint_data = checkpoint_data
+
         try:
             upload = storage.open_resumable_upload(
                 file_path,
@@ -752,6 +767,10 @@ class ConnectionHandler:
                 checkpoint_size=(
                     None if discard_existing else claimed.upload_checkpoint_size
                 ),
+                checkpoint_data=(
+                    None if discard_existing else claimed.upload_checkpoint_data
+                ),
+                checkpoint_callback=persist_checkpoint,
             )
         except ResumableUploadSizeError:
             with Session() as session, session.begin():
@@ -770,6 +789,7 @@ class ConnectionHandler:
                     raise FileTaskEnded(FileTaskStatus(task.status))
                 task.upload_session_id = upload.session_id
                 task.upload_checkpoint_size = upload.checkpoint_size
+                task.upload_checkpoint_data = upload.checkpoint_data
         except Exception:
             if prior_session_id is None:
                 upload.abort()
@@ -859,6 +879,7 @@ class ConnectionHandler:
                     return
                 file_task.upload_session_id = None
                 file_task.upload_checkpoint_size = None
+                file_task.upload_checkpoint_data = None
                 file.sha256 = sha256
                 file.size = actual_size
                 file.active = True

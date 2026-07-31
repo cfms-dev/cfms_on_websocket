@@ -28,6 +28,7 @@ class ClaimedFileTask:
     upload_sha256: str | None
     upload_session_id: str | None = field(repr=False)
     upload_checkpoint_size: int | None
+    upload_checkpoint_data: str | None = field(repr=False)
 
 
 def serialize_file_task(task: FileTask) -> dict[str, Any]:
@@ -150,6 +151,11 @@ def claim_file_task(
         ),
         upload_checkpoint_size=(
             task.upload_checkpoint_size
+            if transfer_mode == TransferMode.UPLOAD
+            else None
+        ),
+        upload_checkpoint_data=(
+            task.upload_checkpoint_data
             if transfer_mode == TransferMode.UPLOAD
             else None
         ),

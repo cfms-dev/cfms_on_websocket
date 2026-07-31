@@ -74,6 +74,7 @@ class ResumableUpload(AbstractContextManager["ResumableUpload"]):
     offset: int
     session_id: str | None
     checkpoint_size: int
+    checkpoint_data: str | None
 
     def __enter__(self) -> Self:
         return self
@@ -148,6 +149,8 @@ class StorageProvider(Provider):
         chunk_size: int,
         session_id: str | None = None,
         checkpoint_size: int | None = None,
+        checkpoint_data: str | None = None,
+        checkpoint_callback: Callable[[str], None] | None = None,
     ) -> ResumableUpload:
         raise UnsupportedOperation("This storage provider cannot resume uploads")
 

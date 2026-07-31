@@ -122,6 +122,8 @@ class _FakeStorage:
         chunk_size,
         session_id=None,
         checkpoint_size=None,
+        checkpoint_data=None,
+        checkpoint_callback=None,
     ):
         from include.providers.storage.local import LocalResumableUpload
 
@@ -1202,6 +1204,71 @@ def test_upload_closes_resources_when_negotiation_send_fails(
         task = session.get(file_task_context.FileTask, task_id)
         assert task.status == FileTaskStatus.PENDING
         assert task.upload_sha256 == hashlib.sha256(payload).hexdigest()
+
+
+def test_upload_persists_provider_checkpoint_on_disconnect(
+    file_task_context, tmp_path, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+    from include.providers.storage.local import LocalResumableUpload
+
+    class CheckpointingUpload(LocalResumableUpload):
+        def __init__(self, path, file_size, chunk_size, checkpoint_callback):
+            super().__init__(path, file_size, chunk_size)
+            self._checkpoint_callback = checkpoint_callback
+
+        def write(self, data):
+            written = super().write(data)
+            self.checkpoint_data = "authoritative-checkpoint"
+            self._checkpoint_callback(self.checkpoint_data)
+            return written
+
+    class CheckpointingStorage(_FakeStorage):
+        def open_resumable_upload(
+            self,
+            path,
+            *,
+            file_size,
+            chunk_size,
+            checkpoint_callback,
+            **_kwargs,
+        ):
+            return CheckpointingUpload(
+                str(self._resolve(path)),
+                file_size,
+                chunk_size,
+                checkpoint_callback,
+            )
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    payload = b"a" * (chunk_size * 2)
+    relative_path = "uploads/checkpointed-disconnect.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    storage = CheckpointingStorage(tmp_path)
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "ProviderManager",
+        lambda: _FakeProviderManager(storage),
+    )
+    handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler,
+        _DisconnectingUploadStream([payload[:chunk_size]]),
+    )
+
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
+    )
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.PENDING
+        assert task.upload_checkpoint_data == "authoritative-checkpoint"
 
 
 def test_upload_rejects_client_limit_below_persisted_chunk_size(
