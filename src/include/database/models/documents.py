@@ -26,6 +26,7 @@ from sqlalchemy import (
     Index,
     Integer,
     UniqueConstraint,
+    select,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
@@ -473,8 +474,18 @@ class Document(Node):
         with session.no_autoflush:
             # Task 2: Batch delete all FileTask rows for deletable files in one query per chunk.
             # Replaces N individual DELETE queries (one per file) with one per chunk.
+            upload_sessions_by_file: dict[str, list[str]] = {}
             if deletable_file_ids:
                 for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
+                    for file_id, upload_session_id in session.execute(
+                        select(FileTask.file_id, FileTask.upload_session_id).where(
+                            FileTask.file_id.in_(list(chunk)),
+                            FileTask.upload_session_id.is_not(None),
+                        )
+                    ):
+                        upload_sessions_by_file.setdefault(file_id, []).append(
+                            upload_session_id
+                        )
                     session.query(FileTask).filter(
                         FileTask.file_id.in_(list(chunk))
                     ).delete(synchronize_session=False)
@@ -498,7 +509,11 @@ class Document(Node):
         # Files are removed from disk ONLY after session.commit() succeeds.
         # If the transaction rolls back, the queued paths are discarded automatically.
         for file_obj in files_to_delete:
-            _queue_deferred_file_deletion(session, file_obj.path)
+            _queue_deferred_file_deletion(
+                session,
+                file_obj.path,
+                tuple(upload_sessions_by_file.get(file_obj.id, ())),
+            )
 
         self.revisions = []
         if do_commit:

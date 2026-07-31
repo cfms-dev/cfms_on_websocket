@@ -4,6 +4,7 @@ import base64
 import hashlib
 from collections.abc import Buffer
 from io import UnsupportedOperation
+from tempfile import SpooledTemporaryFile
 from types import TracebackType
 from typing import Any
 
@@ -12,7 +13,193 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
 
-from include.providers.base import FileObject, StorageProvider
+from include.providers.base import (
+    FileObject,
+    ResumableUpload,
+    ResumableUploadSizeError,
+    StorageProvider,
+)
+
+_S3_MIN_PART_SIZE = 5 * 1024 * 1024
+_S3_MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
+_S3_MAX_PARTS = 10_000
+
+
+def _s3_checkpoint_size(file_size: int, chunk_size: int) -> int:
+    minimum_size = max(
+        _S3_MIN_PART_SIZE,
+        (file_size + _S3_MAX_PARTS - 1) // _S3_MAX_PARTS,
+    )
+    checkpoint_size = ((minimum_size + chunk_size - 1) // chunk_size) * chunk_size
+    if checkpoint_size > _S3_MAX_PART_SIZE:
+        raise ResumableUploadSizeError("File exceeds the S3 multipart upload limit")
+    return checkpoint_size
+
+
+class S3ResumableUpload(ResumableUpload):
+    def __init__(
+        self,
+        client,
+        bucket_name: str,
+        key: str,
+        file_size: int,
+        chunk_size: int,
+        session_id: str | None,
+        checkpoint_size: int | None,
+    ) -> None:
+        self._client = client
+        self._bucket_name = bucket_name
+        self._key = key
+        self._file_size = file_size
+        self.checkpoint_size = checkpoint_size or _s3_checkpoint_size(
+            file_size, chunk_size
+        )
+        self._parts: list[dict[str, Any]] = []
+        self._buffer = SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+        self._buffer_size = 0
+        self._closed = False
+        self._completed = False
+
+        if file_size == 0:
+            self.session_id = None
+            self.offset = 0
+            return
+
+        self.session_id = session_id
+        if session_id is None:
+            self.session_id = self._client.create_multipart_upload(
+                Bucket=self._bucket_name,
+                Key=self._key,
+            )["UploadId"]
+            self.offset = 0
+            return
+
+        try:
+            self._load_parts()
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") not in {
+                "404",
+                "NoSuchUpload",
+            }:
+                raise
+            try:
+                response = self._client.head_object(
+                    Bucket=self._bucket_name, Key=self._key
+                )
+            except ClientError:
+                raise error
+            if response["ContentLength"] != file_size:
+                raise error
+            self.session_id = None
+            self.offset = file_size
+            self._completed = True
+
+    def _load_parts(self) -> None:
+        marker = 0
+        expected_part_number = 1
+        self.offset = 0
+        while True:
+            response = self._client.list_parts(
+                Bucket=self._bucket_name,
+                Key=self._key,
+                UploadId=self.session_id,
+                PartNumberMarker=marker,
+            )
+            for part in response.get("Parts", []):
+                part_number = part["PartNumber"]
+                part_size = part["Size"]
+                if part_number != expected_part_number or (
+                    part_size != self.checkpoint_size
+                    and not (
+                        part_size < self.checkpoint_size
+                        and self.offset + part_size == self._file_size
+                    )
+                ):
+                    raise ValueError("S3 multipart upload has invalid checkpoint parts")
+                self._parts.append({"PartNumber": part_number, "ETag": part["ETag"]})
+                self.offset += part_size
+                expected_part_number += 1
+            if not response.get("IsTruncated"):
+                break
+            marker = response["NextPartNumberMarker"]
+        if self.offset > self._file_size:
+            raise ValueError("S3 upload progress exceeds the declared file size")
+
+    def _upload_part(self) -> None:
+        self._buffer.seek(0)
+        part_number = len(self._parts) + 1
+        response = self._client.upload_part(
+            Bucket=self._bucket_name,
+            Key=self._key,
+            PartNumber=part_number,
+            UploadId=self.session_id,
+            Body=self._buffer,
+            ContentLength=self._buffer_size,
+        )
+        self._parts.append({"PartNumber": part_number, "ETag": response["ETag"]})
+        self.offset += self._buffer_size
+        self._buffer.close()
+        self._buffer = SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+        self._buffer_size = 0
+
+    def write(self, data: Buffer) -> int:
+        if self._completed:
+            raise ValueError("S3 multipart upload is already complete")
+        with memoryview(data) as source_view, source_view.cast("B") as byte_view:
+            written = self._buffer.write(byte_view)
+        self._buffer_size += written
+        if self._buffer_size == self.checkpoint_size:
+            self._upload_part()
+        elif self._buffer_size > self.checkpoint_size:
+            raise ValueError("Upload write crossed the S3 checkpoint boundary")
+        return written
+
+    def finish(self) -> None:
+        if self._completed:
+            self.close()
+            return
+        if self._file_size == 0:
+            self._client.put_object(Bucket=self._bucket_name, Key=self._key, Body=b"")
+            self._completed = True
+            self.close()
+            return
+        if self.offset + self._buffer_size != self._file_size:
+            raise ValueError("S3 multipart upload is incomplete")
+        if self._buffer_size:
+            self._upload_part()
+        self._client.complete_multipart_upload(
+            Bucket=self._bucket_name,
+            Key=self._key,
+            UploadId=self.session_id,
+            MultipartUpload={"Parts": self._parts},
+        )
+        self.session_id = None
+        self._completed = True
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._buffer.close()
+        self._closed = True
+
+    def abort(self) -> None:
+        self.close()
+        if self.session_id is not None:
+            try:
+                self._client.abort_multipart_upload(
+                    Bucket=self._bucket_name,
+                    Key=self._key,
+                    UploadId=self.session_id,
+                )
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") not in {
+                    "404",
+                    "NoSuchUpload",
+                }:
+                    raise
+        self.session_id = None
+        self.offset = 0
 
 
 class S3FileObject(FileObject):
@@ -150,6 +337,8 @@ class S3FileObject(FileObject):
 
 
 class S3StorageProvider(StorageProvider):
+    supports_resumable_uploads = True
+
     def __init__(
         self,
         bucket_name: str,
@@ -220,3 +409,36 @@ class S3StorageProvider(StorageProvider):
             if e.response["Error"]["Code"] == "404":
                 raise FileNotFoundError(f"No such file: '{filename}'")
             raise
+
+    def open_resumable_upload(
+        self,
+        path: str,
+        *,
+        file_size: int,
+        chunk_size: int,
+        session_id: str | None = None,
+        checkpoint_size: int | None = None,
+    ) -> S3ResumableUpload:
+        return S3ResumableUpload(
+            self._client,
+            self._bucket_name,
+            path.lstrip("/"),
+            file_size,
+            chunk_size,
+            session_id,
+            checkpoint_size,
+        )
+
+    def abort_resumable_upload(self, path: str, session_id: str) -> None:
+        try:
+            self._client.abort_multipart_upload(
+                Bucket=self._bucket_name,
+                Key=path.lstrip("/"),
+                UploadId=session_id,
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") not in {
+                "404",
+                "NoSuchUpload",
+            }:
+                raise

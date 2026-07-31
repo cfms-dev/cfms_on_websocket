@@ -25,6 +25,7 @@ from include.config.constants import (
     DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
     FILE_TASK_DEFAULT_DURATION_SECONDS,
     ROOT_DIRECTORY_ID,
+    UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
 )
 from include.config.validation import DocumentUploadPolicy
 from include.database.models.documents import (
@@ -807,16 +808,38 @@ class RequestUploadFileHandler(RequestHandler):
         "type": "object",
         "properties": {
             "task_id": {"type": "string", "minLength": 1},
+            "file_size": {"type": "integer", "minimum": 0},
+            "sha256": {
+                "anyOf": [
+                    {"type": "string", "pattern": "^[0-9A-Fa-f]{64}$"},
+                    {"type": "null"},
+                ]
+            },
+            "max_chunk_size": {
+                "type": "integer",
+                "minimum": UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
+            },
+            "restart": {"type": "boolean"},
         },
-        "required": ["task_id"],
+        "required": ["task_id", "file_size", "sha256", "max_chunk_size"],
         "additionalProperties": False,
     }
 
     def handle(self, handler: ConnectionHandler):
         task_id = handler.data["task_id"]
+        file_size = handler.data["file_size"]
+        sha256 = handler.data["sha256"]
+        max_chunk_size = handler.data["max_chunk_size"]
+        restart = handler.data.get("restart", False)
 
         # The server needs to send one response.
-        handler.receive_file(task_id)
+        handler.receive_file(
+            task_id,
+            file_size,
+            sha256.lower() if sha256 is not None else None,
+            max_chunk_size,
+            restart,
+        )
 
 
 class RequestSetDocumentRulesHandler(RequestHandler):

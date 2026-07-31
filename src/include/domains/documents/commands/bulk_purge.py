@@ -1,5 +1,6 @@
 from itertools import batched
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
@@ -74,8 +75,18 @@ def purge_documents_bulk(session: Session, document_ids: list[str]):
         )
 
     # 3b. Clean up related tasks.
+    upload_sessions_by_file: dict[str, list[str]] = {}
     if deletable_file_ids:
         for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
+            for file_id, upload_session_id in session.execute(
+                select(FileTask.file_id, FileTask.upload_session_id).where(
+                    FileTask.file_id.in_(chunk),
+                    FileTask.upload_session_id.is_not(None),
+                )
+            ):
+                upload_sessions_by_file.setdefault(file_id, []).append(
+                    upload_session_id
+                )
             session.query(FileTask).filter(FileTask.file_id.in_(chunk)).delete(
                 synchronize_session=False
             )
@@ -94,7 +105,11 @@ def purge_documents_bulk(session: Session, document_ids: list[str]):
 
     if deletable_files:
         for f in deletable_files:
-            _queue_deferred_file_deletion(session, f.path)
+            _queue_deferred_file_deletion(
+                session,
+                f.path,
+                tuple(upload_sessions_by_file.get(f.id, ())),
+            )
 
         deletable_file_ids = [f.id for f in deletable_files]
         for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):

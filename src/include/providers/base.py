@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from contextlib import AbstractContextManager
+from io import UnsupportedOperation
 from types import TracebackType
 from typing import Any, ClassVar, Self
 
@@ -65,6 +66,44 @@ class FileObject(AbstractContextManager["FileObject"]):
         raise NotImplementedError
 
 
+class ResumableUploadSizeError(ValueError):
+    pass
+
+
+class ResumableUpload(AbstractContextManager["ResumableUpload"]):
+    offset: int
+    session_id: str | None
+    checkpoint_size: int
+
+    def __enter__(self) -> Self:
+        return self
+
+    @abstractmethod
+    def write(self, data: Buffer) -> int:
+        pass
+
+    @abstractmethod
+    def finish(self) -> None:
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close local resources while preserving committed upload progress."""
+
+    @abstractmethod
+    def abort(self) -> None:
+        """Discard both committed and buffered upload progress."""
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        self.close()
+        return None
+
+
 class StorageProvider(Provider):
     """Storage provider interface for managing file-like resources.
 
@@ -75,6 +114,7 @@ class StorageProvider(Provider):
     """
 
     identifier: ClassVar[str] = "storage"
+    supports_resumable_uploads: ClassVar[bool] = False
 
     @abstractmethod
     def fopen(self, path: str, mode: str = "rb") -> FileObject:
@@ -99,6 +139,20 @@ class StorageProvider(Provider):
     @abstractmethod
     def getsize(self, filename: str, /) -> int:
         pass
+
+    def open_resumable_upload(
+        self,
+        path: str,
+        *,
+        file_size: int,
+        chunk_size: int,
+        session_id: str | None = None,
+        checkpoint_size: int | None = None,
+    ) -> ResumableUpload:
+        raise UnsupportedOperation("This storage provider cannot resume uploads")
+
+    def abort_resumable_upload(self, path: str, session_id: str) -> None:
+        raise UnsupportedOperation("This storage provider cannot abort upload sessions")
 
 
 class EventBusProvider(Provider):

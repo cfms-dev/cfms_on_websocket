@@ -8,7 +8,13 @@ from sqlalchemy.orm import Session as ORMSession
 
 from include.config.validation import DocumentUploadPolicy
 from include.database.models.documents import Document, DocumentRevision
-from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
+from include.database.models.files import (
+    File,
+    FileTask,
+    FileTaskStatus,
+    TransferMode,
+    _queue_deferred_file_deletion,
+)
 from include.database.session import Session
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
 from include.domains.documents.commands.file_tasks import (
@@ -148,6 +154,11 @@ def reclaim_abandoned_uploads(
             file = session.get(File, file_id)
             if file is None or file.active:
                 continue
+            task = session.get(FileTask, task_id)
+            if task is not None and task.upload_session_id is not None:
+                _queue_deferred_file_deletion(
+                    session, file.path, (task.upload_session_id,)
+                )
             claimed = session.execute(
                 delete(FileTask).where(
                     FileTask.id == task_id,

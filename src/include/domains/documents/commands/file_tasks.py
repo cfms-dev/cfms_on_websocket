@@ -23,7 +23,11 @@ class ClaimedFileTask:
     stored_file_size: int | None
     issued_by_username: str | None
     encryption_key: str | None = field(repr=False)
-    download_chunk_size: int | None
+    chunk_size: int | None
+    upload_file_size: int | None
+    upload_sha256: str | None
+    upload_session_id: str | None = field(repr=False)
+    upload_checkpoint_size: int | None
 
 
 def serialize_file_task(task: FileTask) -> dict[str, Any]:
@@ -32,7 +36,7 @@ def serialize_file_task(task: FileTask) -> dict[str, Any]:
         "provider": "native",  # reserved for future use
         "start_time": task.start_time,
         "end_time": task.end_time,
-        "supports_resume": task.mode == TransferMode.DOWNLOAD,
+        "supports_resume": True,
     }
 
 
@@ -134,8 +138,20 @@ def claim_file_task(
         encryption_key=(
             task.encryption_key if transfer_mode == TransferMode.DOWNLOAD else None
         ),
-        download_chunk_size=(
-            task.download_chunk_size if transfer_mode == TransferMode.DOWNLOAD else None
+        chunk_size=task.chunk_size,
+        upload_file_size=(
+            task.upload_file_size if transfer_mode == TransferMode.UPLOAD else None
+        ),
+        upload_sha256=(
+            task.upload_sha256 if transfer_mode == TransferMode.UPLOAD else None
+        ),
+        upload_session_id=(
+            task.upload_session_id if transfer_mode == TransferMode.UPLOAD else None
+        ),
+        upload_checkpoint_size=(
+            task.upload_checkpoint_size
+            if transfer_mode == TransferMode.UPLOAD
+            else None
         ),
     )
     session.expire(task)

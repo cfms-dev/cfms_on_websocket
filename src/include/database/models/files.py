@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     Text,
     event,
+    select,
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
@@ -44,7 +45,9 @@ class FileDeduplicationPhase(IntEnum):
     STORAGE_DELETE = 1
 
 
-def _queue_deferred_file_deletion(session: Session, path: str) -> None:
+def _queue_deferred_file_deletion(
+    session: Session, path: str, upload_session_ids: tuple[str, ...] = ()
+) -> None:
     """Queue a file path for physical deletion after the session's next successful commit.
 
     This ensures filesystem changes only happen after the DB transaction is committed,
@@ -54,7 +57,7 @@ def _queue_deferred_file_deletion(session: Session, path: str) -> None:
     On rollback the queue is cleared so no files are ever removed.
     """
     pending: list = session.info.setdefault("pending_delete_files", [])
-    pending.append(path)
+    pending.append((path, upload_session_ids))
 
     # Register lifecycle hooks only once per session instance to avoid duplicate callbacks.
     if not session.info.get("_deferred_delete_hooks_registered"):
@@ -63,15 +66,28 @@ def _queue_deferred_file_deletion(session: Session, path: str) -> None:
         @event.listens_for(session, "after_commit")
         def _do_deferred_file_deletes(session: Session):
             paths = session.info.pop("pending_delete_files", [])
-            for pending_path in paths:
+            for pending_path, pending_upload_session_ids in paths:
+                for upload_session_id in pending_upload_session_ids:
+                    try:
+                        ProviderManager().storage.abort_resumable_upload(
+                            pending_path, upload_session_id
+                        )
+                    except Exception as exc:  # noqa: BLE001 - cleanup is post-commit.
+                        logger.warning(  # noqa: PLE1205 - Loguru uses brace formatting.
+                            "Failed to abort upload session after commit: {} — {}",
+                            upload_session_id,
+                            exc,
+                        )
+                        session.info["deferred_delete_failure_count"] = (
+                            session.info.get("deferred_delete_failure_count", 0) + 1
+                        )
                 try:
                     ProviderManager().storage.remove(pending_path)
                 except FileNotFoundError:
                     pass  # already removed manually — this is fine
-                except OSError as exc:
-                    # e.g. PermissionError on a locked file post-commit; the DB record
-                    # has already been deleted so the file becomes an orphan.  Log the
-                    # error so operators can clean up manually.
+                except Exception as exc:  # noqa: BLE001 - provider cleanup is post-commit.
+                    # The DB record has already been deleted, so cleanup cannot change
+                    # the committed result. Log the orphan for operator recovery.
                     logger.warning(  # noqa: PLE1205 - Loguru uses brace-style formatting.
                         "Failed to remove file after commit (orphaned file): {} — {}",
                         pending_path,
@@ -185,12 +201,20 @@ class File(Base):
         """
         session = object_session(self)
         if session is not None:
+            upload_session_ids = tuple(
+                session.scalars(
+                    select(FileTask.upload_session_id).where(
+                        FileTask.file_id == self.id,
+                        FileTask.upload_session_id.is_not(None),
+                    )
+                ).all()
+            )
             # Remove associated task records as part of the DB transaction.
             session.query(FileTask).filter(FileTask.file_id == self.id).delete(
                 synchronize_session=False
             )  # be careful
             # Defer physical file removal until after a successful commit.
-            _queue_deferred_file_deletion(session, self.path)
+            _queue_deferred_file_deletion(session, self.path, upload_session_ids)
         else:
             # No session context — perform immediate deletion.
             try:
@@ -259,10 +283,15 @@ class FileTask(Base):
         VARCHAR(256), nullable=True, default=None
     )
 
-    # Download chunking must stay stable across resumptions because the
-    # chunk index participates in the AES-GCM nonce and resume offset.
-    download_chunk_size: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, default=None
+    # A negotiated chunk size stays fixed for the lifetime of either upload or
+    # download tasks so resume offsets retain one unambiguous alignment.
+    chunk_size: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+
+    upload_file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    upload_sha256: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    upload_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    upload_checkpoint_size: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
     )
 
     # encryption_mode: Mapped[str | None] = mapped_column(
