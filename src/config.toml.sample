@@ -32,7 +32,7 @@ ssl_certfile = "./content/ssl/cert.pem"
 # Reverse proxies allowed to supply X-Forwarded-For or X-Real-IP.
 trusted_proxy_networks = ["127.0.0.1/32", "::1/128"]
 
-# File chunk size for uploads (default is 2MB)
+# Server-side chunk-size limit for uploads and downloads (default is 2MB)
 file_chunk_size = 2097152 # 2MB
 # Setting the chunk size too high may cause transfer failures depending on client configuration
 

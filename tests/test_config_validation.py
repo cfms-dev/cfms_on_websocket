@@ -23,7 +23,10 @@ from include.config.validation import (
 def _valid_config() -> dict:
     return {
         "extensions": {"enabled": []},
-        "server": {"trusted_proxy_networks": ["127.0.0.1/32", "::1/128"]},
+        "server": {
+            "file_chunk_size": 2 * 1024 * 1024,
+            "trusted_proxy_networks": ["127.0.0.1/32", "::1/128"],
+        },
         "security": {
             "pepper": "test-pepper",
             "require_client_cert": False,
@@ -115,6 +118,25 @@ def test_proxy_network_entries_must_be_strings():
     config["server"]["trusted_proxy_networks"] = [10]
 
     with pytest.raises(ConfigValidationError, match="must be CIDR strings"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "65536"])
+def test_file_chunk_size_must_be_a_positive_integer(value):
+    config = _valid_config()
+    config["server"]["file_chunk_size"] = value
+
+    with pytest.raises(
+        ConfigValidationError, match="server.file_chunk_size must be a positive integer"
+    ):
+        validate_config(config)
+
+
+def test_file_chunk_size_is_required():
+    config = _valid_config()
+    del config["server"]["file_chunk_size"]
+
+    with pytest.raises(ConfigValidationError, match="server.file_chunk_size"):
         validate_config(config)
 
 

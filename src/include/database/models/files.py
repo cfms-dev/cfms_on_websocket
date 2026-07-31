@@ -259,6 +259,12 @@ class FileTask(Base):
         VARCHAR(256), nullable=True, default=None
     )
 
+    # Download chunking must stay stable across resumptions because the
+    # chunk index participates in the AES-GCM nonce and resume offset.
+    download_chunk_size: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+
     # encryption_mode: Mapped[str | None] = mapped_column(
     #     VARCHAR(32), nullable=True, default=None
     # )  # Encryption mode, such as 'AES' or 'RSA'; None means unencrypted.

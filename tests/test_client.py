@@ -52,7 +52,7 @@ def calculate_sha256(file_path: str) -> str:
 
 
 class AsyncStream:
-    def __init__(self, connection: "AsyncMultiplexConnection", frame_id: int):
+    def __init__(self, connection: AsyncMultiplexConnection, frame_id: int):
         self.connection = connection
         self.frame_id = frame_id
         self._queue: queue.Queue = queue.Queue(100)
@@ -868,7 +868,7 @@ class CFMSTestClient:
         frame = await self._build_and_send_request(
             stream,
             "download_file",
-            {"task_id": dl_task_id},
+            {"task_id": dl_task_id, "offset": 0, "max_chunk_size": 64 * 1024},
             include_auth=True,
         )
 

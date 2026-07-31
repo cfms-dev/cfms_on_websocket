@@ -23,6 +23,7 @@ class ClaimedFileTask:
     stored_file_size: int | None
     issued_by_username: str | None
     encryption_key: str | None = field(repr=False)
+    download_chunk_size: int | None
 
 
 def serialize_file_task(task: FileTask) -> dict[str, Any]:
@@ -132,6 +133,9 @@ def claim_file_task(
         issued_by_username=task.issued_by_username,
         encryption_key=(
             task.encryption_key if transfer_mode == TransferMode.DOWNLOAD else None
+        ),
+        download_chunk_size=(
+            task.download_chunk_size if transfer_mode == TransferMode.DOWNLOAD else None
         ),
     )
     session.expire(task)

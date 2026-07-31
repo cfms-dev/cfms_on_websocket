@@ -225,6 +225,41 @@ downloads. These values are observability signals only: the policy does not
 charge per byte, shape bandwidth continuously, or impose a hard concurrency
 cap.
 
+## File chunk negotiation and download resume
+
+Uploads and downloads use the same initial chunk-size selection rule: the
+server chooses the smallest of the client's maximum, `[server].file_chunk_size`,
+and the direction's hard limit. Upload clients may omit `max_chunk_size` for
+compatibility, in which case their maximum defaults to the 64 KiB upload hard
+limit. Explicit upload maxima must be at least 512 bytes. The server returns the
+result in the existing `ready <chunk_size>` frame.
+
+Protocol version 20 requires every `download_file.data` object to include
+`max_chunk_size` in the inclusive range 16 KiB through 2 MiB. The server chooses
+the result using the shared rule with a 2 MiB download hard limit, stores it on
+the `FileTask`, and returns it as `transfer_file.data.chunk_size` together with
+`file_size` and `total_chunks`.
+
+An initial request uses `offset = 0`. A resume request uses the byte offset of
+the next complete, durably stored chunk. Once a task has a negotiated chunk
+size, every later attempt retains it, including retries from offset zero after
+a configuration change. Non-zero offsets must be aligned to the stored size. A
+client maximum smaller than the stored size produces a `409` response containing
+`data.chunk_size`, and the task is released so a compatible client can retry.
+The file-size offset is also accepted, allowing a client that has all encrypted
+chunks but missed the final key frame to resume without downloading the chunks
+again.
+
+The AES key is a process frame in version 20. After decrypting and verifying
+the destination, the client sends `complete`; only then does the server mark
+the task complete and conclude the stream with `transfer_complete`. A disconnect
+before that acknowledgement releases the task and retains its key and chunk
+size for a safe resume.
+
+The database column is nullable for tasks created before the version 20
+migration. Their size is established on the first post-upgrade transfer or
+resume and then remains fixed.
+
 ## Configuration
 
 Upload settings are hot-reloaded from `[document.upload]`:

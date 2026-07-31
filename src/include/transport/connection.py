@@ -16,9 +16,10 @@ from websockets.exceptions import (
 from websockets.typing import Data
 
 from include.config.constants import (
-    FILE_TRANSFER_MAX_CHUNK_SIZE,
-    FILE_TRANSFER_MIN_CHUNK_SIZE,
+    DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
     GLOBAL_BROADCAST_EVENT_CHANNEL,
+    UPLOAD_TRANSFER_MAX_CHUNK_SIZE,
+    UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
 )
 from include.config.settings import global_config
 from include.config.validation import DocumentUploadPolicy
@@ -46,6 +47,20 @@ from include.transport.client_address import get_client_ip
 from include.transport.multiplexing import FrameType, Stream
 
 logger = log.bind(name="conn")
+
+
+def _negotiate_file_chunk_size(
+    client_max_chunk_size: int | None,
+    *,
+    configured_chunk_size: int,
+    hard_max_chunk_size: int,
+    default_client_max_chunk_size: int | None = None,
+) -> int:
+    if client_max_chunk_size is None:
+        if default_client_max_chunk_size is None:
+            raise ValueError("A client chunk-size limit or default is required")
+        client_max_chunk_size = default_client_max_chunk_size
+    return min(client_max_chunk_size, configured_chunk_size, hard_max_chunk_size)
 
 
 class FileTaskEnded(ConnectionError):
@@ -216,7 +231,7 @@ class ConnectionHandler:
             except TimeoutError:
                 continue
 
-    def send_file(self, task_id: str, offset: int) -> None:
+    def send_file(self, task_id: str, offset: int, max_chunk_size: int) -> None:
         """
         Sends a file associated with the given task ID to the client over a websocket connection using AES encryption.
         The method performs the following steps:
@@ -238,6 +253,7 @@ class ConnectionHandler:
             None
         """
 
+        limit_decision: DownloadLimitDecision | None = None
         with Session() as session, session.begin():
             claimed = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
             if claimed is not None:
@@ -266,6 +282,7 @@ class ConnectionHandler:
         if claimed is None:
             self._conclude_file_task_claim_failure(task_id, TransferMode.DOWNLOAD)
             return
+        assert limit_decision is not None
         if not limit_decision.allowed:
             self.conclude_request(
                 429,
@@ -283,6 +300,7 @@ class ConnectionHandler:
                 self._send_claimed_file(
                     claimed,
                     offset,
+                    max_chunk_size,
                     cancelled,
                     limit_decision,
                 )
@@ -297,6 +315,7 @@ class ConnectionHandler:
         self,
         claimed: ClaimedFileTask,
         offset: int,
+        max_chunk_size: int,
         cancelled: threading.Event,
         limit_decision: DownloadLimitDecision,
     ) -> None:
@@ -331,7 +350,47 @@ class ConnectionHandler:
             would_block=limit_decision.would_block,
         ).info("Document download transfer started")
 
-        chunk_size = global_config["server"]["file_chunk_size"]
+        if claimed.download_chunk_size is not None:
+            chunk_size = claimed.download_chunk_size
+            if chunk_size > max_chunk_size:
+                self.conclude_request(
+                    409,
+                    {"chunk_size": chunk_size},
+                    "Resume chunk size exceeds the client maximum",
+                )
+                with Session() as session, session.begin():
+                    release_file_task(session, task_id)
+                return
+        else:
+            chunk_size = _negotiate_file_chunk_size(
+                max_chunk_size,
+                configured_chunk_size=global_config["server"]["file_chunk_size"],
+                hard_max_chunk_size=DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
+            )
+            with Session() as session, session.begin():
+                file_task = session.get(FileTask, task_id)
+                if not file_task:
+                    raise ValueError(
+                        f"File transfer task not found for task_id: {task_id}"
+                    )
+                file_task.download_chunk_size = chunk_size
+
+        if offset > file_size:
+            self.conclude_request(400, {}, "Invalid offset: exceeds file size")
+            with Session() as session, session.begin():
+                release_file_task(session, task_id)
+            return
+
+        if offset != file_size and offset % chunk_size != 0:
+            self.conclude_request(
+                400,
+                {"chunk_size": chunk_size},
+                "Invalid offset: must be a multiple of chunk_size or zero",
+            )
+            with Session() as session, session.begin():
+                release_file_task(session, task_id)
+            return
+
         total_chunks = (file_size + chunk_size - 1) // chunk_size
 
         self.stream.send(
@@ -362,30 +421,28 @@ class ConnectionHandler:
                 release_file_task(session, task_id)
             return
 
-        if offset > file_size:
-            self.logger.error(
-                f"Invalid offset: {offset} (exceeds file size: {file_size})"
-            )
-            self.conclude_request(400, {}, "Invalid offset: exceeds file size")
-            with Session() as session, session.begin():
-                release_file_task(session, task_id)
-            return
-
-        if offset % chunk_size != 0:
-            self.logger.error(
-                f"Invalid offset: {offset} (not aligned to chunk size: {chunk_size})"
-            )
-            self.conclude_request(
-                400,
-                {},
-                "Invalid offset: must be a multiple of chunk_size or zero",
-            )
-            with Session() as session, session.begin():
-                release_file_task(session, task_id)
-            return
-
         if file_size == 0:
             self.logger.info("Empty file, no need to send")
+            self.stream.send(
+                orjson.dumps(
+                    {
+                        "action": "transfer_file",
+                        "data": {
+                            "flag": "empty_file",
+                        },
+                    },
+                )
+            )
+            received_response = self._recv_file_task_frame(
+                task_id,
+                cancelled,
+                DocumentUploadPolicy.from_config().idle_timeout_seconds,
+            )
+            if received_response.data != b"complete":
+                self.conclude_request(400, {}, "Client did not confirm file completion")
+                with Session() as session, session.begin():
+                    release_file_task(session, task_id)
+                return
             with Session() as session, session.begin():
                 file_task = session.get(FileTask, task_id)
                 if not file_task:
@@ -400,14 +457,7 @@ class ConnectionHandler:
                     )
                     return
             self.stream.send(
-                orjson.dumps(
-                    {
-                        "action": "transfer_file",
-                        "data": {
-                            "flag": "empty_file",
-                        },
-                    },
-                ),
+                orjson.dumps({"action": "transfer_complete", "data": {}}),
                 FrameType.CONCLUSION,
             )
             return
@@ -479,30 +529,44 @@ class ConnectionHandler:
                     )
                     chunk_index += 1
 
+            self.stream.send(
+                orjson.dumps(
+                    {
+                        "action": "aes_key",
+                        "data": {
+                            "key": base64.b64encode(aes_key).decode(),
+                        },
+                    },
+                )
+            )
+
+            received_response = self._recv_file_task_frame(
+                task_id,
+                cancelled,
+                DocumentUploadPolicy.from_config().idle_timeout_seconds,
+            )
+            if received_response.data != b"complete":
+                self.conclude_request(400, {}, "Client did not confirm file completion")
+                with Session() as session, session.begin():
+                    release_file_task(session, task_id)
+                return
+
             with Session() as session, session.begin():
                 file_task = session.get(FileTask, task_id)
                 if not file_task:
                     raise ValueError(
                         f"File transfer task not found for task_id: {task_id}"
                     )
-                if complete_file_task(session, task_id):
-                    key_to_send = base64.b64encode(aes_key).decode()
-                else:
-                    key_to_send = None
-
-            if key_to_send is None:
-                self.conclude_request(410, {"task_status": "cancelled"}, "Task ended")
-                return
+                if not complete_file_task(session, task_id):
+                    self.conclude_request(
+                        410,
+                        {"task_status": FileTaskStatus(file_task.status).name.lower()},
+                        "Task ended",
+                    )
+                    return
 
             self.stream.send(
-                orjson.dumps(
-                    {
-                        "action": "aes_key",
-                        "data": {
-                            "key": key_to_send,
-                        },
-                    },
-                ),
+                orjson.dumps({"action": "transfer_complete", "data": {}}),
                 FrameType.CONCLUSION,
             )
 
@@ -607,7 +671,7 @@ class ConnectionHandler:
                                 "file_size": {"type": "integer"},
                                 "max_chunk_size": {
                                     "type": "integer",
-                                    "minimum": FILE_TRANSFER_MIN_CHUNK_SIZE,
+                                    "minimum": UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
                                 },
                             },
                             "required": ["file_size"],
@@ -627,11 +691,13 @@ class ConnectionHandler:
         sha256: str = task_info["data"].get("sha256")
         # required field, guaranteed by JSON Schema validation
         file_size: int = task_info["data"]["file_size"]
-        max_chunk_size: int = task_info["data"].get(
-            "max_chunk_size", FILE_TRANSFER_MAX_CHUNK_SIZE
+        max_chunk_size: int | None = task_info["data"].get("max_chunk_size")
+        chunk_size = _negotiate_file_chunk_size(
+            max_chunk_size,
+            configured_chunk_size=global_config["server"]["file_chunk_size"],
+            hard_max_chunk_size=UPLOAD_TRANSFER_MAX_CHUNK_SIZE,
+            default_client_max_chunk_size=UPLOAD_TRANSFER_MAX_CHUNK_SIZE,
         )
-
-        chunk_size = min(max_chunk_size, FILE_TRANSFER_MAX_CHUNK_SIZE)
 
         ProviderManager().storage.makedirs(os.path.dirname(file_path), exist_ok=True)
 

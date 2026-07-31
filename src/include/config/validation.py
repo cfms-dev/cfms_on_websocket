@@ -439,6 +439,18 @@ def _validate_client_certificate_config(config: _ConfigSource) -> None:
         )
 
 
+def _validate_file_chunk_size_config(config: _ConfigSource) -> None:
+    server = _section(config, "server")
+    try:
+        value = server["file_chunk_size"]
+    except KeyError as exc:
+        raise ConfigValidationError(
+            "Missing required configuration value server.file_chunk_size"
+        ) from exc
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigValidationError("server.file_chunk_size must be a positive integer")
+
+
 def validate_config(config: _ConfigSource) -> None:
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
@@ -446,6 +458,7 @@ def validate_config(config: _ConfigSource) -> None:
     DocumentUploadPolicy.from_config(config)
     DocumentCreationRiskPolicy.from_config(config)
     DocumentDownloadRiskPolicy.from_config(config)
+    _validate_file_chunk_size_config(config)
     _validate_client_certificate_config(config)
 
     from include.extensions.manager import validate_extension_config

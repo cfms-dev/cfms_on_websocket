@@ -21,6 +21,8 @@ import jsonschema
 from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import (
+    DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
+    DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
     FILE_TASK_DEFAULT_DURATION_SECONDS,
     ROOT_DIRECTORY_ID,
 )
@@ -779,17 +781,23 @@ class RequestDownloadFileHandler(RequestHandler):
         "properties": {
             "task_id": {"type": "string", "minLength": 1},
             "offset": {"type": "integer", "minimum": 0},
+            "max_chunk_size": {
+                "type": "integer",
+                "minimum": DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
+                "maximum": DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
+            },
         },
-        "required": ["task_id"],
+        "required": ["task_id", "max_chunk_size"],
         "additionalProperties": False,
     }
 
     def handle(self, handler: ConnectionHandler):
         task_id: str = handler.data["task_id"]
         offset: int = handler.data.get("offset", 0)
+        max_chunk_size: int = handler.data["max_chunk_size"]
 
         # The server still needs to send one more response.
-        handler.send_file(task_id, offset)
+        handler.send_file(task_id, offset, max_chunk_size)
 
 
 class RequestUploadFileHandler(RequestHandler):
