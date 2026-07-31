@@ -1202,6 +1202,7 @@ def test_empty_upload_uses_structured_v21_response(file_task_context) -> None:
         assert task.status == FileTaskStatus.COMPLETED
         assert file.active is True
         assert file.size == 0
+        assert file.sha256 is None
 
 
 class TestFileTransfer:

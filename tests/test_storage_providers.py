@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from include.providers.storage import local as local_storage
 from include.providers.storage.local import LocalStorageProvider
 
 
@@ -61,6 +62,38 @@ def test_local_resumable_upload_reopens_at_complete_chunk(tmp_path: Path):
         upload.finish()
 
     assert path.read_bytes() == b"a" * 512 + b"b" * 512
+
+
+def test_local_resumable_upload_closes_file_when_initialization_fails(
+    monkeypatch,
+) -> None:
+    class RecordingFile:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            self.closed = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    opened_file = RecordingFile()
+    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: opened_file)
+
+    def fail_getsize(_path: str) -> int:
+        raise OSError("size lookup failed")
+
+    monkeypatch.setattr(local_storage.os.path, "getsize", fail_getsize)
+
+    with pytest.raises(OSError, match="size lookup failed"):
+        LocalStorageProvider().open_resumable_upload(
+            "resumable.bin", file_size=1024, chunk_size=512
+        )
+
+    assert opened_file.closed is True
 
 
 def test_s3_resumable_upload_restores_committed_parts():

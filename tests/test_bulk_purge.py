@@ -65,6 +65,7 @@ class MFileTask(_Base):
     file_id: Mapped[str] = mapped_column(
         VARCHAR(255), ForeignKey("files.id", ondelete="CASCADE"), nullable=False
     )
+    upload_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 @pytest.fixture()
@@ -95,9 +96,11 @@ def bulk_purge_module(monkeypatch):
     file_module = types.ModuleType("include.database.models.files")
     file_module.File = MFile
     file_module.FileTask = MFileTask
-    file_module._queue_deferred_file_deletion = lambda session, path: (
-        session.info.setdefault("queued_paths", []).append(path)
-    )
+
+    def queue_deferred_file_deletion(session, path, upload_session_ids=()):
+        session.info.setdefault("queued_files", []).append((path, upload_session_ids))
+
+    file_module._queue_deferred_file_deletion = queue_deferred_file_deletion
 
     compiled_rules_module = types.ModuleType(
         "include.domains.access.authorization.compiled_rules"
@@ -154,7 +157,14 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
     session, bulk_purge_module, monkeypatch
 ):
     _seed_document_with_revision(session, "doc1", "rev1", "file1")
-    session.add(MFileTask(id="task1", file_id="file1"))
+    session.add_all(
+        [
+            MFileTask(
+                id="task1", file_id="file1", upload_session_id="upload-session-1"
+            ),
+            MFileTask(id="task2", file_id="file1", upload_session_id=None),
+        ]
+    )
     session.add(MCompiledAccessRuleSet(id="rule-set-doc1", node_id="doc1"))
     session.commit()
 
@@ -172,7 +182,7 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
     assert session.query(MCompiledAccessRuleSet).count() == 0
     assert session.query(MFileTask).count() == 0
     assert session.query(MFile).count() == 0
-    assert session.info["queued_paths"] == ["/tmp/file1"]
+    assert session.info["queued_files"] == [("/tmp/file1", ("upload-session-1",))]
 
 
 def test_purge_documents_bulk_keeps_shared_files(
@@ -212,4 +222,4 @@ def test_purge_documents_bulk_keeps_shared_files(
     assert session.get(MDocumentRevision, "rev2") is not None
     assert session.query(MCompiledAccessRuleSet).count() == 0
     assert session.get(MFile, "shared") is not None
-    assert "queued_paths" not in session.info
+    assert "queued_files" not in session.info

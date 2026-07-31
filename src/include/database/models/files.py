@@ -118,7 +118,7 @@ class File(Base):
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
     )
 
-    sha256: Mapped[str] = mapped_column(VARCHAR(64), nullable=True)
+    sha256: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
     # calculate sha256 takes time, especially for large files lol
     #
     # there are also a lot of situations where sha256 in the database is null
@@ -202,12 +202,14 @@ class File(Base):
         session = object_session(self)
         if session is not None:
             upload_session_ids = tuple(
-                session.scalars(
+                upload_session_id
+                for upload_session_id in session.scalars(
                     select(FileTask.upload_session_id).where(
                         FileTask.file_id == self.id,
                         FileTask.upload_session_id.is_not(None),
                     )
                 ).all()
+                if upload_session_id is not None
             )
             # Remove associated task records as part of the DB transaction.
             session.query(FileTask).filter(FileTask.file_id == self.id).delete(

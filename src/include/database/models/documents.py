@@ -483,9 +483,10 @@ class Document(Node):
                             FileTask.upload_session_id.is_not(None),
                         )
                     ):
-                        upload_sessions_by_file.setdefault(file_id, []).append(
-                            upload_session_id
-                        )
+                        if upload_session_id is not None:
+                            upload_sessions_by_file.setdefault(file_id, []).append(
+                                upload_session_id
+                            )
                     session.query(FileTask).filter(
                         FileTask.file_id.in_(list(chunk))
                     ).delete(synchronize_session=False)
