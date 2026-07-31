@@ -57,6 +57,15 @@ def _set_revision_file_size(revision_id: str, size: int) -> None:
         connection.commit()
 
 
+def _get_file_task_status(task_id: str) -> int | None:
+    with sqlite3.connect("src/app.db") as connection:
+        row = connection.execute(
+            "SELECT status FROM file_tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+
+    return row[0] if row else None
+
+
 class _FakeFrame:
     def __init__(self, data):
         self.data = data
@@ -1250,6 +1259,7 @@ class TestFileTransfer:
         assert original_hash == downloaded_hash
         assert original_size == os.path.getsize(download_dest)
         assert _get_revision_file_size(current_rev["id"]) == original_size
+        assert _get_file_task_status(dl_task_id) == 1
 
     @pytest.mark.asyncio
     async def test_download_invalid_task_id_raises_runtime_error(
@@ -1298,6 +1308,44 @@ class TestFileTransfer:
             )
 
         assert not dest.exists() or dest.stat().st_size == 0
+
+    @pytest.mark.asyncio
+    async def test_empty_download_confirms_completion(
+        self, authenticated_client: CFMSTestClient, monkeypatch, tmp_path
+    ):
+        class FakeFrame:
+            def __init__(self, data):
+                self.data = data
+
+        class FakeStream:
+            def __init__(self):
+                self.sent_payloads = []
+                self.responses = [
+                    FakeFrame(b'{"action":"transfer_file","data":{"file_size":0}}'),
+                    FakeFrame(
+                        b'{"action":"transfer_file","data":{"flag":"empty_file"}}'
+                    ),
+                    FakeFrame(b'{"action":"transfer_complete","data":{}}'),
+                ]
+
+            async def send(self, data):
+                self.sent_payloads.append(data)
+
+            async def recv(self):
+                return self.responses.pop(0)
+
+        fake_stream = FakeStream()
+        monkeypatch.setattr(
+            authenticated_client.multiplexer, "open_stream", lambda: fake_stream
+        )
+
+        dest = tmp_path / "empty-download.bin"
+        await authenticated_client.download_file_from_server(
+            "empty-download-task", str(dest)
+        )
+
+        assert dest.read_bytes() == b""
+        assert fake_stream.sent_payloads[-2:] == [b"ready", b"complete"]
 
     @pytest.mark.asyncio
     async def test_upload_missing_source_file_raises_clear_error(

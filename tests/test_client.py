@@ -14,6 +14,7 @@ import secrets
 import ssl
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import orjson
@@ -886,6 +887,7 @@ class CFMSTestClient:
 
         chunks = []
         aes_key = None
+        empty_file = False
 
         while True:
             recv_frame = await stream.recv()
@@ -912,20 +914,35 @@ class CFMSTestClient:
             elif action == "aes_key":
                 aes_key = base64.b64decode(msg["data"]["key"])
                 break
+            elif action == "transfer_file" and msg.get("data", {}).get("flag") == (
+                "empty_file"
+            ):
+                empty_file = True
+                break
             elif action == "abort":
                 raise RuntimeError("Server aborted file transfer")
 
-        if not aes_key:
-            raise RuntimeError("Did not receive AES key")
+        if empty_file:
+            Path(dest_path).write_bytes(b"")
+        else:
+            if not aes_key:
+                raise RuntimeError("Did not receive AES key")
 
-        # Sort and write chunks
-        chunks.sort(key=lambda x: x[0])
-        with open(dest_path, "wb") as f:
-            for index, encrypted_chunk, tag, prefix in chunks:
-                nonce = prefix + index.to_bytes(4, "big")
-                cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
-                decrypted_chunk = cipher.decrypt_and_verify(encrypted_chunk, tag)
-                f.write(decrypted_chunk)
+            chunks.sort(key=lambda x: x[0])
+            with open(dest_path, "wb") as f:
+                for index, encrypted_chunk, tag, prefix in chunks:
+                    nonce = prefix + index.to_bytes(4, "big")
+                    cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
+                    decrypted_chunk = cipher.decrypt_and_verify(encrypted_chunk, tag)
+                    f.write(decrypted_chunk)
+
+        await stream.send(b"complete")
+        completion = await self._parse_frame_data(await stream.recv())
+        if (
+            not isinstance(completion, dict)
+            or completion.get("action") != "transfer_complete"
+        ):
+            raise RuntimeError("Server did not confirm file transfer completion")
 
     async def upload_file_to_server(
         self,
