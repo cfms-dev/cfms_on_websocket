@@ -927,7 +927,14 @@ class CFMSTestClient:
                 decrypted_chunk = cipher.decrypt_and_verify(encrypted_chunk, tag)
                 f.write(decrypted_chunk)
 
-    async def upload_file_to_server(self, task_id: str, file_path: str):
+    async def upload_file_to_server(
+        self,
+        task_id: str,
+        file_path: str,
+        *,
+        restart: bool = False,
+        max_chunk_size: int = 64 * 1024,
+    ):
         """
         Upload a file to the server over WebSocket connection.
 
@@ -940,7 +947,13 @@ class CFMSTestClient:
             RuntimeError: If upload is rejected by server
         """
 
-        # Start stream for file upload handshake + transfer
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"Upload source file not found: {file_path}")
+
+        file_size = os.path.getsize(file_path)
+        sha256 = calculate_sha256(file_path) if file_size else None
+
+        # Start stream for file upload negotiation + transfer
         if self.multiplexer is None:
             raise RuntimeError("Not connected (multiplexing missing).")
 
@@ -948,7 +961,13 @@ class CFMSTestClient:
         frame = await self._build_and_send_request(
             stream,
             "upload_file",
-            {"task_id": task_id},
+            {
+                "task_id": task_id,
+                "file_size": file_size,
+                "sha256": sha256,
+                "max_chunk_size": max_chunk_size,
+                "restart": restart,
+            },
             include_auth=True,
         )
 
@@ -960,60 +979,29 @@ class CFMSTestClient:
         if not isinstance(response, dict) or response.get("action") != "transfer_file":
             raise ValueError("Invalid action received for file transfer")
 
-        if not os.path.isfile(file_path):
-            raise FileNotFoundError(f"Upload source file not found: {file_path}")
+        transfer_data = response.get("data", {})
+        chunk_size = transfer_data.get("chunk_size")
+        offset = transfer_data.get("offset")
+        if (
+            transfer_data.get("file_size") != file_size
+            or not isinstance(chunk_size, int)
+            or not isinstance(offset, int)
+            or offset < 0
+            or offset > file_size
+        ):
+            raise RuntimeError("Invalid resumable upload response")
 
-        file_size = os.path.getsize(file_path)
-        sha256 = calculate_sha256(file_path) if file_size else None
+        with open(file_path, "rb") as f:
+            f.seek(offset)
+            while offset < file_size:
+                chunk = f.read(min(chunk_size, file_size - offset))
+                if not chunk:
+                    raise RuntimeError("Upload source ended before declared file size")
+                await stream.send(chunk)
+                offset += len(chunk)
 
-        task_info = {
-            "action": "transfer_file",
-            "data": {
-                "sha256": sha256,
-                "file_size": file_size,
-            },
-        }
-
-        await stream.send(orjson.dumps(task_info))
-        ready_frame = await stream.recv()
-        raw_reply = ready_frame.data
-        if isinstance(raw_reply, bytes):
-            received_response = raw_reply.decode("utf-8", errors="ignore")
-        elif isinstance(raw_reply, memoryview):
-            received_response = raw_reply.tobytes().decode("utf-8", errors="ignore")
-        elif isinstance(raw_reply, str):
-            received_response = raw_reply
-        else:
-            raise RuntimeError("Unexpected file transfer response")
-
-        if received_response.startswith("ready"):
-            ready = True
-        elif received_response == "stop":
-            ready = False
-        else:
-            raise RuntimeError("Unexpected file transfer handshake response")
-
-        if ready:
-            try:
-                chunk_size = int(received_response.split()[1])
-                with open(file_path, "rb") as f:
-                    while True:
-                        chunk = f.read(chunk_size)
-                        if not chunk:
-                            break
-                        await stream.send(chunk)
-
-                        if len(chunk) < chunk_size:
-                            break
-
-                # need to wait for server confirmation
-                server_frame = await stream.recv()
-                server_response = await self._parse_frame_data(server_frame)
-                return server_response
-            except Exception:
-                raise
-        else:
-            raise RuntimeError("Server rejected file upload")
+        server_frame = await stream.recv()
+        return await self._parse_frame_data(server_frame)
 
     # def receive_file_from_server(
     #     self,

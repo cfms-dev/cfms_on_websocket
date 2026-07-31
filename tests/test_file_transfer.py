@@ -99,7 +99,28 @@ class _FakeStorage:
         os.makedirs(self._resolve(path), mode=mode, exist_ok=exist_ok)
 
     def remove(self, path):
-        os.remove(self._resolve(path))
+        try:
+            os.remove(self._resolve(path))
+            return True
+        except FileNotFoundError:
+            return False
+
+    def open_resumable_upload(
+        self,
+        path,
+        *,
+        file_size,
+        chunk_size,
+        session_id=None,
+        checkpoint_size=None,
+    ):
+        from include.providers.storage.local import LocalResumableUpload
+
+        return LocalResumableUpload(
+            str(self._resolve(path)),
+            file_size,
+            chunk_size,
+        )
 
 
 class _FakeProviderManager:
@@ -184,6 +205,13 @@ class _AssertingUploadStream(_FakeUploadStream):
 
     def recv(self, timeout=None):
         assert self.tracker.active == 0
+        return super().recv(timeout)
+
+
+class _DisconnectingUploadStream(_FakeUploadStream):
+    def recv(self, timeout=None):
+        if not self.responses:
+            raise ConnectionError("upload connection closed")
         return super().recv(timeout)
 
 
@@ -615,7 +643,7 @@ def test_concurrent_upload_reports_conflict(file_task_context) -> None:
     stream = _FakeUploadStream([])
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
 
-    handler.receive_file(task_id)
+    handler.receive_file(task_id, 1, hashlib.sha256(b"x").hexdigest(), 512, False)
 
     response = _sent_json_messages(stream)[-1]
     assert response["code"] == 409
@@ -674,17 +702,27 @@ def test_file_request_handlers_delegate_claiming(file_task_context) -> None:
 
     calls = []
     handler = SimpleNamespace(
-        data={"task_id": "task", "offset": 64, "max_chunk_size": 32 * 1024},
+        data={
+            "task_id": "task",
+            "offset": 64,
+            "file_size": 1,
+            "sha256": "A" * 64,
+            "max_chunk_size": 32 * 1024,
+            "restart": True,
+        },
         send_file=lambda task_id, offset, max_chunk_size: calls.append(
             ("download", task_id, offset, max_chunk_size)
         ),
-        receive_file=lambda task_id: calls.append(("upload", task_id)),
+        receive_file=lambda *args: calls.append(("upload", *args)),
     )
 
     RequestDownloadFileHandler().handle(handler)
     RequestUploadFileHandler().handle(handler)
 
-    assert calls == [("download", "task", 64, 32 * 1024), ("upload", "task")]
+    assert calls == [
+        ("download", "task", 64, 32 * 1024),
+        ("upload", "task", 1, "a" * 64, 32 * 1024, True),
+    ]
 
 
 def test_download_request_requires_bounded_chunk_size(file_task_context) -> None:
@@ -704,6 +742,28 @@ def test_download_request_requires_bounded_chunk_size(file_task_context) -> None
         jsonschema.validate(
             {"task_id": "task", "max_chunk_size": 4 * 1024 * 1024},
             RequestDownloadFileHandler.schema,
+        )
+
+
+def test_upload_request_requires_v21_metadata(file_task_context) -> None:
+    from include.domains.documents.handlers.documents import RequestUploadFileHandler
+
+    valid = {
+        "task_id": "task",
+        "file_size": 1,
+        "sha256": "a" * 64,
+        "max_chunk_size": 512,
+    }
+    jsonschema.validate(valid, RequestUploadFileHandler.schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {"task_id": "task"},
+            RequestUploadFileHandler.schema,
+        )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {**valid, "sha256": "not-a-digest"},
+            RequestUploadFileHandler.schema,
         )
 
 
@@ -750,7 +810,7 @@ def test_download_negotiates_and_persists_chunk_size(
     )
     with file_task_context.session() as session:
         assert (
-            session.get(file_task_context.FileTask, task_id).download_chunk_size
+            session.get(file_task_context.FileTask, task_id).chunk_size
             == expected_chunk_size
         )
 
@@ -769,7 +829,7 @@ def test_resume_reuses_persisted_chunk_size(
         mode=TransferMode.DOWNLOAD,
     )
     with file_task_context.session.begin() as session:
-        session.get(file_task_context.FileTask, task_id).download_chunk_size = 64 * 1024
+        session.get(file_task_context.FileTask, task_id).chunk_size = 64 * 1024
     stream = _FakeDownloadStream()
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
     monkeypatch.setattr(
@@ -796,7 +856,7 @@ def test_resume_rejects_smaller_client_limit_and_releases_task(
         mode=TransferMode.DOWNLOAD,
     )
     with file_task_context.session.begin() as session:
-        session.get(file_task_context.FileTask, task_id).download_chunk_size = 64 * 1024
+        session.get(file_task_context.FileTask, task_id).chunk_size = 64 * 1024
     stream = _FakeDownloadStream()
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
 
@@ -825,7 +885,7 @@ def test_resume_rejects_offset_not_aligned_to_persisted_chunk_size(
         mode=TransferMode.DOWNLOAD,
     )
     with file_task_context.session.begin() as session:
-        session.get(file_task_context.FileTask, task_id).download_chunk_size = 64 * 1024
+        session.get(file_task_context.FileTask, task_id).chunk_size = 64 * 1024
     stream = _FakeDownloadStream()
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
 
@@ -871,7 +931,7 @@ def test_resume_after_all_chunks_replays_only_missing_key(
         task = session.get(file_task_context.FileTask, task_id)
         assert task.status == FileTaskStatus.PENDING
         assert task.encryption_key is not None
-        assert task.download_chunk_size == 64 * 1024
+        assert task.chunk_size == 64 * 1024
 
     resumed_stream = _FakeDownloadStream()
     resumed_handler = _new_transfer_handler(
@@ -899,7 +959,6 @@ def test_resume_after_all_chunks_replays_only_missing_key(
 @pytest.mark.parametrize(
     ("client_max_chunk_size", "configured_chunk_size", "expected_chunk_size"),
     [
-        (None, 2 * 1024 * 1024, 64 * 1024),
         (1024, 2 * 1024 * 1024, 1024),
         (64 * 1024, 2048, 2048),
         (4 * 1024 * 1024, 4 * 1024 * 1024, 64 * 1024),
@@ -921,18 +980,8 @@ def test_upload_negotiates_shared_chunk_size(
         mode=TransferMode.UPLOAD,
     )
     payload = b"u"
-    transfer_data = {
-        "sha256": hashlib.sha256(payload).hexdigest(),
-        "file_size": len(payload),
-    }
-    if client_max_chunk_size is not None:
-        transfer_data["max_chunk_size"] = client_max_chunk_size
-    stream = _FakeUploadStream(
-        [
-            orjson.dumps({"action": "transfer_file", "data": transfer_data}),
-            payload,
-        ]
-    )
+    sha256 = hashlib.sha256(payload).hexdigest()
+    stream = _FakeUploadStream([payload])
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
     monkeypatch.setattr(
         file_task_context.connection,
@@ -940,19 +989,219 @@ def test_upload_negotiates_shared_chunk_size(
         {"server": {"file_chunk_size": configured_chunk_size}},
     )
 
-    handler.receive_file(task_id)
-
-    ready = next(
-        sent.data
-        for sent in stream.sent_payloads
-        if isinstance(sent.data, str) and sent.data.startswith("ready ")
+    handler.receive_file(
+        task_id,
+        len(payload),
+        sha256,
+        client_max_chunk_size,
+        False,
     )
-    assert ready == f"ready {expected_chunk_size}"
+
+    ready = _sent_json_messages(stream)[0]
+    assert ready["data"] == {
+        "file_size": len(payload),
+        "chunk_size": expected_chunk_size,
+        "offset": 0,
+        "supports_resume": True,
+    }
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.COMPLETED
+        assert task.chunk_size == expected_chunk_size
+
+
+def test_local_upload_resumes_from_complete_chunk(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    payload = b"r" * chunk_size + b"tail"
+    sha256 = hashlib.sha256(payload).hexdigest()
+    relative_path = "uploads/resumable-local.bin"
+    task_id, file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+
+    first_stream = _DisconnectingUploadStream([payload[:chunk_size]])
+    first_handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, first_stream
+    )
+    first_handler.receive_file(task_id, len(payload), sha256, chunk_size, False)
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.PENDING
+        assert task.chunk_size == chunk_size
+        assert task.upload_file_size == len(payload)
+        assert task.upload_sha256 == sha256
+
+    resumed_stream = _FakeUploadStream([payload[chunk_size:]])
+    resumed_handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, resumed_stream
+    )
+    resumed_handler.receive_file(task_id, len(payload), sha256, chunk_size, False)
+
+    ready = _sent_json_messages(resumed_stream)[0]
+    assert ready["data"]["offset"] == chunk_size
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        file = session.get(file_task_context.File, file_id)
+        assert task.status == FileTaskStatus.COMPLETED
+        assert file.active is True
+    assert (
+        file_task_context.connection.ProviderManager().storage.root / relative_path
+    ).read_bytes() == payload
+
+
+def test_upload_metadata_conflict_requires_explicit_restart(
+    file_task_context,
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    original = b"a" * (chunk_size * 2)
+    replacement = b"b" * chunk_size
+    original_sha256 = hashlib.sha256(original).hexdigest()
+    replacement_sha256 = hashlib.sha256(replacement).hexdigest()
+    relative_path = "uploads/restarted-local.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+
+    first_handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler,
+        _DisconnectingUploadStream([original[:chunk_size]]),
+    )
+    first_handler.receive_file(
+        task_id, len(original), original_sha256, chunk_size, False
+    )
+
+    conflict_stream = _FakeUploadStream([])
+    conflict_handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, conflict_stream
+    )
+    conflict_handler.receive_file(
+        task_id,
+        len(replacement),
+        replacement_sha256,
+        chunk_size,
+        False,
+    )
+    response = _sent_json_messages(conflict_stream)[-1]
+    assert response["code"] == 409
+    assert response["data"] == {
+        "file_size": len(original),
+        "sha256": original_sha256,
+        "chunk_size": chunk_size,
+    }
+
+    restart_stream = _FakeUploadStream([replacement])
+    restart_handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, restart_stream
+    )
+    restart_handler.receive_file(
+        task_id,
+        len(replacement),
+        replacement_sha256,
+        chunk_size,
+        True,
+    )
+    assert _sent_json_messages(restart_stream)[0]["data"]["offset"] == 0
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.COMPLETED
+        assert task.chunk_size == chunk_size
+
+
+def test_upload_without_digest_discards_disconnected_progress(
+    file_task_context,
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    relative_path = "uploads/non-resumable-local.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler,
+        _DisconnectingUploadStream([b"x" * chunk_size]),
+    )
+
+    handler.receive_file(task_id, chunk_size * 2, None, chunk_size, False)
+
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.PENDING
+        assert task.chunk_size == chunk_size
+        assert task.upload_file_size is None
+        assert task.upload_sha256 is None
+    assert not (
+        file_task_context.connection.ProviderManager().storage.root / relative_path
+    ).exists()
+
+
+def test_upload_rejects_client_limit_below_persisted_chunk_size(
+    file_task_context,
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    relative_path = "uploads/chunk-size-conflict.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    with file_task_context.session.begin() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        task.chunk_size = 1024
+
+    stream = _FakeUploadStream([])
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+    handler.receive_file(
+        task_id,
+        1,
+        hashlib.sha256(b"x").hexdigest(),
+        512,
+        False,
+    )
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 409
+    assert response["data"] == {"chunk_size": 1024}
     with file_task_context.session() as session:
         assert (
             session.get(file_task_context.FileTask, task_id).status
-            == FileTaskStatus.COMPLETED
+            == FileTaskStatus.PENDING
         )
+
+
+def test_empty_upload_uses_structured_v21_response(file_task_context) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    relative_path = "uploads/empty.bin"
+    task_id, file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    stream = _FakeUploadStream([])
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.receive_file(
+        task_id,
+        0,
+        None,
+        file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
+        False,
+    )
+
+    ready, conclusion = _sent_json_messages(stream)
+    assert ready["action"] == "transfer_file"
+    assert ready["data"]["offset"] == 0
+    assert ready["data"]["supports_resume"] is False
+    assert conclusion["code"] == 200
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        file = session.get(file_task_context.File, file_id)
+        assert task.status == FileTaskStatus.COMPLETED
+        assert file.active is True
+        assert file.size == 0
 
 
 class TestFileTransfer:
@@ -1125,26 +1374,21 @@ def test_exact_chunk_upload_marks_file_task_completed(
     task_id, file_id = _create_file_task(file_task_context, relative_path, mode=1)
     chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
     payload = b"a" * (chunk_size * 2)
-    transfer_request = orjson.dumps(
-        {
-            "action": "transfer_file",
-            "data": {
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "file_size": len(payload),
-                "max_chunk_size": chunk_size,
-            },
-        }
-    )
     stream = _FakeUploadStream(
         [
-            transfer_request,
             payload[:chunk_size],
             payload[chunk_size:],
         ]
     )
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
 
-    handler.receive_file(task_id)
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
+    )
 
     with file_task_context.session() as session:
         task = session.get(file_task_context.FileTask, task_id)
@@ -1171,22 +1415,11 @@ def test_upload_does_not_hold_db_session_while_receiving_chunks(
     tracker = _TrackingSessionFactory(file_task_context.session)
     chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
     payload = b"b" * (chunk_size + 1)
-    transfer_request = orjson.dumps(
-        {
-            "action": "transfer_file",
-            "data": {
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "file_size": len(payload),
-                "max_chunk_size": chunk_size,
-            },
-        }
-    )
 
     monkeypatch.setattr(connection_handler, "Session", tracker)
 
     stream = _AssertingUploadStream(
         [
-            transfer_request,
             payload[:chunk_size],
             payload[chunk_size:],
         ],
@@ -1194,7 +1427,13 @@ def test_upload_does_not_hold_db_session_while_receiving_chunks(
     )
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
 
-    handler.receive_file(task_id)
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
+    )
 
     assert tracker.active == 0
 
@@ -1204,17 +1443,7 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
     relative_path = "uploads/deferred-confirmation.bin"
     task_id, file_id = _create_file_task(context, relative_path, mode=1)
     payload = b"c" * context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
-    transfer_request = orjson.dumps(
-        {
-            "action": "transfer_file",
-            "data": {
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "file_size": len(payload),
-                "max_chunk_size": context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
-            },
-        }
-    )
-    stream = _FakeUploadStream([transfer_request, payload])
+    stream = _FakeUploadStream([payload])
     handler = _new_transfer_handler(context.ConnectionHandler, stream)
     release_entered = threading.Event()
     allow_release = threading.Event()
@@ -1262,7 +1491,16 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
         ),
     )
 
-    transfer_thread = threading.Thread(target=handler.receive_file, args=(task_id,))
+    transfer_thread = threading.Thread(
+        target=handler.receive_file,
+        args=(
+            task_id,
+            len(payload),
+            hashlib.sha256(payload).hexdigest(),
+            context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
+            False,
+        ),
+    )
     transfer_thread.start()
     assert release_entered.wait(2)
     assert transfer_thread.is_alive()
@@ -1281,21 +1519,7 @@ def test_upload_hook_write_rolls_back_with_completion(file_task_context, monkeyp
     relative_path = "uploads/commit-hook-rollback.bin"
     task_id, file_id = _create_file_task(context, relative_path, mode=1)
     payload = b"r" * context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
-    stream = _FakeUploadStream(
-        [
-            orjson.dumps(
-                {
-                    "action": "transfer_file",
-                    "data": {
-                        "sha256": hashlib.sha256(payload).hexdigest(),
-                        "file_size": len(payload),
-                        "max_chunk_size": context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
-                    },
-                }
-            ),
-            payload,
-        ]
-    )
+    stream = _FakeUploadStream([payload])
     handler = _new_transfer_handler(context.ConnectionHandler, stream)
 
     def fail_before_commit(session, id, **_kwargs):
@@ -1331,7 +1555,13 @@ def test_upload_hook_write_rolls_back_with_completion(file_task_context, monkeyp
         ),
     )
 
-    handler.receive_file(task_id)
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
+        False,
+    )
 
     assert [
         response["code"]
@@ -1354,21 +1584,7 @@ def test_post_upload_response_hook_failure_does_not_send_second_response(
     relative_path = "uploads/post-response-failure.bin"
     task_id, _file_id = _create_file_task(context, relative_path, mode=1)
     payload = b"p" * context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
-    stream = _FakeUploadStream(
-        [
-            orjson.dumps(
-                {
-                    "action": "transfer_file",
-                    "data": {
-                        "sha256": hashlib.sha256(payload).hexdigest(),
-                        "file_size": len(payload),
-                        "max_chunk_size": context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
-                    },
-                }
-            ),
-            payload,
-        ]
-    )
+    stream = _FakeUploadStream([payload])
     handler = _new_transfer_handler(context.ConnectionHandler, stream)
     reported = []
 
@@ -1393,7 +1609,13 @@ def test_post_upload_response_hook_failure_does_not_send_second_response(
         lambda error, **kwargs: reported.append((error, kwargs)),
     )
 
-    handler.receive_file(task_id)
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
+        False,
+    )
 
     responses = _sent_json_messages(stream)
     assert [response["code"] for response in responses if "code" in response] == [200]
@@ -1409,24 +1631,16 @@ def test_duplicate_and_unique_upload_confirmation_p95_are_close(file_task_contex
     def upload_once(label, index, payload):
         relative_path = f"uploads/latency-{label}-{index}.bin"
         task_id, _file_id = _create_file_task(context, relative_path, mode=1)
-        stream = _FakeUploadStream(
-            [
-                orjson.dumps(
-                    {
-                        "action": "transfer_file",
-                        "data": {
-                            "sha256": hashlib.sha256(payload).hexdigest(),
-                            "file_size": len(payload),
-                            "max_chunk_size": chunk_size,
-                        },
-                    }
-                ),
-                payload,
-            ]
-        )
+        stream = _FakeUploadStream([payload])
         handler = _new_transfer_handler(context.ConnectionHandler, stream)
         started = time.perf_counter()
-        handler.receive_file(task_id)
+        handler.receive_file(
+            task_id,
+            len(payload),
+            hashlib.sha256(payload).hexdigest(),
+            chunk_size,
+            False,
+        )
         elapsed = time.perf_counter() - started
         assert any(
             message.get("code") == 200 for message in _sent_json_messages(stream)
