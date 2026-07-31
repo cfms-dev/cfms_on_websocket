@@ -224,6 +224,18 @@ class _DisconnectingUploadStream(_FakeUploadStream):
         return super().recv(timeout)
 
 
+class _FailingUploadNegotiationStream(_FakeUploadStream):
+    def __init__(self):
+        super().__init__([])
+        self._failed = False
+
+    def send(self, data, frame_type=None, **kwargs):
+        if not self._failed:
+            self._failed = True
+            raise ConnectionError("upload connection closed")
+        return super().send(data, frame_type, **kwargs)
+
+
 def _new_transfer_handler(connection_handler_cls, stream):
     handler = connection_handler_cls.__new__(connection_handler_cls)
     handler.stream = stream
@@ -1147,6 +1159,49 @@ def test_upload_without_digest_discards_disconnected_progress(
     assert not (
         file_task_context.connection.ProviderManager().storage.root / relative_path
     ).exists()
+
+
+def test_upload_closes_resources_when_negotiation_send_fails(
+    file_task_context, tmp_path, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    class TrackingStorage(_FakeStorage):
+        upload = None
+
+        def open_resumable_upload(self, *args, **kwargs):
+            self.upload = super().open_resumable_upload(*args, **kwargs)
+            return self.upload
+
+    relative_path = "uploads/disconnected-negotiation.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    storage = TrackingStorage(tmp_path)
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "ProviderManager",
+        lambda: _FakeProviderManager(storage),
+    )
+    handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, _FailingUploadNegotiationStream()
+    )
+    payload = b"a" * file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        len(payload),
+        False,
+    )
+
+    assert storage.upload is not None
+    assert storage.upload._closed is True
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.PENDING
+        assert task.upload_sha256 == hashlib.sha256(payload).hexdigest()
 
 
 def test_upload_rejects_client_limit_below_persisted_chunk_size(

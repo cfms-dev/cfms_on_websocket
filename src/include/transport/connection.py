@@ -778,23 +778,22 @@ class ConnectionHandler:
             raise
 
         initial_offset = upload.offset
-        self.stream.send(
-            orjson.dumps(
-                {
-                    "action": "transfer_file",
-                    "data": {
-                        "file_size": file_size,
-                        "chunk_size": chunk_size,
-                        "offset": initial_offset,
-                        "supports_resume": resumable,
-                    },
-                }
-            )
-        )
-
         hasher = hashlib.sha256()
         received_size = initial_offset
         try:
+            self.stream.send(
+                orjson.dumps(
+                    {
+                        "action": "transfer_file",
+                        "data": {
+                            "file_size": file_size,
+                            "chunk_size": chunk_size,
+                            "offset": initial_offset,
+                            "supports_resume": resumable,
+                        },
+                    }
+                )
+            )
             logger.info("Receiving file: transfer started")
             while received_size < file_size:
                 data = self._recv_file_task_frame(
