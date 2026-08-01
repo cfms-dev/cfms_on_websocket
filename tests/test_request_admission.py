@@ -1,3 +1,6 @@
+import queue
+import threading
+
 from include.config.validation import AdmissionControlPolicy
 from include.transport import admission as admission_module
 from include.transport.admission import AdmissionController
@@ -61,3 +64,26 @@ def test_request_admission_releases_capacity_after_completion(monkeypatch):
 
     controller.release_request(first_connection)
     assert controller.acquire_request(first_connection).allowed
+
+
+def test_connection_admission_enforces_global_cap_concurrently(monkeypatch):
+    _use_policy(
+        monkeypatch,
+        _policy(max_connections=10, max_connections_per_ip=10),
+    )
+    controller = AdmissionController()
+    barrier = threading.Barrier(100)
+    outcomes: queue.SimpleQueue[bool] = queue.SimpleQueue()
+
+    def acquire() -> None:
+        barrier.wait()
+        outcomes.put(controller.acquire_connection("192.0.2.1").allowed)
+
+    threads = [threading.Thread(target=acquire) for _ in range(100)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert sum(outcomes.get() for _ in threads) == 10
