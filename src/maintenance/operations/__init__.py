@@ -5,7 +5,14 @@ from maintenance.operations.backups import (
     import_backup,
     read_backup_info,
 )
-from maintenance.operations.config import PepperFillResult, fill_pepper
+from maintenance.operations.config import (
+    ConfigSyncResult,
+    ConfigTemplateInspection,
+    PepperFillResult,
+    fill_pepper,
+    inspect_config_template,
+    sync_config_template,
+)
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.users import (
     PasswordResetResult,
@@ -18,6 +25,8 @@ from maintenance.operations.users import (
 __all__ = [
     "BackupExportResult",
     "BackupImportResult",
+    "ConfigSyncResult",
+    "ConfigTemplateInspection",
     "MaintenanceOperationError",
     "PasswordResetResult",
     "PepperFillResult",
@@ -26,7 +35,9 @@ __all__ = [
     "clear_totp",
     "export_backup",
     "fill_pepper",
+    "inspect_config_template",
     "import_backup",
     "read_backup_info",
     "reset_password",
+    "sync_config_template",
 ]

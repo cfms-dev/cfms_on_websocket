@@ -69,6 +69,30 @@ foreign-key reference. See the
 [document upload lifecycle guide](docs/DOCUMENT_UPLOAD_LIFECYCLE.md) for states,
 client errors, configuration, and upgrade behavior.
 
+## Configuration Maintenance
+
+After updating CFMS, run the template synchronization command from `src` to add
+new settings, migrate known legacy settings, and review settings that no longer
+appear in `config.toml.sample`:
+
+```bash
+maintain config sync-template
+```
+
+The command uses the new template's layout and comments while retaining current
+values for settings that still exist. Extension-owned and local settings are not
+treated as obsolete automatically: the interactive workflow asks about each one,
+and `--yes` preserves them. For unattended upgrades, use repeated `--remove`
+options for selected paths or `--prune` to remove every template-external path.
+Use `--check` to report drift without writing files.
+
+Before replacing `config.toml`, the command validates the merged document,
+creates a timestamped `config.toml.backup-*` copy, and performs an atomic
+replacement. A running server can reload most changes, but settings documented as
+restart-only, including extension activation, still require a restart. Protect the
+backup files as carefully as `config.toml` because they contain the previous
+credentials and secrets.
+
 ## Run
 ```bash
 python main.py # DO NOT use `-O`!
