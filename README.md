@@ -69,6 +69,15 @@ foreign-key reference. See the
 [document upload lifecycle guide](docs/DOCUMENT_UPLOAD_LIFECYCLE.md) for states,
 client errors, configuration, and upgrade behavior.
 
+## Request Rate Control
+
+Every connection and logical request passes through process-local admission
+ceilings. Optional token-bucket quotas then control connection attempts and
+request rates by IP address and authenticated account. Start with observation
+mode, and use the Redis provider when quotas must be shared by multiple server
+processes. See the [request rate-control guide](docs/REQUEST_RATE_CONTROL.md) for
+configuration, client responses, rollout, and failure behavior.
+
 ## Run
 ```bash
 python main.py # DO NOT use `-O`!

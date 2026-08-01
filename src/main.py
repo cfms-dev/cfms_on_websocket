@@ -169,6 +169,7 @@ def server_init():
             {"permission": Permissions.BYPASS_LOCKDOWN},
             {"permission": Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT},
             {"permission": Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT},
+            {"permission": Permissions.BYPASS_REQUEST_RATE_LIMIT},
             {"permission": Permissions.APPLY_LOCKDOWN},
             {"permission": Permissions.VIEW_AUDIT_LOGS},
             {"permission": Permissions.MANAGE_ACCESS},
