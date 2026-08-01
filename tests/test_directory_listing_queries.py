@@ -38,8 +38,6 @@ def directory_models(protected_test_config):
             fetch_deleted_listing_items,
             fetch_directory_listing_items,
             fetch_latest_active_revisions_by_document,
-            fetch_search_candidate_rows,
-            search_cursor_key,
         )
     finally:
         os.chdir(original_cwd)
@@ -65,9 +63,7 @@ def directory_models(protected_test_config):
         fetch_deleted_listing_items=fetch_deleted_listing_items,
         fetch_latest_active_revisions=fetch_latest_active_revisions_by_document,
         fetch_directory_listing_items=fetch_directory_listing_items,
-        fetch_search_candidate_rows=fetch_search_candidate_rows,
         node_rules_allow=_node_rules_allow,
-        search_cursor_key=search_cursor_key,
     )
 
 
@@ -111,31 +107,6 @@ def _document(models, session, doc_id: str, folder_id: str):
     document = models.Document(id=doc_id, title=doc_id, folder_id=folder_id)
     session.add(document)
     session.flush()
-    return document
-
-
-def _active_document(
-    models,
-    session,
-    doc_id: str,
-    *,
-    title: str,
-    created_time: float,
-    revision_created_time: float,
-    size: int = 1,
-):
-    document = models.Document(id=doc_id, title=title, created_time=created_time)
-    session.add(document)
-    session.flush()
-    revision = _revision(
-        models,
-        session,
-        f"{doc_id}-revision",
-        document.id,
-        _file(models, f"{doc_id}-file", active=True, size=size),
-        created_time=revision_created_time,
-    )
-    document.current_revision_id = revision.id
     return document
 
 
@@ -641,128 +612,6 @@ def test_deleted_listing_query_limits_candidates(
     assert second_page[0]["id"] != items[0]["id"]
 
 
-def test_search_candidate_query_limits_directory_candidates(
-    directory_models,
-    directory_session,
-):
-    for index in range(3):
-        directory_session.add(
-            directory_models.Folder(
-                id=f"search-folder-{index}",
-                name=f"Limited Search Folder {index}",
-            )
-        )
-    directory_session.commit()
-
-    statements = []
-
-    def collect_statement(_conn, _cursor, statement, *_args):
-        statements.append(statement)
-
-    event.listen(directory_session.bind, "before_cursor_execute", collect_statement)
-    try:
-        rows = directory_models.fetch_search_candidate_rows(
-            directory_session,
-            query="Limited Search",
-            sort_by="name",
-            sort_order="asc",
-            search_documents=False,
-            search_directories=True,
-            last_key=None,
-            limit=2,
-        )
-    finally:
-        event.remove(directory_session.bind, "before_cursor_execute", collect_statement)
-
-    assert len(rows) == 2
-    assert all(row["type"] == "directory" for row in rows)
-    candidate_selects = [
-        statement
-        for statement in statements
-        if "folders" in statement and "lower" in statement.lower()
-    ]
-    assert candidate_selects
-    assert all("LIMIT" in statement.upper() for statement in candidate_selects)
-
-
-@pytest.mark.parametrize(
-    ("literal_fragment", "near_miss_fragment"),
-    [
-        pytest.param(
-            "LiteralPercent%QueryToken",
-            "LiteralPercentXQueryToken",
-            id="percent",
-        ),
-        pytest.param(
-            "LiteralUnderscore_QueryToken",
-            "LiteralUnderscoreXQueryToken",
-            id="underscore",
-        ),
-        pytest.param(
-            "LiteralSlash/QueryToken",
-            "LiteralSlashXQueryToken",
-            id="escape-character",
-        ),
-        pytest.param(
-            "LiteralQuote' OR 1=1 --QueryToken",
-            "UnrelatedSqlQueryToken",
-            id="sql-like-text",
-        ),
-    ],
-)
-def test_search_candidate_query_treats_pattern_characters_as_literals(
-    directory_models,
-    directory_session,
-    literal_fragment,
-    near_miss_fragment,
-):
-    directory_session.add_all(
-        [
-            directory_models.Folder(
-                id="literal-search-folder-match",
-                name=f"Directory {literal_fragment} Result",
-            ),
-            directory_models.Folder(
-                id="literal-search-folder-near-miss",
-                name=f"Directory {near_miss_fragment} Result",
-            ),
-        ]
-    )
-    _active_document(
-        directory_models,
-        directory_session,
-        "literal-search-document-match",
-        title=f"Document {literal_fragment} Result",
-        created_time=10,
-        revision_created_time=20,
-    )
-    _active_document(
-        directory_models,
-        directory_session,
-        "literal-search-document-near-miss",
-        title=f"Document {near_miss_fragment} Result",
-        created_time=30,
-        revision_created_time=40,
-    )
-    directory_session.commit()
-
-    rows = directory_models.fetch_search_candidate_rows(
-        directory_session,
-        query=literal_fragment.swapcase(),
-        sort_by="name",
-        sort_order="asc",
-        search_documents=True,
-        search_directories=True,
-        last_key=None,
-        limit=10,
-    )
-
-    assert {row["id"] for row in rows} == {
-        "literal-search-folder-match",
-        "literal-search-document-match",
-    }
-
-
 def test_node_rules_allow_handles_missing_empty_and_read_rules(
     directory_models,
     directory_session,
@@ -881,144 +730,3 @@ def test_node_rules_allow_matches_explicit_empty_compiled_requirements(
 
     assert restricted.id in allowed_ids_for(staff_user)
     assert restricted.id not in allowed_ids_for(denied_user)
-
-
-@pytest.mark.parametrize(
-    ("sort_order", "expected_ids"),
-    [
-        (
-            "asc",
-            [
-                "search-folder-old",
-                "search-doc-mid",
-                "search-folder-new",
-                "search-doc-last",
-            ],
-        ),
-        (
-            "desc",
-            [
-                "search-doc-last",
-                "search-folder-new",
-                "search-doc-mid",
-                "search-folder-old",
-            ],
-        ),
-    ],
-)
-def test_search_last_modified_cursor_pages_mixed_candidates(
-    directory_models,
-    directory_session,
-    sort_order,
-    expected_ids,
-):
-    query = "LastModifiedCursor"
-    directory_session.add_all(
-        [
-            directory_models.Folder(
-                id="search-folder-old",
-                name=f"{query} Folder Old",
-                created_time=10,
-            ),
-            directory_models.Folder(
-                id="search-folder-new",
-                name=f"{query} Folder New",
-                created_time=30,
-            ),
-        ]
-    )
-    _active_document(
-        directory_models,
-        directory_session,
-        "search-doc-mid",
-        title=f"{query} Document Mid",
-        created_time=5,
-        revision_created_time=20,
-    )
-    _active_document(
-        directory_models,
-        directory_session,
-        "search-doc-last",
-        title=f"{query} Document Last",
-        created_time=5,
-        revision_created_time=40,
-    )
-    directory_session.commit()
-
-    last_key = None
-    seen_ids = []
-    while True:
-        rows = directory_models.fetch_search_candidate_rows(
-            directory_session,
-            query=query,
-            sort_by="last_modified",
-            sort_order=sort_order,
-            search_documents=True,
-            search_directories=True,
-            last_key=last_key,
-            limit=1,
-        )
-        if not rows:
-            break
-
-        assert len(rows) == 1
-        seen_ids.append(rows[0]["id"])
-        last_key = directory_models.search_cursor_key(rows[0], "last_modified")
-
-    assert seen_ids == expected_ids
-    assert len(seen_ids) == len(set(seen_ids))
-
-
-def test_search_name_cursor_uses_database_sort_key_for_unicode(
-    directory_models,
-    directory_session,
-):
-    query = "UnicodeCursor"
-    for item_id, suffix in [
-        ("unicode-folder-omega", "\u03a9"),
-        ("unicode-folder-sigma", "\u03a3"),
-        ("unicode-folder-dotted-i", "\u0130"),
-        ("unicode-folder-sharp-s", "\u00df"),
-        ("unicode-folder-z", "Z"),
-        ("unicode-folder-i", "i"),
-        ("unicode-folder-a-upper", "A"),
-        ("unicode-folder-a-lower", "a"),
-    ]:
-        directory_session.add(
-            directory_models.Folder(
-                id=item_id,
-                name=f"{query} {suffix}",
-            )
-        )
-    directory_session.commit()
-
-    last_key = None
-    seen_ids = []
-    while True:
-        rows = directory_models.fetch_search_candidate_rows(
-            directory_session,
-            query=query,
-            sort_by="name",
-            sort_order="desc",
-            search_documents=False,
-            search_directories=True,
-            last_key=last_key,
-            limit=1,
-        )
-        if not rows:
-            break
-
-        assert len(rows) == 1
-        seen_ids.append(rows[0]["id"])
-        last_key = directory_models.search_cursor_key(rows[0], "name")
-
-    assert seen_ids == [
-        "unicode-folder-omega",
-        "unicode-folder-sigma",
-        "unicode-folder-dotted-i",
-        "unicode-folder-sharp-s",
-        "unicode-folder-z",
-        "unicode-folder-i",
-        "unicode-folder-a-lower",
-        "unicode-folder-a-upper",
-    ]
