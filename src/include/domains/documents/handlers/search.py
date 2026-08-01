@@ -105,7 +105,7 @@ class RequestSearchHandler(RequestHandler):
         with Session() as session:
             user = User.get_existing(session, handler.username)
 
-            if Permissions.SEARCH not in user.permissions:
+            if Permissions.SEARCH not in user.all_permissions:
                 handler.conclude_request(
                     403, {}, "User does not have permission to perform search"
                 )
