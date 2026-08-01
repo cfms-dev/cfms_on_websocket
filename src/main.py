@@ -126,6 +126,7 @@ def server_init():
         group_name="user",
         permissions=[
             {"permission": Permissions.SET_PASSWD},
+            {"permission": Permissions.SEARCH},
         ],
     )
     create_group(

@@ -20,6 +20,9 @@ class Permissions(StrEnum):
     RESTORE = "restore"
     """permission to restore documents/directories from deletion."""
 
+    SEARCH = "search"
+    """permission to search for documents/directories."""
+
     # Super operations
     SUPER_CREATE_DOCUMENT = "super_create_document"
     SUPER_CREATE_DIRECTORY = "super_create_directory"
