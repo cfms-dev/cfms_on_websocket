@@ -4,6 +4,9 @@ from websockets import Headers, Request, Response
 from websockets.sync.server import ServerConnection
 
 from include.domains.security.guards.login import LoginGuard
+from include.domains.security.guards.request_rate_control import (
+    check_connection_attempt,
+)
 from include.transport.client_address import get_client_ip
 
 
@@ -20,6 +23,18 @@ def global_process_request(
             reason_phrase="Forbidden",
             headers=response_headers,
             body=b"IP address is not permitted.",
+        )
+
+    rate_decision = check_connection_attempt(ip)
+    if not rate_decision.allowed:
+        response_headers = Headers()
+        response_headers["Content-Type"] = "text/plain"
+        response_headers["Retry-After"] = str(rate_decision.retry_after_seconds)
+        return Response(
+            status_code=HTTPStatus.TOO_MANY_REQUESTS,
+            reason_phrase="Too Many Requests",
+            headers=response_headers,
+            body=b"Too many connection attempts. Please try again later.",
         )
 
     return None

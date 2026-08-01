@@ -2,6 +2,8 @@ from pathlib import Path
 from shutil import copyfile
 from types import SimpleNamespace
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -60,6 +62,92 @@ def test_log_handler_result_maps_all_audit_fields(monkeypatch, tmp_path):
             "remote_address": "203.0.113.10",
         }
     ]
+
+
+def test_router_returns_429_before_constructing_rate_limited_handler(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.security.guards.request_rate_control import (
+        RequestRateControlDecision,
+    )
+    from include.transport import router
+
+    responses = []
+
+    class FakeConnectionHandler:
+        def __init__(self, stream):
+            self.stream = stream
+            self.action = "limited_action"
+            self.data = {}
+            self.username = ""
+            self.token = ""
+
+        def conclude_request(self, code, data, message):
+            responses.append((code, data, message))
+
+    class LimitedHandler:
+        rate_limit_cost = 4
+
+        def __init__(self):
+            raise AssertionError("A denied handler must not be constructed")
+
+    monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
+    monkeypatch.setattr(router, "get_client_ip", lambda _websocket: "192.0.2.10")
+    monkeypatch.setattr(
+        router.LoginGuard,
+        "evaluate_subnet_access",
+        lambda _ip: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setitem(router.available_functions, "limited_action", LimitedHandler)
+    monkeypatch.setattr(
+        router,
+        "check_request_rate",
+        lambda *args, **kwargs: RequestRateControlDecision(
+            False,
+            would_block=True,
+            scope="ip",
+            limit=12,
+            retry_after_seconds=7,
+        ),
+    )
+    stream = SimpleNamespace(connection=SimpleNamespace(_ws=object()))
+
+    router.handle_request(stream)
+
+    assert responses == [
+        (
+            429,
+            {"scope": "ip", "limit": 12, "retry_after_seconds": 7},
+            "Too many requests. Please try again later.",
+        )
+    ]
+
+
+def test_request_admission_is_released_when_handler_raises(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+
+    released = []
+    connection = object()
+    stream = SimpleNamespace(connection=connection)
+    monkeypatch.setattr(
+        router,
+        "handle_request",
+        lambda _stream: (_ for _ in ()).throw(RuntimeError("failure")),
+    )
+    monkeypatch.setattr(
+        router.admission_controller,
+        "release_request",
+        lambda released_connection: released.append(released_connection),
+    )
+
+    with pytest.raises(RuntimeError, match="failure"):
+        router._handle_request_with_admission(stream)
+
+    assert released == [connection]
 
 
 def test_login_throttled_response_returns_result(monkeypatch, tmp_path):

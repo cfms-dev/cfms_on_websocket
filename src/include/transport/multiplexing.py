@@ -161,7 +161,12 @@ class Stream:
 
 
 class MultiplexedConnection:
-    def __init__(self, websocket: ServerConnection) -> None:
+    def __init__(
+        self,
+        websocket: ServerConnection,
+        *,
+        max_pending_inbound_streams: int = 16,
+    ) -> None:
         """
         :param websocket: ServerConnection
         """
@@ -175,7 +180,9 @@ class MultiplexedConnection:
         self._streams_lock = threading.Lock()
 
         # Pending queue for inbound streams.
-        self._pending_inbound_streams: queue.Queue[Stream | None] = queue.Queue()
+        self._pending_inbound_streams: queue.Queue[Stream | None] = queue.Queue(
+            max_pending_inbound_streams
+        )
 
         # Pending queue for outbound frames.
         #
@@ -236,7 +243,18 @@ class MultiplexedConnection:
                             # Notify the local main thread about the peer stream.
                             new_stream = Stream(self, frame.stream_id)
                             self._streams[frame.stream_id] = new_stream
-                            self._pending_inbound_streams.put(new_stream)
+                            try:
+                                self._pending_inbound_streams.put_nowait(new_stream)
+                            except queue.Full:
+                                logger.warning(
+                                    f"({self.remote_address[0]}): Too many pending "
+                                    "inbound streams"
+                                )
+                                self._ws.close(
+                                    code=1013,
+                                    reason="Too many pending request streams",
+                                )
+                                return
                             target_stream = new_stream
 
                 if close_for_protocol_error:
@@ -266,9 +284,11 @@ class MultiplexedConnection:
         finally:
             with self._send_state_lock:
                 self._is_running = False
-            self._pending_inbound_streams.put(
-                None
-            )  # Wake threads blocked in accept_stream.
+            try:
+                self._pending_inbound_streams.put_nowait(None)
+            except queue.Full:
+                self._pending_inbound_streams.get_nowait()
+                self._pending_inbound_streams.put_nowait(None)
 
             # Wake all threads blocked in Stream.recv() to prevent deadlocks.
             with self._streams_lock:

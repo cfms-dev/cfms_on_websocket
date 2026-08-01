@@ -70,6 +70,7 @@ class Permissions(StrEnum):
     BYPASS_LOCKDOWN = "bypass_lockdown"
     BYPASS_DOCUMENT_CREATION_RATE_LIMIT = "bypass_document_creation_rate_limit"
     BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT = "bypass_document_download_rate_limit"
+    BYPASS_REQUEST_RATE_LIMIT = "bypass_request_rate_limit"
     BLOCK = "block"
     UNBLOCK = "unblock"
     LIST_USER_BLOCKS = "list_user_blocks"

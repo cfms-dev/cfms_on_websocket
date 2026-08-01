@@ -8,6 +8,7 @@ from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.sync.server import ServerConnection
 
 from include.config.constants import NONCE_MIN_LENGTH
+from include.config.validation import AdmissionControlPolicy
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.handlers import (
@@ -95,6 +96,7 @@ from include.domains.operations.handlers.system import (
 from include.domains.operations.lockdown import lockdown_state_manager
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.replay import nonce_store
+from include.domains.security.guards.request_rate_control import check_request_rate
 from include.domains.security.handlers.access_control import (
     RequestCreateBannedSubnetHandler,
     RequestDeleteBannedSubnetHandler,
@@ -113,8 +115,9 @@ from include.domains.security.handlers.two_factor import (
 from include.domains.security.validators.certificates import get_client_cert_subject
 from include.extensions.manager import pm
 from include.shared import clients, clients_lock
+from include.transport.admission import admission_controller
 from include.transport.client_address import get_client_ip
-from include.transport.connection import ConnectionHandler
+from include.transport.connection import ConnectionHandler, send_conclusion
 from include.transport.multiplexing import FrameType, MultiplexedConnection, Stream
 from include.transport.request_handler import RequestHandler, Result
 
@@ -273,6 +276,15 @@ def handle_connection(websocket: ServerConnection):
         websocket: The WebSocket connection object.
 
     """
+    ip = get_client_ip(websocket)
+    connection_admission = admission_controller.acquire_connection(ip)
+    if not connection_admission.allowed:
+        logger.warning(
+            f"Rejecting connection from {ip}: {connection_admission.scope} capacity reached"
+        )
+        websocket.close(code=1013, reason="Server connection capacity reached")
+        return
+
     client_cn = get_client_cert_subject(websocket)
     if client_cn:
         logger.info(
@@ -281,29 +293,68 @@ def handle_connection(websocket: ServerConnection):
     else:
         logger.info(f"Incoming connection: {websocket.remote_address[0]}")
 
-    multiplexer = MultiplexedConnection(websocket)
-
-    with clients_lock:
-        clients.add(multiplexer)
-
-    pm.hook.ext_on_connect(websocket=websocket)
-
+    multiplexer: MultiplexedConnection | None = None
+    extension_connected = False
     try:
+        policy = AdmissionControlPolicy.from_config()
+        multiplexer = MultiplexedConnection(
+            websocket,
+            max_pending_inbound_streams=policy.max_pending_streams_per_connection,
+        )
+
+        with clients_lock:
+            clients.add(multiplexer)
+
+        pm.hook.ext_on_connect(websocket=websocket)
+        extension_connected = True
+
         while True:
             stream = multiplexer.accept_stream()
             if stream is None:
                 break  # Connection closed
 
-            threading.Thread(target=handle_request, args=(stream,), daemon=True).start()
+            request_admission = admission_controller.acquire_request(multiplexer)
+            if not request_admission.allowed:
+                send_conclusion(
+                    stream,
+                    503,
+                    {
+                        "scope": request_admission.scope,
+                        "retry_after_seconds": request_admission.retry_after_seconds,
+                    },
+                    "Server is busy. Please try again later.",
+                )
+                continue
+
+            try:
+                threading.Thread(
+                    target=_handle_request_with_admission,
+                    args=(stream,),
+                    daemon=True,
+                ).start()
+            except Exception:
+                admission_controller.release_request(multiplexer)
+                raise
 
     finally:
-        multiplexer.close()
+        if multiplexer is not None:
+            multiplexer.close()
         websocket.close()
 
-        with clients_lock:
-            clients.discard(multiplexer)
+        if multiplexer is not None:
+            with clients_lock:
+                clients.discard(multiplexer)
 
-        pm.hook.ext_post_disconnect()
+        if extension_connected:
+            pm.hook.ext_post_disconnect()
+        admission_controller.release_connection(ip)
+
+
+def _handle_request_with_admission(stream: Stream) -> None:
+    try:
+        handle_request(stream)
+    finally:
+        admission_controller.release_request(stream.connection)
 
 
 def handle_request(stream: Stream):
@@ -364,6 +415,32 @@ def handle_request(stream: Stream):
                 this_handler.conclude_request(401, {}, "Invalid user or token")
                 return
 
+    handler_type = available_functions.get(action)
+    if handler_type is None:
+        this_handler.conclude_request(400, {}, f"Unknown action: {action}")
+        return
+
+    rate_decision = check_request_rate(
+        action,
+        handler_type.rate_limit_cost,
+        ip,
+        username=this_handler.username if authenticated else None,
+        bypass=(
+            authenticated and Permissions.BYPASS_REQUEST_RATE_LIMIT in user_permissions
+        ),
+    )
+    if not rate_decision.allowed:
+        this_handler.conclude_request(
+            429,
+            {
+                "scope": rate_decision.scope,
+                "limit": rate_decision.limit,
+                "retry_after_seconds": rate_decision.retry_after_seconds,
+            },
+            "Too many requests. Please try again later.",
+        )
+        return
+
     lockdown_state = lockdown_state_manager.get_state()
     if lockdown_state.enabled and action not in whitelisted_functions:
         can_bypass_lockdown = False
@@ -382,8 +459,8 @@ def handle_request(stream: Stream):
     if authenticated and _validate_replay_protection(this_handler) is not None:
         return
 
-    if action in available_functions:
-        _request_handler: RequestHandler = available_functions[action]()
+    if handler_type is not None:
+        _request_handler: RequestHandler = handler_type()
 
         try:
             jsonschema.validate(this_handler.data, _request_handler.schema)
@@ -443,8 +520,4 @@ def handle_request(stream: Stream):
         if callback is None:
             # Reserved for flows that should not submit audit data via return.
             return
-    else:
-        # Handle unknown actions
-        this_handler.conclude_request(400, {}, f"Unknown action: {this_handler.action}")
-
     return

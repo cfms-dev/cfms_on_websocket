@@ -35,6 +35,8 @@ class RequestHandler(ABC):
     schema: ClassVar[dict[str, Any]] = {}
     # Defines whether the handler needs auth check before handling a request.
     require_auth: bool = False
+    # Relative token cost used by transport-wide request rate control.
+    rate_limit_cost: int = 1
 
     @abstractmethod
     def handle(self, handler: ConnectionHandler) -> Result | None:
