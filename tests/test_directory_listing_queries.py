@@ -685,6 +685,84 @@ def test_search_candidate_query_limits_directory_candidates(
     assert all("LIMIT" in statement.upper() for statement in candidate_selects)
 
 
+@pytest.mark.parametrize(
+    ("literal_fragment", "near_miss_fragment"),
+    [
+        pytest.param(
+            "LiteralPercent%QueryToken",
+            "LiteralPercentXQueryToken",
+            id="percent",
+        ),
+        pytest.param(
+            "LiteralUnderscore_QueryToken",
+            "LiteralUnderscoreXQueryToken",
+            id="underscore",
+        ),
+        pytest.param(
+            "LiteralSlash/QueryToken",
+            "LiteralSlashXQueryToken",
+            id="escape-character",
+        ),
+        pytest.param(
+            "LiteralQuote' OR 1=1 --QueryToken",
+            "UnrelatedSqlQueryToken",
+            id="sql-like-text",
+        ),
+    ],
+)
+def test_search_candidate_query_treats_pattern_characters_as_literals(
+    directory_models,
+    directory_session,
+    literal_fragment,
+    near_miss_fragment,
+):
+    directory_session.add_all(
+        [
+            directory_models.Folder(
+                id="literal-search-folder-match",
+                name=f"Directory {literal_fragment} Result",
+            ),
+            directory_models.Folder(
+                id="literal-search-folder-near-miss",
+                name=f"Directory {near_miss_fragment} Result",
+            ),
+        ]
+    )
+    _active_document(
+        directory_models,
+        directory_session,
+        "literal-search-document-match",
+        title=f"Document {literal_fragment} Result",
+        created_time=10,
+        revision_created_time=20,
+    )
+    _active_document(
+        directory_models,
+        directory_session,
+        "literal-search-document-near-miss",
+        title=f"Document {near_miss_fragment} Result",
+        created_time=30,
+        revision_created_time=40,
+    )
+    directory_session.commit()
+
+    rows = directory_models.fetch_search_candidate_rows(
+        directory_session,
+        query=literal_fragment.swapcase(),
+        sort_by="name",
+        sort_order="asc",
+        search_documents=True,
+        search_directories=True,
+        last_key=None,
+        limit=10,
+    )
+
+    assert {row["id"] for row in rows} == {
+        "literal-search-folder-match",
+        "literal-search-document-match",
+    }
+
+
 def test_node_rules_allow_handles_missing_empty_and_read_rules(
     directory_models,
     directory_session,

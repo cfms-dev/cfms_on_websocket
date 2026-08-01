@@ -95,6 +95,66 @@ class TestSearch:
         assert folder["id"] in dir_ids
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("literal_fragment", "near_miss_fragment"),
+        [
+            pytest.param(
+                "LiteralPercent%SearchToken",
+                "LiteralPercentXSearchToken",
+                id="percent",
+            ),
+            pytest.param(
+                "LiteralUnderscore_SearchToken",
+                "LiteralUnderscoreXSearchToken",
+                id="underscore",
+            ),
+            pytest.param(
+                "LiteralSlash/SearchToken",
+                "LiteralSlashXSearchToken",
+                id="escape-character",
+            ),
+            pytest.param(
+                "LiteralQuote' OR 1=1 --SearchToken",
+                "UnrelatedSqlSearchToken",
+                id="sql-like-text",
+            ),
+        ],
+    )
+    async def test_search_treats_pattern_characters_as_literals(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+        literal_fragment: str,
+        near_miss_fragment: str,
+    ):
+        matching_document = await document_factory(
+            f"Document {literal_fragment} Result"
+        )
+        near_miss_document = await document_factory(
+            f"Document {near_miss_fragment} Result"
+        )
+        matching_directory = assert_success(
+            await authenticated_client.create_directory(
+                f"Directory {literal_fragment} Result"
+            )
+        )
+        near_miss_directory = assert_success(
+            await authenticated_client.create_directory(
+                f"Directory {near_miss_fragment} Result"
+            )
+        )
+
+        response = await authenticated_client.search(query=literal_fragment.swapcase())
+        data = assert_success(response)
+
+        document_ids = {item["id"] for item in _documents(data)}
+        directory_ids = {item["id"] for item in _directories(data)}
+        assert document_ids == {matching_document["document_id"]}
+        assert directory_ids == {matching_directory["id"]}
+        assert near_miss_document["document_id"] not in document_ids
+        assert near_miss_directory["id"] not in directory_ids
+
+    @pytest.mark.asyncio
     async def test_search_with_cursor_pagination(
         self, authenticated_client: CFMSTestClient, document_factory
     ):

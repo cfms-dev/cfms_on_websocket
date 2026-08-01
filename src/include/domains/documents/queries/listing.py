@@ -806,7 +806,6 @@ def _search_candidate_selectable(
     search_documents: bool,
     search_directories: bool,
 ):
-    like_pattern = f"%{query}%"
     selects = []
 
     if search_directories:
@@ -825,7 +824,7 @@ def _search_candidate_selectable(
                 Folder.inherit.label("inherit"),
             ).where(
                 Folder.status != EntityStatus.DELETED,
-                Folder.name.ilike(like_pattern),
+                Folder.name.icontains(query, autoescape=True),
             )
         )
 
@@ -833,7 +832,7 @@ def _search_candidate_selectable(
         document_details = _effective_active_revision_details_subquery(
             [
                 Node.__table__.c.status != EntityStatus.DELETED,
-                Node.__table__.c.name.ilike(like_pattern),
+                Node.__table__.c.name.icontains(query, autoescape=True),
             ]
         )
         selects.append(
@@ -996,7 +995,6 @@ def fetch_search_candidate_rows(
     limit: int,
 ) -> list[dict[str, Any]]:
     candidate_rows: list[dict[str, Any]] = []
-    like_pattern = f"%{query}%"
 
     if search_directories:
         folder_selectable = (
@@ -1013,7 +1011,7 @@ def fetch_search_candidate_rows(
             )
             .where(
                 Folder.status != EntityStatus.DELETED,
-                Folder.name.ilike(like_pattern),
+                Folder.name.icontains(query, autoescape=True),
             )
             .subquery()
         )
@@ -1037,7 +1035,7 @@ def fetch_search_candidate_rows(
         document_details = _effective_active_revision_details_subquery(
             [
                 Node.__table__.c.status != EntityStatus.DELETED,
-                Node.__table__.c.name.ilike(like_pattern),
+                Node.__table__.c.name.icontains(query, autoescape=True),
             ]
         )
         primary_column = _search_primary_column(document_details, sort_by)

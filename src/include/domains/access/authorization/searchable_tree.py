@@ -123,7 +123,9 @@ def search_documents_with_access(
 
     # Step 1: Search documents.
     documents = (
-        session.query(Document).filter(Document.title.ilike(f"%{keyword}%")).all()
+        session.query(Document)
+        .filter(Document.title.icontains(keyword, autoescape=True))
+        .all()
     )
     if not documents:
         return [], [], {}
@@ -182,7 +184,9 @@ def search_folders_with_access(
 
     # Step 1: Search folders.
     matched_folders = (
-        session.query(Folder).filter(Folder.name.ilike(f"%{keyword}%")).all()
+        session.query(Folder)
+        .filter(Folder.name.icontains(keyword, autoescape=True))
+        .all()
     )
     if not matched_folders:
         return [], [], {}
