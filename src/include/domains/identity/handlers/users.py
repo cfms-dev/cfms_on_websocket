@@ -335,13 +335,21 @@ class RequestRenameUserHandler(RequestHandler):
                 )
                 return
 
-            if (
-                Permissions.RENAME_USER not in this_user.all_permissions
-                and target_username != this_user.username
-            ):
+            permissions = this_user.all_permissions
+            is_renaming_self = target_username == this_user.username
+
+            has_permission = Permissions.SUPER_RENAME_USER in permissions or (
+                is_renaming_self and Permissions.RENAME_USER in permissions
+            )
+
+            if not has_permission:
                 handler.conclude_request(
                     code=403,
-                    message="You do not have permission to rename users",
+                    message=(
+                        "You do not have permission to rename yourself"
+                        if is_renaming_self
+                        else "You do not have permission to rename users"
+                    ),
                     data={},
                 )
                 return
@@ -777,15 +785,27 @@ class RequestSetUserAvatarHandler(RequestHandler):
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
 
-            if (
-                target_username != this_user.username
-                and Permissions.SUPER_SET_USER_AVATAR not in this_user.all_permissions
-            ):
+            permissions = this_user.all_permissions
+            is_setting_own_avatar = target_username == this_user.username
+
+            has_permission = Permissions.SUPER_SET_USER_AVATAR in permissions or (
+                is_setting_own_avatar and Permissions.SET_USER_AVATAR in permissions
+            )
+
+            if not has_permission:
                 handler.conclude_request(
-                    403, {}, "You do not have permission to set other user's avatar"
+                    code=403,
+                    data={},
+                    message=(
+                        "You do not have permission to set your avatar"
+                        if is_setting_own_avatar
+                        else "You do not have permission to set another user's avatar"
+                    ),
                 )
                 return Result(
-                    code=403, target=target_username, username=handler.username
+                    code=403,
+                    target=target_username,
+                    username=handler.username,
                 )
 
             user_to_update = session.get(User, target_username)
