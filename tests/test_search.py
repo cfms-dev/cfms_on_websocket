@@ -10,6 +10,8 @@ from tests.support.test_config import ServerTestSettings
 from tests.test_client import CFMSTestClient
 from tests.utils import assert_error, assert_success
 
+_SEARCH_USER_GROUPS = [{"group_name": "user", "start_time": 0}]
+
 
 def _documents(data: dict):
     return [item for item in data["items"] if item["type"] == "document"]
@@ -20,6 +22,52 @@ def _directories(data: dict):
 
 
 class TestSearch:
+    @pytest.mark.asyncio
+    async def test_search_requires_authentication(self, client: CFMSTestClient):
+        response = await client.send_request(
+            "search", {"query": "AuthenticationRequired"}, include_auth=False
+        )
+
+        assert_error(response, 401)
+
+    @pytest.mark.asyncio
+    async def test_search_requires_search_permission(
+        self,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        test_user = await user_factory()
+        assert_success(
+            await unauthenticated_client.login(
+                test_user["username"], test_user["password"]
+            )
+        )
+
+        response = await unauthenticated_client.search(query="PermissionRequired")
+
+        error = assert_error(response, 403)
+        assert error["message"] == "User does not have permission to perform search"
+
+    @pytest.mark.asyncio
+    async def test_search_honors_inherited_search_permission(
+        self,
+        unauthenticated_client: CFMSTestClient,
+        user_factory,
+    ):
+        test_user = await user_factory(groups=_SEARCH_USER_GROUPS)
+        assert_success(
+            await unauthenticated_client.login(
+                test_user["username"], test_user["password"]
+            )
+        )
+
+        response = await unauthenticated_client.search(
+            query="InheritedSearchPermission"
+        )
+
+        data = assert_success(response)
+        assert data["items"] == []
+
     @pytest.mark.asyncio
     async def test_search_documents(
         self, authenticated_client: CFMSTestClient, document_factory
@@ -191,7 +239,7 @@ class TestSearch:
         unauthenticated_client: CFMSTestClient,
         user_factory,
     ):
-        test_user = await user_factory()
+        test_user = await user_factory(groups=_SEARCH_USER_GROUPS)
         login_response = await unauthenticated_client.login(
             test_user["username"], test_user["password"]
         )
@@ -254,7 +302,7 @@ class TestSearch:
         unauthenticated_client: CFMSTestClient,
         user_factory,
     ):
-        test_user = await user_factory()
+        test_user = await user_factory(groups=_SEARCH_USER_GROUPS)
         login_response = await unauthenticated_client.login(
             test_user["username"], test_user["password"]
         )
@@ -332,7 +380,7 @@ class TestSearch:
         finally:
             os.chdir(original_cwd)
 
-        test_user = await user_factory()
+        test_user = await user_factory(groups=_SEARCH_USER_GROUPS)
         permissions_response = await authenticated_client.change_user_permissions(
             test_user["username"], ["list_users"]
         )
@@ -476,7 +524,7 @@ class TestSearch:
         unauthenticated_client: CFMSTestClient,
         user_factory,
     ):
-        test_user = await user_factory()
+        test_user = await user_factory(groups=_SEARCH_USER_GROUPS)
         login_response = await unauthenticated_client.login(
             test_user["username"], test_user["password"]
         )
@@ -535,7 +583,7 @@ class TestSearch:
         unauthenticated_client: CFMSTestClient,
         user_factory,
     ):
-        test_user = await user_factory()
+        test_user = await user_factory(groups=_SEARCH_USER_GROUPS)
         login_response = await unauthenticated_client.login(
             test_user["username"], test_user["password"]
         )

@@ -156,12 +156,18 @@ async def user_factory(
     created_users = []
 
     async def _creator(
-        username=None, password="TestPassword123!", nickname="Test User"
+        username=None,
+        password="TestPassword123!",
+        nickname="Test User",
+        groups=None,
     ):
         if not username:
             username = f"user_{secrets.token_hex(4)}"
         response = await authenticated_client.create_user(
-            username=username, password=password, nickname=nickname
+            username=username,
+            password=password,
+            nickname=nickname,
+            groups=groups,
         )
         assert_success(response)
         created_users.append(username)
