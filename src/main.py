@@ -192,6 +192,8 @@ def server_init():
             {"permission": Permissions.PURGE},
             {"permission": Permissions.RESTORE},
             {"permission": Permissions.LIST_DELETED_ITEMS},
+            {"permission": Permissions.SUPER_RENAME_USER},
+            {"permission": Permissions.SET_USER_AVATAR},
         ],
     )
 

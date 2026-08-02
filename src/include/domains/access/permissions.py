@@ -49,6 +49,9 @@ class Permissions(StrEnum):
     MANAGE_2FA = "manage_2fa"
     SET_PASSWD = "set_passwd"
     SET_USER_PERMISSIONS = "set_user_permissions"
+    SET_USER_AVATAR = "set_user_avatar"
+
+    SUPER_RENAME_USER = "super_rename_user"
 
     # Group management
     CREATE_GROUP = "create_group"

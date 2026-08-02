@@ -81,6 +81,10 @@ def _make_src_dir(tmp_path: Path, name: str = "src") -> Path:
     config["provider"]["caching"] = "memory"
     config["provider"]["event_bus"] = "local"
     (src_dir / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
+    (src_dir / "config.toml.sample").write_text(
+        (_SRC_PATH / "config.toml.sample").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     return src_dir
 
 
@@ -228,7 +232,7 @@ def test_incomplete_commands_show_contextual_hints(tmp_path):
         ),
         (
             ["config"],
-            ["Maintain configuration.", "fill-pepper"],
+            ["Maintain configuration.", "fill-pepper", "sync-template"],
         ),
         (
             ["backup"],
@@ -307,6 +311,86 @@ def test_fill_pepper_updates_config_and_is_idempotent(tmp_path):
     result = _run_maintain(src_dir, ["config", "fill-pepper"])
 
     assert "already set" in result.stdout
+
+
+def test_sync_template_check_then_apply_preserves_unknown_settings(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    config_path = src_dir / "config.toml"
+    config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    del config["server"]["trusted_proxy_networks"]
+    config["server"]["local_setting"] = "keep"
+    config["server"]["secret_key"] = "must-not-be-printed"
+    config_path.write_text(tomlkit.dumps(config), encoding="utf-8")
+    original_source = config_path.read_text(encoding="utf-8")
+
+    check_result = _run_maintain(
+        src_dir,
+        ["config", "sync-template", "--check"],
+        check=False,
+    )
+
+    assert check_result.returncode == 1
+    assert config_path.read_text(encoding="utf-8") == original_source
+    assert list(src_dir.glob("config.toml.backup-*")) == []
+    assert "must-not-be-printed" not in check_result.stdout + check_result.stderr
+
+    apply_result = _run_maintain(
+        src_dir,
+        ["config", "sync-template", "--yes"],
+    )
+    synchronized = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+
+    assert synchronized["server"]["trusted_proxy_networks"] == [
+        "127.0.0.1/32",
+        "::1/128",
+    ]
+    assert synchronized["server"]["local_setting"] == "keep"
+    assert "must-not-be-printed" not in apply_result.stdout + apply_result.stderr
+    assert len(list(src_dir.glob("config.toml.backup-*"))) == 1
+
+    synchronized_check = _run_maintain(
+        src_dir,
+        ["config", "sync-template", "--check"],
+    )
+
+    assert "is synchronized" in synchronized_check.stdout
+
+
+def test_sync_template_interactively_removes_unknown_setting(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    config_path = src_dir / "config.toml"
+    config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    config["server"]["old_setting"] = 1
+    config_path.write_text(tomlkit.dumps(config), encoding="utf-8")
+
+    result = _run_maintain(
+        src_dir,
+        ["config", "sync-template"],
+        input_text="y\ny\n",
+    )
+    synchronized = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+
+    assert "old_setting" not in synchronized["server"]
+    assert "server.old_setting" in result.stdout
+
+
+def test_sync_template_rejects_conflicting_options(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+
+    result = _run_maintain(
+        src_dir,
+        [
+            "config",
+            "sync-template",
+            "--prune",
+            "--remove",
+            "server.old_setting",
+        ],
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "cannot be combined" in result.stdout + result.stderr
 
 
 def test_reset_password_updates_hash_and_can_generate_password(tmp_path):
