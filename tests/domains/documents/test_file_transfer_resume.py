@@ -1,3 +1,7 @@
+import hashlib
+
+import pytest
+
 from tests.domains.documents.test_file_task_lifecycle import (
     _create_file_task,
     _DisconnectBeforeCompletionStream,
@@ -9,8 +13,6 @@ from tests.domains.documents.test_file_task_lifecycle import (
     _FakeUploadStream,
     _new_transfer_handler,
     _sent_json_messages,
-    hashlib,
-    pytest,
 )
 
 

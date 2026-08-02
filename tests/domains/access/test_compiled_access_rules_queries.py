@@ -1,8 +1,8 @@
-from tests.domains.access.test_compiled_access_rules_matching import (
-    _make_rule_user,
-    event,
-    time,
-)
+import time
+
+from sqlalchemy import event
+
+from tests.domains.access.test_compiled_access_rules_matching import _make_rule_user
 from tests.domains.access.test_compiled_access_rules_synchronization import (
     _make_access_rule_user,
 )

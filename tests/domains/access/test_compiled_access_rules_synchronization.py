@@ -1,10 +1,9 @@
-from tests.domains.access.test_compiled_access_rules_matching import (
-    Query,
-    SAWarning,
-    pytest,
-    time,
-    warnings,
-)
+import time
+import warnings
+
+import pytest
+from sqlalchemy.exc import SAWarning
+from sqlalchemy.orm import Query
 
 
 def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):

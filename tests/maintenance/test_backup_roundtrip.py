@@ -1,3 +1,9 @@
+import logging
+
+import pytest
+import tomlkit
+from sqlalchemy import insert, select, update
+
 from tests.maintenance.test_backup_format_compatibility import (
     _dump_backup_tables,
     _new_database,
@@ -7,12 +13,6 @@ from tests.maintenance.test_backup_format_compatibility import (
     _test_progress,
     _write_config,
     _write_jsonl,
-    insert,
-    logging,
-    pytest,
-    select,
-    tomlkit,
-    update,
 )
 
 

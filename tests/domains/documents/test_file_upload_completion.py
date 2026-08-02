@@ -1,12 +1,13 @@
+import hashlib
+import threading
+import time
+from types import SimpleNamespace
+
 from tests.domains.documents.test_file_task_lifecycle import (
-    SimpleNamespace,
     _create_file_task,
     _FakeUploadStream,
     _new_transfer_handler,
     _sent_json_messages,
-    hashlib,
-    threading,
-    time,
 )
 
 

@@ -1,5 +1,10 @@
+from pathlib import Path
+
+import pytest
+import tomlkit
+from sqlalchemy import insert
+
 from tests.maintenance.test_backup_format_compatibility import (
-    Path,
     _dump_backup_tables,
     _new_database,
     _read_jsonl,
@@ -7,9 +12,6 @@ from tests.maintenance.test_backup_format_compatibility import (
     _seed_source,
     _write_config,
     _write_jsonl,
-    insert,
-    pytest,
-    tomlkit,
 )
 
 

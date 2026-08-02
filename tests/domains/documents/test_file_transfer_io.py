@@ -1,5 +1,10 @@
+import hashlib
+import os
+import re
+
+import pytest
+
 from tests.domains.documents.test_file_task_lifecycle import (
-    CFMSTestClient,
     _AssertingDownloadStream,
     _AssertingUploadStream,
     _create_file_task,
@@ -11,13 +16,9 @@ from tests.domains.documents.test_file_task_lifecycle import (
     _sent_json_messages,
     _set_revision_file_size,
     _TrackingSessionFactory,
-    assert_success,
-    calculate_sha256,
-    hashlib,
-    os,
-    pytest,
-    re,
 )
+from tests.support.client import CFMSTestClient, calculate_sha256
+from tests.support.utils import assert_success
 
 
 class TestFileTransfer:
