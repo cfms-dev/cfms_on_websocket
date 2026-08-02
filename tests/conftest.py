@@ -12,16 +12,16 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from tests.support.server import start_server, stop_server
-from tests.support.test_config import (
+from tests.support.client import CFMSTestClient
+from tests.support.config import (
     ServerTestSettings,
     capture_config,
     reserve_local_port,
     restore_config,
     write_test_config,
 )
-from tests.test_client import CFMSTestClient
-from tests.utils import assert_success
+from tests.support.server import start_server, stop_server
+from tests.support.utils import assert_success
 
 
 @pytest.fixture(scope="session")

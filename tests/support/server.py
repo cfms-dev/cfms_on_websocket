@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import IO
 
-from tests.support.test_config import ServerTestSettings
+from tests.support.config import ServerTestSettings
 
 
 class ServerLogCapture:

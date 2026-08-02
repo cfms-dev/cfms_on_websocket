@@ -13,8 +13,8 @@ from statistics import mean
 from subprocess import Popen
 from tempfile import TemporaryDirectory
 
-from tests.support.server import ServerLogCapture, start_server, stop_server
-from tests.support.test_config import (
+from tests.support.client import CFMSTestClient
+from tests.support.config import (
     ConfigBackup,
     ServerTestSettings,
     capture_config,
@@ -22,7 +22,7 @@ from tests.support.test_config import (
     restore_config,
     write_test_config,
 )
-from tests.test_client import CFMSTestClient
+from tests.support.server import ServerLogCapture, start_server, stop_server
 
 
 @dataclass
