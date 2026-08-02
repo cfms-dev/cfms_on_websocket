@@ -27,7 +27,15 @@ Before running the tests, ensure you have:
 
 The test suite backs up `src/config.toml` before writing a test configuration
 and restores it at session teardown. SQLite data and generated runtime files
-may still be recreated during integration tests.
+are recreated during integration tests. If `src/app.db` exists, create a
+consistent runtime snapshot before invoking pytest:
+
+```powershell
+uv run --locked python .codex/skills/maintain-cfms-python/scripts/snapshot_test_state.py
+```
+
+The printed snapshot directory may contain credentials and must be treated as
+sensitive. Restoring it is an explicit manual operation.
 
 ### Run All Tests
 
@@ -39,19 +47,19 @@ uv run pytest
 
 ```bash
 # Test basic functionality
-pytest tests/test_basic.py
+uv run pytest tests/test_basic.py
 
 # Test document operations
-pytest tests/test_documents.py
+uv run pytest tests/test_documents.py
 
 # Test directory operations
-pytest tests/test_directories.py
+uv run pytest tests/test_directories.py
 
 # Test user management
-pytest tests/test_users.py
+uv run pytest tests/test_users.py
 
 # Test group management
-pytest tests/test_groups.py
+uv run pytest tests/test_groups.py
 ```
 
 ### Run Specific Test Classes or Functions
@@ -92,6 +100,20 @@ The `CFMSTestClient` class provides a convenient interface for interacting with 
 - Request/response formatting
 - Authentication token management
 - Common API operations
+
+### Search Test Layers
+
+- `test_search.py` exercises the public WebSocket contract, including
+  authentication, the global search permission, result shape, filtering before
+  pagination, cursor behavior, sorting, and validation.
+- `test_search_queries.py` exercises object visibility directly against a
+  disposable SQLite database. It covers object access entries, compiled access
+  rules, inheritance boundaries, and user blocks without reading or writing the
+  integration server's `app.db`.
+
+Keep protocol gates and response assertions in the integration layer. Put
+complex SQL visibility combinations in the disposable-database layer, using
+real models and persisted rows rather than mocked SQLAlchemy query chains.
 
 Example usage:
 
