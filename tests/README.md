@@ -2,6 +2,8 @@
 
 This directory contains the automated test suite for the CFMS (Confidential File Management System) WebSocket server.
 
+**IMPORTANT: THESE TESTS ARE COMPLETELY A PIECE OF SH\*T.**
+
 ## Overview
 
 The test suite provides comprehensive coverage of the server's functionality, including:
