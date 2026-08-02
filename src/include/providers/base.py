@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from io import UnsupportedOperation
 from types import TracebackType
 from typing import Any, ClassVar, Self
@@ -21,6 +22,40 @@ class Provider(ABC):
     It should be implemented on a base class of a `Provider` class, and once
     implemented, it should not be overridden by subclasses.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitCharge:
+    key: str
+    scope: str
+    capacity: int
+    refill_tokens: int
+    refill_period_seconds: int
+    cost: int
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitDecision:
+    allowed: bool
+    scope: str | None = None
+    effective_limit: int | None = None
+    retry_after_seconds: int = 0
+
+
+class RateLimitProvider(Provider):
+    """Atomic token-bucket storage for request rate control."""
+
+    identifier: ClassVar[str] = "rate_limit"
+
+    @abstractmethod
+    def consume(
+        self,
+        charges: tuple[RateLimitCharge, ...],
+        *,
+        retention_seconds: int,
+        now: float | None = None,
+    ) -> RateLimitDecision:
+        pass
 
 
 class FileObject(AbstractContextManager["FileObject"]):

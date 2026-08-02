@@ -30,8 +30,8 @@ from pathlib import Path
 
 from include.config.version import Version
 
-CORE_VERSION = Version("0.4.0.260725_alpha")
-PROTOCOL_VERSION = 20
+CORE_VERSION = Version("0.4.1.260801_alpha")
+PROTOCOL_VERSION = 21
 
 ROOT_ABSPATH = Path(__file__).resolve().parents[2]
 

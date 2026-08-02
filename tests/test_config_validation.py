@@ -6,11 +6,13 @@ from tomlkit import parse
 
 from include.config.settings import GlobalConfig
 from include.config.validation import (
+    AdmissionControlPolicy,
     AuthThrottlePolicy,
     ConfigValidationError,
     DocumentCreationRiskPolicy,
     DocumentDownloadRiskPolicy,
     DocumentUploadPolicy,
+    RequestRateControlPolicy,
     get_config_warnings,
     get_enabled_extensions,
     get_trusted_proxy_networks,
@@ -156,6 +158,63 @@ def test_auth_throttle_delay_range_is_validated():
     }
 
     with pytest.raises(ConfigValidationError, match="must not exceed"):
+        validate_config(config)
+
+
+def test_request_rate_control_defaults_to_observation_mode():
+    config = _valid_config()
+
+    policy = RequestRateControlPolicy.from_config(config)
+
+    assert policy.mode == "observe"
+    assert policy.cost_for("unconfigured") == 1
+    assert AdmissionControlPolicy.from_config(config).max_connections == 64
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("mode", "sometimes", "mode must be"),
+        ("account_capacity", 0, "positive integer"),
+        ("state_retention_seconds", 1, "cover every refill period"),
+        ("action_costs", {"search": 0}, "positive integers"),
+        ("action_costs", {"search": 1_000}, "must not exceed"),
+    ],
+)
+def test_request_rate_control_values_are_validated(setting, value, message):
+    config = _valid_config()
+    config["security"]["request_rate_control"] = {setting: value}
+
+    with pytest.raises(ConfigValidationError, match=message):
+        validate_config(config)
+
+
+def test_request_rate_control_action_cost_overrides_handler_default():
+    config = _valid_config()
+    config["security"]["request_rate_control"] = {"action_costs": {"search": 5}}
+
+    policy = RequestRateControlPolicy.from_config(config)
+
+    assert policy.cost_for("search", 2) == 5
+    assert policy.cost_for("list_users", 2) == 2
+
+
+def test_admission_control_rejects_per_identity_limit_above_global_limit():
+    config = _valid_config()
+    config["server"]["admission_control"] = {
+        "max_connections": 4,
+        "max_connections_per_ip": 5,
+    }
+
+    with pytest.raises(ConfigValidationError, match="must not exceed"):
+        validate_config(config)
+
+
+def test_rate_limit_provider_selection_is_validated():
+    config = _valid_config()
+    config["provider"] = {"rate_limit": "database"}
+
+    with pytest.raises(ConfigValidationError, match="provider.rate_limit"):
         validate_config(config)
 
 

@@ -36,6 +36,16 @@ trusted_proxy_networks = ["127.0.0.1/32", "::1/128"]
 file_chunk_size = 2097152 # 2MB
 # Setting the chunk size too high may cause transfer failures depending on client configuration
 
+[server.admission_control]
+# Hard per-process resource ceilings. These remain enforced even while request
+# rate control is disabled or observing.
+max_connections = 64
+max_connections_per_ip = 16
+max_inflight_requests = 64
+max_inflight_requests_per_connection = 8
+max_pending_streams_per_connection = 16
+busy_retry_after_seconds = 1
+
 [security]
 # Pepper used for password hashing
 pepper = ""
@@ -83,6 +93,24 @@ ip_failure_threshold = 60
 ip_window_seconds = 600
 ip_block_seconds = 900
 record_retention_days = 7
+
+[security.request_rate_control]
+# Start in observation mode, then calibrate with production telemetry before
+# switching to "enforce". "disabled" skips token-bucket accounting.
+mode = "observe"
+connection_capacity = 20
+connection_refill_tokens = 60
+connection_refill_period_seconds = 60
+request_refill_period_seconds = 60
+account_capacity = 120
+account_refill_tokens = 120
+ip_capacity = 600
+ip_refill_tokens = 600
+state_retention_seconds = 600
+
+[security.request_rate_control.action_costs]
+# Optional positive integer costs keyed by request action. Unlisted actions use
+# the handler's declared cost, which defaults to 1.
 
 [sso.oidc]
 # Issuer URL of the OpenID Provider, without a trailing slash.
@@ -195,6 +223,8 @@ caching = "memory" # "memory" or "redis"
 storage = "local" # "local" or "s3"
 # Event bus provider ("local" or "redis")
 event_bus = "local" # "local" or "redis"
+# Request rate-limit state provider ("memory" or "redis")
+rate_limit = "memory" # "memory" or "redis"
 
 [redis]
 # Redis server host

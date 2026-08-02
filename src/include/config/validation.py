@@ -12,10 +12,12 @@ from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 
 __all__ = [
     "AuthThrottlePolicy",
+    "AdmissionControlPolicy",
     "ConfigValidationError",
     "DocumentCreationRiskPolicy",
     "DocumentDownloadRiskPolicy",
     "DocumentUploadPolicy",
+    "RequestRateControlPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
     "get_trusted_proxy_networks",
@@ -157,6 +159,134 @@ class AuthThrottlePolicy:
             raise ConfigValidationError(
                 "security.auth_throttle.account_base_delay_seconds must not exceed "
                 "security.auth_throttle.account_max_delay_seconds"
+            )
+        return policy
+
+
+@dataclass(frozen=True)
+class AdmissionControlPolicy:
+    max_connections: int = 64
+    max_connections_per_ip: int = 16
+    max_inflight_requests: int = 64
+    max_inflight_requests_per_connection: int = 8
+    max_pending_streams_per_connection: int = 16
+    busy_retry_after_seconds: int = 1
+
+    @classmethod
+    def from_config(cls, config: _ConfigSource | None = None) -> AdmissionControlPolicy:
+        if config is None:
+            from include.config.settings import global_config
+
+            config = global_config
+        section = _section(config, "server").get("admission_control", {})
+        if not isinstance(section, Mapping):
+            raise ConfigValidationError("server.admission_control must be a table")
+        policy = cls(
+            **{
+                field.name: section.get(field.name, field.default)
+                for field in fields(cls)
+            }
+        )
+        for field in fields(cls):
+            value = getattr(policy, field.name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigValidationError(
+                    f"server.admission_control.{field.name} must be a positive integer"
+                )
+        if policy.max_connections_per_ip > policy.max_connections:
+            raise ConfigValidationError(
+                "server.admission_control.max_connections_per_ip must not exceed "
+                "max_connections"
+            )
+        if policy.max_inflight_requests_per_connection > policy.max_inflight_requests:
+            raise ConfigValidationError(
+                "server.admission_control.max_inflight_requests_per_connection must "
+                "not exceed max_inflight_requests"
+            )
+        return policy
+
+
+@dataclass(frozen=True)
+class RequestRateControlPolicy:
+    mode: str = "observe"
+    connection_capacity: int = 20
+    connection_refill_tokens: int = 60
+    connection_refill_period_seconds: int = 60
+    request_refill_period_seconds: int = 60
+    account_capacity: int = 120
+    account_refill_tokens: int = 120
+    ip_capacity: int = 600
+    ip_refill_tokens: int = 600
+    state_retention_seconds: int = 600
+    action_costs: tuple[tuple[str, int], ...] = ()
+
+    def cost_for(self, action: str, default: int = 1) -> int:
+        for configured_action, cost in self.action_costs:
+            if configured_action == action:
+                return cost
+        return default
+
+    @classmethod
+    def from_config(
+        cls, config: _ConfigSource | None = None
+    ) -> RequestRateControlPolicy:
+        if config is None:
+            from include.config.settings import global_config
+
+            config = global_config
+        section = _section(config, "security").get("request_rate_control", {})
+        if not isinstance(section, Mapping):
+            raise ConfigValidationError("security.request_rate_control must be a table")
+        configured_costs = section.get("action_costs", {})
+        if not isinstance(configured_costs, Mapping):
+            raise ConfigValidationError(
+                "security.request_rate_control.action_costs must be a table"
+            )
+        values = {
+            field.name: section.get(field.name, field.default)
+            for field in fields(cls)
+            if field.name != "action_costs"
+        }
+        values["action_costs"] = tuple(sorted(configured_costs.items()))
+        policy = cls(**values)
+        if policy.mode not in {"disabled", "observe", "enforce"}:
+            raise ConfigValidationError(
+                "security.request_rate_control.mode must be 'disabled', 'observe', "
+                "or 'enforce'"
+            )
+        for field in fields(cls):
+            if field.name in {"mode", "action_costs"}:
+                continue
+            value = getattr(policy, field.name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ConfigValidationError(
+                    f"security.request_rate_control.{field.name} must be a positive "
+                    "integer"
+                )
+        for action, cost in policy.action_costs:
+            if not isinstance(action, str) or not action:
+                raise ConfigValidationError(
+                    "security.request_rate_control.action_costs keys must be "
+                    "non-empty strings"
+                )
+            if isinstance(cost, bool) or not isinstance(cost, int) or cost <= 0:
+                raise ConfigValidationError(
+                    "security.request_rate_control.action_costs values must be "
+                    "positive integers"
+                )
+            if cost > min(policy.account_capacity, policy.ip_capacity):
+                raise ConfigValidationError(
+                    "security.request_rate_control action costs must not exceed "
+                    "account_capacity or ip_capacity"
+                )
+        required_retention = max(
+            policy.connection_refill_period_seconds,
+            policy.request_refill_period_seconds,
+        )
+        if policy.state_retention_seconds < required_retention:
+            raise ConfigValidationError(
+                "security.request_rate_control.state_retention_seconds must cover "
+                "every refill period"
             )
         return policy
 
@@ -455,11 +585,24 @@ def validate_config(config: _ConfigSource) -> None:
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
+    AdmissionControlPolicy.from_config(config)
+    RequestRateControlPolicy.from_config(config)
     DocumentUploadPolicy.from_config(config)
     DocumentCreationRiskPolicy.from_config(config)
     DocumentDownloadRiskPolicy.from_config(config)
     _validate_file_chunk_size_config(config)
     _validate_client_certificate_config(config)
+
+    try:
+        provider = config["provider"]
+    except KeyError:
+        provider = {}
+    if not isinstance(provider, Mapping):
+        raise ConfigValidationError("Configuration section 'provider' must be a table")
+    if provider.get("rate_limit", "memory") not in {"memory", "redis"}:
+        raise ConfigValidationError(
+            "provider.rate_limit must be either 'memory' or 'redis'"
+        )
 
     from include.extensions.manager import validate_extension_config
 

@@ -115,6 +115,20 @@ class _InvalidFrameWebSocket(_SyncWebSocket):
         super().close(*args, **kwargs)
 
 
+class _InboundFloodWebSocket(_SyncWebSocket):
+    def __init__(self, frames):
+        super().__init__()
+        self.frames = iter(frames)
+        self.close_kwargs = None
+
+    def recv(self, timeout=None, decode=None):
+        return next(self.frames)
+
+    def close(self, *args, **kwargs):
+        self.close_kwargs = kwargs
+        super().close(*args, **kwargs)
+
+
 class _BlockingPutSignalingQueue(_ORIGINAL_QUEUE):
     def __init__(self, maxsize: int, put_blocked: threading.Event) -> None:
         super().__init__(maxsize)
@@ -146,6 +160,24 @@ def test_stream_send_waits_until_writer_sends():
         assert done.wait(timeout=1)
         sender.join(timeout=1)
         assert len(websocket.sent) == 1
+    finally:
+        connection.close()
+
+
+def test_pending_inbound_stream_limit_closes_flooding_connection():
+    websocket = _InboundFloodWebSocket(
+        encode_frame(stream_id, FrameType.PROCESS, b"request")
+        for stream_id in (1, 3, 5)
+    )
+    connection = MultiplexedConnection(websocket, max_pending_inbound_streams=2)
+
+    try:
+        connection._dispatcher.join(timeout=1)
+        assert not connection._dispatcher.is_alive()
+        assert websocket.close_kwargs == {
+            "code": 1013,
+            "reason": "Too many pending request streams",
+        }
     finally:
         connection.close()
 

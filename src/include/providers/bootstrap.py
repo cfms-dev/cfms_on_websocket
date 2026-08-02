@@ -51,6 +51,29 @@ def initialize_providers(config=global_config) -> None:
 
     ProviderManager().register(caching_provider)
 
+    match config["provider"].get("rate_limit", "memory"):
+        case "memory":
+            from include.providers.rate_limits import MemoryRateLimitProvider
+
+            rate_limit_provider = MemoryRateLimitProvider()
+        case "redis":
+            from include.providers.rate_limits import RedisRateLimitProvider
+
+            redis_cfg = config["redis"]
+            rate_limit_provider = RedisRateLimitProvider(
+                host=redis_cfg["host"],
+                port=redis_cfg.get("port", 6379),
+                password=redis_cfg.get("password", ""),
+                db=redis_cfg.get("db", 0),
+            )
+        case _:
+            raise ValueError(
+                "Unsupported rate-limit provider type: "
+                f"{config['provider']['rate_limit']}"
+            )
+
+    ProviderManager().register(rate_limit_provider)
+
     match config["provider"]["event_bus"]:
         case "local":
             from include.providers.events import LocalEventBusProvider

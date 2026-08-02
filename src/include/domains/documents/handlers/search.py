@@ -11,6 +11,7 @@ import time
 
 from include.database.models.identity import User
 from include.database.session import Session
+from include.domains.access.permissions import Permissions
 from include.domains.documents.queries.listing import (
     fetch_visible_search_candidate_rows,
     search_cursor_key,
@@ -103,6 +104,12 @@ class RequestSearchHandler(RequestHandler):
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
+
+            if Permissions.SEARCH not in user.all_permissions:
+                handler.conclude_request(
+                    403, {}, "User does not have permission to perform search"
+                )
+                return Result(code=403, target=query, username=handler.username)
 
             now = time.time()
             all_results = fetch_visible_search_candidate_rows(

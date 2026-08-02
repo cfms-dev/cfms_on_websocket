@@ -35,7 +35,7 @@ with cursor pagination.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `query` | string | Yes | - | Case-insensitive partial match term. Whitespace-only queries are rejected. |
+| `query` | string | Yes | - | Case-insensitive literal partial match term. Whitespace-only queries are rejected. |
 | `page_size` | integer | No | 128 | Maximum number of items to return. Range: 1-128. |
 | `cursor` | string/null | No | null | Encrypted cursor returned by the previous page. Omit or use null for the first page. |
 | `sort_by` | string | No | `name` | One of `name`, `created_time`, `size`, `last_modified`. |
@@ -112,6 +112,9 @@ previous response's `next_cursor`.
 
 ## Notes
 
+- Search terms are matched literally. Characters with special meaning in SQL
+  patterns, including `%` and `_`, do not act as wildcards; `/`, quotes, and
+  other punctuation are also matched as ordinary characters.
 - Permission filtering is applied before pagination, but broad queries may stop
   early at a server-side scan window. In that case the response can contain
   fewer than `page_size` items while still returning `has_more: true` and a

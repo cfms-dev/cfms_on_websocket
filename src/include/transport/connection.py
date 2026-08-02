@@ -49,6 +49,21 @@ from include.transport.multiplexing import FrameType, Stream
 logger = log.bind(name="conn")
 
 
+def send_conclusion(
+    stream: Stream, code: int, data: dict | None = None, message: str = ""
+) -> None:
+    response_json = orjson.dumps(
+        {
+            "code": code,
+            "data": data if data is not None else {},
+            "message": message,
+            "timestamp": time.time(),
+        }
+    )
+    logger.debug(f"Sending response: {response_json}")
+    stream.send(response_json, frame_type=FrameType.CONCLUSION)
+
+
 def _negotiate_file_chunk_size(
     client_max_chunk_size: int | None,
     *,
@@ -129,19 +144,7 @@ class ConnectionHandler:
             data: Data dictionary to include in the response.
             message: Message string to include in the response.
         """
-        response = {
-            "code": code,
-            "data": data if data is not None else {},
-            "message": message,
-            "timestamp": time.time(),
-        }
-
-        response_json = orjson.dumps(
-            response,
-        )
-        self.logger.debug(f"Sending response: {response_json}")
-
-        self.stream.send(response_json, frame_type=FrameType.CONCLUSION)
+        send_conclusion(self.stream, code, data, message)
 
     def report_error(
         self,

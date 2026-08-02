@@ -44,6 +44,9 @@ from include.domains.documents.commands.upload_cleanup import (
 from include.domains.documents.file_task_signals import on_file_task_event
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
+from include.domains.security.guards.request_rate_control import (
+    validate_handler_rate_limit_costs,
+)
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
 from include.extensions.manager import (
     load_extensions_from_directory,
@@ -126,6 +129,7 @@ def server_init():
         group_name="user",
         permissions=[
             {"permission": Permissions.SET_PASSWD},
+            {"permission": Permissions.SEARCH},
         ],
     )
     create_group(
@@ -165,6 +169,7 @@ def server_init():
             {"permission": Permissions.BYPASS_LOCKDOWN},
             {"permission": Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT},
             {"permission": Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT},
+            {"permission": Permissions.BYPASS_REQUEST_RATE_LIMIT},
             {"permission": Permissions.APPLY_LOCKDOWN},
             {"permission": Permissions.VIEW_AUDIT_LOGS},
             {"permission": Permissions.MANAGE_ACCESS},
@@ -358,6 +363,11 @@ def prepare_handlers():
 
     for ext_whitelisted_actions in pm.hook.ext_register_whitelisted_actions():
         whitelisted_functions.extend(ext_whitelisted_actions)
+
+    for action in validate_handler_rate_limit_costs(available_functions):
+        logger.warning(
+            f"Configured request rate-limit cost references unknown action {action!r}"
+        )
 
 
 def prepare_logger():
