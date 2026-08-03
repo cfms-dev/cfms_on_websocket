@@ -273,6 +273,111 @@ def test_policy_is_built_from_validated_config():
     assert policy.ip_failure_threshold == 42
 
 
+def test_policy_sources_preserve_required_root_sections():
+    with pytest.raises(ConfigValidationError) as security_error:
+        AuthThrottlePolicy.from_config({})
+    with pytest.raises(ConfigValidationError) as server_error:
+        AdmissionControlPolicy.from_config({})
+
+    assert str(security_error.value) == "Missing configuration section 'security'"
+    assert str(server_error.value) == "Missing configuration section 'server'"
+
+
+def test_document_policy_sources_preserve_optional_section_semantics():
+    assert DocumentUploadPolicy.from_config({}) == DocumentUploadPolicy()
+    assert DocumentDownloadRiskPolicy.from_config({}) == DocumentDownloadRiskPolicy()
+    assert (
+        DocumentCreationRiskPolicy.from_config(
+            {"document": {"upload": {"creation_risk_control": None}}}
+        )
+        == DocumentCreationRiskPolicy()
+    )
+
+
+@pytest.mark.parametrize(
+    ("policy_type", "config", "path"),
+    [
+        (
+            AuthThrottlePolicy,
+            {"security": {"auth_throttle": {"ip_failure_threshold": True}}},
+            "security.auth_throttle.ip_failure_threshold",
+        ),
+        (
+            AdmissionControlPolicy,
+            {"server": {"admission_control": {"max_connections": True}}},
+            "server.admission_control.max_connections",
+        ),
+        (
+            RequestRateControlPolicy,
+            {"security": {"request_rate_control": {"account_capacity": True}}},
+            "security.request_rate_control.account_capacity",
+        ),
+        (
+            DocumentUploadPolicy,
+            {"document": {"upload": {"idle_timeout_seconds": True}}},
+            "document.upload.idle_timeout_seconds",
+        ),
+        (
+            DocumentCreationRiskPolicy,
+            {
+                "document": {
+                    "upload": {"creation_risk_control": {"account_capacity": True}}
+                }
+            },
+            "document.upload.creation_risk_control.account_capacity",
+        ),
+        (
+            DocumentDownloadRiskPolicy,
+            {"document": {"download": {"risk_control": {"task_capacity": True}}}},
+            "document.download.risk_control.task_capacity",
+        ),
+    ],
+)
+def test_policy_positive_integer_fields_reject_booleans(policy_type, config, path):
+    with pytest.raises(ConfigValidationError) as error:
+        policy_type.from_config(config)
+
+    assert str(error.value) == f"{path} must be a positive integer"
+
+
+def test_declarative_policy_fields_do_not_coerce_values():
+    with pytest.raises(ConfigValidationError) as boolean_error:
+        AuthThrottlePolicy.from_config({"security": {"auth_throttle": {"enabled": 1}}})
+    with pytest.raises(ConfigValidationError) as ratio_error:
+        DocumentCreationRiskPolicy.from_config(
+            {
+                "document": {
+                    "upload": {
+                        "creation_risk_control": {"pending_elevated_ratio": "0.5"}
+                    }
+                }
+            }
+        )
+
+    assert str(boolean_error.value) == (
+        "security.auth_throttle.enabled must be a boolean"
+    )
+    assert str(ratio_error.value) == (
+        "document.upload.creation_risk_control.pending_elevated_ratio must be a "
+        "number greater than 0 and at most 1"
+    )
+
+
+def test_policy_mapping_conversion_and_unknown_fields_preserve_compatibility():
+    policy = RequestRateControlPolicy.from_config(
+        {
+            "security": {
+                "request_rate_control": {
+                    "action_costs": {"search": 5, "login": 2},
+                    "future_setting": "ignored",
+                }
+            }
+        }
+    )
+
+    assert policy.action_costs == (("login", 2), ("search", 5))
+
+
 def test_document_upload_policy_defaults_and_overrides():
     config = _valid_config()
     assert DocumentUploadPolicy.from_config(config).start_timeout_seconds == 3600
