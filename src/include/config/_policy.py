@@ -149,7 +149,7 @@ def _validate_value_type(
 
 
 def _validate_value_range(
-    value: int | float,
+    value: float,
     constraint: _ValueRange,
     path: str,
 ) -> None:
@@ -184,6 +184,7 @@ def _decode_mapping_items(value: Any, path: str) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(items))
 
 
+@dataclass(frozen=True)
 class _ConfigPolicy:
     _SOURCE: ClassVar[_PolicySource]
     _RULES: ClassVar[tuple[_PolicyRule, ...]] = ()
