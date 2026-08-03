@@ -1,9 +1,19 @@
+import annotationlib
 import ipaddress
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    Self,
+    get_args,
+    get_origin,
+)
 
 from tomlkit import TOMLDocument, parse
 from tomlkit.exceptions import TOMLKitError
@@ -33,6 +43,296 @@ class ConfigValidationError(ValueError):
 
 class _ConfigSource(Protocol):
     def __getitem__(self, key: str, /) -> Any: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _Section:
+    name: str
+    required: bool = False
+    none_as_missing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _PolicySource:
+    sections: tuple[_Section, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ValueRange:
+    minimum: int | float | None = None
+    maximum: int | float | None = None
+    minimum_inclusive: bool = True
+    maximum_inclusive: bool = True
+    message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _MappingItems:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldOrder:
+    lower_field: str
+    upper_field: str
+    allow_equal: bool
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MinimumCapacity:
+    capacity_fields: tuple[str, ...]
+    minimum_field: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class _WindowCoverage:
+    retention_field: str
+    window_fields: tuple[str, ...]
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CollectionValueLimit:
+    collection_field: str
+    limit_fields: tuple[str, ...]
+    message: str
+
+
+type _PolicyRule = (
+    _FieldOrder | _MinimumCapacity | _WindowCoverage | _CollectionValueLimit
+)
+
+_PositiveInt = Annotated[
+    int,
+    _ValueRange(
+        minimum=0,
+        minimum_inclusive=False,
+        message="must be a positive integer",
+    ),
+]
+_UnitRatio = Annotated[
+    float,
+    _ValueRange(
+        minimum=0,
+        maximum=1,
+        minimum_inclusive=False,
+        message="must be a number greater than 0 and at most 1",
+    ),
+]
+
+
+def _unwrap_annotation(annotation: Any) -> tuple[Any, tuple[Any, ...]]:
+    if get_origin(annotation) is Annotated:
+        value_type, *metadata = get_args(annotation)
+        return value_type, tuple(metadata)
+    return annotation, ()
+
+
+def _format_literal_values(values: tuple[Any, ...]) -> str:
+    rendered = tuple(repr(value) for value in values)
+    if len(rendered) == 1:
+        return rendered[0]
+    if len(rendered) == 2:
+        return f"{rendered[0]} or {rendered[1]}"
+    return f"{', '.join(rendered[:-1])}, or {rendered[-1]}"
+
+
+def _validate_value_type(
+    value: Any,
+    annotation: Any,
+    path: str,
+    range_constraint: _ValueRange | None,
+) -> None:
+    error = range_constraint.message if range_constraint is not None else None
+    origin = get_origin(annotation)
+    if origin is Literal:
+        allowed = get_args(annotation)
+        if value not in allowed:
+            raise ConfigValidationError(
+                f"{path} must be {_format_literal_values(allowed)}"
+            )
+        return
+    if annotation is bool:
+        valid = isinstance(value, bool)
+        error = error or "must be a boolean"
+    elif annotation is int:
+        valid = not isinstance(value, bool) and isinstance(value, int)
+        error = error or "must be an integer"
+    elif annotation is float:
+        valid = not isinstance(value, bool) and isinstance(value, int | float)
+        error = error or "must be a number"
+    elif annotation is str:
+        valid = isinstance(value, str)
+        error = error or "must be a string"
+    else:
+        raise TypeError(f"Unsupported policy annotation for {path}: {annotation!r}")
+    if not valid:
+        raise ConfigValidationError(f"{path} {error}")
+
+
+def _validate_value_range(
+    value: int | float,
+    constraint: _ValueRange,
+    path: str,
+) -> None:
+    below_minimum = constraint.minimum is not None and (
+        value < constraint.minimum
+        or (not constraint.minimum_inclusive and value == constraint.minimum)
+    )
+    above_maximum = constraint.maximum is not None and (
+        value > constraint.maximum
+        or (not constraint.maximum_inclusive and value == constraint.maximum)
+    )
+    if below_minimum or above_maximum:
+        if constraint.message is None:
+            raise TypeError(f"Policy range for {path} does not define an error message")
+        raise ConfigValidationError(f"{path} {constraint.message}")
+
+
+def _decode_mapping_items(value: Any, path: str) -> tuple[tuple[str, int], ...]:
+    if not isinstance(value, Mapping):
+        raise ConfigValidationError(f"{path} must be a table")
+    items = []
+    for key, item_value in value.items():
+        if not isinstance(key, str) or not key:
+            raise ConfigValidationError(f"{path} keys must be non-empty strings")
+        if (
+            isinstance(item_value, bool)
+            or not isinstance(item_value, int)
+            or item_value <= 0
+        ):
+            raise ConfigValidationError(f"{path} values must be positive integers")
+        items.append((key, item_value))
+    return tuple(sorted(items))
+
+
+class _ConfigPolicy:
+    _SOURCE: ClassVar[_PolicySource]
+    _RULES: ClassVar[tuple[_PolicyRule, ...]] = ()
+
+    @classmethod
+    def _read_section(cls, config: _ConfigSource) -> Mapping[str, Any]:
+        current: Any = config
+        path_parts = []
+        for section in cls._SOURCE.sections:
+            path_parts.append(section.name)
+            path = ".".join(path_parts)
+            try:
+                value = current[section.name]
+            except KeyError as exc:
+                if section.required:
+                    raise ConfigValidationError(
+                        f"Missing configuration section {path!r}"
+                    ) from exc
+                return {}
+            if value is None and section.none_as_missing:
+                return {}
+            if not isinstance(value, Mapping):
+                if section.required:
+                    raise ConfigValidationError(
+                        f"Configuration section {path!r} must be a table"
+                    )
+                raise ConfigValidationError(f"{path} must be a table")
+            current = value
+        return current
+
+    @classmethod
+    def from_config(cls, config: _ConfigSource | None = None) -> Self:
+        if config is None:
+            from include.config.settings import global_config
+
+            config = global_config
+
+        section = cls._read_section(config)
+        annotations = annotationlib.get_annotations(
+            cls,
+            format=annotationlib.Format.VALUE,
+        )
+        values = {}
+        for field in fields(cls):
+            try:
+                annotation = annotations[field.name]
+            except KeyError as exc:
+                raise TypeError(
+                    f"Policy field {cls.__name__}.{field.name} has no annotation"
+                ) from exc
+            value_type, metadata = _unwrap_annotation(annotation)
+            range_constraints = tuple(
+                item for item in metadata if isinstance(item, _ValueRange)
+            )
+            mapping_decoders = tuple(
+                item for item in metadata if isinstance(item, _MappingItems)
+            )
+            known_metadata = (*range_constraints, *mapping_decoders)
+            if len(known_metadata) != len(metadata):
+                raise TypeError(
+                    f"Policy field {cls.__name__}.{field.name} has unsupported metadata"
+                )
+            if (
+                len(range_constraints) > 1
+                or len(mapping_decoders) > 1
+                or (range_constraints and mapping_decoders)
+            ):
+                raise TypeError(
+                    f"Policy field {cls.__name__}.{field.name} has conflicting metadata"
+                )
+
+            configured = field.name in section
+            if configured:
+                value = section[field.name]
+            elif field.default is not MISSING:
+                value = field.default
+            elif field.default_factory is not MISSING:
+                value = field.default_factory()
+            else:
+                raise TypeError(
+                    f"Policy field {cls.__name__}.{field.name} has no default"
+                )
+
+            path = (
+                f"{'.'.join(part.name for part in cls._SOURCE.sections)}.{field.name}"
+            )
+            if mapping_decoders:
+                if configured:
+                    value = _decode_mapping_items(value, path)
+            else:
+                range_constraint = range_constraints[0] if range_constraints else None
+                _validate_value_type(value, value_type, path, range_constraint)
+                if range_constraint is not None:
+                    _validate_value_range(value, range_constraint, path)
+            values[field.name] = value
+
+        policy = cls(**values)
+        policy._validate_rules()
+        return policy
+
+    def _validate_rules(self) -> None:
+        for rule in self._RULES:
+            if isinstance(rule, _FieldOrder):
+                lower = getattr(self, rule.lower_field)
+                upper = getattr(self, rule.upper_field)
+                valid = lower <= upper if rule.allow_equal else lower < upper
+            elif isinstance(rule, _MinimumCapacity):
+                valid = min(
+                    getattr(self, field_name) for field_name in rule.capacity_fields
+                ) >= getattr(self, rule.minimum_field)
+            elif isinstance(rule, _WindowCoverage):
+                valid = getattr(self, rule.retention_field) >= max(
+                    getattr(self, field_name) for field_name in rule.window_fields
+                )
+            elif isinstance(rule, _CollectionValueLimit):
+                limit = min(
+                    getattr(self, field_name) for field_name in rule.limit_fields
+                )
+                valid = all(
+                    value <= limit for _, value in getattr(self, rule.collection_field)
+                )
+            else:
+                raise TypeError(f"Unsupported policy rule: {rule!r}")
+            if not valid:
+                raise ConfigValidationError(rule.message)
 
 
 def _section(config: _ConfigSource, name: str) -> Mapping[str, Any]:
@@ -114,111 +414,108 @@ def get_enabled_extensions(config: _ConfigSource) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
-class AuthThrottlePolicy:
-    enabled: bool = True
-    account_failure_threshold: int = 5
-    account_base_delay_seconds: int = 30
-    account_max_delay_seconds: int = 3600
-    account_reset_seconds: int = 86400
-    account_ip_failure_threshold: int = 5
-    account_ip_window_seconds: int = 900
-    account_ip_block_seconds: int = 900
-    ip_failure_threshold: int = 60
-    ip_window_seconds: int = 600
-    ip_block_seconds: int = 900
-    record_retention_days: int = 7
-
-    @classmethod
-    def from_config(cls, config: _ConfigSource | None = None) -> AuthThrottlePolicy:
-        if config is None:
-            from include.config.settings import global_config
-
-            config = global_config
-
-        section = _section(config, "security").get("auth_throttle", {})
-        if not isinstance(section, Mapping):
-            raise ConfigValidationError("security.auth_throttle must be a table")
-
-        values = {
-            field.name: section.get(field.name, field.default) for field in fields(cls)
-        }
-        policy = cls(**values)
-        if not isinstance(policy.enabled, bool):
-            raise ConfigValidationError(
-                "security.auth_throttle.enabled must be a boolean"
-            )
-        for field in fields(cls):
-            if field.name == "enabled":
-                continue
-            value = getattr(policy, field.name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ConfigValidationError(
-                    f"security.auth_throttle.{field.name} must be a positive integer"
-                )
-        if policy.account_base_delay_seconds > policy.account_max_delay_seconds:
-            raise ConfigValidationError(
+class AuthThrottlePolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (_Section("security", required=True), _Section("auth_throttle"))
+    )
+    _RULES = (
+        _FieldOrder(
+            "account_base_delay_seconds",
+            "account_max_delay_seconds",
+            allow_equal=True,
+            message=(
                 "security.auth_throttle.account_base_delay_seconds must not exceed "
                 "security.auth_throttle.account_max_delay_seconds"
-            )
-        return policy
+            ),
+        ),
+    )
+
+    enabled: bool = True
+    account_failure_threshold: _PositiveInt = 5
+    account_base_delay_seconds: _PositiveInt = 30
+    account_max_delay_seconds: _PositiveInt = 3600
+    account_reset_seconds: _PositiveInt = 86400
+    account_ip_failure_threshold: _PositiveInt = 5
+    account_ip_window_seconds: _PositiveInt = 900
+    account_ip_block_seconds: _PositiveInt = 900
+    ip_failure_threshold: _PositiveInt = 60
+    ip_window_seconds: _PositiveInt = 600
+    ip_block_seconds: _PositiveInt = 900
+    record_retention_days: _PositiveInt = 7
 
 
 @dataclass(frozen=True)
-class AdmissionControlPolicy:
-    max_connections: int = 64
-    max_connections_per_ip: int = 16
-    max_inflight_requests: int = 64
-    max_inflight_requests_per_connection: int = 8
-    max_pending_streams_per_connection: int = 16
-    busy_retry_after_seconds: int = 1
-
-    @classmethod
-    def from_config(cls, config: _ConfigSource | None = None) -> AdmissionControlPolicy:
-        if config is None:
-            from include.config.settings import global_config
-
-            config = global_config
-        section = _section(config, "server").get("admission_control", {})
-        if not isinstance(section, Mapping):
-            raise ConfigValidationError("server.admission_control must be a table")
-        policy = cls(
-            **{
-                field.name: section.get(field.name, field.default)
-                for field in fields(cls)
-            }
-        )
-        for field in fields(cls):
-            value = getattr(policy, field.name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ConfigValidationError(
-                    f"server.admission_control.{field.name} must be a positive integer"
-                )
-        if policy.max_connections_per_ip > policy.max_connections:
-            raise ConfigValidationError(
+class AdmissionControlPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (_Section("server", required=True), _Section("admission_control"))
+    )
+    _RULES = (
+        _FieldOrder(
+            "max_connections_per_ip",
+            "max_connections",
+            allow_equal=True,
+            message=(
                 "server.admission_control.max_connections_per_ip must not exceed "
                 "max_connections"
-            )
-        if policy.max_inflight_requests_per_connection > policy.max_inflight_requests:
-            raise ConfigValidationError(
+            ),
+        ),
+        _FieldOrder(
+            "max_inflight_requests_per_connection",
+            "max_inflight_requests",
+            allow_equal=True,
+            message=(
                 "server.admission_control.max_inflight_requests_per_connection must "
                 "not exceed max_inflight_requests"
-            )
-        return policy
+            ),
+        ),
+    )
+
+    max_connections: _PositiveInt = 64
+    max_connections_per_ip: _PositiveInt = 16
+    max_inflight_requests: _PositiveInt = 64
+    max_inflight_requests_per_connection: _PositiveInt = 8
+    max_pending_streams_per_connection: _PositiveInt = 16
+    busy_retry_after_seconds: _PositiveInt = 1
 
 
 @dataclass(frozen=True)
-class RequestRateControlPolicy:
-    mode: str = "observe"
-    connection_capacity: int = 20
-    connection_refill_tokens: int = 60
-    connection_refill_period_seconds: int = 60
-    request_refill_period_seconds: int = 60
-    account_capacity: int = 120
-    account_refill_tokens: int = 120
-    ip_capacity: int = 600
-    ip_refill_tokens: int = 600
-    state_retention_seconds: int = 600
-    action_costs: tuple[tuple[str, int], ...] = ()
+class RequestRateControlPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (_Section("security", required=True), _Section("request_rate_control"))
+    )
+    _RULES = (
+        _CollectionValueLimit(
+            "action_costs",
+            ("account_capacity", "ip_capacity"),
+            message=(
+                "security.request_rate_control action costs must not exceed "
+                "account_capacity or ip_capacity"
+            ),
+        ),
+        _WindowCoverage(
+            "state_retention_seconds",
+            (
+                "connection_refill_period_seconds",
+                "request_refill_period_seconds",
+            ),
+            message=(
+                "security.request_rate_control.state_retention_seconds must cover "
+                "every refill period"
+            ),
+        ),
+    )
+
+    mode: Literal["disabled", "observe", "enforce"] = "observe"
+    connection_capacity: _PositiveInt = 20
+    connection_refill_tokens: _PositiveInt = 60
+    connection_refill_period_seconds: _PositiveInt = 60
+    request_refill_period_seconds: _PositiveInt = 60
+    account_capacity: _PositiveInt = 120
+    account_refill_tokens: _PositiveInt = 120
+    ip_capacity: _PositiveInt = 600
+    ip_refill_tokens: _PositiveInt = 600
+    state_retention_seconds: _PositiveInt = 600
+    action_costs: Annotated[tuple[tuple[str, int], ...], _MappingItems()] = ()
 
     def cost_for(self, action: str, default: int = 1) -> int:
         for configured_action, cost in self.action_costs:
@@ -226,331 +523,192 @@ class RequestRateControlPolicy:
                 return cost
         return default
 
-    @classmethod
-    def from_config(
-        cls, config: _ConfigSource | None = None
-    ) -> RequestRateControlPolicy:
-        if config is None:
-            from include.config.settings import global_config
-
-            config = global_config
-        section = _section(config, "security").get("request_rate_control", {})
-        if not isinstance(section, Mapping):
-            raise ConfigValidationError("security.request_rate_control must be a table")
-        configured_costs = section.get("action_costs", {})
-        if not isinstance(configured_costs, Mapping):
-            raise ConfigValidationError(
-                "security.request_rate_control.action_costs must be a table"
-            )
-        values = {
-            field.name: section.get(field.name, field.default)
-            for field in fields(cls)
-            if field.name != "action_costs"
-        }
-        values["action_costs"] = tuple(sorted(configured_costs.items()))
-        policy = cls(**values)
-        if policy.mode not in {"disabled", "observe", "enforce"}:
-            raise ConfigValidationError(
-                "security.request_rate_control.mode must be 'disabled', 'observe', "
-                "or 'enforce'"
-            )
-        for field in fields(cls):
-            if field.name in {"mode", "action_costs"}:
-                continue
-            value = getattr(policy, field.name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ConfigValidationError(
-                    f"security.request_rate_control.{field.name} must be a positive "
-                    "integer"
-                )
-        for action, cost in policy.action_costs:
-            if not isinstance(action, str) or not action:
-                raise ConfigValidationError(
-                    "security.request_rate_control.action_costs keys must be "
-                    "non-empty strings"
-                )
-            if isinstance(cost, bool) or not isinstance(cost, int) or cost <= 0:
-                raise ConfigValidationError(
-                    "security.request_rate_control.action_costs values must be "
-                    "positive integers"
-                )
-            if cost > min(policy.account_capacity, policy.ip_capacity):
-                raise ConfigValidationError(
-                    "security.request_rate_control action costs must not exceed "
-                    "account_capacity or ip_capacity"
-                )
-        required_retention = max(
-            policy.connection_refill_period_seconds,
-            policy.request_refill_period_seconds,
-        )
-        if policy.state_retention_seconds < required_retention:
-            raise ConfigValidationError(
-                "security.request_rate_control.state_retention_seconds must cover "
-                "every refill period"
-            )
-        return policy
-
 
 @dataclass(frozen=True)
-class DocumentUploadPolicy:
-    start_timeout_seconds: int = 3600
-    max_duration_seconds: int = 86400
-    idle_timeout_seconds: int = 300
-    cleanup_interval_seconds: int = 60
-    max_pending_documents_per_creator: int = 16
-
-    @classmethod
-    def from_config(cls, config: _ConfigSource | None = None) -> DocumentUploadPolicy:
-        if config is None:
-            from include.config.settings import global_config
-
-            config = global_config
-
-        try:
-            document = config["document"]
-        except KeyError:
-            document = {}
-        if not isinstance(document, Mapping):
-            raise ConfigValidationError("document must be a table")
-
-        upload = document.get("upload", {})
-        if not isinstance(upload, Mapping):
-            raise ConfigValidationError("document.upload must be a table")
-
-        values = {
-            field.name: upload.get(field.name, field.default) for field in fields(cls)
-        }
-        policy = cls(**values)
-        for field in fields(cls):
-            value = getattr(policy, field.name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ConfigValidationError(
-                    f"document.upload.{field.name} must be a positive integer"
-                )
-        if policy.idle_timeout_seconds > policy.max_duration_seconds:
-            raise ConfigValidationError(
+class DocumentUploadPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("document"), _Section("upload")))
+    _RULES = (
+        _FieldOrder(
+            "idle_timeout_seconds",
+            "max_duration_seconds",
+            allow_equal=True,
+            message=(
                 "document.upload.idle_timeout_seconds must not exceed "
                 "document.upload.max_duration_seconds"
-            )
-        if policy.start_timeout_seconds >= policy.max_duration_seconds:
-            raise ConfigValidationError(
+            ),
+        ),
+        _FieldOrder(
+            "start_timeout_seconds",
+            "max_duration_seconds",
+            allow_equal=False,
+            message=(
                 "document.upload.start_timeout_seconds must be less than "
                 "document.upload.max_duration_seconds"
-            )
-        return policy
+            ),
+        ),
+    )
+
+    start_timeout_seconds: _PositiveInt = 3600
+    max_duration_seconds: _PositiveInt = 86400
+    idle_timeout_seconds: _PositiveInt = 300
+    cleanup_interval_seconds: _PositiveInt = 60
+    max_pending_documents_per_creator: _PositiveInt = 16
 
 
 @dataclass(frozen=True)
-class DocumentCreationRiskPolicy:
-    mode: str = "enforce"
-    refill_period_seconds: int = 600
-    account_capacity: int = 60
-    account_refill_tokens: int = 300
-    ip_capacity: int = 200
-    ip_refill_tokens: int = 1000
-    new_account_seconds: int = 7 * 24 * 60 * 60
-    pending_elevated_ratio: float = 0.5
-    pending_high_ratio: float = 0.75
-    ip_account_window_seconds: int = 600
-    ip_accounts_elevated: int = 4
-    ip_accounts_high: int = 10
-    denial_window_seconds: int = 600
-    denials_elevated: int = 1
-    denials_high: int = 3
-    elevated_cost: int = 3
-    high_cost: int = 10
-    state_retention_seconds: int = 86400
-
-    @classmethod
-    def from_config(
-        cls, config: _ConfigSource | None = None
-    ) -> DocumentCreationRiskPolicy:
-        if config is None:
-            from include.config.settings import global_config
-
-            config = global_config
-
-        try:
-            document = config["document"]
-        except KeyError:
-            document = {}
-        if not isinstance(document, Mapping):
-            raise ConfigValidationError("document must be a table")
-
-        upload = document.get("upload", {})
-        if not isinstance(upload, Mapping):
-            raise ConfigValidationError("document.upload must be a table")
-
-        risk_control = upload.get("creation_risk_control")
-        if risk_control is None:
-            risk_control = {}
-        if not isinstance(risk_control, Mapping):
-            raise ConfigValidationError(
-                "document.upload.creation_risk_control must be a table"
-            )
-        values = {
-            field.name: risk_control.get(field.name, field.default)
-            for field in fields(cls)
-        }
-
-        policy = cls(**values)
-        if policy.mode not in {"observe", "enforce"}:
-            raise ConfigValidationError(
-                "document.upload.creation_risk_control.mode must be 'observe' or "
-                "'enforce'"
-            )
-
-        ratio_names = {"pending_elevated_ratio", "pending_high_ratio"}
-        for field in fields(cls):
-            if field.name == "mode":
-                continue
-            value = getattr(policy, field.name)
-            if field.name in ratio_names:
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, int | float)
-                    or not 0 < value <= 1
-                ):
-                    raise ConfigValidationError(
-                        f"document.upload.creation_risk_control.{field.name} must "
-                        "be a number greater than 0 and at most 1"
-                    )
-                continue
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ConfigValidationError(
-                    f"document.upload.creation_risk_control.{field.name} must be "
-                    "a positive integer"
-                )
-
-        ordered_thresholds = (
-            ("pending_elevated_ratio", "pending_high_ratio"),
-            ("ip_accounts_elevated", "ip_accounts_high"),
-            ("denials_elevated", "denials_high"),
+class DocumentCreationRiskPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (
+            _Section("document"),
+            _Section("upload"),
+            _Section("creation_risk_control", none_as_missing=True),
         )
-        for lower_name, upper_name in ordered_thresholds:
-            if getattr(policy, lower_name) >= getattr(policy, upper_name):
-                raise ConfigValidationError(
-                    "document.upload.creation_risk_control."
-                    f"{lower_name} must be less than {upper_name}"
-                )
-
-        if min(policy.account_capacity, policy.ip_capacity) < policy.high_cost:
-            raise ConfigValidationError(
+    )
+    _RULES = (
+        _FieldOrder(
+            "pending_elevated_ratio",
+            "pending_high_ratio",
+            allow_equal=False,
+            message=(
+                "document.upload.creation_risk_control.pending_elevated_ratio "
+                "must be less than pending_high_ratio"
+            ),
+        ),
+        _FieldOrder(
+            "ip_accounts_elevated",
+            "ip_accounts_high",
+            allow_equal=False,
+            message=(
+                "document.upload.creation_risk_control.ip_accounts_elevated "
+                "must be less than ip_accounts_high"
+            ),
+        ),
+        _FieldOrder(
+            "denials_elevated",
+            "denials_high",
+            allow_equal=False,
+            message=(
+                "document.upload.creation_risk_control.denials_elevated must be "
+                "less than denials_high"
+            ),
+        ),
+        _MinimumCapacity(
+            ("account_capacity", "ip_capacity"),
+            "high_cost",
+            message=(
                 "document.upload.creation_risk_control bucket capacities must be "
                 "at least high_cost"
-            )
-        required_retention = max(
-            policy.refill_period_seconds,
-            policy.ip_account_window_seconds,
-            policy.denial_window_seconds,
-        )
-        if policy.state_retention_seconds < required_retention:
-            raise ConfigValidationError(
+            ),
+        ),
+        _WindowCoverage(
+            "state_retention_seconds",
+            (
+                "refill_period_seconds",
+                "ip_account_window_seconds",
+                "denial_window_seconds",
+            ),
+            message=(
                 "document.upload.creation_risk_control.state_retention_seconds must "
                 "cover every risk-control window"
-            )
-        return policy
+            ),
+        ),
+    )
+
+    mode: Literal["observe", "enforce"] = "enforce"
+    refill_period_seconds: _PositiveInt = 600
+    account_capacity: _PositiveInt = 60
+    account_refill_tokens: _PositiveInt = 300
+    ip_capacity: _PositiveInt = 200
+    ip_refill_tokens: _PositiveInt = 1000
+    new_account_seconds: _PositiveInt = 7 * 24 * 60 * 60
+    pending_elevated_ratio: _UnitRatio = 0.5
+    pending_high_ratio: _UnitRatio = 0.75
+    ip_account_window_seconds: _PositiveInt = 600
+    ip_accounts_elevated: _PositiveInt = 4
+    ip_accounts_high: _PositiveInt = 10
+    denial_window_seconds: _PositiveInt = 600
+    denials_elevated: _PositiveInt = 1
+    denials_high: _PositiveInt = 3
+    elevated_cost: _PositiveInt = 3
+    high_cost: _PositiveInt = 10
+    state_retention_seconds: _PositiveInt = 86400
 
 
 @dataclass(frozen=True)
-class DocumentDownloadRiskPolicy:
-    mode: str = "observe"
-    refill_period_seconds: int = 600
-    issue_account_capacity: int = 60
-    issue_account_refill_tokens: int = 300
-    issue_ip_capacity: int = 200
-    issue_ip_refill_tokens: int = 1000
-    transfer_account_capacity: int = 60
-    transfer_account_refill_tokens: int = 300
-    transfer_ip_capacity: int = 200
-    transfer_ip_refill_tokens: int = 1000
-    task_capacity: int = 5
-    task_refill_tokens: int = 10
-    task_refill_period_seconds: int = 3600
-    new_account_seconds: int = 7 * 24 * 60 * 60
-    ip_account_window_seconds: int = 600
-    ip_accounts_elevated: int = 4
-    ip_accounts_high: int = 10
-    denial_window_seconds: int = 600
-    denials_elevated: int = 1
-    denials_high: int = 3
-    elevated_cost: int = 3
-    high_cost: int = 10
-    state_retention_seconds: int = 86400
+class DocumentDownloadRiskPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (_Section("document"), _Section("download"), _Section("risk_control"))
+    )
+    _RULES = (
+        _FieldOrder(
+            "ip_accounts_elevated",
+            "ip_accounts_high",
+            allow_equal=False,
+            message=(
+                "document.download.risk_control.ip_accounts_elevated must be less "
+                "than ip_accounts_high"
+            ),
+        ),
+        _FieldOrder(
+            "denials_elevated",
+            "denials_high",
+            allow_equal=False,
+            message=(
+                "document.download.risk_control.denials_elevated must be less than "
+                "denials_high"
+            ),
+        ),
+        _MinimumCapacity(
+            (
+                "issue_account_capacity",
+                "issue_ip_capacity",
+                "transfer_account_capacity",
+                "transfer_ip_capacity",
+            ),
+            "high_cost",
+            message=(
+                "document.download.risk_control account and IP bucket capacities "
+                "must be at least high_cost"
+            ),
+        ),
+        _WindowCoverage(
+            "state_retention_seconds",
+            (
+                "refill_period_seconds",
+                "task_refill_period_seconds",
+                "ip_account_window_seconds",
+                "denial_window_seconds",
+            ),
+            message=(
+                "document.download.risk_control.state_retention_seconds must cover "
+                "every risk-control window"
+            ),
+        ),
+    )
 
-    @classmethod
-    def from_config(
-        cls, config: _ConfigSource | None = None
-    ) -> DocumentDownloadRiskPolicy:
-        if config is None:
-            from include.config.settings import global_config
-
-            config = global_config
-
-        try:
-            document = config["document"]
-        except KeyError:
-            document = {}
-        if not isinstance(document, Mapping):
-            raise ConfigValidationError("document must be a table")
-
-        download = document.get("download", {})
-        if not isinstance(download, Mapping):
-            raise ConfigValidationError("document.download must be a table")
-        risk_control = download.get("risk_control", {})
-        if not isinstance(risk_control, Mapping):
-            raise ConfigValidationError(
-                "document.download.risk_control must be a table"
-            )
-
-        policy = cls(
-            **{
-                field.name: risk_control.get(field.name, field.default)
-                for field in fields(cls)
-            }
-        )
-        path = "document.download.risk_control"
-        if policy.mode not in {"observe", "enforce"}:
-            raise ConfigValidationError(f"{path}.mode must be 'observe' or 'enforce'")
-        for field in fields(cls):
-            if field.name == "mode":
-                continue
-            value = getattr(policy, field.name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ConfigValidationError(
-                    f"{path}.{field.name} must be a positive integer"
-                )
-
-        for lower_name, upper_name in (
-            ("ip_accounts_elevated", "ip_accounts_high"),
-            ("denials_elevated", "denials_high"),
-        ):
-            if getattr(policy, lower_name) >= getattr(policy, upper_name):
-                raise ConfigValidationError(
-                    f"{path}.{lower_name} must be less than {upper_name}"
-                )
-
-        risk_capacities = (
-            policy.issue_account_capacity,
-            policy.issue_ip_capacity,
-            policy.transfer_account_capacity,
-            policy.transfer_ip_capacity,
-        )
-        if min(risk_capacities) < policy.high_cost:
-            raise ConfigValidationError(
-                f"{path} account and IP bucket capacities must be at least high_cost"
-            )
-        required_retention = max(
-            policy.refill_period_seconds,
-            policy.task_refill_period_seconds,
-            policy.ip_account_window_seconds,
-            policy.denial_window_seconds,
-        )
-        if policy.state_retention_seconds < required_retention:
-            raise ConfigValidationError(
-                f"{path}.state_retention_seconds must cover every risk-control window"
-            )
-        return policy
+    mode: Literal["observe", "enforce"] = "observe"
+    refill_period_seconds: _PositiveInt = 600
+    issue_account_capacity: _PositiveInt = 60
+    issue_account_refill_tokens: _PositiveInt = 300
+    issue_ip_capacity: _PositiveInt = 200
+    issue_ip_refill_tokens: _PositiveInt = 1000
+    transfer_account_capacity: _PositiveInt = 60
+    transfer_account_refill_tokens: _PositiveInt = 300
+    transfer_ip_capacity: _PositiveInt = 200
+    transfer_ip_refill_tokens: _PositiveInt = 1000
+    task_capacity: _PositiveInt = 5
+    task_refill_tokens: _PositiveInt = 10
+    task_refill_period_seconds: _PositiveInt = 3600
+    new_account_seconds: _PositiveInt = 7 * 24 * 60 * 60
+    ip_account_window_seconds: _PositiveInt = 600
+    ip_accounts_elevated: _PositiveInt = 4
+    ip_accounts_high: _PositiveInt = 10
+    denial_window_seconds: _PositiveInt = 600
+    denials_elevated: _PositiveInt = 1
+    denials_high: _PositiveInt = 3
+    elevated_cost: _PositiveInt = 3
+    high_cost: _PositiveInt = 10
+    state_retention_seconds: _PositiveInt = 86400
 
 
 def _validate_client_certificate_config(config: _ConfigSource) -> None:
