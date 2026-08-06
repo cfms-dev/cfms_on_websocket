@@ -2,9 +2,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from include.config.validation import DocumentUploadPolicy
 from include.database.models.files import FileTask, FileTaskStatus, TransferMode
@@ -84,84 +84,89 @@ def claim_file_task(
     *,
     now: float | None = None,
 ) -> ClaimedFileTask | None:
-    if now is None:
-        now = time.time()
-    task = session.get(FileTask, task_id)
+    now = time.time() if now is None else now
+    is_upload = transfer_mode == TransferMode.UPLOAD
+
+    task = session.get(
+        FileTask,
+        task_id,
+        options=(joinedload(FileTask.file),),
+    )
     if task is None or task.mode != transfer_mode:
         return None
-    if expire_file_task_if_due(session, task_id, now=now) != FileTaskStatus.PENDING:
+
+    status = expire_file_task_if_due(session, task_id, now=now)
+    if status != FileTaskStatus.PENDING:
         return None
+
+    # The following line is used to avoid executing an UPDATE that is bound to fail.
     if task.start_time > now:
         return None
 
-    values: dict[Any, Any] = {FileTask.status: FileTaskStatus.IN_PROGRESS}
-    if transfer_mode == TransferMode.UPLOAD:
+    values: dict[str, object] = {
+        "status": FileTaskStatus.IN_PROGRESS,
+    }
+
+    if is_upload:
         policy = DocumentUploadPolicy.from_config()
+
         initial_window = (
             task.end_time is not None
-            and (task.end_time - task.start_time) <= policy.start_timeout_seconds
+            and task.end_time - task.start_time <= policy.start_timeout_seconds
         )
+
         if initial_window:
             values.update(
                 {
-                    FileTask.start_time: now,
-                    FileTask.end_time: now + policy.max_duration_seconds,
+                    "start_time": now,
+                    "end_time": now + policy.max_duration_seconds,
                 }
             )
 
+    statement = (
+        update(FileTask)
+        .where(
+            FileTask.id == task_id,
+            FileTask.mode == transfer_mode,
+            FileTask.status == FileTaskStatus.PENDING,
+            FileTask.start_time <= now,
+            or_(
+                FileTask.end_time.is_(None),
+                FileTask.end_time > now,
+            ),
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+
     result = cast(
         CursorResult[Any],
-        session.execute(
-            update(FileTask)
-            .where(
-                FileTask.id == task_id,
-                FileTask.mode == transfer_mode,
-                FileTask.status == FileTaskStatus.PENDING,
-                FileTask.start_time <= now,
-                (FileTask.end_time.is_(None) | (FileTask.end_time > now)),
-            )
-            .values(values)
-        ),
+        session.execute(statement),
     )
+
     if result.rowcount != 1:
         session.expire(task)
         return None
 
-    file = task.file
-    claimed = ClaimedFileTask(
-        task_id=task.id,
-        file_id=file.id,
-        file_path=file.path,
-        stored_file_size=(
-            file.size if transfer_mode == TransferMode.DOWNLOAD else None
-        ),
-        issued_by_username=task.issued_by_username,
-        encryption_key=(
-            task.encryption_key if transfer_mode == TransferMode.DOWNLOAD else None
-        ),
-        chunk_size=task.chunk_size,
-        upload_file_size=(
-            task.upload_file_size if transfer_mode == TransferMode.UPLOAD else None
-        ),
-        upload_sha256=(
-            task.upload_sha256 if transfer_mode == TransferMode.UPLOAD else None
-        ),
-        upload_session_id=(
-            task.upload_session_id if transfer_mode == TransferMode.UPLOAD else None
-        ),
-        upload_checkpoint_size=(
-            task.upload_checkpoint_size
-            if transfer_mode == TransferMode.UPLOAD
-            else None
-        ),
-        upload_checkpoint_data=(
-            task.upload_checkpoint_data
-            if transfer_mode == TransferMode.UPLOAD
-            else None
-        ),
-    )
-    session.expire(task)
-    return claimed
+    try:
+        stored_file = task.file
+
+        return ClaimedFileTask(
+            task_id=task.id,
+            file_id=task.file_id,
+            file_path=stored_file.path,
+            stored_file_size=(stored_file.size if not is_upload else None),
+            issued_by_username=task.issued_by_username,
+            encryption_key=(task.encryption_key if not is_upload else None),
+            chunk_size=task.chunk_size,
+            upload_file_size=(task.upload_file_size if is_upload else None),
+            upload_sha256=(task.upload_sha256 if is_upload else None),
+            upload_session_id=(task.upload_session_id if is_upload else None),
+            upload_checkpoint_size=(task.upload_checkpoint_size if is_upload else None),
+            upload_checkpoint_data=(task.upload_checkpoint_data if is_upload else None),
+        )
+    finally:
+        session.expire(task)
 
 
 def complete_file_task(session: Session, task_id: str) -> bool:
