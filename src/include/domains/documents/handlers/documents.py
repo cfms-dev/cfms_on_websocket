@@ -159,6 +159,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -227,6 +228,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
 
@@ -273,6 +275,7 @@ class RequestGetDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         document_id: str = handler.data["document_id"]
@@ -359,6 +362,7 @@ class RequestCreateDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         folder_id = handler.data.get("folder_id") or ROOT_DIRECTORY_ID
@@ -526,6 +530,7 @@ class RequestUploadDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
@@ -666,6 +671,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
@@ -719,6 +725,7 @@ class RequestRenameDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -791,6 +798,7 @@ class RequestDownloadFileHandler(RequestHandler):
         "required": ["task_id", "max_chunk_size"],
         "additionalProperties": False,
     }
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         task_id: str = handler.data["task_id"]
@@ -824,6 +832,7 @@ class RequestUploadFileHandler(RequestHandler):
         "required": ["task_id", "file_size", "sha256", "max_chunk_size"],
         "additionalProperties": False,
     }
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         task_id = handler.data["task_id"]
@@ -861,6 +870,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         """Handles the document access rules setting request from the client."""
@@ -923,6 +933,7 @@ class RequestMoveDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -1047,6 +1058,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
         doc_id = handler.data["document_id"]
@@ -1101,6 +1113,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         doc_id = handler.data["document_id"]
@@ -1201,6 +1214,7 @@ class RequestSetDocumentTagsHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         document_id: str = handler.data["document_id"]

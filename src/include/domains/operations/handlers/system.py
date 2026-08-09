@@ -38,6 +38,7 @@ class RequestLockdownHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
         status_to_change: bool = handler.data["status"]
@@ -73,6 +74,7 @@ class RequestViewAuditLogsHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         page_size = get_page_size(handler.data)

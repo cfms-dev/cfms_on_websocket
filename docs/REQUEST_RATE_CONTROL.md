@@ -71,14 +71,49 @@ ip_refill_tokens = 600
 state_retention_seconds = 600
 
 [security.request_rate_control.action_costs]
-search = 3
-upload_document = 5
+search = 4
+upload_document = 8
 ```
 
 Each handler declares a positive integer `rate_limit_cost`, defaulting to one.
 Configuration overrides are checked at startup, including handlers registered by
 extensions. An override for an unknown action produces a warning. Costs cannot
 exceed either request bucket capacity.
+
+### Default action costs
+
+Built-in handlers use six relative cost tiers. With the default account refill
+of 120 tokens per minute, costs 1, 2, 3, 5, 10, and 20 permit approximately
+120, 60, 40, 24, 12, and 6 sustained calls per minute respectively. The IP
+bucket is five times larger. These are starting points for observation-mode
+calibration, not measurements of wall-clock time.
+
+| Cost | Actions |
+| ---: | --- |
+| 1 | `cancel_2fa_setup`, `get_2fa_status`, `get_user_key`, `server_info`, `shutdown` |
+| 2 | `refresh_token`, `validate_2fa`, `list_banned_subnets`, `get_document_access_rules`, `list_revisions`, `get_directory_access_rules`, `unblock_user`, `get_user_info`, `revoke_access`, `upload_user_key`, `delete_user_key`, `set_user_preference_dek`, `list_user_keys` |
+| 3 | `list_auth_lockouts`, `get_document`, `restore_document`, `rename_document`, `move_document`, `get_document_info`, `set_document_tags`, `get_revision`, `set_current_revision`, `list_directory`, `get_directory_info`, `create_directory`, `rename_directory`, `move_directory`, `list_deleted_items`, `search`, `manage_user_status`, `block_user`, `list_user_blocks`, `list_users`, `get_user_avatar`, `set_user_avatar`, `change_user_groups`, `change_user_permissions`, `list_groups`, `create_group`, `get_group_info`, `change_group_permissions`, `grant_access`, `view_access_entries`, `view_audit_logs`, `sso_oidc_start`, `throw_exception` |
+| 5 | `login`, `disable_2fa`, `create_banned_subnet`, `update_banned_subnet`, `delete_banned_subnet`, `create_document`, `upload_document`, `delete_document`, `set_document_rules`, `delete_revision`, `download_file`, `upload_file`, `set_directory_rules`, `create_user`, `delete_user`, `rename_user`, `delete_group`, `rename_group` |
+| 10 | `unlock_auth_lockouts`, `purge_document`, `delete_directory`, `restore_directory`, `set_passwd`, `lockdown`, `sso_oidc_callback` |
+| 20 | `setup_2fa`, `purge_directory` |
+
+The tiers reflect relative database, cryptographic, file-transfer, external
+network, and bulk-operation pressure. Method-specific weighted costs are an
+established quota pattern; see the
+[Google Cloud Endpoints quota guide](https://docs.cloud.google.com/endpoints/docs/openapi/quotas-overview),
+[Azure API Management weighted increment policy](https://learn.microsoft.com/en-us/azure/api-management/rate-limit-by-key-policy),
+and [GitHub's read/write point model](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api).
+[OWASP API4](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/)
+recommends tuning endpoint limits to business needs and separately bounding
+record counts, payload sizes, and batched work.
+
+Costs are fixed per request because quota accounting happens before payload
+schema validation and handler execution. They do not scale with directory
+subtree size, array length, or file bytes. Pagination limits, file-task
+lifecycle controls, hard admission ceilings, and the document-specific risk
+controls remain responsible for those variable dimensions. In particular,
+document creation and download risk tokens are independent signals and are not
+folded into these transport-wide request costs.
 
 The account and IP buckets are charged together for authenticated requests. An
 unauthenticated request charges only its IP bucket. Unknown actions are rejected

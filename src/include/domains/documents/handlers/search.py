@@ -57,6 +57,7 @@ class RequestSearchHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         """

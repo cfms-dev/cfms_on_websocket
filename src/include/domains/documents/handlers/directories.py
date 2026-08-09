@@ -130,6 +130,7 @@ class RequestListDirectoryHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -227,6 +228,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -296,6 +298,7 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
 
@@ -364,6 +367,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         data = handler.data
@@ -477,6 +481,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
 
@@ -587,6 +592,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -656,6 +662,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -754,6 +761,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         """Handles the directory access rules setting request from the client."""
@@ -819,6 +827,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 20
 
     def handle(self, handler: ConnectionHandler):
         folder_id = handler.data["folder_id"]
@@ -921,6 +930,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
         folder_id = handler.data["folder_id"]
@@ -1031,6 +1041,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         parent_id = handler.data["folder_id"]

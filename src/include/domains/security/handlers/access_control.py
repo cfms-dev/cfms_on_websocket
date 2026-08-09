@@ -136,6 +136,7 @@ class RequestListBannedSubnetsHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         denial = _require_permission(handler, Permissions.LIST_BANNED_SUBNETS)
@@ -227,6 +228,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         denial = _require_permission(handler, Permissions.MANAGE_BANNED_SUBNETS)
@@ -306,6 +308,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         denial = _require_permission(handler, Permissions.MANAGE_BANNED_SUBNETS)
@@ -380,6 +383,7 @@ class RequestDeleteBannedSubnetHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         denial = _require_permission(handler, Permissions.MANAGE_BANNED_SUBNETS)
@@ -474,6 +478,7 @@ class RequestListAuthLockoutsHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         denial = _require_permission(handler, Permissions.LIST_AUTH_LOCKOUTS)
@@ -629,6 +634,7 @@ class RequestUnlockAuthLockoutsHandler(RequestHandler):
         "additionalProperties": False,
     }
     require_auth = True
+    rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
         denial = _require_permission(handler, Permissions.UNLOCK_AUTH_LOCKOUTS)

@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Assign calibrated request-token costs to every core, built-in extension,
+  optional OIDC, and debugging action while preserving per-deployment
+  `action_costs` overrides.
 - Increase the protocol version to 19. Download-limit responses use `429` with
   account, IP, or task scope while preserving bearer capability and resumable
   transfer semantics.

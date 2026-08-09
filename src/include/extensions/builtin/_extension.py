@@ -38,6 +38,7 @@ class RequestServerInfoHandler(RequestHandler):
     """
 
     schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
         lockdown_state = lockdown_state_manager.get_state()
@@ -65,6 +66,7 @@ class RequestShutdownHandler(RequestHandler):
 
     schema = {"type": "object", "properties": {}, "additionalProperties": False}
     require_auth = True
+    rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
 

@@ -343,6 +343,7 @@ class RequestOIDCStartHandler(RequestHandler):
         },
         "additionalProperties": False,
     }
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler) -> Result | None:
         try:
@@ -390,6 +391,7 @@ class RequestOIDCCallbackHandler(RequestHandler):
         "required": ["state"],
         "additionalProperties": False,
     }
+    rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler) -> Result | None:
         state = handler.data["state"]

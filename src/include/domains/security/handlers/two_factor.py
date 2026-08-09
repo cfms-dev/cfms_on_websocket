@@ -61,6 +61,7 @@ class RequestSetup2FAHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 20
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
@@ -110,6 +111,7 @@ class RequestValidate2FAHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         token = handler.data["token"]
@@ -188,6 +190,7 @@ class RequestDisable2FAHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         password = handler.data.get("password")
@@ -271,6 +274,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
@@ -315,6 +319,7 @@ class RequestGet2FAStatusHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
 

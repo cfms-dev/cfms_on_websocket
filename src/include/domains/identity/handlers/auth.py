@@ -37,6 +37,7 @@ class RequestLoginHandler(RequestHandler):
         "required": ["username", "password"],
         "additionalProperties": False,
     }
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         username: str = handler.data["username"]
@@ -138,6 +139,7 @@ class RequestLoginHandler(RequestHandler):
 class RequestRefreshTokenHandler(RequestHandler):
     schema = {"type": "object", "properties": {}, "additionalProperties": False}
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         old_token = handler.token

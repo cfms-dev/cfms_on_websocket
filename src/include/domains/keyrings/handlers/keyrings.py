@@ -64,6 +64,7 @@ class RequestUploadUserKeyHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         key_content: str = handler.data["content"]
@@ -133,6 +134,7 @@ class RequestGetUserKeyHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
         key_id: str = handler.data["id"]
@@ -194,6 +196,7 @@ class RequestDeleteUserKeyHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         key_id: str = handler.data["id"]
@@ -254,6 +257,7 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         key_id: str = handler.data["id"]
@@ -308,6 +312,7 @@ class RequestListUserKeysHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         target_username: str = handler.data.get("target_username") or handler.username

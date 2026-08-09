@@ -38,6 +38,7 @@ class RequestListRevisionsHandler(RequestHandler):
     }
 
     require_auth = True  # when True, handler.username is guaranteed to be not None
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
@@ -130,6 +131,7 @@ class RequestGetRevisionHandler(RequestHandler):
     }
 
     require_auth = True  # when True, handler.username is guaranteed to be not None
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         revision_id = handler.data["id"]
@@ -201,6 +203,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
     }
 
     require_auth = True  # when True, handler.username is guaranteed to be not None
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
@@ -245,6 +248,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         # Be careful: this function changes the revision tree structure.

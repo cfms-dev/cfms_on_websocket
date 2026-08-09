@@ -110,7 +110,8 @@ state_retention_seconds = 600
 
 [security.request_rate_control.action_costs]
 # Optional positive integer costs keyed by request action. Unlisted actions use
-# the handler's declared cost, which defaults to 1.
+# calibrated handler defaults in the 1, 2, 3, 5, 10, and 20 cost tiers. Values
+# here override those defaults. See docs/REQUEST_RATE_CONTROL.md for the matrix.
 
 [sso.oidc]
 # Issuer URL of the OpenID Provider, without a trailing slash.

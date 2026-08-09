@@ -61,6 +61,7 @@ class RequestGrantAccessHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -156,6 +157,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         object_type: str = handler.data["object_type"]
@@ -260,6 +262,7 @@ class RequestRevokeAccessHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         entry_id: int = handler.data["entry_id"]

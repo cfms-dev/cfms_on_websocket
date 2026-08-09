@@ -10,8 +10,9 @@ class RequestThrowExceptionHandler(RequestHandler):
     """A request handler that always throws an exception for testing purposes."""
 
     require_auth = True
+    rate_limit_cost = 3
 
-    def handle(self, handler: "ConnectionHandler"):
+    def handle(self, handler: ConnectionHandler):
         """Handle the request by throwing an exception."""
 
         with Session() as session:

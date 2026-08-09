@@ -77,6 +77,7 @@ class RequestListUsersHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         offset, count = get_offset_pagination(handler.data)
@@ -173,6 +174,7 @@ class RequestCreateUserHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         data = handler.data
@@ -243,6 +245,7 @@ class RequestDeleteUserHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
 
@@ -321,6 +324,7 @@ class RequestRenameUserHandler(RequestHandler):
         "required": ["username"],
         "additionalProperties": False,
     }
+    rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
 
@@ -416,6 +420,7 @@ class RequestBlockUserHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -493,6 +498,7 @@ class RequestUnblockUserHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
 
@@ -545,6 +551,7 @@ class RequestListUserBlocksHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -652,6 +659,7 @@ class RequestGetUserInfoHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         user_to_get_username = handler.data["username"]
@@ -712,6 +720,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         user_to_get_username = handler.data["username"]
@@ -777,6 +786,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         target_username: str = handler.data["username"]
@@ -853,6 +863,7 @@ class RequestChangeUserGroupsHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
 
@@ -914,6 +925,7 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
@@ -986,6 +998,7 @@ class RequestSetPasswdHandler(RequestHandler):
         "required": ["username", "new_passwd"],
         "additionalProperties": False,
     }
+    rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
         target_username: str = handler.data["username"]
@@ -1188,6 +1201,7 @@ class RequestManageUserStatusHandler(RequestHandler):
     }
 
     require_auth = True
+    rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         new_status: str = handler.data["status"]
