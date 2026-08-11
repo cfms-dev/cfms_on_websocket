@@ -3,6 +3,7 @@ __all__ = [
     "NonNegativeInt",
     "PositiveFloat",
     "PositiveInt",
+    "JsonInteger",
     "StrictBool",
     "StrictFloat",
     "StrictInt",
@@ -10,10 +11,11 @@ __all__ = [
     "UnitRatio",
 ]
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from annotated_types import Gt, Le
 from pydantic import (
+    BeforeValidator,
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
@@ -23,6 +25,15 @@ from pydantic import (
     StrictStr,
     StringConstraints,
 )
+
+
+def _normalize_json_integer(value: Any) -> Any:
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+JsonInteger = Annotated[int, BeforeValidator(_normalize_json_integer)]
 
 NonEmptyString = Annotated[
     str,

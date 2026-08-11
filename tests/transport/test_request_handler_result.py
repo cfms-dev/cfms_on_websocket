@@ -422,6 +422,21 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch, tm
     assert responses[0][0][1] == {"retry_after_seconds": 45}
 
 
+def test_disable_2fa_request_requires_a_credential(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from pydantic import ValidationError
+
+    from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
+
+    RequestDisable2FAHandler.request_model.model_validate({"password": "secret"})
+
+    with pytest.raises(ValidationError):
+        RequestDisable2FAHandler.request_model.model_validate({})
+    with pytest.raises(ValidationError):
+        RequestDisable2FAHandler.request_model.model_validate({"password": None})
+
+
 def test_password_change_uses_authentication_throttle(monkeypatch, tmp_path):
     _prepare_config(monkeypatch, tmp_path)
 

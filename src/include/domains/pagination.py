@@ -2,6 +2,9 @@ __all__ = [
     "CURSOR_PAGINATION_SCHEMA",
     "OFFSET_PAGINATION_SCHEMA",
     "PAGINATION_CURSOR_MAX_LENGTH",
+    "PaginationCursorToken",
+    "PaginationOffset",
+    "PaginationPageSize",
     "CursorError",
     "PaginationCursor",
     "get_offset_pagination",
@@ -15,21 +18,33 @@ import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from pydantic import Field, StringConstraints
 
 from include.config.constants import (
     PAGINATION_DEFAULT_PAGE_SIZE,
     PAGINATION_MAX_PAGE_SIZE,
 )
 from include.config.settings import global_config
+from include.types import JsonInteger
 
 PAGINATION_CURSOR_MAX_LENGTH = 2048
 _CURSOR_AAD = "pagination-cursor-v2"
 _CURSOR_KDF_INFO = b"cfms-pagination-cursor-fernet-v2"
+
+PaginationPageSize = Annotated[
+    JsonInteger,
+    Field(ge=1, le=PAGINATION_MAX_PAGE_SIZE),
+]
+PaginationCursorToken = Annotated[
+    str,
+    StringConstraints(max_length=PAGINATION_CURSOR_MAX_LENGTH),
+]
+PaginationOffset = Annotated[JsonInteger, Field(ge=0, le=2**15 - 1)]
 
 CURSOR_PAGINATION_SCHEMA = {
     "page_size": {
@@ -125,7 +140,7 @@ class PaginationCursor:
         filters: dict[str, Any],
         ttl: int | None = None,
         value_types: Sequence[CursorValueType] | None = None,
-    ) -> "PaginationCursor | None":
+    ) -> PaginationCursor | None:
         if token is None:
             return None
 

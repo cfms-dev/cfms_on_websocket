@@ -51,3 +51,25 @@ def test_request_data_model_is_strict_and_forbids_extra_fields(
 
     assert type_error.value.errors()[0]["type"] == "int_type"
     assert extra_error.value.errors()[0]["type"] == "extra_forbidden"
+
+
+def test_omittable_field_distinguishes_missing_from_null(monkeypatch, tmp_path) -> None:
+    from pydantic import ValidationError
+
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.transport.request_handler import (
+        REQUEST_UNSET,
+        Omittable,
+        RequestDataModel,
+    )
+
+    class OptionalRequest(RequestDataModel):
+        value: Omittable[str] = REQUEST_UNSET
+
+    request = OptionalRequest.model_validate({})
+    assert "value" not in request.model_fields_set
+
+    with pytest.raises(ValidationError):
+        OptionalRequest.model_validate({"value": None})

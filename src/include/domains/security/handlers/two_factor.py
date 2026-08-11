@@ -6,8 +6,10 @@ two-factor authentication using Time-based One-Time Passwords (TOTP).
 """
 
 from operator import xor
+from typing import Annotated, Literal, Self
 
 import orjson
+from pydantic import StringConstraints, model_validator
 
 from include.config.constants import USERNAME_MAX_LENGTH
 from include.database.models.identity import User, UserStatus
@@ -20,7 +22,47 @@ from include.domains.security.guards.login import (
 )
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_Username = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=USERNAME_MAX_LENGTH),
+]
+_Token = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class _EmptyRequest(RequestDataModel):
+    pass
+
+
+class _Setup2FARequest(RequestDataModel):
+    method: Omittable[Literal["totp"]] = REQUEST_UNSET
+
+
+class _Validate2FARequest(RequestDataModel):
+    token: _Token
+
+
+class _Disable2FARequest(RequestDataModel):
+    username: Omittable[_Username] = REQUEST_UNSET
+    password: Omittable[_NonEmptyString] = REQUEST_UNSET
+
+    @model_validator(mode="after")
+    def require_username_or_password(self) -> Self:
+        if not {"username", "password"} & self.model_fields_set:
+            raise ValueError("username or password is required")
+        return self
+
+
+class _Get2FAStatusRequest(RequestDataModel):
+    target: Omittable[_NonEmptyString] = REQUEST_UNSET
 
 
 def _conclude_throttled(
@@ -54,11 +96,7 @@ class RequestSetup2FAHandler(RequestHandler):
         - backup_codes: List of backup codes for account recovery
     """
 
-    schema = {
-        "type": "object",
-        "properties": {"method": {"type": "string", "enum": ["totp"]}},
-        "additionalProperties": False,
-    }
+    request_model = _Setup2FARequest
 
     require_auth = True
     rate_limit_cost = 20
@@ -101,14 +139,7 @@ class RequestValidate2FAHandler(RequestHandler):
     providing a valid code from their authenticator app. This enables 2FA.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "token": {"type": "string", "minLength": 1, "maxLength": 64},
-        },
-        "required": ["token"],
-        "additionalProperties": False,
-    }
+    request_model = _Validate2FARequest
 
     require_auth = True
     rate_limit_cost = 2
@@ -172,22 +203,7 @@ class RequestDisable2FAHandler(RequestHandler):
     The user must provide their password for verification.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": USERNAME_MAX_LENGTH,
-            },
-            "password": {"type": "string", "minLength": 1},
-        },
-        "anyOf": [
-            {"required": ["username"]},
-            {"required": ["password"]},
-        ],
-        "additionalProperties": False,
-    }
+    request_model = _Disable2FARequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -267,11 +283,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
     but not yet validated/enabled.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": False,
-    }
+    request_model = _EmptyRequest
 
     require_auth = True
     rate_limit_cost = 1
@@ -310,13 +322,7 @@ class RequestGet2FAStatusHandler(RequestHandler):
     Returns whether 2FA is enabled for the authenticated user.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "target": {"type": "string", "minLength": 1},
-        },
-        "additionalProperties": False,
-    }
+    request_model = _Get2FAStatusRequest
 
     require_auth = True
     rate_limit_cost = 1

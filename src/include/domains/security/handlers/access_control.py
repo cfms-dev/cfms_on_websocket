@@ -1,10 +1,11 @@
 import ipaddress
 import math
 import time
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import orjson
 from loguru import logger
+from pydantic import Field, StringConstraints, field_validator
 from sqlalchemy import Double, and_, asc, desc, literal, null, or_, select, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -21,43 +22,97 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.operations.comments import CommentStore
 from include.domains.pagination import (
-    CURSOR_PAGINATION_SCHEMA,
     CursorError,
     PaginationCursor,
+    PaginationCursorToken,
+    PaginationPageSize,
     get_page_size,
     make_cursor_response,
 )
-from include.domains.security.guards.login import AuthFactor, LoginGuard, ThrottleScope
+from include.domains.security.guards.login import LoginGuard, ThrottleScope
 from include.messages import Messages as smsg
 from include.providers.manager import ProviderManager
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
-
-_SUBNET_STATUSES = ("scheduled", "active", "expired")
-_LOCKOUT_SCOPES = (
-    ThrottleScope.IP.value,
-    ThrottleScope.ACCOUNT.value,
-    ThrottleScope.ACCOUNT_IP.value,
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
 )
 
-_SUBNET_SCHEMA = {
-    "type": "string",
-    "minLength": 1,
-    "maxLength": 128,
-}
-_REASON_SCHEMA = {
-    "anyOf": [
-        {"type": "string", "maxLength": 255},
-        {"type": "null"},
-    ]
-}
-_EXPIRY_SCHEMA = {
-    "anyOf": [
-        {"type": "number", "minimum": 0},
-        {"type": "null"},
-    ]
-}
+_Subnet = Annotated[str, StringConstraints(min_length=1, max_length=128)]
+_OptionalReason = Annotated[str, StringConstraints(max_length=255)] | None
+_NonNegativeNumber = Annotated[float, Field(ge=0)]
+_LockoutUsername = Annotated[str, StringConstraints(min_length=1, max_length=255)]
+_IPAddress = Annotated[str, StringConstraints(min_length=1, max_length=45)]
+_UnlockReason = Annotated[str, StringConstraints(min_length=1, max_length=1024)]
+
+
+class _ListBannedSubnetsRequest(RequestDataModel):
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
+    status: Omittable[Literal["scheduled", "active", "expired"]] = REQUEST_UNSET
+
+
+class _BannedSubnetMutationRequest(RequestDataModel):
+    subnet: _Subnet
+    reason: _OptionalReason = None
+    starts_at: Omittable[_NonNegativeNumber] = REQUEST_UNSET
+    expires_at: _NonNegativeNumber | None = None
+    confirm_self_block: Omittable[bool] = REQUEST_UNSET
+
+
+class _DeleteBannedSubnetRequest(RequestDataModel):
+    subnet: _Subnet
+
+
+class _ListAuthLockoutsRequest(RequestDataModel):
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
+    scope: Omittable[Literal["ip", "account", "account_ip"]] = REQUEST_UNSET
+    username: Omittable[_LockoutUsername] = REQUEST_UNSET
+    ip_address: Omittable[_IPAddress] = REQUEST_UNSET
+    factor: Omittable[Literal["password", "totp"]] = REQUEST_UNSET
+
+
+class _IPLockoutSelector(RequestDataModel):
+    scope: Literal["ip"]
+    ip_address: _IPAddress
+
+
+class _AccountLockoutSelector(RequestDataModel):
+    scope: Literal["account"]
+    username: _LockoutUsername
+    factor: Literal["password", "totp"]
+
+
+class _AccountIPLockoutSelector(RequestDataModel):
+    scope: Literal["account_ip"]
+    username: _LockoutUsername
+    ip_address: _IPAddress
+
+
+_LockoutSelector = Annotated[
+    _IPLockoutSelector | _AccountLockoutSelector | _AccountIPLockoutSelector,
+    Field(discriminator="scope"),
+]
+
+
+class _UnlockAuthLockoutsRequest(RequestDataModel):
+    locks: Annotated[list[_LockoutSelector], Field(min_length=1, max_length=100)]
+    reason: _UnlockReason
+
+    @field_validator("locks")
+    @classmethod
+    def require_unique_locks(
+        cls, locks: list[_LockoutSelector]
+    ) -> list[_LockoutSelector]:
+        for index, lock in enumerate(locks):
+            if lock in locks[:index]:
+                raise ValueError("locks must contain unique selectors")
+        return locks
 
 
 def _require_permission(
@@ -127,14 +182,7 @@ def _refresh_subnet_rules() -> None:
 
 
 class RequestListBannedSubnetsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            **CURSOR_PAGINATION_SCHEMA,
-            "status": {"type": "string", "enum": list(_SUBNET_STATUSES)},
-        },
-        "additionalProperties": False,
-    }
+    request_model = _ListBannedSubnetsRequest
     require_auth = True
     rate_limit_cost = 2
 
@@ -215,18 +263,7 @@ class RequestListBannedSubnetsHandler(RequestHandler):
 
 
 class RequestCreateBannedSubnetHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "subnet": _SUBNET_SCHEMA,
-            "reason": _REASON_SCHEMA,
-            "starts_at": {"type": "number", "minimum": 0},
-            "expires_at": _EXPIRY_SCHEMA,
-            "confirm_self_block": {"type": "boolean"},
-        },
-        "required": ["subnet"],
-        "additionalProperties": False,
-    }
+    request_model = _BannedSubnetMutationRequest
     require_auth = True
     rate_limit_cost = 5
 
@@ -295,18 +332,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
 
 
 class RequestUpdateBannedSubnetHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "subnet": _SUBNET_SCHEMA,
-            "reason": _REASON_SCHEMA,
-            "starts_at": {"type": "number", "minimum": 0},
-            "expires_at": _EXPIRY_SCHEMA,
-            "confirm_self_block": {"type": "boolean"},
-        },
-        "required": ["subnet"],
-        "additionalProperties": False,
-    }
+    request_model = _BannedSubnetMutationRequest
     require_auth = True
     rate_limit_cost = 5
 
@@ -376,12 +402,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
 
 
 class RequestDeleteBannedSubnetHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {"subnet": _SUBNET_SCHEMA},
-        "required": ["subnet"],
-        "additionalProperties": False,
-    }
+    request_model = _DeleteBannedSubnetRequest
     require_auth = True
     rate_limit_cost = 5
 
@@ -463,20 +484,7 @@ def _after_lockout_cursor(columns, last: list[Any]):
 
 
 class RequestListAuthLockoutsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            **CURSOR_PAGINATION_SCHEMA,
-            "scope": {"type": "string", "enum": list(_LOCKOUT_SCOPES)},
-            "username": {"type": "string", "minLength": 1, "maxLength": 255},
-            "ip_address": {"type": "string", "minLength": 1, "maxLength": 45},
-            "factor": {
-                "type": "string",
-                "enum": [factor.value for factor in AuthFactor],
-            },
-        },
-        "additionalProperties": False,
-    }
+    request_model = _ListAuthLockoutsRequest
     require_auth = True
     rate_limit_cost = 3
 
@@ -567,44 +575,6 @@ class RequestListAuthLockoutsHandler(RequestHandler):
         )
 
 
-_LOCKOUT_SELECTOR_SCHEMA = {
-    "oneOf": [
-        {
-            "type": "object",
-            "properties": {
-                "scope": {"const": ThrottleScope.IP.value},
-                "ip_address": {"type": "string", "minLength": 1, "maxLength": 45},
-            },
-            "required": ["scope", "ip_address"],
-            "additionalProperties": False,
-        },
-        {
-            "type": "object",
-            "properties": {
-                "scope": {"const": ThrottleScope.ACCOUNT.value},
-                "username": {"type": "string", "minLength": 1, "maxLength": 255},
-                "factor": {
-                    "type": "string",
-                    "enum": [factor.value for factor in AuthFactor],
-                },
-            },
-            "required": ["scope", "username", "factor"],
-            "additionalProperties": False,
-        },
-        {
-            "type": "object",
-            "properties": {
-                "scope": {"const": ThrottleScope.ACCOUNT_IP.value},
-                "username": {"type": "string", "minLength": 1, "maxLength": 255},
-                "ip_address": {"type": "string", "minLength": 1, "maxLength": 45},
-            },
-            "required": ["scope", "username", "ip_address"],
-            "additionalProperties": False,
-        },
-    ]
-}
-
-
 def _selector_record_and_key(selector: dict[str, str]):
     scope = selector["scope"]
     if scope == ThrottleScope.IP.value:
@@ -618,21 +588,7 @@ def _selector_record_and_key(selector: dict[str, str]):
 
 
 class RequestUnlockAuthLockoutsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "locks": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 100,
-                "uniqueItems": True,
-                "items": _LOCKOUT_SELECTOR_SCHEMA,
-            },
-            "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
-        },
-        "required": ["locks", "reason"],
-        "additionalProperties": False,
-    }
+    request_model = _UnlockAuthLockoutsRequest
     require_auth = True
     rate_limit_cost = 10
 

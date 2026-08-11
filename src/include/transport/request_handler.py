@@ -1,12 +1,21 @@
-__all__ = ["JsonInteger", "RequestDataModel", "RequestHandler", "Result"]
+__all__ = [
+    "JsonInteger",
+    "Omittable",
+    "REQUEST_UNSET",
+    "RequestDataModel",
+    "RequestHandler",
+    "Result",
+]
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar
+from enum import Enum
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 from include.transport.connection import ConnectionHandler
+from include.types import JsonInteger
 
 
 @dataclass
@@ -17,13 +26,12 @@ class Result:
     username: str | None = None
 
 
-def _normalize_json_integer(value: Any) -> Any:
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
+class _RequestUnset(Enum):
+    TOKEN = object()
 
 
-JsonInteger = Annotated[int, BeforeValidator(_normalize_json_integer)]
+REQUEST_UNSET = _RequestUnset.TOKEN
+type Omittable[T] = T | _RequestUnset
 
 
 class RequestDataModel(BaseModel):

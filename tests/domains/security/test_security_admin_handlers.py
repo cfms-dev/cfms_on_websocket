@@ -222,6 +222,30 @@ def test_security_admin_permissions_are_independent(security_admin_context):
     } == {403}
 
 
+def test_security_admin_request_models_preserve_schema_constraints(
+    security_admin_context,
+):
+    from pydantic import ValidationError
+
+    handlers = security_admin_context.handlers
+    handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
+        {"subnet": "192.0.2.0/24", "expires_at": None}
+    )
+    with pytest.raises(ValidationError):
+        handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
+            {"subnet": "192.0.2.0/24", "starts_at": None}
+        )
+
+    selector = {"scope": "ip", "ip_address": "192.0.2.1"}
+    handlers.RequestUnlockAuthLockoutsHandler.request_model.model_validate(
+        {"locks": [selector], "reason": "manual unlock"}
+    )
+    with pytest.raises(ValidationError):
+        handlers.RequestUnlockAuthLockoutsHandler.request_model.model_validate(
+            {"locks": [selector, selector], "reason": "manual unlock"}
+        )
+
+
 def test_list_and_unlock_all_lockout_scopes(security_admin_context):
     context = security_admin_context
     handlers = context.handlers

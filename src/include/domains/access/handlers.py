@@ -1,5 +1,9 @@
 __all__ = ["RequestGrantAccessHandler", "RequestRevokeAccessHandler"]
 
+from typing import Annotated, Literal
+
+from pydantic import Field, StringConstraints
+
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import (
     Document,
@@ -12,53 +16,54 @@ from include.database.models.identity import (
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.pagination import (
-    CURSOR_PAGINATION_SCHEMA,
     CursorError,
     PaginationCursor,
+    PaginationCursorToken,
+    PaginationPageSize,
     get_page_size,
     make_cursor_response,
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    JsonInteger,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
 
 ENTITY_TYPE_MAPPING = {"user": User, "group": UserGroup}
 TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}
 
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_NonNegativeNumber = Annotated[float, Field(ge=0)]
+
+
+class _GrantAccessRequest(RequestDataModel):
+    entity_type: Literal["user", "group"]
+    entity_identifier: _NonEmptyString
+    target_type: Literal["document", "directory"]
+    target_identifier: _NonEmptyString
+    access_types: list[str]
+    start_time: _NonNegativeNumber
+    end_time: Omittable[_NonNegativeNumber] = REQUEST_UNSET
+
+
+class _ViewAccessEntriesRequest(RequestDataModel):
+    object_type: Literal["user", "group", "document", "directory"]
+    object_identifier: _NonEmptyString
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
+
+
+class _RevokeAccessRequest(RequestDataModel):
+    entry_id: Annotated[JsonInteger, Field(ge=1)]
+
 
 class RequestGrantAccessHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "entity_type": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^(user|group)$",
-            },
-            "entity_identifier": {"type": "string", "minLength": 1},
-            "target_type": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^(document|directory)$",
-            },
-            "target_identifier": {"type": "string", "minLength": 1},
-            "access_types": {"type": "array", "items": {"type": "string"}},
-            "start_time": {
-                "type": "number",
-                "minimum": 0,
-            },
-            "end_time": {"type": "number", "minimum": 0},
-        },
-        "required": [
-            "entity_type",
-            "entity_identifier",
-            "target_type",
-            "target_identifier",
-            "access_types",
-            "start_time",
-        ],
-        "additionalProperties": False,
-    }
+    request_model = _GrantAccessRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -138,23 +143,7 @@ class RequestGrantAccessHandler(RequestHandler):
 
 
 class RequestViewAccessEntriesHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "object_type": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "^(user|group|document|directory)$",
-            },
-            "object_identifier": {"type": "string", "minLength": 1},
-            **CURSOR_PAGINATION_SCHEMA,
-        },
-        "required": [
-            "object_type",
-            "object_identifier",
-        ],
-        "additionalProperties": False,
-    }
+    request_model = _ViewAccessEntriesRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -249,17 +238,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
 
 
 class RequestRevokeAccessHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "entry_id": {
-                "type": "integer",
-                "minimum": 1,
-            },
-        },
-        "required": ["entry_id"],
-        "additionalProperties": False,
-    }
+    request_model = _RevokeAccessRequest
 
     require_auth = True
     rate_limit_cost = 2

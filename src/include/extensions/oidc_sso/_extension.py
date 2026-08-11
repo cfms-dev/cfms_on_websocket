@@ -10,13 +10,14 @@ import base64
 import hashlib
 import secrets
 import time
-from typing import Any
+from typing import Annotated, Any
 
 import jwt
 import orjson
 import requests
 from authlib.integrations.requests_client import OAuth2Session
 from loguru import logger as log
+from pydantic import StringConstraints
 
 from include.config.settings import global_config
 from include.database.models.identity import User, UserGroup
@@ -30,7 +31,13 @@ from include.exceptions.misc import UserNotActiveError
 from include.extensions.manager import hookimpl
 from include.providers.manager import ProviderManager
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
 
 logger = log.bind(name="oidc_sso")
 
@@ -39,6 +46,8 @@ METADATA_CACHE_PREFIX = "oidc_sso:metadata:"
 DEFAULT_STATE_TTL_SECONDS = 300
 DEFAULT_HTTP_TIMEOUT_SECONDS = 10
 DEFAULT_SCOPE = "openid profile email"
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 
 
 class OIDCConfigurationError(ValueError):
@@ -335,14 +344,12 @@ def _resolve_or_create_user(cfg: dict[str, Any], claims: dict[str, Any]) -> User
         return session.get(User, username)
 
 
+class _OIDCStartRequest(RequestDataModel):
+    redirect_uri: Omittable[_NonEmptyString] = REQUEST_UNSET
+
+
 class RequestOIDCStartHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "redirect_uri": {"type": "string", "minLength": 1},
-        },
-        "additionalProperties": False,
-    }
+    request_model = _OIDCStartRequest
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler) -> Result | None:
@@ -378,19 +385,16 @@ class RequestOIDCStartHandler(RequestHandler):
         return Result(code=200)
 
 
+class _OIDCCallbackRequest(RequestDataModel):
+    state: _NonEmptyString
+    code: Omittable[_NonEmptyString] = REQUEST_UNSET
+    redirect_uri: Omittable[_NonEmptyString] = REQUEST_UNSET
+    error: Omittable[_NonEmptyString] = REQUEST_UNSET
+    error_description: Omittable[str] = REQUEST_UNSET
+
+
 class RequestOIDCCallbackHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "state": {"type": "string", "minLength": 1},
-            "code": {"type": "string", "minLength": 1},
-            "redirect_uri": {"type": "string", "minLength": 1},
-            "error": {"type": "string", "minLength": 1},
-            "error_description": {"type": "string"},
-        },
-        "required": ["state"],
-        "additionalProperties": False,
-    }
+    request_model = _OIDCCallbackRequest
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler) -> Result | None:

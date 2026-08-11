@@ -4,7 +4,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import jsonschema
 import orjson
 import pytest
 import tomlkit
@@ -116,8 +115,8 @@ def test_lockdown_state_uses_strict_validation(values, location, error_type) -> 
         {"status": False},
     ],
 )
-def test_lockdown_request_schema_accepts_valid_data(data) -> None:
-    jsonschema.validate(data, RequestLockdownHandler.schema)
+def test_lockdown_request_model_accepts_valid_data(data) -> None:
+    RequestLockdownHandler.request_model.model_validate(data)
 
 
 @pytest.mark.parametrize(
@@ -130,9 +129,9 @@ def test_lockdown_request_schema_accepts_valid_data(data) -> None:
         {"status": True, "unknown": True},
     ],
 )
-def test_lockdown_request_schema_rejects_invalid_data(data) -> None:
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(data, RequestLockdownHandler.schema)
+def test_lockdown_request_model_rejects_invalid_data(data) -> None:
+    with pytest.raises(ValidationError):
+        RequestLockdownHandler.request_model.model_validate(data)
 
 
 def test_lockdown_payload_shape_is_stable(lockdown_database) -> None:

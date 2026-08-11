@@ -1,4 +1,6 @@
-from pydantic import TypeAdapter
+from typing import Self
+
+from pydantic import model_validator
 from sqlalchemy import and_, desc, or_, true
 
 from include.database.models.identity import User
@@ -7,38 +9,43 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.operations.lockdown import LockdownReason, apply_lockdown
 from include.domains.pagination import (
-    CURSOR_PAGINATION_SCHEMA,
     CursorError,
     PaginationCursor,
+    PaginationCursorToken,
+    PaginationPageSize,
     get_page_size,
     make_cursor_response,
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
 
-_LOCKDOWN_REASON_SCHEMA = TypeAdapter(LockdownReason).json_schema()
+
+class _LockdownRequest(RequestDataModel):
+    status: bool
+    reason: Omittable[LockdownReason] = REQUEST_UNSET
+
+    @model_validator(mode="after")
+    def reject_reason_when_disabling(self) -> Self:
+        if not self.status and "reason" in self.model_fields_set:
+            raise ValueError("reason is not allowed when disabling lockdown")
+        return self
+
+
+class _ViewAuditLogsRequest(RequestDataModel):
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
+    filters: Omittable[list[str]] = REQUEST_UNSET
 
 
 class RequestLockdownHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "status": {"type": "boolean"},
-            "reason": _LOCKDOWN_REASON_SCHEMA,
-        },
-        "required": ["status"],
-        "additionalProperties": False,
-        "allOf": [
-            {
-                "if": {
-                    "properties": {"status": {"const": False}},
-                    "required": ["status"],
-                },
-                "then": {"not": {"required": ["reason"]}},
-            }
-        ],
-    }
+    request_model = _LockdownRequest
 
     require_auth = True
     rate_limit_cost = 10
@@ -67,15 +74,7 @@ class RequestLockdownHandler(RequestHandler):
 
 
 class RequestViewAuditLogsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            **CURSOR_PAGINATION_SCHEMA,
-            "filters": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": [],
-        "additionalProperties": False,
-    }
+    request_model = _ViewAuditLogsRequest
     require_auth = True
     rate_limit_cost = 3
 
