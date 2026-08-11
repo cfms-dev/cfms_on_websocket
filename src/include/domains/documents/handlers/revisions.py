@@ -1,3 +1,6 @@
+from typing import Annotated
+
+from pydantic import StringConstraints
 from sqlalchemy import and_, or_
 
 from include.database.models.documents import Document, DocumentRevision
@@ -15,27 +18,44 @@ from include.domains.documents.queries.file_references import (
     find_unreachable_revision_file_ids,
 )
 from include.domains.pagination import (
-    CURSOR_PAGINATION_SCHEMA,
     CursorError,
     PaginationCursor,
+    PaginationCursorToken,
+    PaginationPageSize,
     get_page_size,
     make_cursor_response,
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_RevisionID = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class _ListRevisionsRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
+
+
+class _RevisionIDRequest(RequestDataModel):
+    id: _RevisionID
+
+
+class _SetDocumentRevisionRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    revision_id: _RevisionID
 
 
 class RequestListRevisionsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            **CURSOR_PAGINATION_SCHEMA,
-        },
-        "required": ["document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _ListRevisionsRequest
 
     require_auth = True  # when True, handler.username is guaranteed to be not None
     rate_limit_cost = 2
@@ -121,14 +141,7 @@ class RequestListRevisionsHandler(RequestHandler):
 
 
 class RequestGetRevisionHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "minLength": 1, "maxLength": 64},
-        },
-        "required": ["id"],
-        "additionalProperties": False,
-    }
+    request_model = _RevisionIDRequest
 
     require_auth = True  # when True, handler.username is guaranteed to be not None
     rate_limit_cost = 3
@@ -192,15 +205,7 @@ class RequestGetRevisionHandler(RequestHandler):
 
 
 class RequestSetDocumentRevisionHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            "revision_id": {"type": "string", "minLength": 1, "maxLength": 64},
-        },
-        "required": ["document_id", "revision_id"],
-        "additionalProperties": False,
-    }
+    request_model = _SetDocumentRevisionRequest
 
     require_auth = True  # when True, handler.username is guaranteed to be not None
     rate_limit_cost = 3
@@ -238,14 +243,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
 
 
 class RequestDeleteRevisionHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "minLength": 1, "maxLength": 64},
-        },
-        "required": ["id"],
-        "additionalProperties": False,
-    }
+    request_model = _RevisionIDRequest
 
     require_auth = True
     rate_limit_cost = 5

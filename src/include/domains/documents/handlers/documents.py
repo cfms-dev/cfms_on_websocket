@@ -15,9 +15,10 @@ __all__ = [
 import datetime
 import secrets
 import time
-from typing import Any
+from typing import Annotated, Any
 
 import jsonschema
+from pydantic import ConfigDict, Field, StringConstraints
 from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import (
@@ -75,7 +76,93 @@ from include.domains.documents.queries.listing import (
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    JsonInteger,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_RevisionID = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+_Sha256 = Annotated[str, StringConstraints(pattern="^[0-9A-Fa-f]{64}$")]
+_Tag = Annotated[str, StringConstraints(min_length=1, max_length=255)]
+_NonNegativeInteger = Annotated[JsonInteger, Field(ge=0)]
+
+
+class _DocumentInfoRequest(RequestDataModel):
+    model_config = ConfigDict(
+        strict=True,
+        validate_default=True,
+        extra="allow",
+    )
+
+    document_id: _NonEmptyString
+
+
+class _DocumentIDRequest(RequestDataModel):
+    document_id: _NonEmptyString
+
+
+class _CreateDocumentRequest(RequestDataModel):
+    folder_id: str | None = None
+    title: _NonEmptyString
+    access_rules: Omittable[dict[str, Any]] = REQUEST_UNSET
+    inherit_parent: Omittable[bool] = REQUEST_UNSET
+
+
+class _UploadDocumentRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    parent_revision_id: _RevisionID | None = None
+
+
+class _RenameDocumentRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    new_title: _NonEmptyString
+
+
+class _DownloadFileRequest(RequestDataModel):
+    task_id: _NonEmptyString
+    offset: Omittable[_NonNegativeInteger] = REQUEST_UNSET
+    max_chunk_size: Annotated[
+        JsonInteger,
+        Field(
+            ge=DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
+            le=DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
+        ),
+    ]
+
+
+class _UploadFileRequest(RequestDataModel):
+    task_id: _NonEmptyString
+    file_size: _NonNegativeInteger
+    sha256: _Sha256 | None
+    max_chunk_size: Annotated[JsonInteger, Field(ge=UPLOAD_TRANSFER_MIN_CHUNK_SIZE)]
+    restart: Omittable[bool] = REQUEST_UNSET
+
+
+class _SetDocumentRulesRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    access_rules: dict[str, list[Any]]
+    inherit_parent: Omittable[bool] = REQUEST_UNSET
+
+
+class _MoveDocumentRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    target_folder_id: str | None = None
+
+
+class _RestoreDocumentRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    target_folder_id: str | None = None
+    new_title: Omittable[_NonEmptyString] = REQUEST_UNSET
+
+
+class _SetDocumentTagsRequest(RequestDataModel):
+    document_id: _NonEmptyString
+    tags: Annotated[list[_Tag], Field(max_length=128)]
 
 
 def create_file_task(
@@ -152,11 +239,7 @@ def serialize_document_metadata(document: Document) -> dict:
 class RequestGetDocumentInfoHandler(RequestHandler):
     """Handles the "get_document_info" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {"document_id": {"type": "string", "minLength": 1}},
-        "required": ["document_id"],
-    }
+    request_model = _DocumentInfoRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -221,12 +304,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
 
 
 class RequestGetDocumentAccessRulesHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {"document_id": {"type": "string", "minLength": 1}},
-        "required": ["document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _DocumentIDRequest
     require_auth = True
     rate_limit_cost = 2
 
@@ -267,12 +345,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
 class RequestGetDocumentHandler(RequestHandler):
     """Handles the "get_document" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {"document_id": {"type": "string", "minLength": 1}},
-        "required": ["document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _DocumentIDRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -349,17 +422,7 @@ class RequestGetDocumentHandler(RequestHandler):
 class RequestCreateDocumentHandler(RequestHandler):
     """Handles the "create_document" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "title": {"type": "string", "minLength": 1},
-            "access_rules": {"type": "object"},
-            "inherit_parent": {"type": "boolean"},
-        },
-        "required": ["title"],
-        "additionalProperties": False,
-    }
+    request_model = _CreateDocumentRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -510,24 +573,7 @@ class RequestCreateDocumentHandler(RequestHandler):
 class RequestUploadDocumentHandler(RequestHandler):
     """Handles the "upload_document" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            "parent_revision_id": {
-                "anyOf": [
-                    {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 64,
-                    },
-                    {"type": "null"},
-                ]
-            },
-        },
-        "required": ["document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _UploadDocumentRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -661,14 +707,7 @@ class RequestUploadDocumentHandler(RequestHandler):
 class RequestDeleteDocumentHandler(RequestHandler):
     """Handles the "delete_document" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-        },
-        "required": ["document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _DocumentIDRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -714,15 +753,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
 class RequestRenameDocumentHandler(RequestHandler):
     """Handles the "rename_document" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            "new_title": {"type": "string", "minLength": 1},
-        },
-        "required": ["document_id", "new_title"],
-        "additionalProperties": False,
-    }
+    request_model = _RenameDocumentRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -784,20 +815,7 @@ class RequestRenameDocumentHandler(RequestHandler):
 class RequestDownloadFileHandler(RequestHandler):
     """Handles the "download_file" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "task_id": {"type": "string", "minLength": 1},
-            "offset": {"type": "integer", "minimum": 0},
-            "max_chunk_size": {
-                "type": "integer",
-                "minimum": DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
-                "maximum": DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
-            },
-        },
-        "required": ["task_id", "max_chunk_size"],
-        "additionalProperties": False,
-    }
+    request_model = _DownloadFileRequest
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -812,26 +830,7 @@ class RequestDownloadFileHandler(RequestHandler):
 class RequestUploadFileHandler(RequestHandler):
     """Handles the "upload_file" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "task_id": {"type": "string", "minLength": 1},
-            "file_size": {"type": "integer", "minimum": 0},
-            "sha256": {
-                "anyOf": [
-                    {"type": "string", "pattern": "^[0-9A-Fa-f]{64}$"},
-                    {"type": "null"},
-                ]
-            },
-            "max_chunk_size": {
-                "type": "integer",
-                "minimum": UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
-            },
-            "restart": {"type": "boolean"},
-        },
-        "required": ["task_id", "file_size", "sha256", "max_chunk_size"],
-        "additionalProperties": False,
-    }
+    request_model = _UploadFileRequest
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -854,20 +853,7 @@ class RequestUploadFileHandler(RequestHandler):
 class RequestSetDocumentRulesHandler(RequestHandler):
     """Handles the "set_document_rules" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            "access_rules": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": {"type": "array", "items": {}},
-            },
-            "inherit_parent": {"type": "boolean"},
-        },
-        "required": ["document_id", "access_rules"],
-        "additionalProperties": False,
-    }
+    request_model = _SetDocumentRulesRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -922,15 +908,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
 class RequestMoveDocumentHandler(RequestHandler):
     """Handles the "move_document" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            "target_folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        },
-        "required": ["document_id"],  # , "target_folder_id"
-        "additionalProperties": False,
-    }
+    request_model = _MoveDocumentRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -1048,14 +1026,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
     This action is irreversible and should only be allowed for users with special permissions.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-        },
-        "required": ["document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _DocumentIDRequest
 
     require_auth = True
     rate_limit_cost = 10
@@ -1101,16 +1072,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
     new folder during restoration. Maps virtual ROOT_DIRECTORY_ID to database None.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            "target_folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "new_title": {"type": "string", "minLength": 1},
-        },
-        "required": ["document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _RestoreDocumentRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -1199,19 +1161,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
 
 
 class RequestSetDocumentTagsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "document_id": {"type": "string", "minLength": 1},
-            "tags": {
-                "type": "array",
-                "maxItems": 128,
-                "items": {"type": "string", "minLength": 1, "maxLength": 255},
-            },
-        },
-        "required": ["document_id", "tags"],
-        "additionalProperties": False,
-    }
+    request_model = _SetDocumentTagsRequest
 
     require_auth = True
     rate_limit_cost = 3

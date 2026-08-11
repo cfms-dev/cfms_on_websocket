@@ -1,8 +1,10 @@
 import secrets
 import time
 from itertools import batched
+from typing import Annotated, Any
 
 import jsonschema
+from pydantic import ConfigDict, StringConstraints
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.models.documents import (
@@ -46,15 +48,81 @@ from include.domains.documents.queries.listing import (
     fetch_directory_listing_items,
 )
 from include.domains.pagination import (
-    CURSOR_PAGINATION_SCHEMA,
     CursorError,
     PaginationCursor,
+    PaginationCursorToken,
+    PaginationPageSize,
     get_page_size,
     make_cursor_response,
 )
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_AccessRules = dict[str, list[Any]]
+
+
+class _ListDirectoryRequest(RequestDataModel):
+    folder_id: str | None
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
+
+
+class _DirectoryIDRequest(RequestDataModel):
+    directory_id: _NonEmptyString
+
+
+class _CreateDirectoryRequest(RequestDataModel):
+    model_config = ConfigDict(
+        strict=True,
+        validate_default=True,
+        extra="allow",
+    )
+
+    parent_id: str | None = None
+    name: _NonEmptyString
+    access_rules: Omittable[_AccessRules] = REQUEST_UNSET
+    exists_ok: Omittable[bool] = REQUEST_UNSET
+    inherit_parent: Omittable[bool] = REQUEST_UNSET
+
+
+class _FolderIDRequest(RequestDataModel):
+    folder_id: _NonEmptyString
+
+
+class _RenameDirectoryRequest(RequestDataModel):
+    folder_id: _NonEmptyString
+    new_name: _NonEmptyString
+
+
+class _MoveDirectoryRequest(RequestDataModel):
+    folder_id: _NonEmptyString
+    target_folder_id: str | None
+
+
+class _SetDirectoryRulesRequest(RequestDataModel):
+    directory_id: _NonEmptyString
+    access_rules: _AccessRules
+    inherit_parent: Omittable[bool] = REQUEST_UNSET
+
+
+class _RestoreDirectoryRequest(RequestDataModel):
+    folder_id: _NonEmptyString
+    target_parent_id: Omittable[_NonEmptyString | None] = REQUEST_UNSET
+    new_name: Omittable[_NonEmptyString] = REQUEST_UNSET
+
+
+class _ListDeletedItemsRequest(RequestDataModel):
+    folder_id: _NonEmptyString
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
 
 
 def _mark_nodes_deleted(session, node_ids, operation_id: str) -> None:
@@ -119,15 +187,7 @@ class RequestListDirectoryHandler(RequestHandler):
 
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            **CURSOR_PAGINATION_SCHEMA,
-        },
-        "required": ["folder_id"],
-        "additionalProperties": False,
-    }
+    request_model = _ListDirectoryRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -220,12 +280,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
 
     """
 
-    schema = {
-        "type": "object",
-        "properties": {"directory_id": {"type": "string", "minLength": 1}},
-        "required": ["directory_id"],
-        "additionalProperties": False,
-    }
+    request_model = _DirectoryIDRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -291,12 +346,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
 
 
 class RequestGetDirectoryAccessRulesHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {"directory_id": {"type": "string", "minLength": 1}},
-        "required": ["directory_id"],
-        "additionalProperties": False,
-    }
+    request_model = _DirectoryIDRequest
     require_auth = True
     rate_limit_cost = 2
 
@@ -350,21 +400,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
 
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "parent_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "name": {"type": "string", "minLength": 1},
-            "access_rules": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": {"type": "array", "items": {}},
-            },
-            "exists_ok": {"type": "boolean"},
-            "inherit_parent": {"type": "boolean"},
-        },
-        "required": ["name"],
-    }
+    request_model = _CreateDirectoryRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -471,14 +507,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
 
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"type": "string", "minLength": 1},
-        },
-        "required": ["folder_id"],
-        "additionalProperties": False,
-    }
+    request_model = _FolderIDRequest
 
     require_auth = True
     rate_limit_cost = 10
@@ -581,15 +610,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"type": "string", "minLength": 1},
-            "new_name": {"type": "string", "minLength": 1},
-        },
-        "required": ["folder_id", "new_name"],
-        "additionalProperties": False,
-    }
+    request_model = _RenameDirectoryRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -651,15 +672,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
 
 class RequestMoveDirectoryHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"type": "string", "minLength": 1},
-            "target_folder_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        },
-        "required": ["folder_id", "target_folder_id"],
-        "additionalProperties": False,
-    }
+    request_model = _MoveDirectoryRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -745,20 +758,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
 class RequestSetDirectoryRulesHandler(RequestHandler):
     """Handles the "set_directory_rules" action."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "directory_id": {"type": "string", "minLength": 1},
-            "access_rules": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": {"type": "array", "items": {}},
-            },
-            "inherit_parent": {"type": "boolean"},
-        },
-        "required": ["directory_id", "access_rules"],
-        "additionalProperties": False,
-    }
+    request_model = _SetDirectoryRulesRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -817,14 +817,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
     This action is irreversible.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"type": "string", "minLength": 1},
-        },
-        "required": ["folder_id"],
-        "additionalProperties": False,
-    }
+    request_model = _FolderIDRequest
 
     require_auth = True
     rate_limit_cost = 20
@@ -918,16 +911,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
     Supports virtual ROOT_DIRECTORY_ID translation to database None.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"type": "string", "minLength": 1},
-            "target_parent_id": {"type": ["string", "null"], "minLength": 1},
-            "new_name": {"type": "string", "minLength": 1},
-        },
-        "required": ["folder_id"],
-        "additionalProperties": False,
-    }
+    request_model = _RestoreDirectoryRequest
 
     require_auth = True
     rate_limit_cost = 10
@@ -1030,15 +1014,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
      a specific parent directory.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "folder_id": {"type": "string", "minLength": 1},
-            **CURSOR_PAGINATION_SCHEMA,
-        },
-        "required": ["folder_id"],
-        "additionalProperties": False,
-    }
+    request_model = _ListDeletedItemsRequest
 
     require_auth = True
     rate_limit_cost = 3

@@ -9,9 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
-import jsonschema
 import orjson
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import Table, create_engine
 from sqlalchemy.orm import sessionmaker
 from websockets.exceptions import ConnectionClosed
@@ -744,20 +744,15 @@ def test_file_request_handlers_delegate_claiming(file_task_context) -> None:
 def test_download_request_requires_bounded_chunk_size(file_task_context) -> None:
     from include.domains.documents.handlers.documents import RequestDownloadFileHandler
 
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            {"task_id": "task"},
-            RequestDownloadFileHandler.schema,
+    with pytest.raises(ValidationError):
+        RequestDownloadFileHandler.request_model.model_validate({"task_id": "task"})
+    with pytest.raises(ValidationError):
+        RequestDownloadFileHandler.request_model.model_validate(
+            {"task_id": "task", "max_chunk_size": 8 * 1024}
         )
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            {"task_id": "task", "max_chunk_size": 8 * 1024},
-            RequestDownloadFileHandler.schema,
-        )
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            {"task_id": "task", "max_chunk_size": 4 * 1024 * 1024},
-            RequestDownloadFileHandler.schema,
+    with pytest.raises(ValidationError):
+        RequestDownloadFileHandler.request_model.model_validate(
+            {"task_id": "task", "max_chunk_size": 4 * 1024 * 1024}
         )
 
 
@@ -770,14 +765,10 @@ def test_upload_request_requires_v21_metadata(file_task_context) -> None:
         "sha256": "a" * 64,
         "max_chunk_size": 512,
     }
-    jsonschema.validate(valid, RequestUploadFileHandler.schema)
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            {"task_id": "task"},
-            RequestUploadFileHandler.schema,
-        )
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(
-            {**valid, "sha256": "not-a-digest"},
-            RequestUploadFileHandler.schema,
+    RequestUploadFileHandler.request_model.model_validate(valid)
+    with pytest.raises(ValidationError):
+        RequestUploadFileHandler.request_model.model_validate({"task_id": "task"})
+    with pytest.raises(ValidationError):
+        RequestUploadFileHandler.request_model.model_validate(
+            {**valid, "sha256": "not-a-digest"}
         )

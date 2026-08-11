@@ -150,3 +150,61 @@ def test_nested_identity_and_keyring_models_preserve_omission_rules(
         RequestListUserKeysHandler.request_model.model_validate(
             {"target_username": None}
         )
+
+
+def test_document_request_models_preserve_legacy_extra_field_rules(
+    monkeypatch, tmp_path
+) -> None:
+    from pydantic import ValidationError
+
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.domains.documents.handlers.directories import (
+        RequestCreateDirectoryHandler,
+    )
+    from include.domains.documents.handlers.documents import (
+        RequestGetDocumentHandler,
+        RequestGetDocumentInfoHandler,
+    )
+
+    RequestCreateDirectoryHandler.request_model.model_validate(
+        {"name": "reports", "legacy_option": True}
+    )
+    RequestGetDocumentInfoHandler.request_model.model_validate(
+        {"document_id": "document", "legacy_option": True}
+    )
+    with pytest.raises(ValidationError):
+        RequestGetDocumentHandler.request_model.model_validate(
+            {"document_id": "document", "legacy_option": True}
+        )
+
+
+def test_document_request_models_preserve_transfer_and_restore_constraints(
+    monkeypatch, tmp_path
+) -> None:
+    from pydantic import ValidationError
+
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.config.constants import DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE
+    from include.domains.documents.handlers.directories import (
+        RequestRestoreDirectoryHandler,
+    )
+    from include.domains.documents.handlers.documents import RequestDownloadFileHandler
+
+    RequestDownloadFileHandler.request_model.model_validate(
+        {
+            "task_id": "task",
+            "offset": 1.0,
+            "max_chunk_size": float(DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE),
+        }
+    )
+    RequestRestoreDirectoryHandler.request_model.model_validate(
+        {"folder_id": "folder", "target_parent_id": None}
+    )
+    with pytest.raises(ValidationError):
+        RequestRestoreDirectoryHandler.request_model.model_validate(
+            {"folder_id": "folder", "target_parent_id": ""}
+        )
