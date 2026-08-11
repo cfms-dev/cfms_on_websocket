@@ -56,8 +56,8 @@ The deployment host must provide Python 3.14 or newer and
 
 ```bash
 sha256sum --check SHA256SUMS.txt
-tar -xzf cfms-on-websocket-0.4.1.tar.gz
-cd cfms-on-websocket-0.4.1
+tar -xzf cfms-on-websocket-0.5.0.tar.gz
+cd cfms-on-websocket-0.5.0
 ```
 
 Install only the locked production dependencies. Add `--extra cluster`,

@@ -221,7 +221,8 @@ class ServerHookSpecs(ABC):
         """Register handlers for specific actions.
 
         Should return a dictionary mapping action names to their corresponding
-        :class:`RequestHandler` classes.
+        :class:`RequestHandler` classes. Each handler must define a
+        :class:`RequestDataModel` subclass as ``request_model``.
         """
 
     @hookspec

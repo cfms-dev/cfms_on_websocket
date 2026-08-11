@@ -1,6 +1,6 @@
 [project]
 name = "cfms-on-websocket"
-version = "0.4.1"
+version = "0.5.0"
 description = "The server-side program for CFMS on WebSocket, a WebSocket-based implementation of the CFMS protocol."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -75,7 +75,6 @@ ignore = [
     "D101", # Missing docstring in public class
     "D102", # Missing docstring in public method
     "D103", # Missing docstring in public function
-    "RUF012", # request schemas are intentionally shared class-level constants
 ]
 extend-select = ["I", "UP"] # , "D"
 

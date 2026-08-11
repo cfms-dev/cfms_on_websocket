@@ -122,8 +122,10 @@ def _declared_handler_costs(path: Path) -> dict[str, int]:
 def test_core_action_costs_match_business_contract(monkeypatch, tmp_path):
     _prepare_config(monkeypatch, tmp_path)
 
+    from include.transport.request_handler import validate_request_handler_models
     from include.transport.router import available_functions
 
+    validate_request_handler_models(available_functions)
     actual = {
         action: handler_type.rate_limit_cost
         for action, handler_type in available_functions.items()

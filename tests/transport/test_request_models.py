@@ -208,3 +208,38 @@ def test_document_request_models_preserve_transfer_and_restore_constraints(
         RequestRestoreDirectoryHandler.request_model.model_validate(
             {"folder_id": "folder", "target_parent_id": ""}
         )
+
+
+def test_handler_contract_requires_a_pydantic_request_model(
+    monkeypatch, tmp_path
+) -> None:
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.transport.request_handler import (
+        RequestDataModel,
+        RequestHandler,
+        validate_request_handler_models,
+    )
+
+    class EmptyRequest(RequestDataModel):
+        pass
+
+    class ValidHandler(RequestHandler):
+        request_model = EmptyRequest
+
+        def handle(self, _handler):
+            return None
+
+    class LegacyHandler(RequestHandler):
+        schema = {"type": "object"}
+
+        def handle(self, _handler):
+            return None
+
+    validate_request_handler_models({"valid": ValidHandler})
+
+    with pytest.raises(TypeError, match="legacy.*request_model"):
+        validate_request_handler_models({"legacy": LegacyHandler})
+    with pytest.raises(TypeError, match="plain.*inherit RequestHandler"):
+        validate_request_handler_models({"plain": object})

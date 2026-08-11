@@ -22,7 +22,7 @@ description = "An optional short description."
 homepage = "https://example.com/extensions/example"
 
 [compatibility]
-minimum_server_version = "0.4.1.260811_alpha"
+minimum_server_version = "0.5.0.260812_alpha"
 ```
 
 `manifest_version` and the `[extension]` table are required. Within `[extension]`,
@@ -78,6 +78,55 @@ Extensions may implement `ext_validate_config(config)` to validate their own
 configuration. The hook runs when an extension is loaded and whenever the global
 configuration is reloaded. It should raise `ConfigValidationError` for invalid
 values; a failed reload leaves the previous configuration active.
+
+## Request handlers
+
+Extensions register request handlers through `ext_register_handlers()`. Every
+registered class must inherit `RequestHandler` and define `request_model` as a
+`RequestDataModel` subclass. The server validates this contract at startup and
+fails fast when an extension still exposes a legacy `schema` dictionary; there
+is no JSON Schema fallback for handler request data.
+
+```python
+from typing import Annotated
+
+from pydantic import StringConstraints
+
+from include.extensions.manager import hookimpl
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+
+
+class EchoRequest(RequestDataModel):
+    message: NonEmptyString
+    label: Omittable[NonEmptyString] = REQUEST_UNSET
+
+
+class EchoHandler(RequestHandler):
+    request_model = EchoRequest
+
+    def handle(self, handler):
+        handler.conclude_request(200, {"message": handler.data["message"]}, "OK")
+        return Result(code=200)
+
+
+@hookimpl
+def ext_register_handlers() -> dict[str, type[RequestHandler]]:
+    return {"echo": EchoHandler}
+```
+
+`RequestDataModel` uses strict Pydantic validation and rejects unknown fields by
+default. Use `Omittable[T]` with `REQUEST_UNSET` when a field may be absent but
+must reject an explicit JSON `null`; use `T | None` when `null` is valid. After
+validation, `ConnectionHandler.data` remains the original JSON dictionary, so
+existing handler and hook code may continue to use dictionary operations.
 
 Extensions that own background services may implement `ext_on_startup()` and
 `ext_on_shutdown()`. Startup runs after the database, providers, and request

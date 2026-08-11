@@ -56,6 +56,7 @@ from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
 from include.transport.client_address import get_bind_options
 from include.transport.request_entrypoint import global_process_request
+from include.transport.request_handler import validate_request_handler_models
 from include.transport.router import (
     available_functions,
     handle_connection,
@@ -360,6 +361,8 @@ def prepare_handlers():
         for handler_name in i:
             if handler_name in available_functions:
                 del available_functions[handler_name]
+
+    validate_request_handler_models(available_functions)
 
     for ext_whitelisted_actions in pm.hook.ext_register_whitelisted_actions():
         whitelisted_functions.extend(ext_whitelisted_actions)

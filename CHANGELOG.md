@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Replace request-handler JSON Schema dictionaries with strict Pydantic request
+  models. Extensions that register handlers must now define a
+  `RequestDataModel` subclass as `request_model`; legacy `schema` dictionaries
+  are no longer supported. The validated request remains available to handlers
+  as the original JSON dictionary.
 - Assign calibrated request-token costs to every core, built-in extension,
   optional OIDC, and debugging action while preserving per-deployment
   `action_costs` overrides.
