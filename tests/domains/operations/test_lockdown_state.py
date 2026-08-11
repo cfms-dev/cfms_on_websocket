@@ -3,25 +3,24 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 
+import jsonschema
 import orjson
 import pytest
 import tomlkit
+from pydantic import ValidationError
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.operations import SystemStateEntry
-from include.database.system_states import create_system_state
 from include.domains.operations import lockdown
+from include.domains.operations.handlers.system import RequestLockdownHandler
 from include.domains.operations.lockdown import (
     LockdownState,
     apply_lockdown,
-    initialize_lockdown_state,
     lockdown_state_manager,
 )
-from include.providers.caching.memory import MemoryCachingProvider
 
 _REAL_CANCEL_PENDING_FILE_TASKS = lockdown._cancel_pending_file_tasks
 
@@ -75,85 +74,142 @@ def test_lockdown_reason_is_replaced_and_persisted(lockdown_database) -> None:
         reopened_engine.dispose()
 
 
-def test_legacy_lockdown_state_is_imported(monkeypatch, lockdown_database) -> None:
-    cache = MemoryCachingProvider()
-    cache.set("system:lockdown", "1")
-    cache.set("system:lockdown:last_disabled", 123.5)
-    monkeypatch.setattr(
-        lockdown, "ProviderManager", lambda: SimpleNamespace(caching=cache)
-    )
+def test_unlocked_state_rejects_a_reason() -> None:
+    with pytest.raises(ValidationError) as error:
+        LockdownState(reason="Invalid")
 
-    initialize_lockdown_state()
-
-    assert lockdown_state_manager.get_state() == LockdownState(enabled=True)
-    assert lockdown_state_manager.get_last_disabled_at() == 123.5
-    assert cache.get("system:lockdown") is None
-    assert cache.get("system:lockdown:last_disabled") is None
-
-
-def test_invalid_legacy_state_imports_locked(monkeypatch, lockdown_database) -> None:
-    cache = MemoryCachingProvider()
-    cache.set("system:lockdown", b"invalid")
-    monkeypatch.setattr(
-        lockdown, "ProviderManager", lambda: SimpleNamespace(caching=cache)
-    )
-
-    initialize_lockdown_state()
-
-    assert lockdown_state_manager.get_state() == LockdownState(enabled=True)
+    assert error.value.errors()[0]["loc"] == ()
+    assert error.value.errors()[0]["type"] == "value_error"
 
 
 @pytest.mark.parametrize(
-    ("schema_version", "payload", "message"),
+    ("values", "location", "error_type"),
     [
+        ({"enabled": 1}, ("enabled",), "bool_type"),
+        ({"enabled": True, "reason": 1}, ("reason",), "string_type"),
         (
-            2,
-            {"enabled": True, "reason": None, "last_disabled_at": 0.0},
-            "schema version",
+            {"enabled": True, "reason": ""},
+            ("reason",),
+            "string_too_short",
         ),
-        (1, {"enabled": True, "reason": None}, "fields"),
         (
-            1,
-            {"enabled": False, "reason": "invalid", "last_disabled_at": 0.0},
-            "persisted lockdown state",
+            {"enabled": True, "reason": "x" * 1025},
+            ("reason",),
+            "string_too_long",
         ),
     ],
 )
-def test_invalid_persisted_lockdown_state_fails_startup(
-    monkeypatch,
-    lockdown_database,
-    schema_version,
-    payload,
-    message,
+def test_lockdown_state_uses_strict_validation(values, location, error_type) -> None:
+    with pytest.raises(ValidationError) as error:
+        LockdownState(**values)
+
+    validation_error = error.value.errors()[0]
+    assert validation_error["loc"] == location
+    assert validation_error["type"] == error_type
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"status": True},
+        {"status": True, "reason": "Maintenance"},
+        {"status": False},
+    ],
+)
+def test_lockdown_request_schema_accepts_valid_data(data) -> None:
+    jsonschema.validate(data, RequestLockdownHandler.schema)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"status": 1},
+        {"status": True, "reason": ""},
+        {"status": True, "reason": "x" * 1025},
+        {"status": False, "reason": "Maintenance"},
+        {"status": True, "unknown": True},
+    ],
+)
+def test_lockdown_request_schema_rejects_invalid_data(data) -> None:
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(data, RequestLockdownHandler.schema)
+
+
+def test_lockdown_payload_shape_is_stable(lockdown_database) -> None:
+    sessions, _database_path = lockdown_database
+
+    apply_lockdown(True, "Maintenance")
+
+    with sessions() as session:
+        entry = session.get(SystemStateEntry, ("core", "lockdown"))
+
+    assert entry is not None
+    assert entry.schema_version == 1
+    assert entry.payload == {
+        "enabled": True,
+        "reason": "Maintenance",
+        "last_disabled_at": 0.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [True, None, 0.0],
+        {"enabled": True, "reason": None},
+        {"enabled": True, "last_disabled_at": 0.0},
+        {
+            "enabled": True,
+            "reason": None,
+            "last_disabled_at": 0.0,
+            "unknown": True,
+        },
+        {"enabled": 1, "reason": None, "last_disabled_at": 0.0},
+        {"enabled": False, "reason": "Invalid", "last_disabled_at": 0.0},
+        {"enabled": True, "reason": None, "last_disabled_at": -1.0},
+        {"enabled": True, "reason": None, "last_disabled_at": float("inf")},
+    ],
+)
+def test_invalid_persisted_lockdown_payload_is_rejected(
+    lockdown_database, payload
 ) -> None:
-    cache = MemoryCachingProvider()
-    monkeypatch.setattr(
-        lockdown, "ProviderManager", lambda: SimpleNamespace(caching=cache)
-    )
     sessions, _database_path = lockdown_database
     with sessions.begin() as session:
-        assert create_system_state(
-            session,
-            "core",
-            "lockdown",
-            schema_version=schema_version,
-            payload=payload,
+        session.add(
+            SystemStateEntry(
+                owner="core",
+                state_key="lockdown",
+                schema_version=1,
+                revision=1,
+                payload=payload,
+                updated_at=1.0,
+            )
         )
 
-    with pytest.raises(RuntimeError, match=message):
-        initialize_lockdown_state()
+    with pytest.raises(RuntimeError, match="Invalid persisted lockdown state"):
+        lockdown_state_manager.get_state()
 
 
-def test_unlocked_state_rejects_a_reason() -> None:
-    with pytest.raises(ValueError, match="reason requires lockdown"):
-        LockdownState(reason="Invalid")
+def test_unknown_lockdown_schema_version_is_rejected(lockdown_database) -> None:
+    sessions, _database_path = lockdown_database
+    with sessions.begin() as session:
+        session.add(
+            SystemStateEntry(
+                owner="core",
+                state_key="lockdown",
+                schema_version=2,
+                revision=1,
+                payload={
+                    "enabled": True,
+                    "reason": None,
+                    "last_disabled_at": 0.0,
+                },
+                updated_at=1.0,
+            )
+        )
 
-
-def test_lockdown_reason_length_is_validated() -> None:
-    with pytest.raises(ValueError, match="1 to 1024"):
-        LockdownState(enabled=True, reason="")
-    with pytest.raises(ValueError, match="1 to 1024"):
-        LockdownState(enabled=True, reason="x" * 1025)
+    with pytest.raises(RuntimeError, match="Unsupported lockdown state schema"):
+        lockdown_state_manager.get_state()
 
 
 def test_enable_if_inactive_preserves_existing_reason(lockdown_database) -> None:

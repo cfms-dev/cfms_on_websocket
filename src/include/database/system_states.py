@@ -1,10 +1,8 @@
-import math
-import re
 import time
-from copy import deepcopy
-from dataclasses import dataclass
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
+from pydantic import ConfigDict, JsonValue, StringConstraints, validate_call
+from pydantic.dataclasses import dataclass
 from sqlalchemy import delete, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -13,6 +11,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from include.database.models.operations import SystemStateEntry
+from include.types import PositiveInt
 
 __all__ = [
     "StoredSystemState",
@@ -22,63 +21,40 @@ __all__ = [
     "update_system_state",
 ]
 
-_OWNER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
-_STATE_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*$")
+_SYSTEM_STATE_CONFIG = ConfigDict(
+    strict=True,
+    allow_inf_nan=False,
+    arbitrary_types_allowed=True,
+)
+_SystemStateOwner = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    ),
+]
+_SystemStateKey = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    ),
+]
+_SystemStatePayload = dict[str, JsonValue]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, config=_SYSTEM_STATE_CONFIG)
 class StoredSystemState:
     """Detached snapshot of one versioned runtime state document."""
 
-    owner: str
-    state_key: str
-    schema_version: int
-    revision: int
-    payload: dict[str, Any]
+    owner: _SystemStateOwner
+    state_key: _SystemStateKey
+    schema_version: PositiveInt
+    revision: PositiveInt
+    payload: _SystemStatePayload
     updated_at: float
-
-
-def _validate_identity(owner: str, state_key: str) -> None:
-    if not isinstance(owner, str) or not 1 <= len(owner) <= 255:
-        raise ValueError("System state owner must contain 1 to 255 characters")
-    if _OWNER_PATTERN.fullmatch(owner) is None:
-        raise ValueError("Invalid system state owner")
-    if not isinstance(state_key, str) or not 1 <= len(state_key) <= 128:
-        raise ValueError("System state key must contain 1 to 128 characters")
-    if _STATE_KEY_PATTERN.fullmatch(state_key) is None:
-        raise ValueError("Invalid system state key")
-
-
-def _validate_positive_integer(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-
-
-def _validate_json_value(value: Any) -> None:
-    if value is None or isinstance(value, bool | int | str):
-        return
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("System state payload cannot contain non-finite numbers")
-        return
-    if isinstance(value, list):
-        for item in value:
-            _validate_json_value(item)
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("System state payload object keys must be strings")
-            _validate_json_value(item)
-        return
-    raise TypeError(f"Unsupported system state payload value: {type(value).__name__}")
-
-
-def _copy_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise TypeError("System state payload must be a JSON object")
-    _validate_json_value(payload)
-    return deepcopy(payload)
 
 
 def _snapshot(entry: SystemStateEntry) -> StoredSystemState:
@@ -87,38 +63,38 @@ def _snapshot(entry: SystemStateEntry) -> StoredSystemState:
         state_key=entry.state_key,
         schema_version=entry.schema_version,
         revision=entry.revision,
-        payload=deepcopy(entry.payload),
+        payload=entry.payload,
         updated_at=entry.updated_at,
     )
 
 
+@validate_call(config=_SYSTEM_STATE_CONFIG)
 def read_system_state(
-    session: Session, owner: str, state_key: str
+    session: Session,
+    owner: _SystemStateOwner,
+    state_key: _SystemStateKey,
 ) -> StoredSystemState | None:
     """Read a detached state snapshot through a caller-owned session."""
-    _validate_identity(owner, state_key)
     entry = session.get(SystemStateEntry, (owner, state_key))
     return None if entry is None else _snapshot(entry)
 
 
+@validate_call(config=_SYSTEM_STATE_CONFIG)
 def create_system_state(
     session: Session,
-    owner: str,
-    state_key: str,
+    owner: _SystemStateOwner,
+    state_key: _SystemStateKey,
     *,
-    schema_version: int,
-    payload: dict[str, Any],
+    schema_version: PositiveInt,
+    payload: _SystemStatePayload,
 ) -> bool:
     """Atomically insert an absent state without committing the caller's session."""
-    _validate_identity(owner, state_key)
-    _validate_positive_integer(schema_version, "schema_version")
-    stored_payload = _copy_payload(payload)
     values = {
         "owner": owner,
         "state_key": state_key,
         "schema_version": schema_version,
         "revision": 1,
-        "payload": stored_payload,
+        "payload": payload,
         "updated_at": time.time(),
     }
     dialect = session.get_bind().dialect.name
@@ -142,20 +118,17 @@ def create_system_state(
     return result.rowcount == 1
 
 
+@validate_call(config=_SYSTEM_STATE_CONFIG)
 def update_system_state(
     session: Session,
-    owner: str,
-    state_key: str,
+    owner: _SystemStateOwner,
+    state_key: _SystemStateKey,
     *,
-    expected_revision: int,
-    schema_version: int,
-    payload: dict[str, Any],
+    expected_revision: PositiveInt,
+    schema_version: PositiveInt,
+    payload: _SystemStatePayload,
 ) -> bool:
     """Replace the expected revision without committing the caller's session."""
-    _validate_identity(owner, state_key)
-    _validate_positive_integer(expected_revision, "expected_revision")
-    _validate_positive_integer(schema_version, "schema_version")
-    stored_payload = _copy_payload(payload)
     result = cast(
         CursorResult[Any],
         session.execute(
@@ -168,7 +141,7 @@ def update_system_state(
             .values(
                 schema_version=schema_version,
                 revision=expected_revision + 1,
-                payload=stored_payload,
+                payload=payload,
                 updated_at=time.time(),
             )
             .execution_options(synchronize_session=False)
@@ -177,16 +150,15 @@ def update_system_state(
     return result.rowcount == 1
 
 
+@validate_call(config=_SYSTEM_STATE_CONFIG)
 def delete_system_state(
     session: Session,
-    owner: str,
-    state_key: str,
+    owner: _SystemStateOwner,
+    state_key: _SystemStateKey,
     *,
-    expected_revision: int,
+    expected_revision: PositiveInt,
 ) -> bool:
     """Delete the expected revision without committing the caller's session."""
-    _validate_identity(owner, state_key)
-    _validate_positive_integer(expected_revision, "expected_revision")
     result = cast(
         CursorResult[Any],
         session.execute(

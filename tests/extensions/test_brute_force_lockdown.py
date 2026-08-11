@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -42,20 +43,41 @@ def test_extension_advertises_capability_flag():
 
 
 @pytest.mark.parametrize(
-    ("overrides", "message"),
+    ("overrides", "field"),
     [
-        ({"unknown": 1}, "unknown fields"),
-        ({"window_seconds": True}, "positive integer"),
-        ({"failure_threshold": 0}, "positive integer"),
-        ({"distinct_account_threshold": 51}, "must not exceed"),
-        ({"distinct_ip_threshold": 51}, "must not exceed"),
-        ({"reason": "   "}, "non-empty string"),
-        ({"reason": "x" * 1025}, "must not exceed 1024"),
+        ({"unknown": 1}, "unknown"),
+        ({"window_seconds": True}, "window_seconds"),
+        ({"failure_threshold": 0}, "failure_threshold"),
+        ({"distinct_account_threshold": 51}, "distinct_account_threshold"),
+        ({"distinct_ip_threshold": 51}, "distinct_ip_threshold"),
+        ({"reason": "   "}, "reason"),
+        ({"reason": " " + "x" * 1024}, "reason"),
     ],
 )
-def test_policy_rejects_invalid_values(overrides, message):
-    with pytest.raises(ConfigValidationError, match=message):
+def test_policy_rejects_invalid_values(overrides, field):
+    with pytest.raises(ConfigValidationError) as error:
         extension.BruteForceLockdownPolicy.from_config(_config(**overrides))
+
+    message = str(error.value)
+    assert "extensions.brute_force_lockdown" in message
+    assert field in message
+
+
+def test_policy_normalizes_configured_reason():
+    policy = extension.BruteForceLockdownPolicy.from_config(
+        _config(reason="  Automatic maintenance  ")
+    )
+
+    assert policy.reason == "Automatic maintenance"
+
+
+def test_policy_direct_construction_uses_pydantic_validation():
+    with pytest.raises(ValidationError) as error:
+        extension.BruteForceLockdownPolicy(window_seconds=True)
+
+    validation_error = error.value.errors()[0]
+    assert validation_error["loc"] == ("window_seconds",)
+    assert validation_error["type"] == "int_type"
 
 
 @pytest.fixture

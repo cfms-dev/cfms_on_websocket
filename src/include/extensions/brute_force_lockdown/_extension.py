@@ -1,10 +1,17 @@
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Any, Self
 
 from loguru import logger as log
+from pydantic import (
+    AfterValidator,
+    ConfigDict,
+    ValidationError,
+    model_validator,
+)
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 from sqlalchemy import distinct, func
 
 from include.config.validation import ConfigValidationError
@@ -13,10 +20,12 @@ from include.database.models.operations import AuditEntry
 from include.database.session import Session
 from include.domains.operations.commands.audit import log_audit
 from include.domains.operations.lockdown import (
+    LockdownReason,
     apply_lockdown,
     lockdown_state_manager,
 )
 from include.extensions.manager import hookimpl
+from include.types import PositiveInt
 
 if TYPE_CHECKING:
     from include.transport.connection import ConnectionHandler
@@ -29,15 +38,47 @@ DEFAULT_REASON = (
 )
 _STARTED_AT = time.time()
 _detection_lock = threading.Lock()
+_POLICY_CONFIG = ConfigDict(
+    strict=True,
+    validate_default=True,
+    extra="forbid",
+)
 
 
-@dataclass(frozen=True, slots=True)
+def _strip_configured_reason(reason: str) -> str:
+    stripped = reason.strip()
+    if not stripped:
+        raise ValueError("Lockdown reason must not be blank")
+    return stripped
+
+
+_ConfiguredLockdownReason = Annotated[
+    LockdownReason,
+    AfterValidator(_strip_configured_reason),
+]
+
+
+@pydantic_dataclass(
+    frozen=True,
+    slots=True,
+    config=_POLICY_CONFIG,
+)
 class BruteForceLockdownPolicy:
-    window_seconds: int = 600
-    failure_threshold: int = 50
-    distinct_account_threshold: int = 10
-    distinct_ip_threshold: int = 10
-    reason: str = DEFAULT_REASON
+    window_seconds: PositiveInt = 600
+    failure_threshold: PositiveInt = 50
+    distinct_account_threshold: PositiveInt = 10
+    distinct_ip_threshold: PositiveInt = 10
+    reason: _ConfiguredLockdownReason = DEFAULT_REASON
+
+    @model_validator(mode="after")
+    def _validate_thresholds(self) -> Self:
+        if self.distinct_account_threshold > self.failure_threshold:
+            raise ValueError(
+                "distinct_account_threshold must not exceed failure_threshold"
+            )
+        if self.distinct_ip_threshold > self.failure_threshold:
+            raise ValueError("distinct_ip_threshold must not exceed failure_threshold")
+        return self
 
     @classmethod
     def from_config(cls, config: Any) -> BruteForceLockdownPolicy:
@@ -58,57 +99,12 @@ class BruteForceLockdownPolicy:
                 "extensions.brute_force_lockdown must be a table"
             )
 
-        allowed_fields = {field.name for field in fields(cls)}
-        unknown_fields = sorted(set(section) - allowed_fields)
-        if unknown_fields:
+        try:
+            return cls(**section)
+        except ValidationError as exc:
             raise ConfigValidationError(
-                "extensions.brute_force_lockdown contains unknown fields: "
-                + ", ".join(unknown_fields)
-            )
-
-        values = {
-            field.name: section.get(field.name, field.default) for field in fields(cls)
-        }
-        policy = cls(**values)
-        for field_name in (
-            "window_seconds",
-            "failure_threshold",
-            "distinct_account_threshold",
-            "distinct_ip_threshold",
-        ):
-            value = getattr(policy, field_name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ConfigValidationError(
-                    f"extensions.brute_force_lockdown.{field_name} must be a "
-                    "positive integer"
-                )
-
-        if policy.distinct_account_threshold > policy.failure_threshold:
-            raise ConfigValidationError(
-                "extensions.brute_force_lockdown.distinct_account_threshold must "
-                "not exceed failure_threshold"
-            )
-        if policy.distinct_ip_threshold > policy.failure_threshold:
-            raise ConfigValidationError(
-                "extensions.brute_force_lockdown.distinct_ip_threshold must not "
-                "exceed failure_threshold"
-            )
-        if not isinstance(policy.reason, str) or not policy.reason.strip():
-            raise ConfigValidationError(
-                "extensions.brute_force_lockdown.reason must be a non-empty string"
-            )
-        if len(policy.reason) > 1024:
-            raise ConfigValidationError(
-                "extensions.brute_force_lockdown.reason must not exceed 1024 characters"
-            )
-
-        return cls(
-            window_seconds=policy.window_seconds,
-            failure_threshold=policy.failure_threshold,
-            distinct_account_threshold=policy.distinct_account_threshold,
-            distinct_ip_threshold=policy.distinct_ip_threshold,
-            reason=policy.reason.strip(),
-        )
+                f"Invalid extensions.brute_force_lockdown configuration: {exc}"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)

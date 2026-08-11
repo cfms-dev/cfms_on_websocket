@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
@@ -111,6 +112,9 @@ def test_state_payloads_are_detached_copies(state_database) -> None:
         assert first is not None
         assert first.payload == {"items": [{"value": 1}]}
         first.payload["items"][0]["value"] = 3
+        same_session = read_system_state(session, "sample_ext", "snapshot")
+        assert same_session is not None
+        assert same_session.payload == {"items": [{"value": 1}]}
 
     with state_database() as session:
         second = read_system_state(session, "sample_ext", "snapshot")
@@ -155,17 +159,17 @@ def test_concurrent_create_has_one_winner(state_database) -> None:
 
 
 @pytest.mark.parametrize(
-    ("owner", "state_key", "message"),
+    ("owner", "state_key"),
     [
-        ("Invalid", "state", "owner"),
-        ("sample_ext", "Invalid State", "key"),
-        ("x" * 256, "state", "owner"),
-        ("sample_ext", "x" * 129, "key"),
+        ("Invalid", "state"),
+        ("sample_ext", "Invalid State"),
+        ("x" * 256, "state"),
+        ("sample_ext", "x" * 129),
     ],
 )
-def test_state_identity_is_validated(state_database, owner, state_key, message) -> None:
+def test_state_identity_is_validated(state_database, owner, state_key) -> None:
     with state_database.begin() as session:
-        with pytest.raises(ValueError, match=message):
+        with pytest.raises(ValidationError):
             create_system_state(
                 session,
                 owner,
@@ -176,17 +180,18 @@ def test_state_identity_is_validated(state_database, owner, state_key, message) 
 
 
 @pytest.mark.parametrize(
-    ("payload", "error"),
+    "payload",
     [
-        ([], TypeError),
-        ({"value": object()}, TypeError),
-        ({1: "value"}, TypeError),
-        ({"value": float("inf")}, ValueError),
+        [],
+        {"value": object()},
+        {1: "value"},
+        {"value": float("inf")},
+        {"value": (1, 2)},
     ],
 )
-def test_state_payload_must_be_a_json_object(state_database, payload, error) -> None:
+def test_state_payload_must_be_a_json_object(state_database, payload) -> None:
     with state_database.begin() as session:
-        with pytest.raises(error):
+        with pytest.raises(ValidationError):
             create_system_state(
                 session,
                 "sample_ext",
