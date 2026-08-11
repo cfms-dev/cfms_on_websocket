@@ -1,8 +1,10 @@
-__all__ = ["RequestHandler", "Result"]
+__all__ = ["JsonInteger", "RequestDataModel", "RequestHandler", "Result"]
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from include.transport.connection import ConnectionHandler
 
@@ -15,11 +17,28 @@ class Result:
     username: str | None = None
 
 
+def _normalize_json_integer(value: Any) -> Any:
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+JsonInteger = Annotated[int, BeforeValidator(_normalize_json_integer)]
+
+
+class RequestDataModel(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        validate_default=True,
+        extra="forbid",
+    )
+
+
 class RequestHandler(ABC):
     """
     Abstract base class for handling requests.
     Attributes:
-        schema (ClassVar[dict]): A dictionary defining the expected schema for request data.
+        request_model: The Pydantic model defining valid request data.
     Methods:
         handle():
             Abstract method to process a request. Must be implemented by subclasses.
@@ -31,8 +50,9 @@ class RequestHandler(ABC):
                     The result is submitted as audit information.
     """
 
-    # This property defines the json structure of the request data.
+    # Legacy JSON Schema retained only while core handlers migrate to request models.
     schema: ClassVar[dict[str, Any]] = {}
+    request_model: ClassVar[type[RequestDataModel] | None] = None
     # Defines whether the handler needs auth check before handling a request.
     require_auth: bool = False
     # Relative token cost used by transport-wide request rate control.

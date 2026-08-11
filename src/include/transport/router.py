@@ -4,6 +4,7 @@ import time
 import jsonschema
 import orjson
 from loguru import logger as log
+from pydantic import ValidationError
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.sync.server import ServerConnection
 
@@ -462,18 +463,53 @@ def handle_request(stream: Stream):
     if handler_type is not None:
         _request_handler: RequestHandler = handler_type()
 
-        try:
-            jsonschema.validate(this_handler.data, _request_handler.schema)
-        except jsonschema.ValidationError as error:
-            this_handler.conclude_request(
-                400,
-                {
-                    "validator": error.validator,
-                    "validator_value": error.validator_value,
-                },
-                error.message,
-            )
-            return
+        if _request_handler.request_model is not None:
+            try:
+                _request_handler.request_model.model_validate(this_handler.data)
+            except ValidationError as error:
+                validation_error = error.errors(
+                    include_url=False,
+                    include_input=False,
+                )[0]
+                location = ".".join(str(part) for part in validation_error["loc"])
+                message = validation_error["msg"]
+                if location:
+                    message = f"{location}: {message}"
+                context = validation_error.get("ctx")
+                validator_value = (
+                    {
+                        key: (
+                            value
+                            if isinstance(value, str | int | float | bool | None)
+                            else str(value)
+                        )
+                        for key, value in context.items()
+                    }
+                    if context is not None
+                    else None
+                )
+                this_handler.conclude_request(
+                    400,
+                    {
+                        "validator": validation_error["type"],
+                        "validator_value": validator_value,
+                    },
+                    message,
+                )
+                return
+        else:
+            try:
+                jsonschema.validate(this_handler.data, _request_handler.schema)
+            except jsonschema.ValidationError as error:
+                this_handler.conclude_request(
+                    400,
+                    {
+                        "validator": error.validator,
+                        "validator_value": error.validator_value,
+                    },
+                    error.message,
+                )
+                return
 
         if _request_handler.require_auth and not authenticated:
             this_handler.conclude_request(401, {}, "Authentication required")

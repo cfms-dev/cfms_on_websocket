@@ -125,6 +125,130 @@ def test_router_returns_429_before_constructing_rate_limited_handler(
     ]
 
 
+def test_router_reports_pydantic_request_validation_errors(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+    from include.transport.request_handler import RequestDataModel
+
+    responses = []
+
+    class InvalidRequest(RequestDataModel):
+        value: int
+
+    class PydanticHandler:
+        request_model = InvalidRequest
+        require_auth = False
+        rate_limit_cost = 1
+
+        def handle(self, _handler):
+            raise AssertionError("Invalid requests must not reach the handler")
+
+    class FakeConnectionHandler:
+        def __init__(self, stream):
+            self.stream = stream
+            self.action = "pydantic_action"
+            self.data = {"value": "1"}
+            self.username = ""
+            self.token = ""
+            self.remote_address = "192.0.2.10"
+
+        def conclude_request(self, code, data, message):
+            responses.append((code, data, message))
+
+    monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
+    monkeypatch.setattr(router, "get_client_ip", lambda _websocket: "192.0.2.10")
+    monkeypatch.setattr(
+        router.LoginGuard,
+        "evaluate_subnet_access",
+        lambda _ip: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router,
+        "check_request_rate",
+        lambda *_args, **_kwargs: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router.lockdown_state_manager,
+        "get_state",
+        lambda: SimpleNamespace(enabled=False),
+    )
+    monkeypatch.setitem(router.available_functions, "pydantic_action", PydanticHandler)
+    stream = SimpleNamespace(connection=SimpleNamespace(_ws=object()))
+
+    router.handle_request(stream)
+
+    assert responses == [
+        (
+            400,
+            {"validator": "int_type", "validator_value": None},
+            "value: Input should be a valid integer",
+        )
+    ]
+
+
+def test_router_keeps_validated_request_data_as_the_original_dict(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+    from include.transport.request_handler import RequestDataModel
+
+    request_data = {"value": 1}
+    handled_data = []
+
+    class ValidRequest(RequestDataModel):
+        value: int
+
+    class PydanticHandler:
+        request_model = ValidRequest
+        require_auth = False
+        rate_limit_cost = 1
+
+        def handle(self, handler):
+            handled_data.append(handler.data)
+
+    class FakeConnectionHandler:
+        def __init__(self, stream):
+            self.stream = stream
+            self.action = "pydantic_action"
+            self.data = request_data
+            self.username = ""
+            self.token = ""
+            self.remote_address = "192.0.2.10"
+
+    hook = SimpleNamespace(
+        ext_before_request=lambda **_kwargs: None,
+        ext_post_request=lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
+    monkeypatch.setattr(router, "get_client_ip", lambda _websocket: "192.0.2.10")
+    monkeypatch.setattr(
+        router.LoginGuard,
+        "evaluate_subnet_access",
+        lambda _ip: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router,
+        "check_request_rate",
+        lambda *_args, **_kwargs: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router.lockdown_state_manager,
+        "get_state",
+        lambda: SimpleNamespace(enabled=False),
+    )
+    monkeypatch.setattr(router, "pm", SimpleNamespace(hook=hook))
+    monkeypatch.setitem(router.available_functions, "pydantic_action", PydanticHandler)
+    stream = SimpleNamespace(connection=SimpleNamespace(_ws=object()))
+
+    router.handle_request(stream)
+
+    assert handled_data == [request_data]
+    assert handled_data[0] is request_data
+
+
 def test_request_admission_is_released_when_handler_raises(monkeypatch, tmp_path):
     _prepare_config(monkeypatch, tmp_path)
 
