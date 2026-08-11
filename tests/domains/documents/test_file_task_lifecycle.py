@@ -300,8 +300,6 @@ def file_task_context(monkeypatch, tmp_path):
                 ext_before_file_upload_finalize=lambda session, id, **_kwargs: (
                     schedule_file_deduplication(session, id)
                 ),
-                ext_on_empty_file_uploaded=lambda **_kwargs: None,
-                ext_on_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_upload_completed=lambda **_kwargs: None,
             )
         ),

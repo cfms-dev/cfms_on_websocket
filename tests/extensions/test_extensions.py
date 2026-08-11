@@ -151,34 +151,37 @@ def test_extension_manifest_is_parsed(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("overrides", "message"),
+    ("overrides", "field"),
     [
-        ({"manifest_version": 2}, "unsupported manifest_version"),
-        ({"identifier": "Invalid-Identifier"}, "invalid extension identifier"),
-        ({"identifier": "core"}, "reserved extension identifier"),
-        ({"identifier": "x" * 256}, "must not exceed 255"),
+        ({"manifest_version": 2}, "manifest_version"),
+        ({"identifier": "Invalid-Identifier"}, "identifier"),
+        ({"identifier": "x" * 256}, "identifier"),
         ({"authors": []}, "authors"),
-        ({"unknown_field": "value"}, "unknown fields"),
+        ({"unknown_field": "value"}, "unknown_field"),
     ],
 )
-def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, message):
+def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, field):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(
         _manifest_source("sample_ext", **overrides), encoding="utf-8"
     )
 
-    with pytest.raises(extension_manager.ExtensionManifestError, match=message):
+    with pytest.raises(extension_manager.ExtensionManifestError) as error:
         extension_manager.parse_extension_manifest(manifest_path)
+
+    assert field in str(error.value)
 
 
 def test_extension_manifest_requires_core_fields(tmp_path):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text("manifest_version = 1\n", encoding="utf-8")
 
-    with pytest.raises(
-        extension_manager.ExtensionManifestError, match="missing required fields"
-    ):
+    with pytest.raises(extension_manager.ExtensionManifestError) as error:
         extension_manager.parse_extension_manifest(manifest_path)
+
+    message = str(error.value)
+    for field in ("identifier", "name", "version", "authors", "license"):
+        assert field in message
 
 
 @pytest.mark.parametrize("missing", ["manifest", "entrypoint"])

@@ -35,12 +35,6 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
             )
         )
 
-    def on_uploaded(**_kwargs):
-        lifecycle.append("uploaded")
-        assert not any(
-            message.get("code") == 200 for message in _sent_json_messages(stream)
-        )
-
     def after_response(id, **_kwargs):
         assert id == file_id
         lifecycle.append("after_response")
@@ -57,8 +51,6 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
         SimpleNamespace(
             hook=SimpleNamespace(
                 ext_before_file_upload_finalize=before_commit,
-                ext_on_empty_file_uploaded=lambda **_kwargs: None,
-                ext_on_file_uploaded=on_uploaded,
                 ext_on_file_upload_completed=after_response,
             )
         ),
@@ -81,7 +73,7 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
     allow_release.set()
     transfer_thread.join(2)
     assert not transfer_thread.is_alive()
-    assert lifecycle == ["before_commit", "uploaded", "after_response"]
+    assert lifecycle == ["before_commit", "after_response"]
 
     with context.session() as session:
         assert session.get(context.FileDeduplicationTask, file_id) is not None
@@ -114,8 +106,6 @@ def test_upload_hook_write_rolls_back_with_completion(file_task_context, monkeyp
         SimpleNamespace(
             hook=SimpleNamespace(
                 ext_before_file_upload_finalize=fail_before_commit,
-                ext_on_empty_file_uploaded=lambda **_kwargs: None,
-                ext_on_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_upload_completed=lambda **_kwargs: None,
             )
         ),
@@ -170,8 +160,6 @@ def test_post_upload_response_hook_failure_does_not_send_second_response(
         SimpleNamespace(
             hook=SimpleNamespace(
                 ext_before_file_upload_finalize=lambda **_kwargs: None,
-                ext_on_empty_file_uploaded=lambda **_kwargs: None,
-                ext_on_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_upload_completed=fail_after_response,
             )
         ),

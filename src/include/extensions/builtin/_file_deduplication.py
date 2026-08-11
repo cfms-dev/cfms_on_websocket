@@ -405,7 +405,7 @@ class FileDeduplicationWorker:
         except Exception:
             logger.exception("Failed to inspect file deduplication queue at startup")
             queue_depth = None
-        logger.bind(queue_depth=queue_depth).info("File deduplication worker started")
+        logger.bind(queue_depth=queue_depth)
         while not self._stop.is_set():
             try:
                 processed = process_one_file_deduplication_task()
@@ -416,7 +416,6 @@ class FileDeduplicationWorker:
             if not processed:
                 self._wake.wait(_IDLE_POLL_SECONDS)
                 self._wake.clear()
-        logger.info("File deduplication worker stopped")
 
 
 file_deduplication_worker = FileDeduplicationWorker()

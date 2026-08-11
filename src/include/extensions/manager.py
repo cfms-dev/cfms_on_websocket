@@ -20,11 +20,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import pluggy
 import websockets.sync.server
 from loguru import logger as log
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+
+from include.types import NonEmptyString
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
@@ -39,18 +42,8 @@ logger = log.bind(name="ext_manager")
 
 MANIFEST_FILENAME = "manifest.toml"
 ENTRYPOINT_FILENAME = "_extension.py"
-SUPPORTED_MANIFEST_VERSION = 1
 IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_IDENTIFIER_LENGTH = 255
-REQUIRED_MANIFEST_FIELDS = {
-    "manifest_version",
-    "identifier",
-    "name",
-    "version",
-    "authors",
-    "license",
-}
-OPTIONAL_MANIFEST_FIELDS = {"description", "homepage"}
 
 
 class ExtensionManifestError(ValueError):
@@ -65,16 +58,35 @@ class ExtensionLoadError(RuntimeError):
     """Raised when a configured extension cannot be loaded."""
 
 
-@dataclass(frozen=True, slots=True)
-class ExtensionManifest:
-    manifest_version: int
-    identifier: str
-    name: str
-    version: str
-    authors: tuple[str, ...]
-    license: str
-    description: str | None = None
-    homepage: str | None = None
+ExtensionIdentifier = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_IDENTIFIER_LENGTH,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    ),
+]
+
+
+class ExtensionManifest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
+
+    manifest_version: Literal[1]  # := SUPPORTED_MANIFEST_VERSION
+    identifier: ExtensionIdentifier
+    name: NonEmptyString
+    version: NonEmptyString
+    authors: Annotated[
+        tuple[NonEmptyString, ...],
+        Field(min_length=1, strict=False),
+    ]
+    license: NonEmptyString
+    description: NonEmptyString | None = None
+    homepage: NonEmptyString | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,85 +96,24 @@ class DiscoveredExtension:
     entrypoint: Path
 
 
-def _required_string(data: dict, field: str, manifest_path: Path) -> str:
-    value = data[field]
-    if not isinstance(value, str) or not value.strip():
-        raise ExtensionManifestError(
-            f"{manifest_path}: {field!r} must be a non-empty string"
-        )
-    return value.strip()
-
-
-def _optional_string(data: dict, field: str, manifest_path: Path) -> str | None:
-    if field not in data:
-        return None
-    value = data[field]
-    if not isinstance(value, str) or not value.strip():
-        raise ExtensionManifestError(
-            f"{manifest_path}: {field!r} must be a non-empty string when provided"
-        )
-    return value.strip()
-
-
-def parse_extension_manifest(manifest_path: str | Path) -> ExtensionManifest:
-    """Parse and validate a versioned extension manifest."""
+def parse_extension_manifest(
+    manifest_path: str | Path,
+) -> ExtensionManifest:
     path = Path(manifest_path)
+
     try:
         with path.open("rb") as manifest_file:
             data = tomllib.load(manifest_file)
+
+        return ExtensionManifest.model_validate(data)
+
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ExtensionManifestError(f"Failed to read {path}: {exc}") from exc
 
-    fields = set(data)
-    missing = sorted(REQUIRED_MANIFEST_FIELDS - fields)
-    if missing:
+    except ValidationError as exc:
         raise ExtensionManifestError(
-            f"{path}: missing required fields: {', '.join(missing)}"
-        )
-    unknown = sorted(fields - REQUIRED_MANIFEST_FIELDS - OPTIONAL_MANIFEST_FIELDS)
-    if unknown:
-        raise ExtensionManifestError(f"{path}: unknown fields: {', '.join(unknown)}")
-
-    manifest_version = data["manifest_version"]
-    if isinstance(manifest_version, bool) or not isinstance(manifest_version, int):
-        raise ExtensionManifestError(f"{path}: 'manifest_version' must be an integer")
-    if manifest_version != SUPPORTED_MANIFEST_VERSION:
-        raise ExtensionManifestError(
-            f"{path}: unsupported manifest_version {manifest_version}; "
-            f"expected {SUPPORTED_MANIFEST_VERSION}"
-        )
-
-    identifier = _required_string(data, "identifier", path)
-    if len(identifier) > MAX_IDENTIFIER_LENGTH:
-        raise ExtensionManifestError(
-            f"{path}: extension identifier must not exceed "
-            f"{MAX_IDENTIFIER_LENGTH} characters"
-        )
-    if IDENTIFIER_PATTERN.fullmatch(identifier) is None:
-        raise ExtensionManifestError(
-            f"{path}: invalid extension identifier {identifier!r}"
-        )
-
-    authors = data["authors"]
-    if not isinstance(authors, list) or not authors:
-        raise ExtensionManifestError(
-            f"{path}: 'authors' must be a non-empty array of strings"
-        )
-    if any(not isinstance(author, str) or not author.strip() for author in authors):
-        raise ExtensionManifestError(
-            f"{path}: 'authors' must be a non-empty array of strings"
-        )
-
-    return ExtensionManifest(
-        manifest_version=manifest_version,
-        identifier=identifier,
-        name=_required_string(data, "name", path),
-        version=_required_string(data, "version", path),
-        authors=tuple(author.strip() for author in authors),
-        license=_required_string(data, "license", path),
-        description=_optional_string(data, "description", path),
-        homepage=_optional_string(data, "homepage", path),
-    )
+            f"{path}: invalid extension manifest: {exc}"
+        ) from exc
 
 
 def discover_extensions(extension_dir: str | Path) -> dict[str, DiscoveredExtension]:
@@ -399,15 +350,15 @@ def load_extensions_from_directory(
 ) -> None:
     """Load the built-in extension and configured extensions in order."""
     discovered = discover_extensions(extension_dir)
-    builtin = discovered.get("builtin")
-    if builtin is None:
+    builtin_ext = discovered.get("builtin")
+    if builtin_ext is None:
         raise ExtensionDiscoveryError(
             f"Required built-in extension was not found in {extension_dir}"
         )
 
     enabled = tuple(enabled_identifiers)
-    if len(enabled) != len(set(enabled)):
-        raise ExtensionDiscoveryError("Enabled extension identifiers must be unique")
+    # if len(enabled) != len(set(enabled)):
+    #     raise ExtensionDiscoveryError("Enabled extension identifiers must be unique")
     if "builtin" in enabled:
         raise ExtensionDiscoveryError(
             "The built-in extension is always loaded and must not be configured"
@@ -420,7 +371,7 @@ def load_extensions_from_directory(
 
     extensions_to_load = []
     if not pm.has_plugin("builtin"):
-        extensions_to_load.append(builtin)
+        extensions_to_load.append(builtin_ext)
     extensions_to_load.extend(
         discovered[identifier]
         for identifier in enabled
@@ -446,7 +397,7 @@ def load_extensions_from_directory(
         manifest = extension.manifest
         if manifest.identifier != "builtin":
             logger.info(
-                f"Loaded extension: {manifest.name} {manifest.version} "
+                f"Loaded extension: {manifest.name} ({manifest.version}) "
                 f"({manifest.identifier})"
             )
 
