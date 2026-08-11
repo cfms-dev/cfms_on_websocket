@@ -487,7 +487,7 @@ def handle_request(stream: Stream):
 
         try:
             if (
-                pm.hook.ext_pre_request(
+                pm.hook.ext_before_request(
                     request_handler=_request_handler,
                     connection_handler=this_handler,
                 )

@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 
 
 @hookimpl
-def ext_before_file_upload_commit(
+def ext_before_file_upload_finalize(
     session: "OrmSession",
     id: str,
     path: str,

@@ -42,7 +42,6 @@ ENTRYPOINT_FILENAME = "_extension.py"
 SUPPORTED_MANIFEST_VERSION = 1
 IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_IDENTIFIER_LENGTH = 255
-RESERVED_EXTENSION_IDENTIFIERS = {"core"}
 REQUIRED_MANIFEST_FIELDS = {
     "manifest_version",
     "identifier",
@@ -143,10 +142,6 @@ def parse_extension_manifest(manifest_path: str | Path) -> ExtensionManifest:
         raise ExtensionManifestError(
             f"{path}: invalid extension identifier {identifier!r}"
         )
-    if identifier in RESERVED_EXTENSION_IDENTIFIERS:
-        raise ExtensionManifestError(
-            f"{path}: reserved extension identifier {identifier!r}"
-        )
 
     authors = data["authors"]
     if not isinstance(authors, list) or not authors:
@@ -227,7 +222,7 @@ class ServerHookSpecs(ABC):
     def ext_validate_config(self, config: Mapping[str, Any]) -> None:
         """Validate extension-owned configuration values.
 
-        Implementations should raise ``ConfigValidationError`` when the
+        Implementations should raise :class:`ConfigValidationError` when the
         supplied configuration is invalid.
         """
 
@@ -236,8 +231,8 @@ class ServerHookSpecs(ABC):
     def ext_register_handlers(self) -> dict[str, type["RequestHandler"]]:
         """Register handlers for specific actions.
 
-        Should return a dictionary mapping action names to their
-        corresponding RequestHandler classes.
+        Should return a dictionary mapping action names to their corresponding
+        :class:`RequestHandler` classes.
         """
 
     @hookspec
@@ -245,18 +240,17 @@ class ServerHookSpecs(ABC):
     def ext_unregister_handlers(self) -> set[str]:
         """Unregister handlers for specific actions.
 
-        Should return a set of action names whose handlers should
-        be unregistered.
+        Should return a set of action names whose handlers should be unregistered.
         """
 
     @hookspec
     @abstractmethod
     def ext_register_whitelisted_actions(self) -> set[str]:
         """
-        Register actions that should be whitelisted (allowed even
-        during lockdown).
+        Register actions that should be whitelisted (allowed even during lockdown).
 
-        Should return a set of action names.
+        Should return a set of action names. Note that this hook does not encompass
+        the functionality of `ext_register_handlers`.
         """
 
     @hookspec
@@ -308,7 +302,7 @@ class ServerHookSpecs(ABC):
 
     @hookspec(firstresult=True)
     @abstractmethod
-    def ext_pre_request(
+    def ext_before_request(
         self,
         request_handler: "RequestHandler",
         connection_handler: "ConnectionHandler",
@@ -333,7 +327,7 @@ class ServerHookSpecs(ABC):
 
     @hookspec
     @abstractmethod
-    def ext_before_file_upload_commit(
+    def ext_before_file_upload_finalize(
         self,
         session: "OrmSession",
         id: str,
@@ -349,31 +343,11 @@ class ServerHookSpecs(ABC):
 
     @hookspec
     @abstractmethod
-    def ext_on_file_uploaded(self, id: str, path: str, sha256: str) -> None:
-        """
-        Triggered when a file is uploaded to the server, providing the
-        file's id, path, and sha256 hash.
-
-        This can be used to implement features like file deduplication,
-        virus scanning, or triggering post-upload processing.
-        """
-
-    @hookspec
-    @abstractmethod
-    def ext_post_file_upload_response(self, id: str, path: str, sha256: str) -> None:
+    def ext_on_file_upload_completed(self, id: str, path: str, sha256: str) -> None:
         """Run after a non-empty upload's success response has been sent.
 
         Implementations must handle their own failures because the upload is
         already complete and acknowledged to the client.
-        """
-
-    @hookspec
-    @abstractmethod
-    def ext_on_empty_file_uploaded(self, id: str, path: str) -> None:
-        """
-        Triggered when an empty file is uploaded to the server,
-        providing the filename. This can be used to clean up
-        placeholder files that were created but never filled.
         """
 
 

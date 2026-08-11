@@ -59,12 +59,12 @@ startup failures, and implementations must be idempotent. The startup hook may
 accept the bound `server` when it needs access to the WebSocket server itself.
 
 Non-empty uploads expose three ordered extension points. The
-`ext_before_file_upload_commit(session, id, path, sha256)` hook runs inside the
+`ext_before_file_upload_finalize(session, id, path, sha256)` hook runs inside the
 upload completion transaction; implementations may add database work through
 the supplied session but must not commit or close it. After that transaction
 commits, `ext_on_file_uploaded(id, path, sha256)` retains its existing position
 before the success response. Finally,
-`ext_post_file_upload_response(id, path, sha256)` runs after the response has
+`ext_on_file_upload_completed(id, path, sha256)` runs after the response has
 been sent and must not attempt to change the completed client result.
 
 The `builtin` extension uses these hooks together with its startup and shutdown

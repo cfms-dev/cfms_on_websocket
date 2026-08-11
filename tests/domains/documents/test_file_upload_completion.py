@@ -56,10 +56,10 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
         "pm",
         SimpleNamespace(
             hook=SimpleNamespace(
-                ext_before_file_upload_commit=before_commit,
+                ext_before_file_upload_finalize=before_commit,
                 ext_on_empty_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_uploaded=on_uploaded,
-                ext_post_file_upload_response=after_response,
+                ext_on_file_upload_completed=after_response,
             )
         ),
     )
@@ -113,10 +113,10 @@ def test_upload_hook_write_rolls_back_with_completion(file_task_context, monkeyp
         "pm",
         SimpleNamespace(
             hook=SimpleNamespace(
-                ext_before_file_upload_commit=fail_before_commit,
+                ext_before_file_upload_finalize=fail_before_commit,
                 ext_on_empty_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_uploaded=lambda **_kwargs: None,
-                ext_post_file_upload_response=lambda **_kwargs: None,
+                ext_on_file_upload_completed=lambda **_kwargs: None,
             )
         ),
     )
@@ -169,10 +169,10 @@ def test_post_upload_response_hook_failure_does_not_send_second_response(
         "pm",
         SimpleNamespace(
             hook=SimpleNamespace(
-                ext_before_file_upload_commit=lambda **_kwargs: None,
+                ext_before_file_upload_finalize=lambda **_kwargs: None,
                 ext_on_empty_file_uploaded=lambda **_kwargs: None,
                 ext_on_file_uploaded=lambda **_kwargs: None,
-                ext_post_file_upload_response=fail_after_response,
+                ext_on_file_upload_completed=fail_after_response,
             )
         ),
     )

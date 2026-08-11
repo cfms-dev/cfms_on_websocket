@@ -57,9 +57,9 @@ Reuse `ServerHookSpecs`, existing hook timing, and manifest discovery. Extension
 
 Hook timing is a contract:
 
-- `ext_before_file_upload_commit` runs inside the caller-owned upload transaction; implementations may write through the supplied session but must not commit or close it.
+- `ext_before_file_upload_finalize` runs inside the caller-owned upload transaction; implementations may write through the supplied session but must not commit or close it.
 - `ext_on_file_uploaded` runs after commit and before the success response.
-- `ext_post_file_upload_response` runs after acknowledgement and cannot change the client result.
+- `ext_on_file_upload_completed` runs after acknowledgement and cannot change the client result.
 - startup/shutdown hooks must preserve the documented ordering; shutdown implementations are idempotent.
 
 ### `src/maintenance`

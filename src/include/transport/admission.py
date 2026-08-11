@@ -1,4 +1,4 @@
-__all__ = ["AdmissionDecision", "AdmissionController", "admission_controller"]
+__all__ = ["AdmissionController", "AdmissionDecision", "admission_controller"]
 
 import threading
 from dataclasses import dataclass
