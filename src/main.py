@@ -488,6 +488,7 @@ def main():
     )
 
     try_reclaim_abandoned_uploads()
+
     try:
         with serve(
             handle_connection,

@@ -1,3 +1,5 @@
+__all__ = ["Version"]
+
 import re
 from functools import total_ordering
 

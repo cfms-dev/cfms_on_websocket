@@ -1,9 +1,11 @@
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any, cast
 
 from loguru import logger as log
 from sqlalchemy import and_, delete, or_, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session as ORMSession
 
 from include.config.validation import DocumentUploadPolicy
@@ -159,11 +161,14 @@ def reclaim_abandoned_uploads(
                 _queue_deferred_file_deletion(
                     session, file.path, (task.upload_session_id,)
                 )
-            claimed = session.execute(
-                delete(FileTask).where(
-                    FileTask.id == task_id,
-                    FileTask.status == FileTaskStatus.EXPIRED,
-                )
+            claimed = cast(
+                CursorResult[Any],
+                session.execute(
+                    delete(FileTask).where(
+                        FileTask.id == task_id,
+                        FileTask.status == FileTaskStatus.EXPIRED,
+                    )
+                ),
             )
             if claimed.rowcount != 1:
                 continue

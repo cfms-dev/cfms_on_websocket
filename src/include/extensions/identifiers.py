@@ -5,8 +5,14 @@ from typing import Annotated
 from pydantic import AfterValidator, StringConstraints, TypeAdapter
 
 
-def _reject_core_identifier(value: str) -> str:
-    if value == "core":
+def _reject_identifiers(value: str) -> str:
+    """A validator that rejects the reserved extension identifiers.
+
+    This function is experimental and may be removed in any future version.
+
+    TODO: Consider the necessity of this function's existence.
+    """
+    if value in ("core",):
         raise ValueError(f"Extension identifier {value!r} is reserved")
     return value
 
@@ -19,7 +25,7 @@ ExtensionIdentifier = Annotated[
         max_length=255,
         pattern=r"^[a-z][a-z0-9_]*$",
     ),
-    AfterValidator(_reject_core_identifier),
+    AfterValidator(_reject_identifiers),
 ]
 
 _IDENTIFIER_ADAPTER = TypeAdapter(ExtensionIdentifier)
