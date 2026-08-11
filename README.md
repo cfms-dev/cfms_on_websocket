@@ -47,6 +47,35 @@ the necessary dependencies for cluster functionality and MySQL support:
 uv sync --extra cluster --extra mysql
 ```
 
+## Deploy a Release Bundle
+
+Release tags publish source deployment bundles in both ZIP and tar.gz formats.
+The deployment host must provide Python 3.14 or newer and
+[uv](https://docs.astral.sh/uv/). Verify the downloaded files against
+`SHA256SUMS.txt`, then extract the format appropriate for the host:
+
+```bash
+sha256sum --check SHA256SUMS.txt
+tar -xzf cfms-on-websocket-0.4.1.tar.gz
+cd cfms-on-websocket-0.4.1
+```
+
+Install only the locked production dependencies. Add `--extra cluster`,
+`--extra mysql`, or `--extra ext_oidc_sso` when those features are required:
+
+```bash
+uv sync --locked --no-dev
+cd src
+cp config.toml.sample config.toml  # first installation only
+uv run --no-dev alembic upgrade head
+uv run --no-dev python main.py  # DO NOT use `-O`!
+```
+
+For an upgrade, back up the deployment first and retain the existing
+`config.toml`, database, `content` directory, certificates, and credentials.
+The release bundle intentionally contains none of that mutable or sensitive
+state; do not replace it with sample or empty content from a new bundle.
+
 ## Extensions
 
 Extensions are discovered through versioned `manifest.toml` files and are

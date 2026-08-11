@@ -1,0 +1,119 @@
+name: Publish Release Bundle
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.16"
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must use vX.Y.Z format: ${tag}" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          project_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "${version}" != "${project_version}" ]]; then
+            echo "Tag version ${version} does not match project version ${project_version}" >&2
+            exit 1
+          fi
+
+          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${GITHUB_SHA}")" >> "${GITHUB_ENV}"
+
+      - name: Build release archives
+        run: >-
+          python tools/build_release.py
+          --version "${VERSION}"
+          --source-date-epoch "${SOURCE_DATE_EPOCH}"
+          --output-dir dist
+
+      - name: Verify checksums and archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+
+          mkdir -p smoke/zip smoke/tar
+          unzip -q "dist/cfms-on-websocket-${VERSION}.zip" -d smoke/zip
+          tar -xzf "dist/cfms-on-websocket-${VERSION}.tar.gz" -C smoke/tar
+          diff -qr smoke/zip smoke/tar
+
+      - name: Smoke-test the deployment bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_root="${GITHUB_WORKSPACE}/smoke/zip/cfms-on-websocket-${VERSION}"
+          uv sync --project "${bundle_root}" --locked --no-dev
+          cp "${bundle_root}/src/config.toml.sample" "${bundle_root}/src/config.toml"
+          uv run --project "${bundle_root}" --no-dev python -m compileall -q "${bundle_root}/src"
+          (
+            cd "${bundle_root}/src"
+            uv run --project "${bundle_root}" --no-dev alembic --version
+            uv run --project "${bundle_root}" --no-dev python -c "import main; import maintenance.cli"
+            uv run --project "${bundle_root}" --no-dev python -c \
+              "from importlib.util import find_spec; assert find_spec('pytest') is None"
+          )
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          assets=(
+            "dist/cfms-on-websocket-${VERSION}.zip"
+            "dist/cfms-on-websocket-${VERSION}.tar.gz"
+            "dist/SHA256SUMS.txt"
+          )
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" "${assets[@]}" --clobber
+          else
+            gh release create "${tag}" "${assets[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "${tag}"
+          fi
