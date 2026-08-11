@@ -1,9 +1,11 @@
 __all__ = [
     "DiscoveredExtension",
     "ExtensionDiscoveryError",
+    "ExtensionCompatibility",
     "ExtensionLoadError",
     "ExtensionManifest",
     "ExtensionManifestError",
+    "ExtensionMetadata",
     "collect_extension_flags",
     "discover_extensions",
     "load_extensions_from_directory",
@@ -13,7 +15,6 @@ __all__ = [
 ]
 
 import importlib.util
-import re
 import sys
 import tomllib
 from abc import ABC, abstractmethod
@@ -25,8 +26,17 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 import pluggy
 import websockets.sync.server
 from loguru import logger as log
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
+from include.config.constants import CORE_VERSION
+from include.config.version import Version
 from include.types import NonEmptyString
 
 if TYPE_CHECKING:
@@ -42,7 +52,6 @@ logger = log.bind(name="ext_manager")
 
 MANIFEST_FILENAME = "manifest.toml"
 ENTRYPOINT_FILENAME = "_extension.py"
-IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_IDENTIFIER_LENGTH = 255
 
 
@@ -69,14 +78,13 @@ ExtensionIdentifier = Annotated[
 ]
 
 
-class ExtensionManifest(BaseModel):
+class ExtensionMetadata(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
         strict=True,
     )
 
-    manifest_version: Literal[1]  # := SUPPORTED_MANIFEST_VERSION
     identifier: ExtensionIdentifier
     name: NonEmptyString
     version: NonEmptyString
@@ -87,6 +95,38 @@ class ExtensionManifest(BaseModel):
     license: NonEmptyString
     description: NonEmptyString | None = None
     homepage: NonEmptyString | None = None
+
+
+class ExtensionCompatibility(BaseModel):
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
+
+    minimum_server_version: Version | None = None
+
+    @field_validator("minimum_server_version", mode="before")
+    @classmethod
+    def parse_minimum_server_version(cls, value):
+        if isinstance(value, str):
+            return Version(value)
+        return value
+
+
+class ExtensionManifest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
+
+    manifest_version: Literal[2]  # := SUPPORTED_MANIFEST_VERSION
+    extension: ExtensionMetadata
+    compatibility: ExtensionCompatibility = Field(
+        default_factory=ExtensionCompatibility
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,13 +198,14 @@ def discover_extensions(extension_dir: str | Path) -> dict[str, DiscoveredExtens
         except ExtensionManifestError as exc:
             raise ExtensionDiscoveryError(str(exc)) from exc
 
-        previous = discovered.get(manifest.identifier)
+        metadata = manifest.extension
+        previous = discovered.get(metadata.identifier)
         if previous is not None:
             raise ExtensionDiscoveryError(
-                f"Duplicate extension identifier {manifest.identifier!r} in "
+                f"Duplicate extension identifier {metadata.identifier!r} in "
                 f"{previous.directory} and {extension_path}"
             )
-        discovered[manifest.identifier] = DiscoveredExtension(
+        discovered[metadata.identifier] = DiscoveredExtension(
             manifest=manifest,
             directory=extension_path,
             entrypoint=entrypoint,
@@ -318,12 +359,11 @@ def _rollback_extension(ext_name: str) -> None:
 
 def _rollback_extensions(extensions: list[DiscoveredExtension]) -> None:
     for extension in reversed(extensions):
-        _rollback_extension(extension.manifest.identifier)
+        _rollback_extension(extension.manifest.extension.identifier)
 
 
 def _load_extension(extension: DiscoveredExtension) -> None:
-    manifest = extension.manifest
-    ext_name = manifest.identifier
+    ext_name = extension.manifest.extension.identifier
     registered = False
     try:
         spec = importlib.util.spec_from_file_location(ext_name, extension.entrypoint)
@@ -387,6 +427,15 @@ def load_extensions_from_directory(
         if not pm.has_plugin(identifier)
     )
 
+    for extension in extensions_to_load:
+        minimum_version = extension.manifest.compatibility.minimum_server_version
+        if minimum_version is not None and CORE_VERSION < minimum_version:
+            identifier = extension.manifest.extension.identifier
+            raise ExtensionLoadError(
+                f"Extension {identifier!r} requires server version "
+                f"{minimum_version} or newer; current server version is {CORE_VERSION}"
+            )
+
     loaded_extensions: list[DiscoveredExtension] = []
     try:
         for extension in extensions_to_load:
@@ -403,11 +452,11 @@ def load_extensions_from_directory(
         ) from exc
 
     for extension in loaded_extensions:
-        manifest = extension.manifest
-        if manifest.identifier != "builtin":
+        metadata = extension.manifest.extension
+        if metadata.identifier != "builtin":
             logger.info(
-                f"Loaded extension: {manifest.name} ({manifest.version}) "
-                f"({manifest.identifier})"
+                f"Loaded extension: {metadata.name} ({metadata.version}) "
+                f"({metadata.identifier})"
             )
 
 

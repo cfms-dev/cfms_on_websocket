@@ -1,4 +1,6 @@
-manifest_version = 1
+manifest_version = 2
+
+[extension]
 identifier = "oidc_sso"
 name = "OpenID Connect SSO"
 version = "1.0.0"
@@ -6,3 +8,6 @@ authors = ["Creeper19472"]
 license = "Apache-2.0"
 description = "OpenID Connect single sign-on support for CFMS."
 homepage = "https://github.com/cfms-dev/cfms_on_websocket"
+
+[compatibility]
+minimum_server_version = "0.4.1.260801_alpha"

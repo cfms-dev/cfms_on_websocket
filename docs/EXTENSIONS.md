@@ -7,10 +7,12 @@ Python code.
 
 ## Manifest format
 
-Manifest version 1 uses these fields:
+Manifest version 2 separates extension metadata from server compatibility:
 
 ```toml
-manifest_version = 1
+manifest_version = 2
+
+[extension]
 identifier = "example_extension"
 name = "Example Extension"
 version = "1.0.0"
@@ -18,11 +20,28 @@ authors = ["Example Author"]
 license = "Apache-2.0"
 description = "An optional short description."
 homepage = "https://example.com/extensions/example"
+
+[compatibility]
+minimum_server_version = "0.4.1.260801_alpha"
 ```
 
-`manifest_version`, `identifier`, `name`, `version`, `authors`, and `license` are
-required. `description` and `homepage` are optional. Unknown fields are rejected.
-Use semantic versions for `version` and an SPDX license identifier where possible.
+`manifest_version` and the `[extension]` table are required. Within `[extension]`,
+`identifier`, `name`, `version`, `authors`, and `license` are required;
+`description` and `homepage` are optional. The `[compatibility]` table and
+`minimum_server_version` are optional. Omitting the minimum version declares no
+server-version floor. Unknown tables and fields are rejected.
+
+Use semantic versions for the extension's own `version` and an SPDX license
+identifier where possible. `minimum_server_version` uses the CFMS core version
+format reported by `server_info.version`:
+`MAJOR.MINOR.PATCH[.BUILD][_TYPE[NUMBER]]`. Supported release types are `alpha`,
+`beta`, `rc`, and `release`, ordered from earliest to latest; omitting the type is
+equivalent to `release`. Version values must be bare versions without comparison
+operators.
+
+Flat manifest version 1 files are no longer supported. Extension developers must
+set `manifest_version = 2`, move descriptive fields into `[extension]`, and add
+`[compatibility]` when the extension requires a particular server version.
 
 The identifier is the stable configuration and Pluggy registration key. It must
 match `^[a-z][a-z0-9_]*$`, contain at most 255 characters, must not be `core`,
@@ -43,9 +62,16 @@ do not list it in `enabled`. Configuration changes require a server restart. The
 server validates every installed extension manifest at startup, but imports only
 the built-in extension and identifiers listed in `enabled`.
 
-Startup fails when the extension catalog is invalid, an enabled identifier is not
-installed, or an enabled extension cannot be imported. This prevents the server
-from silently running without configured capabilities.
+Before importing any extension code, the server checks the complete set of
+extensions selected for this load. If the current core version is lower than any
+selected extension's `minimum_server_version`, startup fails with the extension
+identifier, required version, and current version, and none of the selected
+extensions are imported. An installed but disabled extension may target a newer
+server without blocking startup, although its manifest must still be valid.
+
+Startup also fails when the extension catalog is invalid, an enabled identifier
+is not installed, or an enabled extension cannot be imported. This prevents the
+server from silently running without configured capabilities.
 
 Extensions may implement `ext_validate_config(config)` to validate their own
 configuration. The hook runs when an extension is loaded and whenever the global

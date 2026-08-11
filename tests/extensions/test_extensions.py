@@ -6,11 +6,15 @@ import pluggy
 import pytest
 
 import include.extensions.manager as extension_manager
+from include.config.constants import CORE_VERSION
+from include.config.version import Version
 
 EXTENSION_MODULE_NAMES = {
     "builtin",
+    "compatible_ext",
     "disabled_ext",
     "first_ext",
+    "incompatible_ext",
     "missing_entry_ext",
     "plain_validator_ext",
     "root_file_ext",
@@ -20,9 +24,22 @@ EXTENSION_MODULE_NAMES = {
 }
 
 
-def _manifest_source(default_identifier: str, **overrides) -> str:
+def _toml_value(value) -> str:
+    if isinstance(value, str):
+        return repr(value)
+    if isinstance(value, list):
+        return f"[{', '.join(repr(item) for item in value)}]"
+    return str(value)
+
+
+def _manifest_source(
+    default_identifier: str,
+    *,
+    manifest_version: int = 2,
+    compatibility: dict | None = None,
+    **overrides,
+) -> str:
     values = {
-        "manifest_version": 1,
         "identifier": default_identifier,
         "name": "Sample Extension",
         "version": "1.0.0",
@@ -30,15 +47,13 @@ def _manifest_source(default_identifier: str, **overrides) -> str:
         "license": "Apache-2.0",
     }
     values.update(overrides)
-    lines = []
+    lines = [f"manifest_version = {manifest_version}", "", "[extension]"]
     for key, value in values.items():
-        if isinstance(value, str):
-            lines.append(f"{key} = {value!r}")
-        elif isinstance(value, list):
-            rendered = ", ".join(repr(item) for item in value)
-            lines.append(f"{key} = [{rendered}]")
-        else:
-            lines.append(f"{key} = {value}")
+        lines.append(f"{key} = {_toml_value(value)}")
+    if compatibility is not None:
+        lines.extend(("", "[compatibility]"))
+        for key, value in compatibility.items():
+            lines.append(f"{key} = {_toml_value(value)}")
     return "\n".join(lines) + "\n"
 
 
@@ -57,9 +72,11 @@ def _write_manifest(extension_dir: Path, identifier: str, **overrides) -> Path:
     return manifest_path
 
 
-def _write_builtin(root: Path, source: str = "VALUE = 1\n") -> Path:
+def _write_builtin(
+    root: Path, source: str = "VALUE = 1\n", **manifest_overrides
+) -> Path:
     extension_dir = _write_extension(root, "builtin", source)
-    _write_manifest(extension_dir, "builtin")
+    _write_manifest(extension_dir, "builtin", **manifest_overrides)
     return extension_dir
 
 
@@ -121,6 +138,27 @@ def test_directory_extension_entrypoint_is_loaded(monkeypatch, tmp_path):
     assert pm.get_plugin("sample_ext").VALUE == 42
 
 
+@pytest.mark.parametrize("minimum_version", ["1.2.2", "1.2.3"])
+def test_compatible_extension_minimum_version_loads(
+    monkeypatch, tmp_path, minimum_version
+):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    monkeypatch.setattr(extension_manager, "CORE_VERSION", Version("1.2.3"))
+    _write_builtin(tmp_path)
+    extension_dir = _write_extension(tmp_path, "compatible_folder")
+    _write_manifest(
+        extension_dir,
+        "compatible_ext",
+        compatibility={"minimum_server_version": minimum_version},
+    )
+
+    _load_extensions(tmp_path, ["compatible_ext"])
+
+    assert pm.has_plugin("builtin")
+    assert pm.has_plugin("compatible_ext")
+
+
 def test_directory_without_entrypoint_is_skipped(monkeypatch, tmp_path):
     pm = _fresh_plugin_manager()
     monkeypatch.setattr(extension_manager, "pm", pm)
@@ -140,20 +178,31 @@ def test_extension_manifest_is_parsed(tmp_path):
         "sample_ext",
         description="A sample extension",
         homepage="https://example.test/sample",
+        compatibility={"minimum_server_version": "0.4.1.260801_alpha"},
     )
 
     manifest = extension_manager.parse_extension_manifest(manifest_path)
 
-    assert manifest.identifier == "sample_ext"
-    assert manifest.name == "Sample Extension"
-    assert manifest.authors == ("Test Author",)
-    assert manifest.description == "A sample extension"
+    assert manifest.extension.identifier == "sample_ext"
+    assert manifest.extension.name == "Sample Extension"
+    assert manifest.extension.authors == ("Test Author",)
+    assert manifest.extension.description == "A sample extension"
+    assert str(manifest.compatibility.minimum_server_version) == ("0.4.1.260801_alpha")
+
+
+def test_extension_manifest_compatibility_is_optional(tmp_path):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_manifest_source("sample_ext"), encoding="utf-8")
+
+    manifest = extension_manager.parse_extension_manifest(manifest_path)
+
+    assert manifest.compatibility.minimum_server_version is None
 
 
 @pytest.mark.parametrize(
     ("overrides", "field"),
     [
-        ({"manifest_version": 2}, "manifest_version"),
+        ({"manifest_version": 3}, "manifest_version"),
         ({"identifier": "Invalid-Identifier"}, "identifier"),
         ({"identifier": "x" * 256}, "identifier"),
         ({"authors": []}, "authors"),
@@ -175,9 +224,64 @@ def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, field):
     assert "errors.pydantic.dev" not in message
 
 
+@pytest.mark.parametrize(
+    ("source", "field"),
+    [
+        (
+            _manifest_source(
+                "sample_ext",
+                compatibility={"minimum_server_version": "1.2.3junk"},
+            ),
+            "compatibility.minimum_server_version",
+        ),
+        (_manifest_source("sample_ext") + "\n[unknown]\nvalue = 1\n", "unknown"),
+        (
+            _manifest_source(
+                "sample_ext",
+                compatibility={"unknown_field": "value"},
+            ),
+            "compatibility.unknown_field",
+        ),
+    ],
+)
+def test_invalid_manifest_sections_are_rejected(tmp_path, source, field):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(extension_manager.ExtensionManifestError) as error:
+        extension_manager.parse_extension_manifest(manifest_path)
+
+    assert field in str(error.value)
+
+
+def test_flat_manifest_version_one_is_rejected(tmp_path):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "manifest_version = 1",
+                "identifier = 'sample_ext'",
+                "name = 'Sample Extension'",
+                "version = '1.0.0'",
+                "authors = ['Test Author']",
+                "license = 'Apache-2.0'",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(extension_manager.ExtensionManifestError) as error:
+        extension_manager.parse_extension_manifest(manifest_path)
+
+    message = str(error.value)
+    assert "manifest_version" in message
+    assert "extension" in message
+
+
 def test_extension_manifest_requires_core_fields(tmp_path):
     manifest_path = tmp_path / "manifest.toml"
-    manifest_path.write_text("manifest_version = 1\n", encoding="utf-8")
+    manifest_path.write_text("manifest_version = 2\n\n[extension]\n", encoding="utf-8")
 
     with pytest.raises(extension_manager.ExtensionManifestError) as error:
         extension_manager.parse_extension_manifest(manifest_path)
@@ -185,6 +289,18 @@ def test_extension_manifest_requires_core_fields(tmp_path):
     message = str(error.value)
     for field in ("identifier", "name", "version", "authors", "license"):
         assert field in message
+
+
+def test_bundled_extension_manifests_are_valid():
+    extension_root = Path(extension_manager.__file__).parent
+
+    discovered = extension_manager.discover_extensions(extension_root)
+
+    assert set(discovered) == {"builtin", "brute_force_lockdown", "oidc_sso"}
+    assert all(
+        extension.manifest.compatibility.minimum_server_version == CORE_VERSION
+        for extension in discovered.values()
+    )
 
 
 @pytest.mark.parametrize("missing", ["manifest", "entrypoint"])
@@ -254,16 +370,44 @@ def test_builtin_extension_loads_quietly_and_is_not_loaded_twice(monkeypatch, tm
 def test_disabled_extension_is_not_imported(monkeypatch, tmp_path):
     pm = _fresh_plugin_manager()
     monkeypatch.setattr(extension_manager, "pm", pm)
+    monkeypatch.setattr(extension_manager, "CORE_VERSION", Version("1.2.3"))
     _write_builtin(tmp_path)
     extension_dir = _write_extension(
         tmp_path, "disabled_folder", "raise RuntimeError('must not import')\n"
     )
-    _write_manifest(extension_dir, "disabled_ext")
+    _write_manifest(
+        extension_dir,
+        "disabled_ext",
+        compatibility={"minimum_server_version": "2.0.0"},
+    )
 
     _load_extensions(tmp_path, [])
 
     assert not pm.has_plugin("disabled_ext")
     assert "disabled_ext" not in sys.modules
+
+
+def test_incompatible_builtin_is_rejected_before_import(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    monkeypatch.setattr(extension_manager, "CORE_VERSION", Version("1.2.3"))
+    _write_builtin(
+        tmp_path,
+        "raise RuntimeError('must not import')\n",
+        compatibility={"minimum_server_version": "2.0.0"},
+    )
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match=(
+            "Extension 'builtin' requires server version 2.0.0 or newer; "
+            "current server version is 1.2.3"
+        ),
+    ):
+        _load_extensions(tmp_path, [])
+
+    assert not pm.has_plugin("builtin")
+    assert "builtin" not in sys.modules
 
 
 def test_extensions_are_registered_in_configuration_order(monkeypatch, tmp_path):
@@ -352,6 +496,50 @@ def test_extension_batch_rolls_back_when_later_import_fails(monkeypatch, tmp_pat
     assert "builtin" not in sys.modules
     assert "first_ext" not in sys.modules
     assert "second_ext" not in sys.modules
+
+
+def test_incompatible_extension_prevents_entire_batch_import(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    monkeypatch.setattr(extension_manager, "CORE_VERSION", Version("1.2.3"))
+
+    builtin_marker = tmp_path / "builtin-imported"
+    compatible_marker = tmp_path / "compatible-imported"
+    incompatible_marker = tmp_path / "incompatible-imported"
+    _write_builtin(tmp_path, f"open({str(builtin_marker)!r}, 'w').close()\n")
+    compatible = _write_extension(
+        tmp_path,
+        "compatible_folder",
+        f"open({str(compatible_marker)!r}, 'w').close()\n",
+    )
+    incompatible = _write_extension(
+        tmp_path,
+        "incompatible_folder",
+        f"open({str(incompatible_marker)!r}, 'w').close()\n",
+    )
+    _write_manifest(compatible, "compatible_ext")
+    _write_manifest(
+        incompatible,
+        "incompatible_ext",
+        compatibility={"minimum_server_version": "2.0.0"},
+    )
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match=(
+            "Extension 'incompatible_ext' requires server version 2.0.0 or newer; "
+            "current server version is 1.2.3"
+        ),
+    ):
+        _load_extensions(tmp_path, ["compatible_ext", "incompatible_ext"])
+
+    assert pm.list_name_plugin() == []
+    assert not builtin_marker.exists()
+    assert not compatible_marker.exists()
+    assert not incompatible_marker.exists()
+    assert "builtin" not in sys.modules
+    assert "compatible_ext" not in sys.modules
+    assert "incompatible_ext" not in sys.modules
 
 
 def test_enabled_extension_config_failure_is_fatal(monkeypatch, tmp_path):
