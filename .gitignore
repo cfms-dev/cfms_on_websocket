@@ -56,7 +56,6 @@ src/content/files/
 src/content/logs/*
 
 .idea
-uv.lock
 tests/*_old.py
 
 # Node.js
