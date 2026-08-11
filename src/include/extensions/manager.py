@@ -41,6 +41,8 @@ MANIFEST_FILENAME = "manifest.toml"
 ENTRYPOINT_FILENAME = "_extension.py"
 SUPPORTED_MANIFEST_VERSION = 1
 IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+MAX_IDENTIFIER_LENGTH = 255
+RESERVED_EXTENSION_IDENTIFIERS = {"core"}
 REQUIRED_MANIFEST_FIELDS = {
     "manifest_version",
     "identifier",
@@ -132,9 +134,18 @@ def parse_extension_manifest(manifest_path: str | Path) -> ExtensionManifest:
         )
 
     identifier = _required_string(data, "identifier", path)
+    if len(identifier) > MAX_IDENTIFIER_LENGTH:
+        raise ExtensionManifestError(
+            f"{path}: extension identifier must not exceed "
+            f"{MAX_IDENTIFIER_LENGTH} characters"
+        )
     if IDENTIFIER_PATTERN.fullmatch(identifier) is None:
         raise ExtensionManifestError(
             f"{path}: invalid extension identifier {identifier!r}"
+        )
+    if identifier in RESERVED_EXTENSION_IDENTIFIERS:
+        raise ExtensionManifestError(
+            f"{path}: reserved extension identifier {identifier!r}"
         )
 
     authors = data["authors"]

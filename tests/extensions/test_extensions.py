@@ -155,6 +155,8 @@ def test_extension_manifest_is_parsed(tmp_path):
     [
         ({"manifest_version": 2}, "unsupported manifest_version"),
         ({"identifier": "Invalid-Identifier"}, "invalid extension identifier"),
+        ({"identifier": "core"}, "reserved extension identifier"),
+        ({"identifier": "x" * 256}, "must not exceed 255"),
         ({"authors": []}, "authors"),
         ({"unknown_field": "value"}, "unknown fields"),
     ],

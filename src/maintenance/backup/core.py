@@ -143,6 +143,7 @@ EXCLUDED_TABLE_NAMES = frozenset(
         "login_throttles",
         "rate_limit_buckets",
         "risk_ip_accounts",
+        "system_states",
         "traffic_throttles",
     }
 )

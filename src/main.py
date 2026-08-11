@@ -43,6 +43,7 @@ from include.domains.documents.commands.upload_cleanup import (
 )
 from include.domains.documents.file_task_signals import on_file_task_event
 from include.domains.operations.broadcast import on_global_broadcast
+from include.domains.operations.lockdown import initialize_lockdown_state
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.request_rate_control import (
     validate_handler_rate_limit_costs,
@@ -457,6 +458,9 @@ def main():
 
     # Initialize Providers
     initialize_providers()
+
+    # Validate durable lockdown state and import the legacy cache representation.
+    initialize_lockdown_state()
 
     # Register global broadcast handler
     ProviderManager().event_bus.subscribe(

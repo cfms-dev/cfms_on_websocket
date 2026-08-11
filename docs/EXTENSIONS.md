@@ -25,8 +25,9 @@ required. `description` and `homepage` are optional. Unknown fields are rejected
 Use semantic versions for `version` and an SPDX license identifier where possible.
 
 The identifier is the stable configuration and Pluggy registration key. It must
-match `^[a-z][a-z0-9_]*$`, must be unique across the installed extension catalog,
-and must not change when the extension directory or display name changes.
+match `^[a-z][a-z0-9_]*$`, contain at most 255 characters, must not be `core`,
+must be unique across the installed extension catalog, and must not change when
+the extension directory or display name changes.
 
 ## Activation
 
@@ -70,6 +71,29 @@ The `builtin` extension uses these hooks together with its startup and shutdown
 hooks to own durable file deduplication. Core upload handling publishes the
 lifecycle events but does not schedule or run deduplication itself.
 
+## Persistent runtime state
+
+Core features and trusted extensions may use `include.database.system_states`
+to persist small, low-frequency runtime state across process restarts. Each
+extension uses its manifest identifier as `owner`; `core` is reserved for the
+server. State keys are lowercase identifiers that may also contain `.`, `-`,
+and `_`.
+
+The state API accepts a caller-owned SQLAlchemy session and never commits,
+rolls back, or closes it. Creates are insert-if-absent, while updates and deletes
+require the revision returned by `read_system_state`. A failed comparison means
+another transaction changed the row and the owner must reread before deciding
+whether to retry. Payload schema versions belong to the owner: extensions must
+explicitly migrate supported older versions and must not overwrite an unknown
+newer version.
+
+Disabling or removing an extension does not delete its rows. Runtime state is
+excluded from logical backups and must remain safely reconstructible. Do not
+store secrets, configuration, business records, high-frequency counters, large
+payloads, task queues, or data that needs field indexes, foreign keys, or
+database-level field constraints in this table; use a dedicated model and
+migration for those cases.
+
 ## Automatic brute-force lockdown
 
 Enable the optional `brute_force_lockdown` extension to escalate a service-wide
@@ -98,6 +122,10 @@ not expire automatically. An administrator must disable it through the existing
 `lockdown` action. Doing so starts a fresh detection window. The public reason is
 generic; aggregate trigger counts and thresholds are recorded under the
 `automatic_lockdown` audit action without account or IP lists.
+
+The lockdown status, public reason, and last disable timestamp are stored in the
+database. A normal or abnormal server restart therefore restores the previous
+locked or unlocked state without replaying transition side effects.
 
 ## OIDC migration
 

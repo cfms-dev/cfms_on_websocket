@@ -40,6 +40,7 @@ from include.database.models.operations import (
     AuditEntry,
     RateLimitBucket,
     RiskIPAccount,
+    SystemStateEntry,
 )
 from include.database.models.security import (
     AccountThrottle,
@@ -75,6 +76,7 @@ __all__ = [
     "ObjectAccessEntry",
     "RateLimitBucket",
     "RiskIPAccount",
+    "SystemStateEntry",
     "TrafficThrottle",
     "TransferMode",
     "User",

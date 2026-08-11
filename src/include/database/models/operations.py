@@ -2,7 +2,15 @@ import secrets
 import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, VARCHAR, Float, ForeignKey, Integer
+from sqlalchemy import (
+    JSON,
+    VARCHAR,
+    BigInteger,
+    CheckConstraint,
+    Float,
+    ForeignKey,
+    Integer,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -52,3 +60,20 @@ class RiskIPAccount(Base):
     last_attempt: Mapped[float] = mapped_column(
         Float, nullable=False, default=time.time, index=True
     )
+
+
+class SystemStateEntry(Base):
+    __tablename__ = "system_states"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version > 0", name="ck_system_states_schema_version_positive"
+        ),
+        CheckConstraint("revision > 0", name="ck_system_states_revision_positive"),
+    )
+
+    owner: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
+    state_key: Mapped[str] = mapped_column(VARCHAR(128), primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[float] = mapped_column(Float, nullable=False)
