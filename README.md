@@ -150,6 +150,16 @@ uv sync --dev
 uv run pre-commit install
 ```
 
+Regarding policy, different sections of the codebase are subject to varying 
+management approaches for AI-generated code, while the project as a whole accepts AI 
+contributions: 
+
+1. Components critical to core logic (that is, the code located in the `include` 
+directory) require human review to ensure adherence to human-friendly coding standards; 
+2. Tests and maintenance tools are currently written and reviewed entirely by AI, 
+meaning we guarantee only the correctness of their output rather than their internal 
+execution logic.
+
 ## Testing
 
 This repository includes an automated test suite built with pytest. Note that
