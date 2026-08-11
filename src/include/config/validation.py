@@ -1,10 +1,10 @@
 import ipaddress
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from functools import lru_cache
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
+from pydantic.dataclasses import dataclass
 from tomlkit import TOMLDocument, parse
 from tomlkit.exceptions import TOMLKitError
 
@@ -17,16 +17,15 @@ from include.config._policy import (
     _MappingItems,
     _MinimumCapacity,
     _PolicySource,
-    _PositiveInt,
     _Section,
-    _UnitRatio,
     _WindowCoverage,
 )
 from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
+from include.types import PositiveInt, UnitRatio
 
 __all__ = [
-    "AuthThrottlePolicy",
     "AdmissionControlPolicy",
+    "AuthThrottlePolicy",
     "ConfigValidationError",
     "DocumentCreationRiskPolicy",
     "DocumentDownloadRiskPolicy",
@@ -122,7 +121,10 @@ def get_enabled_extensions(config: _ConfigSource) -> tuple[str, ...]:
 @dataclass(frozen=True)
 class AuthThrottlePolicy(_ConfigPolicy):
     _SOURCE = _PolicySource(
-        (_Section("security", required=True), _Section("auth_throttle"))
+        (
+            _Section("security", required=True),
+            _Section("auth_throttle"),
+        )
     )
     _RULES = (
         _FieldOrder(
@@ -137,23 +139,26 @@ class AuthThrottlePolicy(_ConfigPolicy):
     )
 
     enabled: bool = True
-    account_failure_threshold: _PositiveInt = 5
-    account_base_delay_seconds: _PositiveInt = 30
-    account_max_delay_seconds: _PositiveInt = 3600
-    account_reset_seconds: _PositiveInt = 86400
-    account_ip_failure_threshold: _PositiveInt = 5
-    account_ip_window_seconds: _PositiveInt = 900
-    account_ip_block_seconds: _PositiveInt = 900
-    ip_failure_threshold: _PositiveInt = 60
-    ip_window_seconds: _PositiveInt = 600
-    ip_block_seconds: _PositiveInt = 900
-    record_retention_days: _PositiveInt = 7
+    account_failure_threshold: PositiveInt = 5
+    account_base_delay_seconds: PositiveInt = 30
+    account_max_delay_seconds: PositiveInt = 3600
+    account_reset_seconds: PositiveInt = 86400
+    account_ip_failure_threshold: PositiveInt = 5
+    account_ip_window_seconds: PositiveInt = 900
+    account_ip_block_seconds: PositiveInt = 900
+    ip_failure_threshold: PositiveInt = 60
+    ip_window_seconds: PositiveInt = 600
+    ip_block_seconds: PositiveInt = 900
+    record_retention_days: PositiveInt = 7
 
 
 @dataclass(frozen=True)
 class AdmissionControlPolicy(_ConfigPolicy):
     _SOURCE = _PolicySource(
-        (_Section("server", required=True), _Section("admission_control"))
+        (
+            _Section("server", required=True),
+            _Section("admission_control"),
+        )
     )
     _RULES = (
         _FieldOrder(
@@ -176,18 +181,21 @@ class AdmissionControlPolicy(_ConfigPolicy):
         ),
     )
 
-    max_connections: _PositiveInt = 64
-    max_connections_per_ip: _PositiveInt = 16
-    max_inflight_requests: _PositiveInt = 64
-    max_inflight_requests_per_connection: _PositiveInt = 8
-    max_pending_streams_per_connection: _PositiveInt = 16
-    busy_retry_after_seconds: _PositiveInt = 1
+    max_connections: PositiveInt = 64
+    max_connections_per_ip: PositiveInt = 16
+    max_inflight_requests: PositiveInt = 64
+    max_inflight_requests_per_connection: PositiveInt = 8
+    max_pending_streams_per_connection: PositiveInt = 16
+    busy_retry_after_seconds: PositiveInt = 1
 
 
 @dataclass(frozen=True)
 class RequestRateControlPolicy(_ConfigPolicy):
     _SOURCE = _PolicySource(
-        (_Section("security", required=True), _Section("request_rate_control"))
+        (
+            _Section("security", required=True),
+            _Section("request_rate_control"),
+        )
     )
     _RULES = (
         _CollectionValueLimit(
@@ -212,16 +220,16 @@ class RequestRateControlPolicy(_ConfigPolicy):
     )
 
     mode: Literal["disabled", "observe", "enforce"] = "observe"
-    connection_capacity: _PositiveInt = 20
-    connection_refill_tokens: _PositiveInt = 60
-    connection_refill_period_seconds: _PositiveInt = 60
-    request_refill_period_seconds: _PositiveInt = 60
-    account_capacity: _PositiveInt = 120
-    account_refill_tokens: _PositiveInt = 120
-    ip_capacity: _PositiveInt = 600
-    ip_refill_tokens: _PositiveInt = 600
-    state_retention_seconds: _PositiveInt = 600
-    action_costs: Annotated[tuple[tuple[str, int], ...], _MappingItems()] = ()
+    connection_capacity: PositiveInt = 20
+    connection_refill_tokens: PositiveInt = 60
+    connection_refill_period_seconds: PositiveInt = 60
+    request_refill_period_seconds: PositiveInt = 60
+    account_capacity: PositiveInt = 120
+    account_refill_tokens: PositiveInt = 120
+    ip_capacity: PositiveInt = 600
+    ip_refill_tokens: PositiveInt = 600
+    state_retention_seconds: PositiveInt = 600
+    action_costs: _MappingItems = ()
 
     def cost_for(self, action: str, default: int = 1) -> int:
         for configured_action, cost in self.action_costs:
@@ -254,11 +262,11 @@ class DocumentUploadPolicy(_ConfigPolicy):
         ),
     )
 
-    start_timeout_seconds: _PositiveInt = 3600
-    max_duration_seconds: _PositiveInt = 86400
-    idle_timeout_seconds: _PositiveInt = 300
-    cleanup_interval_seconds: _PositiveInt = 60
-    max_pending_documents_per_creator: _PositiveInt = 16
+    start_timeout_seconds: PositiveInt = 3600
+    max_duration_seconds: PositiveInt = 86400
+    idle_timeout_seconds: PositiveInt = 300
+    cleanup_interval_seconds: PositiveInt = 60
+    max_pending_documents_per_creator: PositiveInt = 16
 
 
 @dataclass(frozen=True)
@@ -321,29 +329,33 @@ class DocumentCreationRiskPolicy(_ConfigPolicy):
     )
 
     mode: Literal["observe", "enforce"] = "enforce"
-    refill_period_seconds: _PositiveInt = 600
-    account_capacity: _PositiveInt = 60
-    account_refill_tokens: _PositiveInt = 300
-    ip_capacity: _PositiveInt = 200
-    ip_refill_tokens: _PositiveInt = 1000
-    new_account_seconds: _PositiveInt = 7 * 24 * 60 * 60
-    pending_elevated_ratio: _UnitRatio = 0.5
-    pending_high_ratio: _UnitRatio = 0.75
-    ip_account_window_seconds: _PositiveInt = 600
-    ip_accounts_elevated: _PositiveInt = 4
-    ip_accounts_high: _PositiveInt = 10
-    denial_window_seconds: _PositiveInt = 600
-    denials_elevated: _PositiveInt = 1
-    denials_high: _PositiveInt = 3
-    elevated_cost: _PositiveInt = 3
-    high_cost: _PositiveInt = 10
-    state_retention_seconds: _PositiveInt = 86400
+    refill_period_seconds: PositiveInt = 600
+    account_capacity: PositiveInt = 60
+    account_refill_tokens: PositiveInt = 300
+    ip_capacity: PositiveInt = 200
+    ip_refill_tokens: PositiveInt = 1000
+    new_account_seconds: PositiveInt = 7 * 24 * 60 * 60
+    pending_elevated_ratio: UnitRatio = 0.5
+    pending_high_ratio: UnitRatio = 0.75
+    ip_account_window_seconds: PositiveInt = 600
+    ip_accounts_elevated: PositiveInt = 4
+    ip_accounts_high: PositiveInt = 10
+    denial_window_seconds: PositiveInt = 600
+    denials_elevated: PositiveInt = 1
+    denials_high: PositiveInt = 3
+    elevated_cost: PositiveInt = 3
+    high_cost: PositiveInt = 10
+    state_retention_seconds: PositiveInt = 86400
 
 
 @dataclass(frozen=True)
 class DocumentDownloadRiskPolicy(_ConfigPolicy):
     _SOURCE = _PolicySource(
-        (_Section("document"), _Section("download"), _Section("risk_control"))
+        (
+            _Section("document"),
+            _Section("download"),
+            _Section("risk_control"),
+        )
     )
     _RULES = (
         _FieldOrder(
@@ -393,28 +405,28 @@ class DocumentDownloadRiskPolicy(_ConfigPolicy):
     )
 
     mode: Literal["observe", "enforce"] = "observe"
-    refill_period_seconds: _PositiveInt = 600
-    issue_account_capacity: _PositiveInt = 60
-    issue_account_refill_tokens: _PositiveInt = 300
-    issue_ip_capacity: _PositiveInt = 200
-    issue_ip_refill_tokens: _PositiveInt = 1000
-    transfer_account_capacity: _PositiveInt = 60
-    transfer_account_refill_tokens: _PositiveInt = 300
-    transfer_ip_capacity: _PositiveInt = 200
-    transfer_ip_refill_tokens: _PositiveInt = 1000
-    task_capacity: _PositiveInt = 5
-    task_refill_tokens: _PositiveInt = 10
-    task_refill_period_seconds: _PositiveInt = 3600
-    new_account_seconds: _PositiveInt = 7 * 24 * 60 * 60
-    ip_account_window_seconds: _PositiveInt = 600
-    ip_accounts_elevated: _PositiveInt = 4
-    ip_accounts_high: _PositiveInt = 10
-    denial_window_seconds: _PositiveInt = 600
-    denials_elevated: _PositiveInt = 1
-    denials_high: _PositiveInt = 3
-    elevated_cost: _PositiveInt = 3
-    high_cost: _PositiveInt = 10
-    state_retention_seconds: _PositiveInt = 86400
+    refill_period_seconds: PositiveInt = 600
+    issue_account_capacity: PositiveInt = 60
+    issue_account_refill_tokens: PositiveInt = 300
+    issue_ip_capacity: PositiveInt = 200
+    issue_ip_refill_tokens: PositiveInt = 1000
+    transfer_account_capacity: PositiveInt = 60
+    transfer_account_refill_tokens: PositiveInt = 300
+    transfer_ip_capacity: PositiveInt = 200
+    transfer_ip_refill_tokens: PositiveInt = 1000
+    task_capacity: PositiveInt = 5
+    task_refill_tokens: PositiveInt = 10
+    task_refill_period_seconds: PositiveInt = 3600
+    new_account_seconds: PositiveInt = 7 * 24 * 60 * 60
+    ip_account_window_seconds: PositiveInt = 600
+    ip_accounts_elevated: PositiveInt = 4
+    ip_accounts_high: PositiveInt = 10
+    denial_window_seconds: PositiveInt = 600
+    denials_elevated: PositiveInt = 1
+    denials_high: PositiveInt = 3
+    elevated_cost: PositiveInt = 3
+    high_cost: PositiveInt = 10
+    state_retention_seconds: PositiveInt = 86400
 
 
 def _validate_client_certificate_config(config: _ConfigSource) -> None:

@@ -151,32 +151,40 @@ def test_extension_manifest_is_parsed(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("overrides", "message"),
+    ("overrides", "field"),
     [
-        ({"manifest_version": 2}, "unsupported manifest_version"),
-        ({"identifier": "Invalid-Identifier"}, "invalid extension identifier"),
+        ({"manifest_version": 2}, "manifest_version"),
+        ({"identifier": "Invalid-Identifier"}, "identifier"),
+        ({"identifier": "x" * 256}, "identifier"),
         ({"authors": []}, "authors"),
-        ({"unknown_field": "value"}, "unknown fields"),
+        ({"unknown_field": "value"}, "unknown_field"),
     ],
 )
-def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, message):
+def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, field):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(
         _manifest_source("sample_ext", **overrides), encoding="utf-8"
     )
 
-    with pytest.raises(extension_manager.ExtensionManifestError, match=message):
+    with pytest.raises(extension_manager.ExtensionManifestError) as error:
         extension_manager.parse_extension_manifest(manifest_path)
+
+    message = str(error.value)
+    assert field in message
+    assert "\n" not in message
+    assert "errors.pydantic.dev" not in message
 
 
 def test_extension_manifest_requires_core_fields(tmp_path):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text("manifest_version = 1\n", encoding="utf-8")
 
-    with pytest.raises(
-        extension_manager.ExtensionManifestError, match="missing required fields"
-    ):
+    with pytest.raises(extension_manager.ExtensionManifestError) as error:
         extension_manager.parse_extension_manifest(manifest_path)
+
+    message = str(error.value)
+    for field in ("identifier", "name", "version", "authors", "license"):
+        assert field in message
 
 
 @pytest.mark.parametrize("missing", ["manifest", "entrypoint"])
@@ -271,6 +279,23 @@ def test_extensions_are_registered_in_configuration_order(monkeypatch, tmp_path)
 
     registered = [name for name, _plugin in pm.list_name_plugin()]
     assert registered == ["builtin", "first_ext", "second_ext"]
+
+
+def test_duplicate_enabled_extension_identifiers_are_rejected(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    extension_dir = _write_extension(tmp_path, "sample_folder")
+    _write_manifest(extension_dir, "sample_ext")
+
+    with pytest.raises(
+        extension_manager.ExtensionDiscoveryError,
+        match="Enabled extension identifiers must be unique",
+    ):
+        _load_extensions(tmp_path, ["sample_ext", "sample_ext"])
+
+    assert not pm.has_plugin("builtin")
+    assert not pm.has_plugin("sample_ext")
 
 
 def test_missing_configured_extension_is_rejected(monkeypatch, tmp_path):

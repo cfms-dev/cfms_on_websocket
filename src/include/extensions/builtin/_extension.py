@@ -134,7 +134,7 @@ def ext_post_request(
 
 
 @hookimpl
-def ext_before_file_upload_commit(
+def ext_before_file_upload_finalize(
     session: "OrmSession",
     id: str,
     path: str,
@@ -145,6 +145,6 @@ def ext_before_file_upload_commit(
 
 
 @hookimpl
-def ext_post_file_upload_response(id: str, path: str, sha256: str) -> None:
+def ext_on_file_upload_completed(id: str, path: str, sha256: str) -> None:
     if sha256:
         release_file_deduplication(id)

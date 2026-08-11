@@ -180,6 +180,37 @@ def _add_duplicate_pair(context, *, live_download=False):
         )
 
 
+def test_worker_exits_quietly_after_successful_processing(
+    deduplication_context, monkeypatch
+):
+    context = deduplication_context
+    records = []
+    worker = context.module.FileDeduplicationWorker()
+
+    def stop_worker():
+        worker._stop.set()
+        worker._wake.set()
+        return False
+
+    monkeypatch.setattr(
+        context.module,
+        "process_one_file_deduplication_task",
+        stop_worker,
+    )
+    sink_id = log.add(
+        lambda message: records.append(message.record),
+        filter=lambda record: (
+            record["extra"].get("name") == "builtin.file_deduplication"
+        ),
+    )
+    try:
+        worker._run()
+    finally:
+        log.remove(sink_id)
+
+    assert records == []
+
+
 def test_non_duplicate_file_completes_quietly_without_storage_deletion(
     deduplication_context,
 ):

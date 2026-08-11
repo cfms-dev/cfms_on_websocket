@@ -46,8 +46,8 @@ def test_lifecycle_hooks_are_part_of_the_extension_contract():
 
     assert "ext_on_startup" in hook_names
     assert "ext_on_shutdown" in hook_names
-    assert "ext_before_file_upload_commit" in hook_names
-    assert "ext_post_file_upload_response" in hook_names
+    assert "ext_before_file_upload_finalize" in hook_names
+    assert "ext_on_file_upload_completed" in hook_names
     assert "ext_on_server_start" not in hook_names
     assert "ext_on_server_stop" not in hook_names
 
@@ -69,8 +69,8 @@ def test_builtin_deduplication_hooks_ignore_uploads_without_digest(
     )
 
     session = object()
-    builtin_extension.ext_before_file_upload_commit(session, "file", "path", "")
-    builtin_extension.ext_post_file_upload_response("file", "path", "")
+    builtin_extension.ext_before_file_upload_finalize(session, "file", "path", "")
+    builtin_extension.ext_on_file_upload_completed("file", "path", "")
 
     assert scheduled == []
     assert released == []
@@ -93,8 +93,8 @@ def test_builtin_deduplication_hooks_schedule_and_release(
     )
 
     session = object()
-    builtin_extension.ext_before_file_upload_commit(session, "file", "path", "a" * 64)
-    builtin_extension.ext_post_file_upload_response("file", "path", "a" * 64)
+    builtin_extension.ext_before_file_upload_finalize(session, "file", "path", "a" * 64)
+    builtin_extension.ext_on_file_upload_completed("file", "path", "a" * 64)
 
     assert scheduled == [(session, "file")]
     assert released == ["file"]

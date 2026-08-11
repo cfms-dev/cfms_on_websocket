@@ -1,10 +1,11 @@
+from pydantic import TypeAdapter
 from sqlalchemy import and_, desc, or_, true
 
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.operations.lockdown import apply_lockdown
+from include.domains.operations.lockdown import LockdownReason, apply_lockdown
 from include.domains.pagination import (
     CURSOR_PAGINATION_SCHEMA,
     CursorError,
@@ -16,13 +17,15 @@ from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestHandler, Result
 
+_LOCKDOWN_REASON_SCHEMA = TypeAdapter(LockdownReason).json_schema()
+
 
 class RequestLockdownHandler(RequestHandler):
     schema = {
         "type": "object",
         "properties": {
             "status": {"type": "boolean"},
-            "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+            "reason": _LOCKDOWN_REASON_SCHEMA,
         },
         "required": ["status"],
         "additionalProperties": False,

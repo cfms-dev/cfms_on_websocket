@@ -85,6 +85,7 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
     assert "compiled_access_rules" in result["tables"]
     assert "document_access_rules" not in result["tables"]
     assert "folder_access_rules" not in result["tables"]
+    assert "system_states" not in result["tables"]
     assert init_path.exists()
     import_tasks = list(import_progress.tasks)
     assert any(
@@ -132,6 +133,9 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         traffic_throttles = connection.execute(
             select(base.metadata.tables["traffic_throttles"])
         ).all()
+        system_states = connection.execute(
+            select(base.metadata.tables["system_states"])
+        ).all()
         assert len(compiled_rules) == 2
         rule_sets = connection.execute(
             select(base.metadata.tables["compiled_access_rule_sets"])
@@ -142,6 +146,7 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
         assert rate_limit_buckets == []
         assert risk_ip_accounts == []
         assert login_throttles == []
+        assert system_states == []
         assert traffic_throttles == []
 
     from include.database.models.identity import User

@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Add explicit pending, in-progress, completed, cancelled, and expired file-task
   lifecycle states.
 - Add versioned extension manifests and identifier-based extension activation.
-- Add non-persistent lockdown reasons to lockdown responses, events, and server information.
+- Add versioned persistent system state storage for core features and extensions.
+- Persist lockdown status, reasons, and the last disable timestamp across restarts.
 - Expose account status in user information responses.
 
 ### Changed

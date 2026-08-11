@@ -551,6 +551,21 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "locked_until": created_at,
             },
         )
+        connection.execute(
+            insert(tables["system_states"]),
+            {
+                "owner": "core",
+                "state_key": "lockdown",
+                "schema_version": 1,
+                "revision": 1,
+                "payload": {
+                    "enabled": True,
+                    "reason": "Maintenance",
+                    "last_disabled_at": 0.0,
+                },
+                "updated_at": created_at,
+            },
+        )
 
 
 def _dump_backup_tables(base, db_engine) -> dict[str, list[dict]]:
@@ -578,6 +593,7 @@ def _backup_table_names(base) -> set[str]:
         "login_throttles",
         "rate_limit_buckets",
         "risk_ip_accounts",
+        "system_states",
         "traffic_throttles",
     }
     return set(base.metadata.tables) - excluded
@@ -641,8 +657,9 @@ def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context)
     assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
 
 
-def test_shared_risk_state_tables_are_excluded(backup_context):
+def test_runtime_state_tables_are_excluded(backup_context):
     excluded = backup_context.backup_core.EXCLUDED_TABLE_NAMES
 
     assert "rate_limit_buckets" in excluded
     assert "risk_ip_accounts" in excluded
+    assert "system_states" in excluded

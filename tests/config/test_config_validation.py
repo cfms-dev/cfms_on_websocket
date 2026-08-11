@@ -146,8 +146,10 @@ def test_auth_throttle_values_are_validated():
     config = _valid_config()
     config["security"]["auth_throttle"] = {"ip_failure_threshold": 0}
 
-    with pytest.raises(ConfigValidationError, match="must be a positive integer"):
+    with pytest.raises(ConfigValidationError) as error:
         validate_config(config)
+
+    assert "security.auth_throttle.ip_failure_threshold" in str(error.value)
 
 
 def test_auth_throttle_delay_range_is_validated():
@@ -172,21 +174,31 @@ def test_request_rate_control_defaults_to_observation_mode():
 
 
 @pytest.mark.parametrize(
-    ("setting", "value", "message"),
+    ("setting", "value", "expected_fragment"),
     [
-        ("mode", "sometimes", "mode must be"),
-        ("account_capacity", 0, "positive integer"),
+        ("mode", "sometimes", "security.request_rate_control.mode"),
+        (
+            "account_capacity",
+            0,
+            "security.request_rate_control.account_capacity",
+        ),
         ("state_retention_seconds", 1, "cover every refill period"),
-        ("action_costs", {"search": 0}, "positive integers"),
+        (
+            "action_costs",
+            {"search": 0},
+            "security.request_rate_control.action_costs",
+        ),
         ("action_costs", {"search": 1_000}, "must not exceed"),
     ],
 )
-def test_request_rate_control_values_are_validated(setting, value, message):
+def test_request_rate_control_values_are_validated(setting, value, expected_fragment):
     config = _valid_config()
     config["security"]["request_rate_control"] = {setting: value}
 
-    with pytest.raises(ConfigValidationError, match=message):
+    with pytest.raises(ConfigValidationError) as error:
         validate_config(config)
+
+    assert expected_fragment in str(error.value)
 
 
 def test_request_rate_control_action_cost_overrides_handler_default():
@@ -337,7 +349,7 @@ def test_policy_positive_integer_fields_reject_booleans(policy_type, config, pat
     with pytest.raises(ConfigValidationError) as error:
         policy_type.from_config(config)
 
-    assert str(error.value) == f"{path} must be a positive integer"
+    assert path in str(error.value)
 
 
 def test_declarative_policy_fields_do_not_coerce_values():
@@ -354,12 +366,9 @@ def test_declarative_policy_fields_do_not_coerce_values():
             }
         )
 
-    assert str(boolean_error.value) == (
-        "security.auth_throttle.enabled must be a boolean"
-    )
-    assert str(ratio_error.value) == (
-        "document.upload.creation_risk_control.pending_elevated_ratio must be a "
-        "number greater than 0 and at most 1"
+    assert "security.auth_throttle.enabled" in str(boolean_error.value)
+    assert "document.upload.creation_risk_control.pending_elevated_ratio" in str(
+        ratio_error.value
     )
 
 
@@ -417,22 +426,28 @@ def test_document_download_risk_policy_defaults_and_overrides():
 
 
 @pytest.mark.parametrize(
-    ("setting", "value", "message"),
+    ("setting", "value", "expected_fragment"),
     [
-        ("mode", "disabled", "must be 'observe' or 'enforce'"),
-        ("issue_account_capacity", 0, "positive integer"),
+        ("mode", "disabled", "document.download.risk_control.mode"),
+        (
+            "issue_account_capacity",
+            0,
+            "document.download.risk_control.issue_account_capacity",
+        ),
         ("ip_accounts_high", 4, "must be less than"),
         ("denials_high", 1, "must be less than"),
         ("high_cost", 201, "at least high_cost"),
         ("state_retention_seconds", 3599, "cover every risk-control window"),
     ],
 )
-def test_download_risk_policy_validates_settings(setting, value, message):
+def test_download_risk_policy_validates_settings(setting, value, expected_fragment):
     config = _valid_config()
     config["document"] = {"download": {"risk_control": {setting: value}}}
 
-    with pytest.raises(ConfigValidationError, match=message):
+    with pytest.raises(ConfigValidationError) as error:
         validate_config(config)
+
+    assert expected_fragment in str(error.value)
 
 
 def test_legacy_creation_rate_settings_are_ignored():
@@ -473,11 +488,19 @@ def test_new_creation_risk_settings_override_ignored_legacy_settings():
 
 
 @pytest.mark.parametrize(
-    ("setting", "value", "message"),
+    ("setting", "value", "expected_fragment"),
     [
-        ("mode", "disabled", "must be 'observe' or 'enforce'"),
-        ("account_capacity", 0, "positive integer"),
-        ("pending_elevated_ratio", 1.1, "at most 1"),
+        ("mode", "disabled", "document.upload.creation_risk_control.mode"),
+        (
+            "account_capacity",
+            0,
+            "document.upload.creation_risk_control.account_capacity",
+        ),
+        (
+            "pending_elevated_ratio",
+            1.1,
+            "document.upload.creation_risk_control.pending_elevated_ratio",
+        ),
         ("pending_high_ratio", 0.25, "must be less than"),
         ("ip_accounts_high", 4, "must be less than"),
         ("denials_high", 1, "must be less than"),
@@ -485,12 +508,14 @@ def test_new_creation_risk_settings_override_ignored_legacy_settings():
         ("state_retention_seconds", 599, "cover every risk-control window"),
     ],
 )
-def test_creation_risk_policy_validates_settings(setting, value, message):
+def test_creation_risk_policy_validates_settings(setting, value, expected_fragment):
     config = _valid_config()
     config["document"] = {"upload": {"creation_risk_control": {setting: value}}}
 
-    with pytest.raises(ConfigValidationError, match=message):
+    with pytest.raises(ConfigValidationError) as error:
         validate_config(config)
+
+    assert expected_fragment in str(error.value)
 
 
 @pytest.mark.parametrize(

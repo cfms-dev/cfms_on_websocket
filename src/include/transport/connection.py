@@ -887,17 +887,12 @@ class ConnectionHandler:
                 file.size = actual_size
                 file.active = True
                 if file_size:
-                    pm.hook.ext_before_file_upload_commit(
+                    pm.hook.ext_before_file_upload_finalize(
                         session=session,
                         id=file_id,
                         path=file_path,
                         sha256=sha256,
                     )
-
-            if file_size:
-                pm.hook.ext_on_file_uploaded(id=file_id, path=file_path, sha256=sha256)
-            else:
-                pm.hook.ext_on_empty_file_uploaded(id=file_id, path=file_path)
 
             self.logger.info(
                 f"File received and saved to {file_path}, total size: {actual_size}"
@@ -906,7 +901,7 @@ class ConnectionHandler:
 
             if file_size:
                 try:
-                    pm.hook.ext_post_file_upload_response(
+                    pm.hook.ext_on_file_upload_completed(
                         id=file_id,
                         path=file_path,
                         sha256=sha256,
