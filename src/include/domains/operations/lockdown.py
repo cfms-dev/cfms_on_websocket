@@ -45,6 +45,8 @@ logger = log.bind(name="lockdown")
 _LOCKDOWN_OWNER = "core"
 _LOCKDOWN_STATE_KEY = "lockdown"
 _LOCKDOWN_SCHEMA_VERSION = 1
+_LOCKDOWN_CAS_MAX_ATTEMPTS = 8
+_LOCKDOWN_CAS_RETRY_BASE_SECONDS = 0.005
 _ACTIVE_FILE_TASK_STATUSES = (
     FileTaskStatus.PENDING,
     FileTaskStatus.IN_PROGRESS,
@@ -210,6 +212,8 @@ def apply_lockdown(
     if not status and only_if_inactive:
         raise ValueError("only_if_inactive is only valid when enabling lockdown")
 
+    attempt = 0
+
     while True:
         task_ids: list[str] = []
         cancelled_file_tasks = 0
@@ -258,17 +262,24 @@ def apply_lockdown(
                     payload=payload,
                 )
 
-            if not applied:
-                continue
-
-            if status:
+            if applied and status:
                 task_ids, cancelled_file_tasks = _cancel_pending_file_tasks(session)
 
-        publish_cancelled_file_tasks(task_ids)
-        _publish_lockdown_state(state)
+        if applied:
+            publish_cancelled_file_tasks(task_ids)
+            _publish_lockdown_state(state)
 
-        return LockdownTransition(
-            state=state,
-            applied=True,
-            cancelled_file_tasks=cancelled_file_tasks,
-        )
+            return LockdownTransition(
+                state=state,
+                applied=True,
+                cancelled_file_tasks=cancelled_file_tasks,
+            )
+
+        attempt += 1
+
+        if attempt >= _LOCKDOWN_CAS_MAX_ATTEMPTS:
+            raise RuntimeError(
+                "Failed to apply lockdown after repeated concurrent updates"
+            )
+
+        time.sleep(_LOCKDOWN_CAS_RETRY_BASE_SECONDS * 2 ** (attempt - 1))

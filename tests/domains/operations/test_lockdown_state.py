@@ -222,6 +222,31 @@ def test_enable_if_inactive_preserves_existing_reason(lockdown_database) -> None
     assert existing.state == initial.state
 
 
+def test_lockdown_cas_retries_are_bounded(monkeypatch, lockdown_database) -> None:
+    attempts = []
+    delays = []
+
+    def lose_revision_race(*_args, **_kwargs):
+        attempts.append(True)
+        return False
+
+    monkeypatch.setattr(lockdown, "create_system_state", lose_revision_race)
+    monkeypatch.setattr(lockdown.time, "sleep", delays.append)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to apply lockdown after repeated concurrent updates",
+    ):
+        apply_lockdown(True, "Contended")
+
+    assert len(attempts) == lockdown._LOCKDOWN_CAS_MAX_ATTEMPTS
+    assert delays == [
+        lockdown._LOCKDOWN_CAS_RETRY_BASE_SECONDS * 2**attempt
+        for attempt in range(lockdown._LOCKDOWN_CAS_MAX_ATTEMPTS - 1)
+    ]
+    assert lockdown_state_manager.get_state() == LockdownState()
+
+
 def test_enable_if_inactive_has_single_concurrent_winner(
     monkeypatch, lockdown_database
 ) -> None:

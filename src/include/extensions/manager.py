@@ -111,8 +111,17 @@ def parse_extension_manifest(
         raise ExtensionManifestError(f"Failed to read {path}: {exc}") from exc
 
     except ValidationError as exc:
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or '<manifest>'}: "
+            f"{error['msg']}"
+            for error in exc.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )
+        )
         raise ExtensionManifestError(
-            f"{path}: invalid extension manifest: {exc}"
+            f"{path}: invalid extension manifest: {details}"
         ) from exc
 
 
@@ -357,8 +366,8 @@ def load_extensions_from_directory(
         )
 
     enabled = tuple(enabled_identifiers)
-    # if len(enabled) != len(set(enabled)):
-    #     raise ExtensionDiscoveryError("Enabled extension identifiers must be unique")
+    if len(enabled) != len(set(enabled)):
+        raise ExtensionDiscoveryError("Enabled extension identifiers must be unique")
     if "builtin" in enabled:
         raise ExtensionDiscoveryError(
             "The built-in extension is always loaded and must not be configured"

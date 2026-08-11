@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from loguru import logger as log
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
@@ -397,15 +397,6 @@ class FileDeduplicationWorker:
         self._wake.set()
 
     def _run(self) -> None:
-        try:
-            with Session() as session:
-                queue_depth = session.scalar(
-                    select(func.count()).select_from(FileDeduplicationTask)
-                )
-        except Exception:
-            logger.exception("Failed to inspect file deduplication queue at startup")
-            queue_depth = None
-        logger.bind(queue_depth=queue_depth)
         while not self._stop.is_set():
             try:
                 processed = process_one_file_deduplication_task()
