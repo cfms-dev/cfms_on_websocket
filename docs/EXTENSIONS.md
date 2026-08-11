@@ -22,7 +22,7 @@ description = "An optional short description."
 homepage = "https://example.com/extensions/example"
 
 [compatibility]
-minimum_server_version = "0.4.1.260801_alpha"
+minimum_server_version = "0.4.1.260811_alpha"
 ```
 
 `manifest_version` and the `[extension]` table are required. Within `[extension]`,

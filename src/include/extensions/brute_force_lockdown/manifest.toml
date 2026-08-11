@@ -10,4 +10,4 @@ description = "Automatically enters lockdown when local authentication failures 
 homepage = "https://github.com/cfms-dev/cfms_on_websocket"
 
 [compatibility]
-minimum_server_version = "0.4.1.260801_alpha"
+minimum_server_version = "0.4.1.260811_alpha"

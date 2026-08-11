@@ -178,7 +178,7 @@ def test_extension_manifest_is_parsed(tmp_path):
         "sample_ext",
         description="A sample extension",
         homepage="https://example.test/sample",
-        compatibility={"minimum_server_version": "0.4.1.260801_alpha"},
+        compatibility={"minimum_server_version": "0.4.1.260811_alpha"},
     )
 
     manifest = extension_manager.parse_extension_manifest(manifest_path)
@@ -187,7 +187,7 @@ def test_extension_manifest_is_parsed(tmp_path):
     assert manifest.extension.name == "Sample Extension"
     assert manifest.extension.authors == ("Test Author",)
     assert manifest.extension.description == "A sample extension"
-    assert str(manifest.compatibility.minimum_server_version) == ("0.4.1.260801_alpha")
+    assert str(manifest.compatibility.minimum_server_version) == ("0.4.1.260811_alpha")
 
 
 def test_extension_manifest_compatibility_is_optional(tmp_path):
