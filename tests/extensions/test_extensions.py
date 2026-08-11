@@ -203,7 +203,10 @@ def test_extension_manifest_compatibility_is_optional(tmp_path):
     ("overrides", "field"),
     [
         ({"manifest_version": 3}, "manifest_version"),
+        ({"identifier": 1}, "identifier"),
         ({"identifier": "Invalid-Identifier"}, "identifier"),
+        ({"identifier": " sample_ext "}, "identifier"),
+        ({"identifier": "core"}, "identifier"),
         ({"identifier": "x" * 256}, "identifier"),
         ({"authors": []}, "authors"),
         ({"unknown_field": "value"}, "unknown_field"),
@@ -222,6 +225,16 @@ def test_invalid_extension_manifest_is_rejected(tmp_path, overrides, field):
     assert field in message
     assert "\n" not in message
     assert "errors.pydantic.dev" not in message
+
+
+def test_maximum_length_extension_identifier_is_accepted(tmp_path):
+    identifier = "a" + "x" * 254
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(_manifest_source(identifier), encoding="utf-8")
+
+    manifest = extension_manager.parse_extension_manifest(manifest_path)
+
+    assert manifest.extension.identifier == identifier
 
 
 @pytest.mark.parametrize(

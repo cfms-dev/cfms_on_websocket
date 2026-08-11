@@ -1,7 +1,7 @@
 __all__ = [
     "DiscoveredExtension",
-    "ExtensionDiscoveryError",
     "ExtensionCompatibility",
+    "ExtensionDiscoveryError",
     "ExtensionLoadError",
     "ExtensionManifest",
     "ExtensionManifestError",
@@ -30,13 +30,13 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StringConstraints,
     ValidationError,
     field_validator,
 )
 
 from include.config.constants import CORE_VERSION
 from include.config.version import Version
+from include.extensions.identifiers import ExtensionIdentifier
 from include.types import NonEmptyString
 
 if TYPE_CHECKING:
@@ -52,7 +52,6 @@ logger = log.bind(name="ext_manager")
 
 MANIFEST_FILENAME = "manifest.toml"
 ENTRYPOINT_FILENAME = "_extension.py"
-MAX_IDENTIFIER_LENGTH = 255
 
 
 class ExtensionManifestError(ValueError):
@@ -65,17 +64,6 @@ class ExtensionDiscoveryError(RuntimeError):
 
 class ExtensionLoadError(RuntimeError):
     """Raised when a configured extension cannot be loaded."""
-
-
-ExtensionIdentifier = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True,
-        min_length=1,
-        max_length=MAX_IDENTIFIER_LENGTH,
-        pattern=r"^[a-z][a-z0-9_]*$",
-    ),
-]
 
 
 class ExtensionMetadata(BaseModel):

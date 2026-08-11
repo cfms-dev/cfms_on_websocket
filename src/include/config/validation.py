@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any, Literal
 
+from pydantic import ValidationError
 from pydantic.dataclasses import dataclass
 from tomlkit import TOMLDocument, parse
 from tomlkit.exceptions import TOMLKitError
@@ -21,6 +22,7 @@ from include.config._policy import (
     _WindowCoverage,
 )
 from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
+from include.extensions.identifiers import validate_extension_identifier
 from include.types import PositiveInt, UnitRatio
 
 __all__ = [
@@ -84,8 +86,6 @@ def get_trusted_proxy_networks(
 
 
 def get_enabled_extensions(config: _ConfigSource) -> tuple[str, ...]:
-    from include.extensions.manager import IDENTIFIER_PATTERN
-
     extensions = _section(config, "extensions")
     try:
         values = extensions["enabled"]
@@ -101,20 +101,22 @@ def get_enabled_extensions(config: _ConfigSource) -> tuple[str, ...]:
     enabled = []
     seen = set()
     for value in values:
-        if not isinstance(value, str) or IDENTIFIER_PATTERN.fullmatch(value) is None:
+        try:
+            identifier = validate_extension_identifier(value)
+        except ValidationError as exc:
             raise ConfigValidationError(
                 "extensions.enabled entries must be valid extension identifiers"
-            )
-        if value == "builtin":
+            ) from exc
+        if identifier == "builtin":
             raise ConfigValidationError(
                 "extensions.enabled must not contain 'builtin'; it is always enabled"
             )
-        if value in seen:
+        if identifier in seen:
             raise ConfigValidationError(
-                f"extensions.enabled contains duplicate identifier {value!r}"
+                f"extensions.enabled contains duplicate identifier {identifier!r}"
             )
-        seen.add(value)
-        enabled.append(value)
+        seen.add(identifier)
+        enabled.append(identifier)
     return tuple(enabled)
 
 

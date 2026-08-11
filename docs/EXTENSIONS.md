@@ -46,7 +46,8 @@ set `manifest_version = 2`, move descriptive fields into `[extension]`, and add
 The identifier is the stable configuration and Pluggy registration key. It must
 match `^[a-z][a-z0-9_]*$`, contain at most 255 characters, must not be `core`,
 must be unique across the installed extension catalog, and must not change when
-the extension directory or display name changes.
+the extension directory or display name changes. Identifier values are validated
+exactly as written and are never trimmed or otherwise normalized.
 
 ## Activation
 

@@ -78,7 +78,11 @@ def test_enabled_extensions_preserve_configuration_order():
     ("value", "message"),
     [
         ("sample_ext", "must be an array"),
+        ([1], "valid extension identifiers"),
         (["Invalid-Identifier"], "valid extension identifiers"),
+        ([" sample_ext "], "valid extension identifiers"),
+        (["x" * 256], "valid extension identifiers"),
+        (["core"], "valid extension identifiers"),
         (["sample_ext", "sample_ext"], "duplicate identifier"),
         (["builtin"], "always enabled"),
     ],
@@ -89,6 +93,14 @@ def test_invalid_enabled_extensions_are_rejected(value, message):
 
     with pytest.raises(ConfigValidationError, match=message):
         get_enabled_extensions(config)
+
+
+def test_maximum_length_extension_identifier_is_accepted():
+    identifier = "a" + "x" * 254
+    config = _valid_config()
+    config["extensions"]["enabled"] = [identifier]
+
+    assert get_enabled_extensions(config) == (identifier,)
 
 
 def test_extensions_enabled_is_required():
