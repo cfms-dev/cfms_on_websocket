@@ -73,3 +73,80 @@ def test_omittable_field_distinguishes_missing_from_null(monkeypatch, tmp_path) 
 
     with pytest.raises(ValidationError):
         OptionalRequest.model_validate({"value": None})
+
+
+def test_identity_request_models_preserve_conditional_and_alias_rules(
+    monkeypatch, tmp_path
+) -> None:
+    from pydantic import ValidationError
+
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.domains.identity.handlers.auth import RequestLoginHandler
+    from include.domains.identity.handlers.groups import RequestRenameGroupHandler
+    from include.domains.identity.handlers.users import RequestManageUserStatusHandler
+
+    RequestLoginHandler.request_model.model_validate(
+        {"username": "alice", "password": "secret", "2fa_token": "123456"}
+    )
+    with pytest.raises(ValidationError):
+        RequestLoginHandler.request_model.model_validate(
+            {
+                "username": "alice",
+                "password": "secret",
+                "two_factor_token": "123456",
+            }
+        )
+
+    RequestRenameGroupHandler.request_model.model_validate(
+        {"group_name": "staff", "display_name": None}
+    )
+    with pytest.raises(ValidationError):
+        RequestRenameGroupHandler.request_model.model_validate({"group_name": "staff"})
+
+    RequestManageUserStatusHandler.request_model.model_validate(
+        {"status": "disabled", "username": "alice", "reason": "incident"}
+    )
+    with pytest.raises(ValidationError):
+        RequestManageUserStatusHandler.request_model.model_validate(
+            {"status": "active", "username": "alice", "reason": "resolved"}
+        )
+
+
+def test_nested_identity_and_keyring_models_preserve_omission_rules(
+    monkeypatch, tmp_path
+) -> None:
+    from pydantic import ValidationError
+
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.domains.identity.handlers.users import RequestCreateUserHandler
+    from include.domains.keyrings.handlers.keyrings import RequestListUserKeysHandler
+
+    RequestCreateUserHandler.request_model.model_validate(
+        {
+            "username": "alice",
+            "password": "",
+            "permissions": [{"permission": "read", "start_time": 0}],
+        }
+    )
+    with pytest.raises(ValidationError):
+        RequestCreateUserHandler.request_model.model_validate(
+            {
+                "username": "alice",
+                "password": "",
+                "permissions": [
+                    {"permission": "read", "start_time": 0, "end_time": None}
+                ],
+            }
+        )
+
+    RequestListUserKeysHandler.request_model.model_validate(
+        {"offset": 1.0, "count": 10.0}
+    )
+    with pytest.raises(ValidationError):
+        RequestListUserKeysHandler.request_model.model_validate(
+            {"target_username": None}
+        )

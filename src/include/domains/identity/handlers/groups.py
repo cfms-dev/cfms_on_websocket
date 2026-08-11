@@ -3,6 +3,10 @@ __all__ = [
     # ...
 ]
 
+from typing import Annotated
+
+from pydantic import StringConstraints
+
 from include.database.models.identity import (
     User,
     UserGroup,
@@ -12,20 +16,57 @@ from include.database.models.identity import (
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.identity.commands.groups import create_group
-from include.domains.pagination import OFFSET_PAGINATION_SCHEMA, get_offset_pagination
+from include.domains.pagination import (
+    PaginationOffset,
+    PaginationPageSize,
+    get_offset_pagination,
+)
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+
+
+class _OffsetPaginationRequest(RequestDataModel):
+    offset: Omittable[PaginationOffset] = REQUEST_UNSET
+    count: Omittable[PaginationPageSize] = REQUEST_UNSET
+
+
+class _TimedPermission(RequestDataModel):
+    permission: str
+    start_time: float
+    end_time: Omittable[float] = REQUEST_UNSET
+
+
+class _CreateGroupRequest(RequestDataModel):
+    group_name: _NonEmptyString
+    display_name: str | None = None
+    permissions: Omittable[list[_TimedPermission]] = REQUEST_UNSET
+
+
+class _GroupNameRequest(RequestDataModel):
+    group_name: _NonEmptyString
+
+
+class _RenameGroupRequest(RequestDataModel):
+    group_name: _NonEmptyString
+    display_name: str | None
+
+
+class _ChangeGroupPermissionsRequest(RequestDataModel):
+    group_name: _NonEmptyString
+    permissions: list[str]
 
 
 class RequestListGroupsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            **OFFSET_PAGINATION_SCHEMA,
-        },
-        "additionalProperties": False,
-    }
+    request_model = _OffsetPaginationRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -76,28 +117,7 @@ class RequestListGroupsHandler(RequestHandler):
 
 
 class RequestCreateGroupHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "group_name": {"type": "string", "minLength": 1},
-            "display_name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "permissions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "permission": {"type": "string"},
-                        "start_time": {"type": "number"},
-                        "end_time": {"type": "number"},
-                    },
-                    "required": ["permission", "start_time"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["group_name"],
-        "additionalProperties": False,
-    }
+    request_model = _CreateGroupRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -138,14 +158,7 @@ class RequestCreateGroupHandler(RequestHandler):
 
 
 class RequestDeleteGroupHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "group_name": {"type": "string", "minLength": 1},
-        },
-        "required": ["group_name"],
-        "additionalProperties": False,
-    }
+    request_model = _GroupNameRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -212,15 +225,7 @@ class RequestDeleteGroupHandler(RequestHandler):
 
 
 class RequestRenameGroupHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "group_name": {"type": "string", "minLength": 1},
-            "display_name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        },
-        "required": ["group_name", "display_name"],
-        "additionalProperties": False,
-    }
+    request_model = _RenameGroupRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -270,14 +275,7 @@ class RequestRenameGroupHandler(RequestHandler):
 
 
 class RequestGetGroupInfoHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "group_name": {"type": "string", "minLength": 1},
-        },
-        "required": ["group_name"],
-        "additionalProperties": False,
-    }
+    request_model = _GroupNameRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -334,21 +332,7 @@ class RequestGetGroupInfoHandler(RequestHandler):
 
 
 class RequestChangeGroupPermissionsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "group_name": {"type": "string", "minLength": 1},
-            "permissions": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["group_name", "permissions"],
-        "additionalProperties": False,
-    }
+    request_model = _ChangeGroupPermissionsRequest
 
     require_auth = True
     rate_limit_cost = 3

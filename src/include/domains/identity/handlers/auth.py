@@ -1,5 +1,7 @@
 import time
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field, StringConstraints
 
 from include.config.constants import USERNAME_MAX_LENGTH
 from include.config.settings import global_config
@@ -17,26 +19,39 @@ from include.domains.security.guards.login import (
 )
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_Username = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=USERNAME_MAX_LENGTH),
+]
+_TwoFactorToken = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class _LoginRequest(RequestDataModel):
+    username: _Username
+    password: _NonEmptyString
+    two_factor_token: Omittable[_TwoFactorToken] = Field(
+        default=REQUEST_UNSET,
+        alias="2fa_token",
+    )
+
+
+class _EmptyRequest(RequestDataModel):
+    pass
 
 
 class RequestLoginHandler(RequestHandler):
     """Authenticate a local user and issue a session token."""
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": USERNAME_MAX_LENGTH,
-            },
-            "password": {"type": "string", "minLength": 1},
-            "2fa_token": {"type": "string", "minLength": 1, "maxLength": 64},
-        },
-        "required": ["username", "password"],
-        "additionalProperties": False,
-    }
+    request_model = _LoginRequest
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -137,7 +152,7 @@ class RequestLoginHandler(RequestHandler):
 
 
 class RequestRefreshTokenHandler(RequestHandler):
-    schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    request_model = _EmptyRequest
     require_auth = True
     rate_limit_cost = 2
 

@@ -16,10 +16,12 @@ __all__ = [
 ]
 
 import time
+from typing import Annotated, Literal, Self
 
 import filetype
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+from pydantic import Field, StringConstraints, model_validator
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import selectinload
 
@@ -48,10 +50,11 @@ from include.domains.identity.validators.passwords import (
 )
 from include.domains.operations.comments import CommentStore
 from include.domains.pagination import (
-    CURSOR_PAGINATION_SCHEMA,
-    OFFSET_PAGINATION_SCHEMA,
     CursorError,
     PaginationCursor,
+    PaginationCursorToken,
+    PaginationOffset,
+    PaginationPageSize,
     get_offset_pagination,
     get_page_size,
     make_cursor_response,
@@ -60,7 +63,114 @@ from include.domains.security.guards.login import AuthFactor, LoginGuard
 from include.messages import Messages as smsg
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_Username = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=USERNAME_MAX_LENGTH),
+]
+_StatusReason = Annotated[str, StringConstraints(min_length=1, max_length=1024)]
+_NonNegativeNumber = Annotated[float, Field(ge=0)]
+
+
+class _OffsetPaginationRequest(RequestDataModel):
+    offset: Omittable[PaginationOffset] = REQUEST_UNSET
+    count: Omittable[PaginationPageSize] = REQUEST_UNSET
+
+
+class _TimedPermission(RequestDataModel):
+    permission: str
+    start_time: float
+    end_time: Omittable[float] = REQUEST_UNSET
+
+
+class _TimedGroup(RequestDataModel):
+    group_name: str
+    start_time: float
+    end_time: Omittable[float] = REQUEST_UNSET
+
+
+class _CreateUserRequest(RequestDataModel):
+    username: _Username
+    password: str
+    nickname: Omittable[str] = REQUEST_UNSET
+    permissions: Omittable[list[_TimedPermission]] = REQUEST_UNSET
+    groups: Omittable[list[_TimedGroup]] = REQUEST_UNSET
+
+
+class _UsernameRequest(RequestDataModel):
+    username: _NonEmptyString
+
+
+class _RenameUserRequest(RequestDataModel):
+    username: _NonEmptyString
+    nickname: str | None = None
+
+
+class _BlockTarget(RequestDataModel):
+    type: Literal["all", "directory", "document"]
+    id: Omittable[_NonEmptyString] = REQUEST_UNSET
+
+
+class _BlockUserRequest(RequestDataModel):
+    username: _NonEmptyString
+    target: _BlockTarget
+    block_types: Annotated[list[str], Field(min_length=1)]
+    not_before: Omittable[_NonNegativeNumber] = REQUEST_UNSET
+    not_after: Omittable[float] = REQUEST_UNSET
+
+
+class _BlockIDRequest(RequestDataModel):
+    block_id: _NonEmptyString
+
+
+class _ListUserBlocksRequest(RequestDataModel):
+    username: _NonEmptyString
+    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
+    cursor: PaginationCursorToken | None = None
+
+
+class _SetUserAvatarRequest(RequestDataModel):
+    username: _NonEmptyString
+    document_id: _NonEmptyString
+
+
+class _ChangeUserGroupsRequest(RequestDataModel):
+    username: _NonEmptyString
+    groups: Omittable[list[str]] = REQUEST_UNSET
+
+
+class _ChangeUserPermissionsRequest(RequestDataModel):
+    username: _NonEmptyString
+    permissions: list[str]
+
+
+class _SetPasswordRequest(RequestDataModel):
+    username: _Username
+    old_passwd: str | None = None
+    new_passwd: _NonEmptyString
+    force_update_after_login: Omittable[bool] = REQUEST_UNSET
+    bypass_passwd_requirements: Omittable[bool] = REQUEST_UNSET
+
+
+class _ManageUserStatusRequest(RequestDataModel):
+    status: Literal["active", "disabled"]
+    username: _NonEmptyString
+    reason: Omittable[_StatusReason] = REQUEST_UNSET
+
+    @model_validator(mode="after")
+    def reject_reason_when_activating(self) -> Self:
+        if self.status == "active" and "reason" in self.model_fields_set:
+            raise ValueError("reason is not allowed when activating a user")
+        return self
+
 
 # Module-level PasswordHasher instance — reused across all calls to avoid
 # repeated construction overhead.
@@ -68,13 +178,7 @@ _password_hasher = PasswordHasher()
 
 
 class RequestListUsersHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            **OFFSET_PAGINATION_SCHEMA,
-        },
-        "additionalProperties": False,
-    }
+    request_model = _OffsetPaginationRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -132,46 +236,7 @@ class RequestListUsersHandler(RequestHandler):
 
 
 class RequestCreateUserHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": USERNAME_MAX_LENGTH,
-            },
-            "password": {"type": "string"},
-            "nickname": {"type": "string"},
-            "permissions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "permission": {"type": "string"},
-                        "start_time": {"type": "number"},
-                        "end_time": {"type": "number"},
-                    },
-                    "required": ["permission", "start_time"],
-                    "additionalProperties": False,
-                },
-            },
-            "groups": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "group_name": {"type": "string"},
-                        "start_time": {"type": "number"},
-                        "end_time": {"type": "number"},
-                    },
-                    "required": ["group_name", "start_time"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["username", "password"],
-        "additionalProperties": False,
-    }
+    request_model = _CreateUserRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -235,14 +300,7 @@ class RequestCreateUserHandler(RequestHandler):
 
 
 class RequestDeleteUserHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {"type": "string", "minLength": 1},
-        },
-        "required": ["username"],
-        "additionalProperties": False,
-    }
+    request_model = _UsernameRequest
 
     require_auth = True
     rate_limit_cost = 5
@@ -312,18 +370,7 @@ class RequestDeleteUserHandler(RequestHandler):
 
 
 class RequestRenameUserHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {
-                "type": "string",
-                "minLength": 1,
-            },
-            "nickname": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        },
-        "required": ["username"],
-        "additionalProperties": False,
-    }
+    request_model = _RenameUserRequest
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -387,37 +434,7 @@ class RequestBlockUserHandler(RequestHandler):
     (NOT multiple block types), it should be requested in installments.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {
-                "type": "string",
-                "minLength": 1,
-            },
-            "target": {
-                "type": "object",
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        # "minLength": 1,
-                        "pattern": "^(all|directory|document)$",
-                    },
-                    "id": {"type": "string", "minLength": 1},
-                },
-                "required": ["type"],
-                "additionalProperties": False,
-            },
-            "block_types": {
-                "type": "array",
-                "minItems": 1,
-                "items": {"type": "string"},  # not empty
-            },
-            "not_before": {"type": "number", "minimum": 0},
-            "not_after": {"type": "number"},
-        },
-        "required": ["username", "block_types", "target"],
-        "additionalProperties": False,
-    }
+    request_model = _BlockUserRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -485,17 +502,7 @@ class RequestUnblockUserHandler(RequestHandler):
     Handler for action `unblock_user`.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "block_id": {
-                "type": "string",
-                "minLength": 1,
-            },
-        },
-        "required": ["block_id"],
-        "additionalProperties": False,
-    }
+    request_model = _BlockIDRequest
 
     require_auth = True
     rate_limit_cost = 2
@@ -537,18 +544,7 @@ class RequestUnblockUserHandler(RequestHandler):
 
 
 class RequestListUserBlocksHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {
-                "type": "string",
-                "minLength": 1,
-            },
-            **CURSOR_PAGINATION_SCHEMA,
-        },
-        "required": ["username"],
-        "additionalProperties": False,
-    }
+    request_model = _ListUserBlocksRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -649,14 +645,7 @@ class RequestListUserBlocksHandler(RequestHandler):
 
 
 class RequestGetUserInfoHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {"type": "string", "minLength": 1},
-        },
-        "required": ["username"],
-        "additionalProperties": False,
-    }
+    request_model = _UsernameRequest
 
     require_auth = True
     rate_limit_cost = 2
@@ -710,14 +699,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
     already included in the response.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {"type": "string", "minLength": 1},
-        },
-        "required": ["username"],
-        "additionalProperties": False,
-    }
+    request_model = _UsernameRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -775,15 +757,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
     designated as the avatar are changed later, the avatar setting will not be lost.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {"type": "string", "minLength": 1},
-            "document_id": {"type": "string", "minLength": 1},
-        },
-        "required": ["username", "document_id"],
-        "additionalProperties": False,
-    }
+    request_model = _SetUserAvatarRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -852,15 +826,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
 
 
 class RequestChangeUserGroupsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {"type": "string", "minLength": 1},
-            "groups": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["username"],
-        "additionalProperties": False,
-    }
+    request_model = _ChangeUserGroupsRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -908,21 +874,7 @@ class RequestChangeUserGroupsHandler(RequestHandler):
 
 
 class RequestChangeUserPermissionsHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {"type": "string", "minLength": 1},
-            "permissions": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["username", "permissions"],
-        "additionalProperties": False,
-    }
+    request_model = _ChangeUserPermissionsRequest
 
     require_auth = True
     rate_limit_cost = 3
@@ -982,22 +934,7 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
 
 
 class RequestSetPasswdHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "username": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": USERNAME_MAX_LENGTH,
-            },
-            "old_passwd": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "new_passwd": {"type": "string", "minLength": 1},
-            "force_update_after_login": {"type": "boolean"},
-            "bypass_passwd_requirements": {"type": "boolean"},
-        },
-        "required": ["username", "new_passwd"],
-        "additionalProperties": False,
-    }
+    request_model = _SetPasswordRequest
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
@@ -1180,25 +1117,7 @@ class RequestSetPasswdHandler(RequestHandler):
 
 
 class RequestManageUserStatusHandler(RequestHandler):
-    schema = {
-        "type": "object",
-        "properties": {
-            "status": {"enum": ["active", "disabled"]},
-            "username": {"type": "string", "minLength": 1},
-            "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
-        },
-        "required": ["status", "username"],
-        "additionalProperties": False,
-        "allOf": [
-            {
-                "if": {
-                    "properties": {"status": {"const": "active"}},
-                    "required": ["status"],
-                },
-                "then": {"not": {"required": ["reason"]}},
-            }
-        ],
-    }
+    request_model = _ManageUserStatusRequest
 
     require_auth = True
     rate_limit_cost = 3

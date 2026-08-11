@@ -22,15 +22,47 @@ __all__ = [
 ]
 
 import time
+from typing import Annotated
+
+from pydantic import StringConstraints
 
 from include.database.models.identity import User
 from include.database.models.keyrings import UserKey
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.pagination import OFFSET_PAGINATION_SCHEMA, get_offset_pagination
+from include.domains.pagination import (
+    PaginationOffset,
+    PaginationPageSize,
+    get_offset_pagination,
+)
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestHandler, Result
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    Result,
+)
+
+_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+_KeyContent = Annotated[str, StringConstraints(min_length=1, max_length=512)]
+
+
+class _UploadUserKeyRequest(RequestDataModel):
+    content: _KeyContent
+    label: Omittable[str] = REQUEST_UNSET
+    target_username: Omittable[_NonEmptyString] = REQUEST_UNSET
+
+
+class _KeyIDRequest(RequestDataModel):
+    id: _NonEmptyString
+
+
+class _ListUserKeysRequest(RequestDataModel):
+    target_username: Omittable[_NonEmptyString] = REQUEST_UNSET
+    offset: Omittable[PaginationOffset] = REQUEST_UNSET
+    count: Omittable[PaginationPageSize] = REQUEST_UNSET
 
 
 class RequestUploadUserKeyHandler(RequestHandler):
@@ -52,16 +84,7 @@ class RequestUploadUserKeyHandler(RequestHandler):
         404 - User does not exist (admin path only).
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "content": {"type": "string", "minLength": 1, "maxLength": 512},
-            "label": {"type": "string"},
-            "target_username": {"type": "string", "minLength": 1},
-        },
-        "required": ["content"],
-        "additionalProperties": False,
-    }
+    request_model = _UploadUserKeyRequest
 
     require_auth = True
     rate_limit_cost = 2
@@ -124,14 +147,7 @@ class RequestGetUserKeyHandler(RequestHandler):
         404 - Key not found.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "minLength": 1},
-        },
-        "required": ["id"],
-        "additionalProperties": False,
-    }
+    request_model = _KeyIDRequest
 
     require_auth = True
     rate_limit_cost = 1
@@ -186,14 +202,7 @@ class RequestDeleteUserKeyHandler(RequestHandler):
         404 - Key not found.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "minLength": 1},
-        },
-        "required": ["id"],
-        "additionalProperties": False,
-    }
+    request_model = _KeyIDRequest
 
     require_auth = True
     rate_limit_cost = 2
@@ -247,14 +256,7 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
         404 - Key not found.
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "minLength": 1},
-        },
-        "required": ["id"],
-        "additionalProperties": False,
-    }
+    request_model = _KeyIDRequest
 
     require_auth = True
     rate_limit_cost = 2
@@ -302,14 +304,7 @@ class RequestListUserKeysHandler(RequestHandler):
         404 - User does not exist (admin path only).
     """
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "target_username": {"type": "string", "minLength": 1},
-            **OFFSET_PAGINATION_SCHEMA,
-        },
-        "additionalProperties": False,
-    }
+    request_model = _ListUserKeysRequest
 
     require_auth = True
     rate_limit_cost = 2
