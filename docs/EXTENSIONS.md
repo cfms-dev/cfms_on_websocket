@@ -88,21 +88,15 @@ fails fast when an extension still exposes a legacy `schema` dictionary; there
 is no JSON Schema fallback for handler request data.
 
 ```python
-from typing import Annotated
-
-from pydantic import StringConstraints
-
 from include.extensions.manager import hookimpl
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
     RequestDataModel,
     RequestHandler,
+    NonEmptyString,
     Result,
 )
-
-NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-
 
 class EchoRequest(RequestDataModel):
     message: NonEmptyString

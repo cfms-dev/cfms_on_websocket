@@ -1,14 +1,14 @@
 import time
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import Field, StringConstraints
+from pydantic import Field
 
-from include.config.constants import USERNAME_MAX_LENGTH
 from include.config.settings import global_config
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.identity.sessions import build_login_success_data
+from include.domains.identity.types import RequestUsername
 from include.domains.identity.validators.passwords import check_passwd_requirements
 from include.domains.operations.commands.audit import log_audit
 from include.domains.security.guards.login import (
@@ -17,35 +17,27 @@ from include.domains.security.guards.login import (
     ThrottleDecision,
     ThrottleScope,
 )
+from include.domains.security.types import TwoFactorToken
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
+    EmptyRequestDataModel,
     Omittable,
     RequestDataModel,
     RequestHandler,
     Result,
 )
-
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-_Username = Annotated[
-    str,
-    StringConstraints(min_length=1, max_length=USERNAME_MAX_LENGTH),
-]
-_TwoFactorToken = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+from include.types import NonEmptyString
 
 
 class _LoginRequest(RequestDataModel):
-    username: _Username
-    password: _NonEmptyString
-    two_factor_token: Omittable[_TwoFactorToken] = Field(
+    username: RequestUsername
+    password: NonEmptyString
+    two_factor_token: Omittable[TwoFactorToken] = Field(
         default=REQUEST_UNSET,
         alias="2fa_token",
     )
-
-
-class _EmptyRequest(RequestDataModel):
-    pass
 
 
 class RequestLoginHandler(RequestHandler):
@@ -152,7 +144,7 @@ class RequestLoginHandler(RequestHandler):
 
 
 class RequestRefreshTokenHandler(RequestHandler):
-    request_model = _EmptyRequest
+    request_model = EmptyRequestDataModel
     require_auth = True
     rate_limit_cost = 2
 

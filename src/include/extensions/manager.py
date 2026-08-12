@@ -37,7 +37,7 @@ from pydantic import (
 from include.config.constants import CORE_VERSION
 from include.config.version import Version
 from include.extensions.identifiers import ExtensionIdentifier
-from include.types import NonEmptyString
+from include.types import TrimmedNonEmptyString
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
@@ -74,15 +74,15 @@ class ExtensionMetadata(BaseModel):
     )
 
     identifier: ExtensionIdentifier
-    name: NonEmptyString
-    version: NonEmptyString
+    name: TrimmedNonEmptyString
+    version: TrimmedNonEmptyString
     authors: Annotated[
-        tuple[NonEmptyString, ...],
+        tuple[TrimmedNonEmptyString, ...],
         Field(min_length=1, strict=False),
     ]
-    license: NonEmptyString
-    description: NonEmptyString | None = None
-    homepage: NonEmptyString | None = None
+    license: TrimmedNonEmptyString
+    description: TrimmedNonEmptyString | None = None
+    homepage: TrimmedNonEmptyString | None = None
 
 
 class ExtensionCompatibility(BaseModel):

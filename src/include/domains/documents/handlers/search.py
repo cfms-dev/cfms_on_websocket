@@ -8,9 +8,7 @@ with permission filtering, result limiting, and sorting capabilities.
 __all__ = ["RequestSearchHandler"]
 
 import time
-from typing import Annotated, Literal
-
-from pydantic import StringConstraints
+from typing import Literal
 
 from include.database.models.identity import User
 from include.database.session import Session
@@ -35,12 +33,11 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+from include.types import NonEmptyString
 
 
 class _SearchRequest(RequestDataModel):
-    query: _NonEmptyString
+    query: NonEmptyString
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
     sort_by: Omittable[Literal["name", "created_time", "size", "last_modified"]] = (

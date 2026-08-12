@@ -44,23 +44,23 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+from include.types import NonEmptyString
 
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 _KeyContent = Annotated[str, StringConstraints(min_length=1, max_length=512)]
 
 
 class _UploadUserKeyRequest(RequestDataModel):
     content: _KeyContent
     label: Omittable[str] = REQUEST_UNSET
-    target_username: Omittable[_NonEmptyString] = REQUEST_UNSET
+    target_username: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
 class _KeyIDRequest(RequestDataModel):
-    id: _NonEmptyString
+    id: NonEmptyString
 
 
 class _ListUserKeysRequest(RequestDataModel):
-    target_username: Omittable[_NonEmptyString] = REQUEST_UNSET
+    target_username: Omittable[NonEmptyString] = REQUEST_UNSET
     offset: Omittable[PaginationOffset] = REQUEST_UNSET
     count: Omittable[PaginationPageSize] = REQUEST_UNSET
 

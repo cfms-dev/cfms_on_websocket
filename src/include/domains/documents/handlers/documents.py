@@ -73,22 +73,23 @@ from include.domains.documents.queries.file_references import (
 from include.domains.documents.queries.listing import (
     fetch_latest_active_revisions_by_document,
 )
+from include.domains.documents.types import RevisionID
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
-    JsonInteger,
     Omittable,
     RequestDataModel,
     RequestHandler,
     Result,
 )
+from include.types import JsonInteger, NonEmptyString
 
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-_RevisionID = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 _Sha256 = Annotated[str, StringConstraints(pattern="^[0-9A-Fa-f]{64}$")]
 _Tag = Annotated[str, StringConstraints(min_length=1, max_length=255)]
+
+# FIXME: Extract to `include.types` when necessary.
 _NonNegativeInteger = Annotated[JsonInteger, Field(ge=0)]
 
 
@@ -99,32 +100,32 @@ class _DocumentInfoRequest(RequestDataModel):
         extra="allow",
     )
 
-    document_id: _NonEmptyString
+    document_id: NonEmptyString
 
 
 class _DocumentIDRequest(RequestDataModel):
-    document_id: _NonEmptyString
+    document_id: NonEmptyString
 
 
 class _CreateDocumentRequest(RequestDataModel):
     folder_id: str | None = None
-    title: _NonEmptyString
+    title: NonEmptyString
     access_rules: Omittable[dict[str, Any]] = REQUEST_UNSET
     inherit_parent: Omittable[bool] = REQUEST_UNSET
 
 
 class _UploadDocumentRequest(RequestDataModel):
-    document_id: _NonEmptyString
-    parent_revision_id: _RevisionID | None = None
+    document_id: NonEmptyString
+    parent_revision_id: RevisionID | None = None
 
 
 class _RenameDocumentRequest(RequestDataModel):
-    document_id: _NonEmptyString
-    new_title: _NonEmptyString
+    document_id: NonEmptyString
+    new_title: NonEmptyString
 
 
 class _DownloadFileRequest(RequestDataModel):
-    task_id: _NonEmptyString
+    task_id: NonEmptyString
     offset: Omittable[_NonNegativeInteger] = REQUEST_UNSET
     max_chunk_size: Annotated[
         JsonInteger,
@@ -136,7 +137,7 @@ class _DownloadFileRequest(RequestDataModel):
 
 
 class _UploadFileRequest(RequestDataModel):
-    task_id: _NonEmptyString
+    task_id: NonEmptyString
     file_size: _NonNegativeInteger
     sha256: _Sha256 | None
     max_chunk_size: Annotated[JsonInteger, Field(ge=UPLOAD_TRANSFER_MIN_CHUNK_SIZE)]
@@ -144,24 +145,24 @@ class _UploadFileRequest(RequestDataModel):
 
 
 class _SetDocumentRulesRequest(RequestDataModel):
-    document_id: _NonEmptyString
+    document_id: NonEmptyString
     access_rules: dict[str, list[Any]]
     inherit_parent: Omittable[bool] = REQUEST_UNSET
 
 
 class _MoveDocumentRequest(RequestDataModel):
-    document_id: _NonEmptyString
+    document_id: NonEmptyString
     target_folder_id: str | None = None
 
 
 class _RestoreDocumentRequest(RequestDataModel):
-    document_id: _NonEmptyString
+    document_id: NonEmptyString
     target_folder_id: str | None = None
-    new_title: Omittable[_NonEmptyString] = REQUEST_UNSET
+    new_title: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
 class _SetDocumentTagsRequest(RequestDataModel):
-    document_id: _NonEmptyString
+    document_id: NonEmptyString
     tags: Annotated[list[_Tag], Field(max_length=128)]
 
 
@@ -605,7 +606,10 @@ class RequestUploadDocumentHandler(RequestHandler):
                         DocumentRevision.document_id == document_id,
                         FileTask.mode == TransferMode.UPLOAD,
                         FileTask.status.in_(
-                            (FileTaskStatus.PENDING, FileTaskStatus.IN_PROGRESS)
+                            (
+                                FileTaskStatus.PENDING,
+                                FileTaskStatus.IN_PROGRESS,
+                            )
                         ),
                     )
                     .order_by(FileTask.start_time.desc())

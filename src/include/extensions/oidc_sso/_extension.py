@@ -10,14 +10,13 @@ import base64
 import hashlib
 import secrets
 import time
-from typing import Annotated, Any
+from typing import Any
 
 import jwt
 import orjson
 import requests
 from authlib.integrations.requests_client import OAuth2Session
 from loguru import logger as log
-from pydantic import StringConstraints
 
 from include.config.settings import global_config
 from include.database.models.identity import User, UserGroup
@@ -38,6 +37,7 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+from include.types import NonEmptyString
 
 logger = log.bind(name="oidc_sso")
 
@@ -46,8 +46,6 @@ METADATA_CACHE_PREFIX = "oidc_sso:metadata:"
 DEFAULT_STATE_TTL_SECONDS = 300
 DEFAULT_HTTP_TIMEOUT_SECONDS = 10
 DEFAULT_SCOPE = "openid profile email"
-
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 
 
 class OIDCConfigurationError(ValueError):
@@ -345,7 +343,7 @@ def _resolve_or_create_user(cfg: dict[str, Any], claims: dict[str, Any]) -> User
 
 
 class _OIDCStartRequest(RequestDataModel):
-    redirect_uri: Omittable[_NonEmptyString] = REQUEST_UNSET
+    redirect_uri: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
 class RequestOIDCStartHandler(RequestHandler):
@@ -386,10 +384,10 @@ class RequestOIDCStartHandler(RequestHandler):
 
 
 class _OIDCCallbackRequest(RequestDataModel):
-    state: _NonEmptyString
-    code: Omittable[_NonEmptyString] = REQUEST_UNSET
-    redirect_uri: Omittable[_NonEmptyString] = REQUEST_UNSET
-    error: Omittable[_NonEmptyString] = REQUEST_UNSET
+    state: NonEmptyString
+    code: Omittable[NonEmptyString] = REQUEST_UNSET
+    redirect_uri: Omittable[NonEmptyString] = REQUEST_UNSET
+    error: Omittable[NonEmptyString] = REQUEST_UNSET
     error_description: Omittable[str] = REQUEST_UNSET
 
 

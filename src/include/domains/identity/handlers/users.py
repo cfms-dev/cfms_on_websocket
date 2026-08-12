@@ -25,7 +25,7 @@ from pydantic import Field, StringConstraints, model_validator
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import selectinload
 
-from include.config.constants import AVAILABLE_BLOCK_TYPES, USERNAME_MAX_LENGTH
+from include.config.constants import AVAILABLE_BLOCK_TYPES
 from include.config.settings import global_config
 from include.database.models.access import (
     UserBlockEntry,
@@ -43,6 +43,11 @@ from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import create_file_task
 from include.domains.identity.commands.users import create_user
 from include.domains.identity.password_auth import verify_password_or_dummy
+from include.domains.identity.request_models import (
+    OffsetPaginationRequest,
+    TimedPermission,
+)
+from include.domains.identity.types import RequestUsername
 from include.domains.identity.validators.passwords import (
     InvalidPasswordLengthError,
     RuleRequirementsNotMetError,
@@ -53,7 +58,6 @@ from include.domains.pagination import (
     CursorError,
     PaginationCursor,
     PaginationCursorToken,
-    PaginationOffset,
     PaginationPageSize,
     get_offset_pagination,
     get_page_size,
@@ -70,25 +74,9 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+from include.types import NonEmptyString, NonNegativeFloat
 
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-_Username = Annotated[
-    str,
-    StringConstraints(min_length=1, max_length=USERNAME_MAX_LENGTH),
-]
 _StatusReason = Annotated[str, StringConstraints(min_length=1, max_length=1024)]
-_NonNegativeNumber = Annotated[float, Field(ge=0)]
-
-
-class _OffsetPaginationRequest(RequestDataModel):
-    offset: Omittable[PaginationOffset] = REQUEST_UNSET
-    count: Omittable[PaginationPageSize] = REQUEST_UNSET
-
-
-class _TimedPermission(RequestDataModel):
-    permission: str
-    start_time: float
-    end_time: Omittable[float] = REQUEST_UNSET
 
 
 class _TimedGroup(RequestDataModel):
@@ -98,71 +86,71 @@ class _TimedGroup(RequestDataModel):
 
 
 class _CreateUserRequest(RequestDataModel):
-    username: _Username
+    username: RequestUsername
     password: str
     nickname: Omittable[str] = REQUEST_UNSET
-    permissions: Omittable[list[_TimedPermission]] = REQUEST_UNSET
+    permissions: Omittable[list[TimedPermission]] = REQUEST_UNSET
     groups: Omittable[list[_TimedGroup]] = REQUEST_UNSET
 
 
 class _UsernameRequest(RequestDataModel):
-    username: _NonEmptyString
+    username: NonEmptyString
 
 
 class _RenameUserRequest(RequestDataModel):
-    username: _NonEmptyString
+    username: NonEmptyString
     nickname: str | None = None
 
 
 class _BlockTarget(RequestDataModel):
     type: Literal["all", "directory", "document"]
-    id: Omittable[_NonEmptyString] = REQUEST_UNSET
+    id: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
 class _BlockUserRequest(RequestDataModel):
-    username: _NonEmptyString
+    username: NonEmptyString
     target: _BlockTarget
     block_types: Annotated[list[str], Field(min_length=1)]
-    not_before: Omittable[_NonNegativeNumber] = REQUEST_UNSET
+    not_before: Omittable[NonNegativeFloat] = REQUEST_UNSET
     not_after: Omittable[float] = REQUEST_UNSET
 
 
 class _BlockIDRequest(RequestDataModel):
-    block_id: _NonEmptyString
+    block_id: NonEmptyString
 
 
 class _ListUserBlocksRequest(RequestDataModel):
-    username: _NonEmptyString
+    username: NonEmptyString
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
 
 
 class _SetUserAvatarRequest(RequestDataModel):
-    username: _NonEmptyString
-    document_id: _NonEmptyString
+    username: NonEmptyString
+    document_id: NonEmptyString
 
 
 class _ChangeUserGroupsRequest(RequestDataModel):
-    username: _NonEmptyString
+    username: NonEmptyString
     groups: Omittable[list[str]] = REQUEST_UNSET
 
 
 class _ChangeUserPermissionsRequest(RequestDataModel):
-    username: _NonEmptyString
+    username: NonEmptyString
     permissions: list[str]
 
 
 class _SetPasswordRequest(RequestDataModel):
-    username: _Username
+    username: RequestUsername
     old_passwd: str | None = None
-    new_passwd: _NonEmptyString
+    new_passwd: NonEmptyString
     force_update_after_login: Omittable[bool] = REQUEST_UNSET
     bypass_passwd_requirements: Omittable[bool] = REQUEST_UNSET
 
 
 class _ManageUserStatusRequest(RequestDataModel):
     status: Literal["active", "disabled"]
-    username: _NonEmptyString
+    username: NonEmptyString
     reason: Omittable[_StatusReason] = REQUEST_UNSET
 
     @model_validator(mode="after")
@@ -178,7 +166,7 @@ _password_hasher = PasswordHasher()
 
 
 class RequestListUsersHandler(RequestHandler):
-    request_model = _OffsetPaginationRequest
+    request_model = OffsetPaginationRequest
 
     require_auth = True
     rate_limit_cost = 3

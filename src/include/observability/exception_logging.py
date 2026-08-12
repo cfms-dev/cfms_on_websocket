@@ -14,7 +14,7 @@ import loguru
 
 def log_exception_with_id(
     exc: Exception,
-    logger: "loguru.Logger",
+    logger: loguru.Logger,
     context: str | None = None,
 ) -> str:
     """

@@ -1,13 +1,15 @@
 __all__ = [
+    "JsonInteger",
     "NonEmptyString",
+    "NonNegativeFloat",
     "NonNegativeInt",
     "PositiveFloat",
     "PositiveInt",
-    "JsonInteger",
     "StrictBool",
     "StrictFloat",
     "StrictInt",
     "StrictStr",
+    "TrimmedNonEmptyString",
     "UnitRatio",
 ]
 
@@ -16,6 +18,7 @@ from typing import Annotated, Any
 from annotated_types import Gt, Le
 from pydantic import (
     BeforeValidator,
+    NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
@@ -35,7 +38,9 @@ def _normalize_json_integer(value: Any) -> Any:
 
 JsonInteger = Annotated[int, BeforeValidator(_normalize_json_integer)]
 
-NonEmptyString = Annotated[
+NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+
+TrimmedNonEmptyString = Annotated[
     str,
     StringConstraints(
         strip_whitespace=True,

@@ -41,10 +41,10 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+from include.types import NonNegativeFloat
 
 _Subnet = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 _OptionalReason = Annotated[str, StringConstraints(max_length=255)] | None
-_NonNegativeNumber = Annotated[float, Field(ge=0)]
 _LockoutUsername = Annotated[str, StringConstraints(min_length=1, max_length=255)]
 _IPAddress = Annotated[str, StringConstraints(min_length=1, max_length=45)]
 _UnlockReason = Annotated[str, StringConstraints(min_length=1, max_length=1024)]
@@ -59,8 +59,8 @@ class _ListBannedSubnetsRequest(RequestDataModel):
 class _BannedSubnetMutationRequest(RequestDataModel):
     subnet: _Subnet
     reason: _OptionalReason = None
-    starts_at: Omittable[_NonNegativeNumber] = REQUEST_UNSET
-    expires_at: _NonNegativeNumber | None = None
+    starts_at: Omittable[NonNegativeFloat] = REQUEST_UNSET
+    expires_at: NonNegativeFloat | None = None
     confirm_self_block: Omittable[bool] = REQUEST_UNSET
 
 

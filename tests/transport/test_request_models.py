@@ -53,6 +53,26 @@ def test_request_data_model_is_strict_and_forbids_extra_fields(
     assert extra_error.value.errors()[0]["type"] == "extra_forbidden"
 
 
+def test_request_non_empty_string_preserves_whitespace(monkeypatch, tmp_path) -> None:
+    from pydantic import ValidationError
+
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.transport.request_handler import (
+        NonEmptyString,
+        RequestDataModel,
+    )
+
+    class TextRequest(RequestDataModel):
+        value: NonEmptyString
+
+    assert TextRequest.model_validate({"value": "   "}).value == "   "
+    assert TextRequest.model_validate({"value": "  value  "}).value == "  value  "
+    with pytest.raises(ValidationError):
+        TextRequest.model_validate({"value": ""})
+
+
 def test_omittable_field_distinguishes_missing_from_null(monkeypatch, tmp_path) -> None:
     from pydantic import ValidationError
 

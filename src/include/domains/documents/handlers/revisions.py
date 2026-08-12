@@ -1,6 +1,3 @@
-from typing import Annotated
-
-from pydantic import StringConstraints
 from sqlalchemy import and_, or_
 
 from include.database.models.documents import Document, DocumentRevision
@@ -17,6 +14,7 @@ from include.domains.documents.handlers.documents import (
 from include.domains.documents.queries.file_references import (
     find_unreachable_revision_file_ids,
 )
+from include.domains.documents.types import RevisionID
 from include.domains.pagination import (
     CursorError,
     PaginationCursor,
@@ -34,24 +32,22 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-_RevisionID = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+from include.types import NonEmptyString
 
 
 class _ListRevisionsRequest(RequestDataModel):
-    document_id: _NonEmptyString
+    document_id: NonEmptyString
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
 
 
 class _RevisionIDRequest(RequestDataModel):
-    id: _RevisionID
+    id: RevisionID
 
 
 class _SetDocumentRevisionRequest(RequestDataModel):
-    document_id: _NonEmptyString
-    revision_id: _RevisionID
+    document_id: NonEmptyString
+    revision_id: RevisionID
 
 
 class RequestListRevisionsHandler(RequestHandler):

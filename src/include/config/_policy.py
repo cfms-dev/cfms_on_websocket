@@ -5,7 +5,7 @@ from typing import Annotated, Any, ClassVar, Protocol, Self
 from pydantic import AfterValidator, BeforeValidator, ConfigDict, ValidationError
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
-from include.types import NonEmptyString, PositiveInt
+from include.types import PositiveInt, TrimmedNonEmptyString
 
 
 class ConfigValidationError(ValueError):
@@ -82,7 +82,7 @@ def _sort_mapping_items(
 
 
 _MappingItems = Annotated[
-    tuple[tuple[NonEmptyString, PositiveInt], ...],
+    tuple[tuple[TrimmedNonEmptyString, PositiveInt], ...],
     BeforeValidator(_mapping_to_items),
     AfterValidator(_sort_mapping_items),
 ]

@@ -1,7 +1,9 @@
 __all__ = [
-    "JsonInteger",
-    "Omittable",
     "REQUEST_UNSET",
+    "EmptyRequestDataModel",
+    "JsonInteger",
+    "NonEmptyString",
+    "Omittable",
     "RequestDataModel",
     "RequestHandler",
     "Result",
@@ -17,7 +19,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict
 
 from include.transport.connection import ConnectionHandler
-from include.types import JsonInteger
+from include.types import JsonInteger, NonEmptyString
 
 
 @dataclass
@@ -42,6 +44,10 @@ class RequestDataModel(BaseModel):
         validate_default=True,
         extra="forbid",
     )
+
+
+class EmptyRequestDataModel(RequestDataModel):
+    pass
 
 
 class RequestHandler(ABC):

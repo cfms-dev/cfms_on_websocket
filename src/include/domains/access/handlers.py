@@ -2,7 +2,7 @@ __all__ = ["RequestGrantAccessHandler", "RequestRevokeAccessHandler"]
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints
+from pydantic import Field
 
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import (
@@ -27,33 +27,30 @@ from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
-    JsonInteger,
     Omittable,
     RequestDataModel,
     RequestHandler,
     Result,
 )
+from include.types import JsonInteger, NonEmptyString, NonNegativeFloat
 
 ENTITY_TYPE_MAPPING = {"user": User, "group": UserGroup}
 TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}
 
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-_NonNegativeNumber = Annotated[float, Field(ge=0)]
-
 
 class _GrantAccessRequest(RequestDataModel):
     entity_type: Literal["user", "group"]
-    entity_identifier: _NonEmptyString
+    entity_identifier: NonEmptyString
     target_type: Literal["document", "directory"]
-    target_identifier: _NonEmptyString
+    target_identifier: NonEmptyString
     access_types: list[str]
-    start_time: _NonNegativeNumber
-    end_time: Omittable[_NonNegativeNumber] = REQUEST_UNSET
+    start_time: NonNegativeFloat
+    end_time: Omittable[NonNegativeFloat] = REQUEST_UNSET
 
 
 class _ViewAccessEntriesRequest(RequestDataModel):
     object_type: Literal["user", "group", "document", "directory"]
-    object_identifier: _NonEmptyString
+    object_identifier: NonEmptyString
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
 

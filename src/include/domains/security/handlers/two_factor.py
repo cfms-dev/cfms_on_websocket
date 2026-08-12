@@ -6,40 +6,32 @@ two-factor authentication using Time-based One-Time Passwords (TOTP).
 """
 
 from operator import xor
-from typing import Annotated, Literal, Self
+from typing import Literal, Self
 
 import orjson
-from pydantic import StringConstraints, model_validator
+from pydantic import model_validator
 
-from include.config.constants import USERNAME_MAX_LENGTH
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.identity.types import RequestUsername
 from include.domains.security.guards.login import (
     AuthFactor,
     LoginGuard,
     ThrottleDecision,
 )
+from include.domains.security.types import TwoFactorToken
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
+    EmptyRequestDataModel,
     Omittable,
     RequestDataModel,
     RequestHandler,
     Result,
 )
-
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-_Username = Annotated[
-    str,
-    StringConstraints(min_length=1, max_length=USERNAME_MAX_LENGTH),
-]
-_Token = Annotated[str, StringConstraints(min_length=1, max_length=64)]
-
-
-class _EmptyRequest(RequestDataModel):
-    pass
+from include.types import NonEmptyString
 
 
 class _Setup2FARequest(RequestDataModel):
@@ -47,12 +39,12 @@ class _Setup2FARequest(RequestDataModel):
 
 
 class _Validate2FARequest(RequestDataModel):
-    token: _Token
+    token: TwoFactorToken
 
 
 class _Disable2FARequest(RequestDataModel):
-    username: Omittable[_Username] = REQUEST_UNSET
-    password: Omittable[_NonEmptyString] = REQUEST_UNSET
+    username: Omittable[RequestUsername] = REQUEST_UNSET
+    password: Omittable[NonEmptyString] = REQUEST_UNSET
 
     @model_validator(mode="after")
     def require_username_or_password(self) -> Self:
@@ -62,7 +54,7 @@ class _Disable2FARequest(RequestDataModel):
 
 
 class _Get2FAStatusRequest(RequestDataModel):
-    target: Omittable[_NonEmptyString] = REQUEST_UNSET
+    target: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
 def _conclude_throttled(
@@ -283,7 +275,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
     but not yet validated/enabled.
     """
 
-    request_model = _EmptyRequest
+    request_model = EmptyRequestDataModel
 
     require_auth = True
     rate_limit_cost = 1

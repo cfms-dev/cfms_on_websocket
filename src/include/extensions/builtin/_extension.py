@@ -16,7 +16,11 @@ from include.domains.operations.lockdown import lockdown_state_manager
 from include.extensions.manager import collect_extension_flags, hookimpl
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
-from include.transport.request_handler import RequestDataModel, RequestHandler, Result
+from include.transport.request_handler import (
+    EmptyRequestDataModel,
+    RequestHandler,
+    Result,
+)
 
 from ._file_deduplication import (
     file_deduplication_worker,
@@ -29,10 +33,6 @@ _active_server_lock = threading.Lock()
 _active_server: Server | None = None
 
 
-class _EmptyRequest(RequestDataModel):
-    pass
-
-
 class RequestServerInfoHandler(RequestHandler):
     """
     Handle the 'server_info' action to return server information.
@@ -41,7 +41,7 @@ class RequestServerInfoHandler(RequestHandler):
         this_handler: The ConnectionHandler instance handling the request.
     """
 
-    request_model = _EmptyRequest
+    request_model = EmptyRequestDataModel
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
@@ -68,7 +68,7 @@ class RequestShutdownHandler(RequestHandler):
         this_handler: The ConnectionHandler instance handling the request.
     """
 
-    request_model = _EmptyRequest
+    request_model = EmptyRequestDataModel
     require_auth = True
     rate_limit_cost = 1
 

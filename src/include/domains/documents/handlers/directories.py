@@ -1,10 +1,10 @@
 import secrets
 import time
 from itertools import batched
-from typing import Annotated, Any
+from typing import Any
 
 import jsonschema
-from pydantic import ConfigDict, StringConstraints
+from pydantic import ConfigDict
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.models.documents import (
@@ -64,8 +64,8 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+from include.types import NonEmptyString
 
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 _AccessRules = dict[str, list[Any]]
 
 
@@ -76,7 +76,7 @@ class _ListDirectoryRequest(RequestDataModel):
 
 
 class _DirectoryIDRequest(RequestDataModel):
-    directory_id: _NonEmptyString
+    directory_id: NonEmptyString
 
 
 class _CreateDirectoryRequest(RequestDataModel):
@@ -87,40 +87,40 @@ class _CreateDirectoryRequest(RequestDataModel):
     )
 
     parent_id: str | None = None
-    name: _NonEmptyString
+    name: NonEmptyString
     access_rules: Omittable[_AccessRules] = REQUEST_UNSET
     exists_ok: Omittable[bool] = REQUEST_UNSET
     inherit_parent: Omittable[bool] = REQUEST_UNSET
 
 
 class _FolderIDRequest(RequestDataModel):
-    folder_id: _NonEmptyString
+    folder_id: NonEmptyString
 
 
 class _RenameDirectoryRequest(RequestDataModel):
-    folder_id: _NonEmptyString
-    new_name: _NonEmptyString
+    folder_id: NonEmptyString
+    new_name: NonEmptyString
 
 
 class _MoveDirectoryRequest(RequestDataModel):
-    folder_id: _NonEmptyString
+    folder_id: NonEmptyString
     target_folder_id: str | None
 
 
 class _SetDirectoryRulesRequest(RequestDataModel):
-    directory_id: _NonEmptyString
+    directory_id: NonEmptyString
     access_rules: _AccessRules
     inherit_parent: Omittable[bool] = REQUEST_UNSET
 
 
 class _RestoreDirectoryRequest(RequestDataModel):
-    folder_id: _NonEmptyString
-    target_parent_id: Omittable[_NonEmptyString | None] = REQUEST_UNSET
-    new_name: Omittable[_NonEmptyString] = REQUEST_UNSET
+    folder_id: NonEmptyString
+    target_parent_id: Omittable[NonEmptyString | None] = REQUEST_UNSET
+    new_name: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
 class _ListDeletedItemsRequest(RequestDataModel):
-    folder_id: _NonEmptyString
+    folder_id: NonEmptyString
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
 

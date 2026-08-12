@@ -3,10 +3,6 @@ __all__ = [
     # ...
 ]
 
-from typing import Annotated
-
-from pydantic import StringConstraints
-
 from include.database.models.identity import (
     User,
     UserGroup,
@@ -16,11 +12,11 @@ from include.database.models.identity import (
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.identity.commands.groups import create_group
-from include.domains.pagination import (
-    PaginationOffset,
-    PaginationPageSize,
-    get_offset_pagination,
+from include.domains.identity.request_models import (
+    OffsetPaginationRequest,
+    TimedPermission,
 )
+from include.domains.pagination import get_offset_pagination
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
@@ -30,43 +26,31 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-
-_NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
-
-
-class _OffsetPaginationRequest(RequestDataModel):
-    offset: Omittable[PaginationOffset] = REQUEST_UNSET
-    count: Omittable[PaginationPageSize] = REQUEST_UNSET
-
-
-class _TimedPermission(RequestDataModel):
-    permission: str
-    start_time: float
-    end_time: Omittable[float] = REQUEST_UNSET
+from include.types import NonEmptyString
 
 
 class _CreateGroupRequest(RequestDataModel):
-    group_name: _NonEmptyString
+    group_name: NonEmptyString
     display_name: str | None = None
-    permissions: Omittable[list[_TimedPermission]] = REQUEST_UNSET
+    permissions: Omittable[list[TimedPermission]] = REQUEST_UNSET
 
 
 class _GroupNameRequest(RequestDataModel):
-    group_name: _NonEmptyString
+    group_name: NonEmptyString
 
 
 class _RenameGroupRequest(RequestDataModel):
-    group_name: _NonEmptyString
+    group_name: NonEmptyString
     display_name: str | None
 
 
 class _ChangeGroupPermissionsRequest(RequestDataModel):
-    group_name: _NonEmptyString
+    group_name: NonEmptyString
     permissions: list[str]
 
 
 class RequestListGroupsHandler(RequestHandler):
-    request_model = _OffsetPaginationRequest
+    request_model = OffsetPaginationRequest
 
     require_auth = True
     rate_limit_cost = 3
