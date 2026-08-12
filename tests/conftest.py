@@ -150,6 +150,17 @@ async def unauthenticated_client(
 
 
 @pytest_asyncio.fixture
+async def low_privilege_client(
+    unauthenticated_client: CFMSTestClient,
+    user_factory,
+) -> CFMSTestClient:
+    user = await user_factory()
+    response = await unauthenticated_client.login(user["username"], user["password"])
+    assert_success(response)
+    return unauthenticated_client
+
+
+@pytest_asyncio.fixture
 async def user_factory(
     authenticated_client: CFMSTestClient,
 ) -> AsyncGenerator[Callable]:

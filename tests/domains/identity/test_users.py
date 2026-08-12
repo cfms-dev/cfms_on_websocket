@@ -10,6 +10,67 @@ from tests.support.utils import assert_error, assert_success
 
 class TestUserOperations:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("action", "username_field"),
+        [
+            ("get_user_info", "username"),
+            ("get_user_avatar", "username"),
+            ("get_2fa_status", "target"),
+        ],
+    )
+    async def test_cross_user_lookup_does_not_disclose_user_existence(
+        self,
+        action: str,
+        username_field: str,
+        low_privilege_client: CFMSTestClient,
+        test_user: dict,
+    ):
+        existing_response = await low_privilege_client.send_request(
+            action,
+            {username_field: test_user["username"]},
+        )
+        missing_response = await low_privilege_client.send_request(
+            action,
+            {username_field: "nonexistent_user_xyz_12345"},
+        )
+
+        for response in (existing_response, missing_response):
+            assert response["code"] == 403
+            assert response["data"] == {}
+        assert existing_response["message"] == missing_response["message"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_login_does_not_disclose_user_existence(
+        self,
+        unauthenticated_client: CFMSTestClient,
+        test_user: dict,
+    ):
+        existing_response = await unauthenticated_client.login(
+            test_user["username"], "incorrect-password"
+        )
+        missing_response = await unauthenticated_client.login(
+            "nonexistent_user_xyz_12345", "incorrect-password"
+        )
+
+        for response in (existing_response, missing_response):
+            assert response["code"] == 401
+            assert response["message"] == "Invalid credentials"
+            assert response["data"] == {}
+
+    @pytest.mark.asyncio
+    async def test_low_privilege_user_can_get_own_identity_security_state(
+        self,
+        low_privilege_client: CFMSTestClient,
+    ):
+        user_info = await low_privilege_client.get_user_info(
+            low_privilege_client.username
+        )
+        two_factor_status = await low_privilege_client.get_2fa_status()
+
+        assert_success(user_info)
+        assert_success(two_factor_status)
+
+    @pytest.mark.asyncio
     async def test_self_password_change_is_throttled_and_can_recover(
         self,
         authenticated_client: CFMSTestClient,

@@ -226,6 +226,16 @@ class RequestDisable2FAHandler(RequestHandler):
                 )
 
         with Session() as session:
+            if not is_self:
+                requester = User.get_existing(session, requester_username)
+                if Permissions.MANAGE_2FA not in requester.all_permissions:
+                    handler.conclude_request(403, {}, "Permission denied")
+                    return Result(
+                        code=403,
+                        target=target_username,
+                        username=requester_username,
+                    )
+
             user = session.get(User, target_username)
             if not user or not user.totp_enabled:
                 handler.conclude_request(400, {}, "2FA not enabled or user not found")
@@ -252,13 +262,6 @@ class RequestDisable2FAHandler(RequestHandler):
                     handler.conclude_request(4003, {}, "User account is not active")
                     return Result(
                         code=4003, target=target_username, username=requester_username
-                    )
-            else:
-                requester = User.get_existing(session, requester_username)
-                if Permissions.MANAGE_2FA not in requester.all_permissions:
-                    handler.conclude_request(403, {}, "Permission denied")
-                    return Result(
-                        code=403, target=target_username, username=requester_username
                     )
 
             user.disable_totp()
@@ -325,15 +328,6 @@ class RequestGet2FAStatusHandler(RequestHandler):
 
         with Session() as session:
             user = User.get_existing(session, handler.username)
-            target = session.get(User, target_username)
-
-            if not target:
-                handler.conclude_request(
-                    code=404,
-                    message="Target user not found",
-                    data={},
-                )
-                return
 
             if (
                 target_username != handler.username
@@ -347,6 +341,15 @@ class RequestGet2FAStatusHandler(RequestHandler):
                 return Result(
                     code=403, target=target_username, username=handler.username
                 )
+
+            target = session.get(User, target_username)
+            if not target:
+                handler.conclude_request(
+                    code=404,
+                    message="Target user not found",
+                    data={},
+                )
+                return
 
             handler.conclude_request(
                 code=200,

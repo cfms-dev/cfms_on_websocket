@@ -158,7 +158,7 @@ def _describe_node_name_conflict_winner(winner: Node, user: User) -> tuple[dict,
             payload["entity"] = winner
         message = smsg.DIRECTORY_NAME_DUPLICATE
     else:
-        raise RuntimeError(f"Unsupported conflicting node type: {winner.type!r}")
+        raise TypeError(f"Unsupported conflicting node type: {winner.type!r}")
 
     if visible_id is not None:
         payload["duplicate_id"] = visible_id

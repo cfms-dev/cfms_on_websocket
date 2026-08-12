@@ -12,6 +12,66 @@ class TestTwoFactorAuth:
     """Test two-factor authentication setup, validation, and cancellation."""
 
     @pytest.mark.asyncio
+    async def test_disable_2fa_does_not_disclose_cross_user_target(
+        self,
+        authenticated_client: CFMSTestClient,
+        admin_credentials: dict,
+        low_privilege_client: CFMSTestClient,
+    ):
+        setup_started = False
+        two_factor_enabled = False
+        try:
+            setup_response = await authenticated_client.setup_2fa()
+            assert setup_response.get("code") == 200, "Failed to setup 2FA"
+            setup_started = True
+
+            token = pyotp.TOTP(setup_response["data"]["secret"]).now()
+            validation_response = await authenticated_client.validate_2fa(token)
+            assert validation_response.get("code") == 200
+            two_factor_enabled = True
+
+            existing_response = await low_privilege_client.send_request(
+                "disable_2fa",
+                {"username": admin_credentials["username"]},
+            )
+            missing_response = await low_privilege_client.send_request(
+                "disable_2fa",
+                {"username": "nonexistent_user_xyz_12345"},
+            )
+
+            for response in (existing_response, missing_response):
+                assert response["code"] == 403
+                assert response["message"] == "Permission denied"
+                assert response["data"] == {}
+
+            status_response = await authenticated_client.get_2fa_status()
+            assert status_response["data"]["enabled"] is True
+        finally:
+            if two_factor_enabled:
+                await authenticated_client.cancel_2fa(admin_credentials["password"])
+            elif setup_started:
+                await authenticated_client.cancel_2fa_setup()
+
+    @pytest.mark.asyncio
+    async def test_manage_2fa_permission_preserves_target_diagnostics(
+        self,
+        authenticated_client: CFMSTestClient,
+        test_user: dict,
+    ):
+        existing_response = await authenticated_client.send_request(
+            "get_2fa_status",
+            {"target": test_user["username"]},
+        )
+        missing_response = await authenticated_client.send_request(
+            "get_2fa_status",
+            {"target": "nonexistent_user_xyz_12345"},
+        )
+
+        assert existing_response["code"] == 200
+        assert missing_response["code"] == 404
+        assert missing_response["message"] == "Target user not found"
+
+    @pytest.mark.asyncio
     async def test_get_2fa_status_disabled_by_default(
         self, authenticated_client: CFMSTestClient
     ):

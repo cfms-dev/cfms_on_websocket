@@ -644,13 +644,6 @@ class RequestGetUserInfoHandler(RequestHandler):
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
 
-            user_to_get = session.get(User, user_to_get_username)
-            if not user_to_get:
-                handler.conclude_request(
-                    code=404, message="User does not exist", data={}
-                )
-                return
-
             if (
                 user_to_get_username != this_user.username
                 and Permissions.GET_USER_INFO not in this_user.all_permissions
@@ -659,6 +652,13 @@ class RequestGetUserInfoHandler(RequestHandler):
                     code=403,
                     message="You do not have permission to get user information",
                     data={},
+                )
+                return
+
+            user_to_get = session.get(User, user_to_get_username)
+            if not user_to_get:
+                handler.conclude_request(
+                    code=404, message="User does not exist", data={}
                 )
                 return
 
@@ -702,13 +702,6 @@ class RequestGetUserAvatarHandler(RequestHandler):
             # when require_auth is True, user authentication has been verified
             this_user = User.get_existing(session, handler.username)
 
-            user_to_get = session.get(User, user_to_get_username)
-            if not user_to_get:
-                handler.conclude_request(
-                    code=404, message="User does not exist", data={}
-                )
-                return
-
             if (
                 user_to_get_username != this_user.username
                 and Permissions.GET_USER_INFO not in this_user.all_permissions
@@ -717,6 +710,13 @@ class RequestGetUserAvatarHandler(RequestHandler):
                     code=403,
                     message="You do not have permission to get user information",
                     data={},
+                )
+                return
+
+            user_to_get = session.get(User, user_to_get_username)
+            if not user_to_get:
+                handler.conclude_request(
+                    code=404, message="User does not exist", data={}
                 )
                 return
 
