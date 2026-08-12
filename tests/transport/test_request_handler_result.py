@@ -125,16 +125,31 @@ def test_router_returns_429_before_constructing_rate_limited_handler(
     ]
 
 
-def test_router_reports_pydantic_request_validation_errors(monkeypatch, tmp_path):
+def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch, tmp_path):
     _prepare_config(monkeypatch, tmp_path)
 
+    import orjson
+    from pydantic import Field, field_validator
+
     from include.transport import router
+    from include.transport.connection import send_conclusion
+    from include.transport.multiplexing import FrameType
     from include.transport.request_handler import RequestDataModel
 
-    responses = []
+    sent_frames = []
+
+    class NestedRequest(RequestDataModel):
+        secret: int
+        count: int = Field(gt=10)
+        label: str
+
+        @field_validator("label")
+        @classmethod
+        def reject_label(cls, _value: str) -> str:
+            raise ValueError("label is reserved")
 
     class InvalidRequest(RequestDataModel):
-        value: int
+        item: NestedRequest
 
     class PydanticHandler:
         request_model = InvalidRequest
@@ -148,13 +163,20 @@ def test_router_reports_pydantic_request_validation_errors(monkeypatch, tmp_path
         def __init__(self, stream):
             self.stream = stream
             self.action = "pydantic_action"
-            self.data = {"value": "1"}
+            self.data = {
+                "item": {
+                    "secret": "correct-horse-battery-staple",
+                    "count": 1,
+                    "label": "private-label",
+                },
+                "extra": "private-extra",
+            }
             self.username = ""
             self.token = ""
             self.remote_address = "192.0.2.10"
 
         def conclude_request(self, code, data, message):
-            responses.append((code, data, message))
+            send_conclusion(self.stream, code, data, message)
 
     monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
     monkeypatch.setattr(router, "get_client_ip", lambda _websocket: "192.0.2.10")
@@ -174,17 +196,50 @@ def test_router_reports_pydantic_request_validation_errors(monkeypatch, tmp_path
         lambda: SimpleNamespace(enabled=False),
     )
     monkeypatch.setitem(router.available_functions, "pydantic_action", PydanticHandler)
-    stream = SimpleNamespace(connection=SimpleNamespace(_ws=object()))
+    stream = SimpleNamespace(
+        connection=SimpleNamespace(_ws=object()),
+        send=lambda data, frame_type: sent_frames.append((data, frame_type)),
+    )
 
     router.handle_request(stream)
 
-    assert responses == [
-        (
-            400,
-            {"validator": "int_type", "validator_value": None},
-            "value: Input should be a valid integer",
-        )
-    ]
+    assert len(sent_frames) == 1
+    response_data, frame_type = sent_frames[0]
+    assert frame_type is FrameType.CONCLUSION
+    assert b"correct-horse-battery-staple" not in response_data
+    assert b"private-label" not in response_data
+    assert b"private-extra" not in response_data
+
+    response = orjson.loads(response_data)
+    assert isinstance(response.pop("timestamp"), float)
+    assert response == {
+        "code": 400,
+        "data": {
+            "errors": [
+                {
+                    "type": "int_type",
+                    "loc": ["item", "secret"],
+                    "msg": "Input should be a valid integer",
+                },
+                {
+                    "type": "greater_than",
+                    "loc": ["item", "count"],
+                    "msg": "Input should be greater than 10",
+                },
+                {
+                    "type": "value_error",
+                    "loc": ["item", "label"],
+                    "msg": "Value error, label is reserved",
+                },
+                {
+                    "type": "extra_forbidden",
+                    "loc": ["extra"],
+                    "msg": "Extra inputs are not permitted",
+                },
+            ]
+        },
+        "message": "Invalid request data",
+    }
 
 
 def test_router_keeps_validated_request_data_as_the_original_dict(

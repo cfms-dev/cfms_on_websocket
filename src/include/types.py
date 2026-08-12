@@ -18,6 +18,7 @@ from typing import Annotated, Any
 from annotated_types import Gt, Le
 from pydantic import (
     BeforeValidator,
+    Field,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
@@ -36,7 +37,15 @@ def _normalize_json_integer(value: Any) -> Any:
     return value
 
 
-JsonInteger = Annotated[int, BeforeValidator(_normalize_json_integer)]
+JsonInteger = Annotated[
+    int,
+    BeforeValidator(_normalize_json_integer),
+    Field(
+        description=(
+            "Integer following JSON Schema semantics. Integral floats are accepted."
+        )
+    ),
+]
 
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 

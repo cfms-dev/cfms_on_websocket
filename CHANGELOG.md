@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   `RequestDataModel` subclass as `request_model`; legacy `schema` dictionaries
   are no longer supported. The validated request remains available to handlers
   as the original JSON dictionary.
+- Return every request-data validation failure in `data.errors` using Pydantic's
+  `type`, `loc`, and `msg` fields while omitting submitted input, validation
+  context, and documentation URLs from client responses.
 - Assign calibrated request-token costs to every core, built-in extension,
   optional OIDC, and debugging action while preserving per-deployment
   `action_costs` overrides.

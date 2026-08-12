@@ -122,6 +122,30 @@ must reject an explicit JSON `null`; use `T | None` when `null` is valid. After
 validation, `ConnectionHandler.data` remains the original JSON dictionary, so
 existing handler and hook code may continue to use dictionary operations.
 
+When request data fails validation, the server returns `400` with every safe
+Pydantic error under `data.errors`:
+
+```json
+{
+  "code": 400,
+  "data": {
+    "errors": [
+      {
+        "type": "int_type",
+        "loc": ["value"],
+        "msg": "Input should be a valid integer"
+      }
+    ]
+  },
+  "message": "Invalid request data"
+}
+```
+
+Each error contains only `type`, `loc`, and `msg`. The submitted input,
+validation context, and Pydantic documentation URL are omitted. Extension
+validators must use static, client-safe error messages and must not interpolate
+request values, credentials, or other secrets into validation errors.
+
 Extensions that own background services may implement `ext_on_startup()` and
 `ext_on_shutdown()`. Startup runs after the database, providers, and request
 handlers are ready. Shutdown runs whenever the serving loop exits, including
