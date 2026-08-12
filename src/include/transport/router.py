@@ -340,7 +340,12 @@ def handle_connection(websocket: ServerConnection):
     finally:
         if multiplexer is not None:
             multiplexer.close()
-        websocket.close()
+            websocket.close(
+                code=multiplexer.close_code,
+                reason=multiplexer.close_reason,
+            )
+        else:
+            websocket.close()
 
         if multiplexer is not None:
             with clients_lock:
@@ -376,8 +381,7 @@ def handle_request(stream: Stream):
         stream.send(orjson.dumps(response), frame_type=FrameType.CONCLUSION)
         # Force-close the WebSocket connection.
         # 1008 is the WebSocket policy violation close code.
-        stream.connection.close()
-        stream.connection._ws.close(code=1008, reason="IP address is not permitted")
+        stream.connection.close(code=1008, reason="IP address is not permitted")
         return
 
     try:

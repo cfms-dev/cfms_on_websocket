@@ -125,6 +125,116 @@ def test_router_returns_429_before_constructing_rate_limited_handler(
     ]
 
 
+def test_router_closes_multiplexer_with_policy_violation_for_denied_ip(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+
+    close_calls = []
+
+    class FakeConnection:
+        _ws = object()
+
+        def close(self, *args, **kwargs):
+            close_calls.append((args, kwargs))
+
+    class FakeStream:
+        connection = FakeConnection()
+
+        def send(self, data, frame_type):
+            pass
+
+    monkeypatch.setattr(router, "get_client_ip", lambda _websocket: "192.0.2.10")
+    monkeypatch.setattr(
+        router.LoginGuard,
+        "evaluate_subnet_access",
+        lambda _ip: SimpleNamespace(allowed=False),
+    )
+
+    router.handle_request(FakeStream())
+
+    assert close_calls == [
+        ((), {"code": 1008, "reason": "IP address is not permitted"})
+    ]
+
+
+def test_connection_handler_closes_websocket_before_post_disconnect(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+
+    events = []
+
+    class FakeWebSocket:
+        remote_address = ("192.0.2.10", 12345)
+        disconnected = False
+
+        def close(self, *, code=1000, reason=""):
+            events.append(("websocket_close", code, reason))
+            self.disconnected = True
+
+    class FakeMultiplexer:
+        def __init__(self, websocket, *, max_pending_inbound_streams):
+            self.websocket = websocket
+            self.close_code = 1000
+            self.close_reason = ""
+            self.close_started = False
+
+        def accept_stream(self):
+            self.close(code=1013, reason="inbound overload")
+            return None
+
+        def close(self, code=1000, reason=""):
+            if self.close_started:
+                return
+            self.close_started = True
+            self.close_code = code
+            self.close_reason = reason
+            events.append(("logical_close", code, reason))
+
+    class FakeHooks:
+        def ext_on_connect(self, *, websocket):
+            events.append(("on_connect",))
+
+        def ext_post_disconnect(self):
+            assert websocket.disconnected
+            events.append(("post_disconnect",))
+
+    class FakeAdmissionController:
+        def acquire_connection(self, _ip):
+            return SimpleNamespace(allowed=True)
+
+        def release_connection(self, _ip):
+            assert websocket.disconnected
+            events.append(("release_connection",))
+
+    websocket = FakeWebSocket()
+    monkeypatch.setattr(router, "get_client_ip", lambda _websocket: "192.0.2.10")
+    monkeypatch.setattr(router, "get_client_cert_subject", lambda _websocket: None)
+    monkeypatch.setattr(router, "MultiplexedConnection", FakeMultiplexer)
+    monkeypatch.setattr(
+        router.AdmissionControlPolicy,
+        "from_config",
+        lambda: SimpleNamespace(max_pending_streams_per_connection=16),
+    )
+    monkeypatch.setattr(router, "admission_controller", FakeAdmissionController())
+    monkeypatch.setattr(router, "pm", SimpleNamespace(hook=FakeHooks()))
+
+    router.handle_connection(websocket)
+
+    assert events == [
+        ("on_connect",),
+        ("logical_close", 1013, "inbound overload"),
+        ("websocket_close", 1013, "inbound overload"),
+        ("post_disconnect",),
+        ("release_connection",),
+    ]
+
+
 def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch, tmp_path):
     _prepare_config(monkeypatch, tmp_path)
 

@@ -14,6 +14,7 @@ FRAME_HEADER_FORMAT = "!IB"  # 4 bytes for stream_id, 1 byte for frame_type
 FRAME_HEADER = struct.Struct(FRAME_HEADER_FORMAT)
 FRAME_HEADER_SIZE = FRAME_HEADER.size
 OUTBOUND_QUEUE_SIZE = 1024
+MAX_PENDING_FRAMES_PER_STREAM = 128
 QUEUE_POLL_INTERVAL = 0.05
 
 logger = log.bind(name="multiplexer")
@@ -128,7 +129,7 @@ class Stream:
     def __init__(self, connection: MultiplexedConnection, frame_id: int) -> None:
         self.connection = connection
         self.frame_id = frame_id
-        self._queue: queue.Queue[Frame | None] = queue.Queue(100)
+        self._queue: queue.Queue[Frame] = queue.Queue(MAX_PENDING_FRAMES_PER_STREAM)
 
     def send(self, data: DataLike, frame_type: FrameType = FrameType.PROCESS) -> None:
         """Send data on this stream."""
@@ -145,19 +146,24 @@ class Stream:
     def recv(self, timeout: float | None = None) -> Frame:
         """Receive data for this stream, blocking until a frame is available."""
         try:
-            frame = self._queue.get(timeout=timeout)
+            return self._queue.get(timeout=timeout)
         except queue.Empty as exc:
             raise TimeoutError(
                 "Timed out while waiting for multiplexed stream frame"
             ) from exc
+        except queue.ShutDown as exc:
+            raise ConnectionClosedError from exc
 
-        if frame is None:
-            raise ConnectionClosedError
-        return frame
-
-    def _put_incoming_frame(self, frame: Frame | None) -> None:
+    def _put_incoming_frame(self, frame: Frame) -> bool:
         """Queue a frame for this stream. Called by the dispatcher."""
-        self._queue.put(frame)
+        try:
+            self._queue.put_nowait(frame)
+        except queue.ShutDown:
+            return False
+        return True
+
+    def _close(self) -> None:
+        self._queue.shutdown()
 
 
 class MultiplexedConnection:
@@ -180,7 +186,7 @@ class MultiplexedConnection:
         self._streams_lock = threading.Lock()
 
         # Pending queue for inbound streams.
-        self._pending_inbound_streams: queue.Queue[Stream | None] = queue.Queue(
+        self._pending_inbound_streams: queue.Queue[Stream] = queue.Queue(
             max_pending_inbound_streams
         )
 
@@ -197,6 +203,9 @@ class MultiplexedConnection:
         self._send_state_lock = threading.Lock()
 
         self._is_running = True
+        self._close_started = False
+        self.close_code = 1000
+        self.close_reason = ""
 
         self._dispatcher = threading.Thread(target=self._recv_loop, daemon=True)
         self._dispatcher.start()
@@ -220,7 +229,10 @@ class MultiplexedConnection:
 
     def accept_stream(self) -> Stream | None:
         """Wait for and return a new stream created by the peer."""
-        return self._pending_inbound_streams.get()
+        try:
+            return self._pending_inbound_streams.get()
+        except queue.ShutDown:
+            return None
 
     def _recv_loop(self) -> None:
         try:
@@ -229,8 +241,11 @@ class MultiplexedConnection:
                 frame = decode_frame(raw_payload)
 
                 close_for_protocol_error = False
+                close_for_inbound_overload = False
 
                 with self._streams_lock:
+                    if not self._is_running:
+                        return
                     target_stream = self._streams.get(frame.stream_id)
                     if target_stream is None:
                         if frame.stream_id % 2 == 0:
@@ -250,15 +265,18 @@ class MultiplexedConnection:
                                     f"({self.remote_address[0]}): Too many pending "
                                     "inbound streams"
                                 )
-                                self._ws.close(
-                                    code=1013,
-                                    reason="Too many pending request streams",
-                                )
-                                return
+                                close_for_inbound_overload = True
                             target_stream = new_stream
 
+                if close_for_inbound_overload:
+                    self.close(
+                        code=1013,
+                        reason="Too many pending request streams",
+                    )
+                    return
+
                 if close_for_protocol_error:
-                    self._ws.close(
+                    self.close(
                         code=1002,
                         reason="Protocol error: invalid client-initiated stream",
                     )
@@ -267,7 +285,21 @@ class MultiplexedConnection:
                 if target_stream is None:
                     continue
 
-                target_stream._put_incoming_frame(frame)
+                try:
+                    frame_queued = target_stream._put_incoming_frame(frame)
+                except queue.Full:
+                    logger.warning(
+                        f"({self.remote_address[0]}): Too many pending frames for "
+                        f"stream {frame.stream_id}"
+                    )
+                    self.close(
+                        code=1013,
+                        reason="Too many pending frames for one stream",
+                    )
+                    return
+
+                if not frame_queued:
+                    return
 
                 # Reclaim routing table memory when the peer sends an end frame.
                 if frame.frame_type == FrameType.CONCLUSION:
@@ -276,24 +308,13 @@ class MultiplexedConnection:
 
         except InvalidFrameError as exc:
             logger.warning(f"({self.remote_address[0]}): Invalid frame: {exc}")
-            self._ws.close(code=exc.close_code, reason=exc.close_reason)
+            self.close(code=exc.close_code, reason=exc.close_reason)
         except ConnectionClosed:
             logger.info(f"({self.remote_address[0]}): WebSocket connection closed")
         except Exception:
             logger.exception(f"({self.remote_address[0]}): Error in receive loop")
         finally:
-            with self._send_state_lock:
-                self._is_running = False
-            try:
-                self._pending_inbound_streams.put_nowait(None)
-            except queue.Full:
-                self._pending_inbound_streams.get_nowait()
-                self._pending_inbound_streams.put_nowait(None)
-
-            # Wake all threads blocked in Stream.recv() to prevent deadlocks.
-            with self._streams_lock:
-                for stream in self._streams.values():
-                    stream._put_incoming_frame(None)
+            self.close()
 
     def _enqueue_frame(
         self,
@@ -406,12 +427,7 @@ class MultiplexedConnection:
                     with self._send_state_lock:
                         self._writer_error = exc
                         self._is_running = False
-                        self._fail_pending_sends(exc)
-                    try:
-                        self._ws.close()
-                    except Exception:  # noqa: BLE001, S110 - close is best-effort after a write failure.
-                        # The send failure is already reported to callers.
-                        pass
+                    self.close()
                     return
 
                 if item.done is not None:
@@ -434,17 +450,29 @@ class MultiplexedConnection:
             if item.done is not None:
                 item.done.set()
 
-    def close(self) -> None:
+    def close(self, code: int = 1000, reason: str = "") -> None:
+        """Request a logical close without waiting for WebSocket I/O."""
         with self._send_state_lock:
+            if self._close_started:
+                return
+            self._close_started = True
+            self.close_code = code
+            self.close_reason = reason
             self._is_running = False
-            self._fail_pending_sends(ConnectionClosedError("Connection is closing"))
+            close_error = self._writer_error or ConnectionClosedError(
+                "Connection is closing"
+            )
+            self._fail_pending_sends(close_error)
             try:
                 self._pending_outbound_frames.put_nowait(None)
             except queue.Full:
                 # Pending senders were already failed; closing must not block.
                 pass
-        try:
-            self._ws.close()
-        except Exception:  # noqa: BLE001, S110 - close is safe to call repeatedly.
-            # Close is best-effort because callers may invoke it repeatedly.
-            pass
+
+        with self._streams_lock:
+            streams = tuple(self._streams.values())
+            self._streams.clear()
+            self._pending_inbound_streams.shutdown(immediate=True)
+
+        for stream in streams:
+            stream._close()
