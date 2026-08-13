@@ -101,7 +101,11 @@ def restore_extension_modules():
         for name in EXTENSION_MODULE_NAMES
         if name in sys.modules
     }
+    saved_metadata = extension_manager._loaded_extension_metadata.copy()
+    extension_manager._loaded_extension_metadata.clear()
     yield
+    extension_manager._loaded_extension_metadata.clear()
+    extension_manager._loaded_extension_metadata.update(saved_metadata)
     for name in EXTENSION_MODULE_NAMES:
         if name in saved_modules:
             sys.modules[name] = saved_modules[name]
@@ -436,6 +440,13 @@ def test_extensions_are_registered_in_configuration_order(monkeypatch, tmp_path)
 
     registered = [name for name, _plugin in pm.list_name_plugin()]
     assert registered == ["builtin", "first_ext", "second_ext"]
+    metadata = extension_manager.get_loaded_extension_metadata()
+    assert [entry.identifier for entry in metadata] == [
+        "builtin",
+        "first_ext",
+        "second_ext",
+    ]
+    assert [entry.version for entry in metadata] == ["1.0.0", "1.0.0", "1.0.0"]
 
 
 def test_duplicate_enabled_extension_identifiers_are_rejected(monkeypatch, tmp_path):
@@ -509,6 +520,7 @@ def test_extension_batch_rolls_back_when_later_import_fails(monkeypatch, tmp_pat
     assert "builtin" not in sys.modules
     assert "first_ext" not in sys.modules
     assert "second_ext" not in sys.modules
+    assert extension_manager.get_loaded_extension_metadata() == ()
 
 
 def test_incompatible_extension_prevents_entire_batch_import(monkeypatch, tmp_path):

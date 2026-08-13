@@ -37,7 +37,8 @@ format:
 `MAJOR.MINOR.PATCH[.BUILD][_TYPE[NUMBER]]`. Supported release types are `alpha`,
 `beta`, `rc`, and `release`, ordered from earliest to latest; omitting the type is
 equivalent to `release`. Version values must be bare versions without comparison
-operators.
+operators. Authorized administrators can read the running core version from
+`diagnostics.server.core_version`.
 
 Flat manifest version 1 files are no longer supported. Extension developers must
 set `manifest_version = 2`, move descriptive fields into `[extension]`, and add

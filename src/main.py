@@ -148,6 +148,7 @@ def server_init():
             {"permission": Permissions.DELETE_DIRECTORY},
             {"permission": Permissions.RENAME_DIRECTORY},
             {"permission": Permissions.MANAGE_SYSTEM},
+            {"permission": Permissions.DIAGNOSTICS},
             {"permission": Permissions.CREATE_USER},
             {"permission": Permissions.DELETE_USER},
             {"permission": Permissions.RENAME_USER},

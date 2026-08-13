@@ -2,11 +2,13 @@ import asyncio
 import ssl
 import struct
 import time
+from importlib.metadata import version as distribution_version
 
 import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
+from include.config.constants import CORE_VERSION
 from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings
 from tests.support.utils import assert_error, assert_success
@@ -18,7 +20,185 @@ def _format_ws_host(host: str) -> str:
     return host
 
 
+def _collect_keys(value) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {
+            nested_key
+            for nested_value in value.values()
+            for nested_key in _collect_keys(nested_value)
+        }
+    if isinstance(value, list):
+        return {
+            nested_key
+            for nested_value in value
+            for nested_key in _collect_keys(nested_value)
+        }
+    return set()
+
+
 class TestSystemManagement:
+    @pytest.mark.asyncio
+    async def test_diagnostics_requires_authentication(self, client: CFMSTestClient):
+        response = await client.send_request("diagnostics", include_auth=False)
+        assert_error(response, 401)
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_requires_dedicated_permission(
+        self,
+        authenticated_client: CFMSTestClient,
+        low_privilege_client: CFMSTestClient,
+    ):
+        response = await low_privilege_client.diagnostics()
+        assert_error(response, 403)
+
+        audit_items = assert_success(
+            await authenticated_client.view_audit_logs(filters=["diagnostics"])
+        )["items"]
+        denied = next(
+            item
+            for item in audit_items
+            if item["username"] == low_privilege_client.username
+        )
+        assert denied["result"] == 403
+        assert denied["data"] is None
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_returns_allowlisted_snapshot_and_audits_access(
+        self, authenticated_client: CFMSTestClient
+    ):
+        diagnostics = assert_success(await authenticated_client.diagnostics())
+
+        assert set(diagnostics) == {
+            "schema_version",
+            "server",
+            "runtime",
+            "component_versions",
+            "database",
+            "providers",
+            "extensions",
+            "extension_flags",
+            "lockdown",
+        }
+        assert diagnostics["schema_version"] == 1
+        assert diagnostics["server"] == {
+            "server_name": "CFMS WebSocket Server",
+            "core_version": CORE_VERSION.original,
+            "protocol_version": 22,
+            "debug_configured": True,
+        }
+        assert set(diagnostics["runtime"]) == {
+            "python_implementation",
+            "python_version",
+            "openssl_version",
+            "operating_system",
+            "operating_system_release",
+            "architecture",
+        }
+        assert all(isinstance(value, str) for value in diagnostics["runtime"].values())
+        expected_components = {
+            component: distribution_version(distribution)
+            for component, distribution in {
+                "cryptography": "cryptography",
+                "orjson": "orjson",
+                "pluggy": "pluggy",
+                "pydantic": "pydantic",
+                "sqlalchemy": "SQLAlchemy",
+                "websockets": "websockets",
+            }.items()
+        }
+        assert diagnostics["component_versions"] == expected_components
+        assert diagnostics["database"] == {
+            "dialect": "sqlite",
+            "driver": "pysqlite",
+        }
+        assert diagnostics["providers"] == {
+            "storage": "local",
+            "caching": "memory",
+            "event_bus": "local",
+            "rate_limit": "memory",
+        }
+        assert diagnostics["extensions"][0] == {
+            "identifier": "builtin",
+            "name": "CFMS Built-in Extension",
+            "version": "0.5.0",
+        }
+        assert isinstance(diagnostics["extension_flags"], list)
+        assert diagnostics["lockdown"] == {"enabled": False, "reason": None}
+
+        forbidden_keys = {
+            "path",
+            "hostname",
+            "host",
+            "ip",
+            "ip_address",
+            "port",
+            "url",
+            "database_name",
+            "bucket",
+            "credentials",
+            "password",
+            "secret",
+            "secret_key",
+            "certificate",
+            "environment",
+            "pid",
+            "logs",
+            "traceback",
+            "users",
+        }
+        assert _collect_keys(diagnostics).isdisjoint(forbidden_keys)
+
+        audit_items = assert_success(
+            await authenticated_client.view_audit_logs(filters=["diagnostics"])
+        )["items"]
+        assert audit_items[0]["action"] == "diagnostics"
+        assert audit_items[0]["result"] == 0
+        assert audit_items[0]["data"] is None
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_requires_lockdown_bypass(
+        self,
+        authenticated_client: CFMSTestClient,
+        test_server_settings: ServerTestSettings,
+        user_factory,
+    ):
+        user = await user_factory()
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                user["username"], ["diagnostics"]
+            )
+        )
+        diagnostics_client = CFMSTestClient(
+            host=test_server_settings.host,
+            port=test_server_settings.port,
+            use_ssl=test_server_settings.use_ssl,
+        )
+        await diagnostics_client.connect()
+        assert_success(
+            await diagnostics_client.login(user["username"], user["password"])
+        )
+
+        try:
+            assert_success(
+                await authenticated_client.set_lockdown(True, "Scheduled maintenance")
+            )
+            lockdown_error = assert_error(
+                await diagnostics_client.diagnostics(),
+                999,
+            )
+            assert lockdown_error["data"] == {
+                "status": True,
+                "reason": "Scheduled maintenance",
+            }
+            admin_diagnostics = assert_success(await authenticated_client.diagnostics())
+            assert admin_diagnostics["lockdown"] == {
+                "enabled": True,
+                "reason": "Scheduled maintenance",
+            }
+        finally:
+            assert_success(await authenticated_client.set_lockdown(False))
+            await diagnostics_client.disconnect()
+
     @pytest.mark.asyncio
     async def test_lockdown_enabled(
         self, authenticated_client: CFMSTestClient, user_factory

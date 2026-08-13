@@ -8,6 +8,7 @@ __all__ = [
     "ExtensionMetadata",
     "collect_extension_flags",
     "discover_extensions",
+    "get_loaded_extension_metadata",
     "load_extensions_from_directory",
     "parse_extension_manifest",
     "pm",
@@ -83,6 +84,9 @@ class ExtensionMetadata(BaseModel):
     license: TrimmedNonEmptyString
     description: TrimmedNonEmptyString | None = None
     homepage: TrimmedNonEmptyString | None = None
+
+
+_loaded_extension_metadata: dict[str, ExtensionMetadata] = {}
 
 
 class ExtensionCompatibility(BaseModel):
@@ -343,6 +347,7 @@ class ServerHookSpecs(ABC):
 
 def _rollback_extension(ext_name: str) -> None:
     pm.unregister(name=ext_name)
+    _loaded_extension_metadata.pop(ext_name, None)
     sys.modules.pop(ext_name, None)
 
 
@@ -365,6 +370,7 @@ def _load_extension(extension: DiscoveredExtension) -> None:
         sys.modules[ext_name] = module
         spec.loader.exec_module(module)
         pm.register(module, name=ext_name)
+        _loaded_extension_metadata[ext_name] = extension.manifest.extension
         registered = True
     except ExtensionLoadError:
         raise
@@ -461,6 +467,10 @@ def collect_extension_flags() -> list[str]:
             flags.add(flag)
 
     return sorted(flags)
+
+
+def get_loaded_extension_metadata() -> tuple[ExtensionMetadata, ...]:
+    return tuple(_loaded_extension_metadata.values())
 
 
 pm = pluggy.PluginManager("cfms")

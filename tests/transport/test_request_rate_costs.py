@@ -81,6 +81,7 @@ EXPECTED_CORE_ACTION_COSTS = {
 }
 
 EXPECTED_EXTRA_HANDLER_COSTS = {
+    "RequestDiagnosticsHandler": 3,
     "RequestServerInfoHandler": 1,
     "RequestShutdownHandler": 1,
     "RequestOIDCStartHandler": 3,
@@ -157,6 +158,6 @@ def test_all_known_costs_fit_default_request_buckets():
         *EXPECTED_EXTRA_HANDLER_COSTS.values(),
     )
 
-    assert len(all_costs) == 78
+    assert len(all_costs) == 79
     assert set(all_costs) == {1, 2, 3, 5, 10, 20}
     assert all(0 < cost <= capacity for cost in all_costs)

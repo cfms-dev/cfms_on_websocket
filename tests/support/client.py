@@ -451,6 +451,10 @@ class CFMSTestClient:
         """
         return await self.send_request("server_info", include_auth=False)
 
+    async def diagnostics(self) -> dict[str, Any]:
+        """Get permission-protected server diagnostics."""
+        return await self.send_request("diagnostics")
+
     async def refresh_token(self) -> dict[str, Any]:
         """
         Refresh the authentication token.

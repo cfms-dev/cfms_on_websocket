@@ -38,6 +38,7 @@ class Permissions(StrEnum):
     tasks that have not been assigned to other specific permissions.
     """
     DEBUGGING = "debugging"
+    DIAGNOSTICS = "diagnostics"
 
     # User management
     CREATE_USER = "create_user"

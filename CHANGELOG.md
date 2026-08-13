@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Add a permission-protected `diagnostics` action with a fixed, non-secret
+  runtime snapshot and a dedicated `diagnostics` permission granted to `sysop`
+  by default.
 - Add adaptive download controls at task issuance and transfer start, with
   persistent account, IP, and bearer-task token buckets, observe/enforce modes,
   structured risk telemetry, and a `bypass_document_download_rate_limit`

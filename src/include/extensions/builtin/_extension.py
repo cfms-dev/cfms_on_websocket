@@ -1,4 +1,7 @@
+import platform
+import ssl
 import threading
+from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING
 
 from loguru import logger as log
@@ -7,13 +10,17 @@ from websockets.sync.server import Server
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
 
-from include.config.constants import PROTOCOL_VERSION
+from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from include.config.settings import global_config
 from include.database.models.identity import User
-from include.database.session import Session
+from include.database.session import Session, engine
 from include.domains.access.permissions import Permissions
 from include.domains.operations.lockdown import lockdown_state_manager
-from include.extensions.manager import collect_extension_flags, hookimpl
+from include.extensions.manager import (
+    collect_extension_flags,
+    get_loaded_extension_metadata,
+    hookimpl,
+)
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
@@ -31,6 +38,30 @@ from ._file_deduplication import (
 logger = log.bind(name="builtin")
 _active_server_lock = threading.Lock()
 _active_server: Server | None = None
+
+_CORE_COMPONENT_DISTRIBUTIONS = {
+    "cryptography": "cryptography",
+    "orjson": "orjson",
+    "pluggy": "pluggy",
+    "pydantic": "pydantic",
+    "sqlalchemy": "SQLAlchemy",
+    "websockets": "websockets",
+}
+
+
+def _component_versions() -> dict[str, str]:
+    distributions = dict(_CORE_COMPONENT_DISTRIBUTIONS)
+    provider_config = global_config["provider"]
+    if "redis" in provider_config.values():
+        distributions["redis"] = "redis"
+    if provider_config["storage"] == "s3":
+        distributions["boto3"] = "boto3"
+    if global_config["database"]["type"] == "mysql":
+        distributions["mysql_connector_python"] = "mysql-connector-python"
+    return {
+        component: distribution_version(distribution)
+        for component, distribution in distributions.items()
+    }
 
 
 class RequestServerInfoHandler(RequestHandler):
@@ -57,6 +88,67 @@ class RequestServerInfoHandler(RequestHandler):
         handler.conclude_request(
             200, server_info, "Server information retrieved successfully"
         )
+
+
+class RequestDiagnosticsHandler(RequestHandler):
+    request_model = EmptyRequestDataModel
+    require_auth = True
+    rate_limit_cost = 3
+
+    def handle(self, handler: ConnectionHandler):
+        with Session() as session:
+            user = User.get_existing(session, handler.username)
+            if Permissions.DIAGNOSTICS not in user.all_permissions:
+                handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
+                return Result(code=403, target=None, username=handler.username)
+
+        lockdown_state = lockdown_state_manager.get_state()
+        provider_config = global_config["provider"]
+        diagnostics = {
+            "schema_version": 1,
+            "server": {
+                "server_name": global_config["server"]["name"],
+                "core_version": CORE_VERSION.original,
+                "protocol_version": PROTOCOL_VERSION,
+                "debug_configured": global_config["debug"],
+            },
+            "runtime": {
+                "python_implementation": platform.python_implementation(),
+                "python_version": platform.python_version(),
+                "openssl_version": ssl.OPENSSL_VERSION,
+                "operating_system": platform.system(),
+                "operating_system_release": platform.release(),
+                "architecture": platform.machine(),
+            },
+            "component_versions": _component_versions(),
+            "database": {
+                "dialect": engine.dialect.name,
+                "driver": engine.dialect.driver,
+            },
+            "providers": {
+                "storage": provider_config["storage"],
+                "caching": provider_config["caching"],
+                "event_bus": provider_config["event_bus"],
+                "rate_limit": provider_config.get("rate_limit", "memory"),
+            },
+            "extensions": [
+                {
+                    "identifier": metadata.identifier,
+                    "name": metadata.name,
+                    "version": metadata.version,
+                }
+                for metadata in get_loaded_extension_metadata()
+            ],
+            "extension_flags": collect_extension_flags(),
+            "lockdown": {
+                "enabled": lockdown_state.enabled,
+                "reason": lockdown_state.reason,
+            },
+        }
+        handler.conclude_request(
+            200, diagnostics, "Server diagnostics retrieved successfully"
+        )
+        return Result(code=0, target=None, username=handler.username)
 
 
 class RequestShutdownHandler(RequestHandler):
@@ -123,7 +215,11 @@ def ext_on_shutdown() -> None:
 
 @hookimpl
 def ext_register_handlers():
-    return {"server_info": RequestServerInfoHandler, "shutdown": RequestShutdownHandler}
+    return {
+        "server_info": RequestServerInfoHandler,
+        "diagnostics": RequestDiagnosticsHandler,
+        "shutdown": RequestShutdownHandler,
+    }
 
 
 @hookimpl
