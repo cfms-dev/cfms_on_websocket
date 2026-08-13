@@ -58,6 +58,79 @@ class TestUserOperations:
             assert response["data"] == {}
 
     @pytest.mark.asyncio
+    async def test_password_change_does_not_disclose_user_existence(
+        self,
+        unauthenticated_client: CFMSTestClient,
+        test_user: dict,
+    ):
+        responses = []
+        for username in (
+            test_user["username"],
+            "nonexistent_user_xyz_12345",
+        ):
+            responses.append(
+                await unauthenticated_client.send_request(
+                    "set_passwd",
+                    {
+                        "username": username,
+                        "old_passwd": "incorrect-password",
+                        "new_passwd": "UpdatedPassword456!",
+                        "bypass_passwd_requirements": True,
+                    },
+                )
+            )
+
+        for response in responses:
+            assert response["code"] == 401
+            assert response["message"] == "Invalid credentials"
+            assert response["data"] == {}
+
+    @pytest.mark.asyncio
+    async def test_password_reset_authorizes_before_disclosing_target_existence(
+        self,
+        low_privilege_client: CFMSTestClient,
+        test_user: dict,
+    ):
+        responses = []
+        for username in (
+            test_user["username"],
+            "nonexistent_user_xyz_12345",
+        ):
+            responses.append(
+                await low_privilege_client.send_request(
+                    "set_passwd",
+                    {
+                        "username": username,
+                        "new_passwd": "UpdatedPassword456!",
+                    },
+                )
+            )
+
+        for response in responses:
+            assert response["code"] == 403
+            assert (
+                response["message"] == "You do not have permission to set user password"
+            )
+            assert response["data"] == {}
+
+    @pytest.mark.asyncio
+    async def test_super_password_reset_reports_missing_target(
+        self,
+        authenticated_client: CFMSTestClient,
+    ):
+        response = await authenticated_client.send_request(
+            "set_passwd",
+            {
+                "username": "nonexistent_user_xyz_12345",
+                "new_passwd": "UpdatedPassword456!",
+            },
+        )
+
+        assert response["code"] == 404
+        assert response["message"] == "User does not exist"
+        assert response["data"] == {}
+
+    @pytest.mark.asyncio
     async def test_low_privilege_user_can_get_own_identity_security_state(
         self,
         low_privilege_client: CFMSTestClient,
@@ -93,6 +166,7 @@ class TestUserOperations:
             },
         )
         assert_error(failed, 401)
+        assert_success(await unauthenticated_client.login(username, user["password"]))
 
         changed = await unauthenticated_client.send_request(
             "set_passwd",
@@ -103,6 +177,10 @@ class TestUserOperations:
             },
         )
         assert_success(changed)
+        assert_error(await unauthenticated_client.refresh_token(), 401)
+        assert_error(
+            await unauthenticated_client.login(username, user["password"]), 401
+        )
         assert_success(await unauthenticated_client.login(username, new_password))
 
     @pytest.mark.asyncio

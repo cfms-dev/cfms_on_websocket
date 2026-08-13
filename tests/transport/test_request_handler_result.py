@@ -602,11 +602,15 @@ def test_disable_2fa_request_requires_a_credential(monkeypatch, tmp_path):
         RequestDisable2FAHandler.request_model.model_validate({"password": None})
 
 
-def test_password_change_uses_authentication_throttle(monkeypatch, tmp_path):
+@pytest.mark.parametrize("old_passwd", ["", "wrong"])
+def test_password_change_uses_authentication_throttle(
+    monkeypatch, tmp_path, old_passwd
+):
     _prepare_config(monkeypatch, tmp_path)
 
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
+    from include.transport.request_handler import Result
 
     responses = []
     handler = SimpleNamespace(
@@ -614,7 +618,7 @@ def test_password_change_uses_authentication_throttle(monkeypatch, tmp_path):
         token="",
         data={
             "username": "alice",
-            "old_passwd": "wrong",
+            "old_passwd": old_passwd,
             "new_passwd": "NewPassword123!",
         },
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
@@ -627,6 +631,341 @@ def test_password_change_uses_authentication_throttle(monkeypatch, tmp_path):
 
     result = RequestSetPasswdHandler().handle(handler)
 
-    assert result.code == 429
-    assert responses[0][0][0] == 429
-    assert responses[0][0][1] == {"retry_after_seconds": 45}
+    assert result == Result(code=429, target="alice")
+    assert responses == [
+        (
+            (),
+            {
+                "code": 429,
+                "data": {"retry_after_seconds": 45},
+                "message": "Too many authentication attempts. Please try again later.",
+            },
+        )
+    ]
+
+
+class _PasswordUser:
+    def __init__(
+        self,
+        password,
+        *,
+        permissions=(),
+        status=None,
+        token_valid=True,
+    ):
+        self.password = password
+        self.all_permissions = set(permissions)
+        self.status = status
+        self.token_valid = token_valid
+        self.password_update = None
+
+    def is_token_valid(self, _token):
+        return self.token_valid
+
+    def verify_password(self, password):
+        return password == self.password
+
+    def set_password(self, password, force_update_after_login=False):
+        self.password = password
+        self.password_update = (password, force_update_after_login)
+
+
+class _PasswordSession:
+    def __init__(self, users):
+        self.users = users
+        self.get_calls = []
+        self.commit_count = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def get(self, _model, username):
+        self.get_calls.append(username)
+        return self.users.get(username)
+
+    def commit(self):
+        self.commit_count += 1
+
+
+def _password_request(data, *, username="", token=""):
+    responses = []
+    handler = SimpleNamespace(
+        username=username,
+        token=token,
+        data=data,
+        stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
+        conclude_request=lambda **kwargs: responses.append(kwargs),
+    )
+    return handler, responses
+
+
+def _allow_password_authentication(monkeypatch, users):
+    from include.domains.security.guards.login import ThrottleDecision
+
+    monkeypatch.setattr(users, "get_client_ip", lambda _websocket: "127.0.0.1")
+    monkeypatch.setattr(
+        users.LoginGuard, "evaluate", lambda *_args: ThrottleDecision(True)
+    )
+    monkeypatch.setattr(users.LoginGuard, "report_failure", lambda *_args: None)
+    monkeypatch.setattr(
+        users.LoginGuard, "report_success", lambda *_args, **_kwargs: None
+    )
+
+
+def test_password_change_wrong_credentials_do_not_disclose_user_existence(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.identity.handlers import users
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+    from include.transport.request_handler import Result
+
+    _allow_password_authentication(monkeypatch, users)
+    verified_users = []
+
+    def verify(user, password):
+        verified_users.append(user)
+        return user is not None and user.verify_password(password)
+
+    monkeypatch.setattr(users, "verify_password_or_dummy", verify)
+    outcomes = []
+    existing = _PasswordUser("correct-password")
+    for target in (existing, None):
+        session = _PasswordSession({"alice": target} if target else {})
+        monkeypatch.setattr(users, "Session", lambda: session)
+        handler, responses = _password_request(
+            {
+                "username": "alice",
+                "old_passwd": "wrong-password",
+                "new_passwd": "NewPassword123!",
+                "bypass_passwd_requirements": True,
+            }
+        )
+
+        result = RequestSetPasswdHandler().handle(handler)
+        outcomes.append((result, responses, session.commit_count))
+
+    expected_result = Result(code=401, target="alice")
+    expected_response = {
+        "code": 401,
+        "data": {},
+        "message": "Invalid credentials",
+    }
+    assert outcomes == [
+        (expected_result, [expected_response], 0),
+        (expected_result, [expected_response], 0),
+    ]
+    assert verified_users == [existing, None]
+
+
+@pytest.mark.parametrize(
+    ("operator", "token", "expected_code", "expected_message"),
+    [
+        (None, "", 400, "Operator is required when setting other user password"),
+        (_PasswordUser("unused"), "", 400, "Given an operator, token is required"),
+        (
+            _PasswordUser("unused", token_valid=False),
+            "token",
+            401,
+            "Invalid user or token",
+        ),
+        (
+            _PasswordUser("unused"),
+            "token",
+            403,
+            "You do not have permission to set user password",
+        ),
+    ],
+)
+def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
+    monkeypatch,
+    tmp_path,
+    operator,
+    token,
+    expected_code,
+    expected_message,
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.identity.handlers import users
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+
+    operator_username = "operator" if operator is not None else ""
+    records = {"operator": operator} if operator is not None else {}
+    records["alice"] = _PasswordUser("old-password")
+    session = _PasswordSession(records)
+    monkeypatch.setattr(users, "Session", lambda: session)
+    handler, responses = _password_request(
+        {"username": "alice", "new_passwd": "NewPassword123!"},
+        username=operator_username,
+        token=token,
+    )
+
+    result = RequestSetPasswdHandler().handle(handler)
+
+    assert result.code == expected_code
+    assert result.target == "alice"
+    assert result.username == ("operator" if expected_code == 403 else None)
+    assert result.data is None
+    assert responses == [
+        {"code": expected_code, "data": {}, "message": expected_message}
+    ]
+    assert "alice" not in session.get_calls
+    assert session.commit_count == 0
+
+
+def test_password_reset_reports_missing_target_after_operator_authorization(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.access.permissions import Permissions
+    from include.domains.identity.handlers import users
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+    from include.transport.request_handler import Result
+
+    operator = _PasswordUser("unused", permissions={Permissions.SUPER_SET_PASSWD})
+    session = _PasswordSession({"operator": operator})
+    monkeypatch.setattr(users, "Session", lambda: session)
+    handler, responses = _password_request(
+        {"username": "missing", "new_passwd": "NewPassword123!"},
+        username="operator",
+        token="token",
+    )
+
+    result = RequestSetPasswdHandler().handle(handler)
+
+    assert result == Result(code=404, target="missing", username="operator")
+    assert result.data is None
+    assert responses == [{"code": 404, "data": {}, "message": "User does not exist"}]
+    assert session.get_calls == ["operator", "missing"]
+    assert session.commit_count == 0
+
+
+def test_self_password_change_commits_and_attributes_audit_to_target(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.database.models.identity import UserStatus
+    from include.domains.access.permissions import Permissions
+    from include.domains.identity.handlers import users
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+    from include.transport.request_handler import Result
+
+    _allow_password_authentication(monkeypatch, users)
+    user = _PasswordUser(
+        "OldPassword123!",
+        permissions={Permissions.SET_PASSWD},
+        status=UserStatus.ACTIVE,
+    )
+    session = _PasswordSession({"alice": user})
+    monkeypatch.setattr(users, "Session", lambda: session)
+    handler, responses = _password_request(
+        {
+            "username": "alice",
+            "old_passwd": "OldPassword123!",
+            "new_passwd": "NewPassword456!",
+        }
+    )
+
+    result = RequestSetPasswdHandler().handle(handler)
+
+    assert result == Result(code=200, target="alice", username="alice")
+    assert result.data is None
+    assert responses == [
+        {"code": 200, "data": {}, "message": "Password set successfully"}
+    ]
+    assert user.password_update == ("NewPassword456!", False)
+    assert session.commit_count == 1
+
+
+def test_self_password_change_rejects_privileged_flags_after_authentication(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.identity.handlers import users
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+    from include.transport.request_handler import Result
+
+    _allow_password_authentication(monkeypatch, users)
+    user = _PasswordUser("OldPassword123!")
+    session = _PasswordSession({"alice": user})
+    monkeypatch.setattr(users, "Session", lambda: session)
+    handler, responses = _password_request(
+        {
+            "username": "alice",
+            "old_passwd": "OldPassword123!",
+            "new_passwd": "NewPassword456!",
+            "bypass_passwd_requirements": True,
+            "force_update_after_login": True,
+        }
+    )
+
+    result = RequestSetPasswdHandler().handle(handler)
+
+    assert result == Result(code=400, target="alice", username="alice")
+    assert result.data is None
+    assert responses == [
+        {
+            "code": 400,
+            "data": {
+                "bypass_passwd_requirements": True,
+                "force_update_after_login": True,
+            },
+            "message": (
+                "The following options cannot be set to True when changing your "
+                "own password: bypass_passwd_requirements, force_update_after_login"
+            ),
+        }
+    ]
+    assert user.password_update is None
+    assert session.commit_count == 0
+
+
+def test_privileged_password_reset_can_bypass_policy_and_force_expiration(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.domains.access.permissions import Permissions
+    from include.domains.identity.handlers import users
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+    from include.transport.request_handler import Result
+
+    operator = _PasswordUser("unused", permissions={Permissions.SUPER_SET_PASSWD})
+    target = _PasswordUser("OldPassword123!")
+    session = _PasswordSession({"operator": operator, "alice": target})
+    monkeypatch.setattr(users, "Session", lambda: session)
+    monkeypatch.setattr(
+        users,
+        "check_passwd_requirements",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("Password policy must be bypassed")
+        ),
+    )
+    handler, responses = _password_request(
+        {
+            "username": "alice",
+            "new_passwd": "short",
+            "bypass_passwd_requirements": True,
+            "force_update_after_login": True,
+        },
+        username="operator",
+        token="token",
+    )
+
+    result = RequestSetPasswdHandler().handle(handler)
+
+    assert result == Result(code=200, target="alice", username="operator")
+    assert result.data is None
+    assert responses == [
+        {"code": 200, "data": {}, "message": "Password set successfully"}
+    ]
+    assert target.password_update == ("short", True)
+    assert session.commit_count == 1

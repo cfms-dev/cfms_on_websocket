@@ -19,8 +19,6 @@ import time
 from typing import Annotated, Literal, Self
 
 import filetype
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from pydantic import Field, StringConstraints, model_validator
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import selectinload
@@ -158,11 +156,6 @@ class _ManageUserStatusRequest(RequestDataModel):
         if self.status == "active" and "reason" in self.model_fields_set:
             raise ValueError("reason is not allowed when activating a user")
         return self
-
-
-# Module-level PasswordHasher instance — reused across all calls to avoid
-# repeated construction overhead.
-_password_hasher = PasswordHasher()
 
 
 class RequestListUsersHandler(RequestHandler):
@@ -928,7 +921,25 @@ class RequestSetPasswdHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         target_username: str = handler.data["username"]
         old_passwd: str | None = handler.data.get("old_passwd")
+        new_passwd: str = handler.data["new_passwd"]
+        operator_username = handler.username
+        bypass_passwd_requirements: bool = handler.data.get(
+            "bypass_passwd_requirements", False
+        )
+        force_update_after_login: bool = handler.data.get(
+            "force_update_after_login", False
+        )
         ip: str | None = None
+
+        def respond(
+            code: int,
+            message: str,
+            data: dict | None = None,
+            *,
+            username: str | None = None,
+        ) -> Result:
+            handler.conclude_request(code=code, data=data or {}, message=message)
+            return Result(code=code, target=target_username, username=username)
 
         if old_passwd is not None:
             ip = get_client_ip(handler.stream.connection._ws)
@@ -937,80 +948,30 @@ class RequestSetPasswdHandler(RequestHandler):
                 data = {}
                 if decision.retry_after_seconds is not None:
                     data["retry_after_seconds"] = decision.retry_after_seconds
-                handler.conclude_request(
+                return respond(
                     429,
-                    data,
                     "Too many authentication attempts. Please try again later.",
+                    data,
                 )
-                return Result(code=429, target=target_username)
 
         with Session() as session:
-            operator_username = handler.username
-
-            new_passwd: str = handler.data["new_passwd"]
-            # sysop feature.
-            bypass_passwd_requirements: bool = handler.data.get(
-                "bypass_passwd_requirements", False
-            )
-            force_update_after_login: bool = handler.data.get(
-                "force_update_after_login", False
-            )
-
-            user = session.get(User, target_username)
-            if not user:
-                if old_passwd is not None:
-                    verify_password_or_dummy(None, old_passwd)
-                    assert ip is not None
-                    LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
-                handler.conclude_request(
-                    code=401, message="Invalid credentials", data={}
-                )
-                return
-
-            # Initialize the operator user. If no operator is specified, the
-            # target user acts as the operator.
+            operator_user = None
             if operator_username:
                 if not handler.token:
-                    handler.conclude_request(
-                        code=400,
-                        message="Given an operator, token is required",
-                        data={},
-                    )
-                    return
+                    return respond(400, "Given an operator, token is required")
 
                 operator_user = session.get(User, operator_username)
                 if not operator_user or not operator_user.is_token_valid(handler.token):
-                    handler.conclude_request(
-                        code=401, message="Invalid user or token", data={}
-                    )
-                    return
-            else:  # operator_user should never be used on this path.
-                operator_user = None
+                    return respond(401, "Invalid user or token")
 
             if old_passwd is not None:
-                # Disallow these elevated flags when a user is changing their own password
-                _flags_set = []
-                if bypass_passwd_requirements:
-                    _flags_set.append("bypass_passwd_requirements")
-                if force_update_after_login:
-                    _flags_set.append("force_update_after_login")
-
-                if _flags_set:
-                    handler.conclude_request(
-                        400,
-                        message="The following options cannot be set to True when changing your own password: "
-                        + ", ".join(_flags_set),
-                        data={flag: True for flag in _flags_set},
-                    )
-                    return
-
+                user = session.get(User, target_username)
                 if not verify_password_or_dummy(user, old_passwd):
                     assert ip is not None
                     LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
-                    handler.conclude_request(
-                        code=401, message="Invalid credentials", data={}
-                    )
-                    return
+                    return respond(401, "Invalid credentials")
+
+                assert user is not None
                 assert ip is not None
                 LoginGuard.report_success(
                     ip,
@@ -1018,36 +979,52 @@ class RequestSetPasswdHandler(RequestHandler):
                     AuthFactor.PASSWORD,
                     completed_authentication=True,
                 )
+                actor_username = target_username
+
+                flags_set = []
+                if bypass_passwd_requirements:
+                    flags_set.append("bypass_passwd_requirements")
+                if force_update_after_login:
+                    flags_set.append("force_update_after_login")
+
+                if flags_set:
+                    return respond(
+                        400,
+                        "The following options cannot be set to True when "
+                        "changing your own password: " + ", ".join(flags_set),
+                        {flag: True for flag in flags_set},
+                        username=actor_username,
+                    )
                 if user.status != UserStatus.ACTIVE:
-                    handler.conclude_request(403, {}, "Account is not active")
-                    return
+                    return respond(
+                        403, "Account is not active", username=actor_username
+                    )
 
                 if not (
                     {Permissions.SET_PASSWD, Permissions.SUPER_SET_PASSWD}
                     & user.all_permissions
                 ):
-                    handler.conclude_request(
-                        code=403,
-                        message="You do not have permission to change your own password",
-                        data={},
+                    return respond(
+                        403,
+                        "You do not have permission to change your own password",
+                        username=actor_username,
                     )
-                    return
-
-            else:  # User changes another user's password.
+            else:
                 if not operator_user:
-                    handler.conclude_request(
-                        code=400,
-                        message="Operator is required when setting other user password",
-                        data={},
+                    return respond(
+                        400, "Operator is required when setting other user password"
                     )
-                    return
                 if Permissions.SUPER_SET_PASSWD not in operator_user.all_permissions:
-                    handler.conclude_request(
-                        code=403,
-                        message="You do not have permission to set user password",
-                        data={},
+                    return respond(
+                        403,
+                        "You do not have permission to set user password",
+                        username=operator_username,
                     )
-                    return
+
+                actor_username = operator_username
+                user = session.get(User, target_username)
+                if user is None:
+                    return respond(404, "User does not exist", username=actor_username)
 
             try:
                 if not bypass_passwd_requirements:
@@ -1059,49 +1036,37 @@ class RequestSetPasswdHandler(RequestHandler):
                         global_config["security"]["passwd_min_passed_count"],
                     )
             except InvalidPasswordLengthError as e:
-                handler.conclude_request(
+                return respond(
                     400,
-                    {"min_length": e.min_length, "max_length": e.max_length},
                     str(e),
+                    {"min_length": e.min_length, "max_length": e.max_length},
+                    username=actor_username,
                 )
-                return Result(code=400, target=target_username)
             except RuleRequirementsNotMetError as e:
-                handler.conclude_request(
+                return respond(
                     400,
+                    str(e),
                     {
                         "passed_count": e.passed_count,
                         "min_passed_count": e.min_passed_count,
                         "unpassed_rules": tuple(e.unpassed_rules),
                     },
-                    str(e),
+                    username=actor_username,
                 )
-                return Result(code=400, target=target_username)
 
-            try:
-                _same = _password_hasher.verify(user.pass_hash, new_passwd)
-            except VerifyMismatchError, VerificationError, InvalidHashError:
-                _same = False
-
-            if _same:
-                handler.conclude_request(
+            if user.verify_password(new_passwd):
+                return respond(
                     400,
-                    {},
                     "New password should not be the same",
+                    username=actor_username,
                 )
-                return
 
             user.set_password(
                 new_passwd, force_update_after_login=force_update_after_login
             )
-            # session.commit()
+            session.commit()
 
-        response = {
-            "code": 200,
-            "message": "Password set successfully",
-            "data": {},
-        }
-
-        handler.conclude_request(**response)
+        return respond(200, "Password set successfully", username=actor_username)
 
 
 class RequestManageUserStatusHandler(RequestHandler):

@@ -134,6 +134,37 @@ def test_identity_request_models_preserve_conditional_and_alias_rules(
         )
 
 
+def test_set_password_request_preserves_compatible_mode_values(
+    monkeypatch, tmp_path
+) -> None:
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.domains.identity.handlers.users import RequestSetPasswdHandler
+
+    request_data = {"username": "alice", "new_passwd": "NewPassword123!"}
+
+    omitted = RequestSetPasswdHandler.request_model.model_validate(request_data)
+    null = RequestSetPasswdHandler.request_model.model_validate(
+        {**request_data, "old_passwd": None}
+    )
+    empty = RequestSetPasswdHandler.request_model.model_validate(
+        {**request_data, "old_passwd": ""}
+    )
+    provided = RequestSetPasswdHandler.request_model.model_validate(
+        {**request_data, "old_passwd": "secret"}
+    )
+
+    assert omitted.old_passwd is None
+    assert "old_passwd" not in omitted.model_fields_set
+    assert null.old_passwd is None
+    assert "old_passwd" in null.model_fields_set
+    assert empty.old_passwd == ""
+    assert "old_passwd" in empty.model_fields_set
+    assert provided.old_passwd == "secret"
+    assert "old_passwd" in provided.model_fields_set
+
+
 def test_nested_identity_and_keyring_models_preserve_omission_rules(
     monkeypatch, tmp_path
 ) -> None:

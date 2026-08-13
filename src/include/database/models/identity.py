@@ -254,20 +254,16 @@ class User(Base):
 
         return new_token
 
-    def set_password(self, plain_password: str, force_update_after_login: bool = False):
-        """Update the user's password and persist an Argon2id hash."""
+    def set_password(
+        self, plain_password: str, force_update_after_login: bool = False
+    ) -> None:
+        """Update password state; the caller owns persistence."""
         self.pass_hash = _password_hasher.hash(plain_password)
 
         self.secret_key = secrets.token_hex(
             32
         )  # token_hex(32) generates a 64-character hex
         self.passwd_last_modified = time.time() if not force_update_after_login else 0
-
-        # Write to the database.
-        session = object_session(self)
-        if session is not None:
-            session.add(self)
-            session.commit()
 
     def setup_totp(self) -> tuple[str, list[str]]:
         """

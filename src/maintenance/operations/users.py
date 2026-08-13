@@ -37,7 +37,6 @@ def reset_password(username: str, password: str | None = None) -> PasswordResetR
             raise MaintenanceOperationError(f"User {username!r} was not found.")
 
         user.set_password(new_password, force_update_after_login=True)
-        session.add(user)
         session.commit()
 
     return PasswordResetResult(
