@@ -7,7 +7,7 @@ from websockets.sync.server import Server
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
 
-from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
+from include.config.constants import PROTOCOL_VERSION
 from include.config.settings import global_config
 from include.database.models.identity import User
 from include.database.session import Session
@@ -49,7 +49,6 @@ class RequestServerInfoHandler(RequestHandler):
 
         server_info = {
             "server_name": global_config["server"]["name"],
-            "version": CORE_VERSION.original,
             "protocol_version": PROTOCOL_VERSION,
             "lockdown": lockdown_state.enabled,
             "lockdown_reason": lockdown_state.reason,

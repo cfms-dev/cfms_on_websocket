@@ -33,7 +33,7 @@ server-version floor. Unknown tables and fields are rejected.
 
 Use semantic versions for the extension's own `version` and an SPDX license
 identifier where possible. `minimum_server_version` uses the CFMS core version
-format reported by `server_info.version`:
+format:
 `MAJOR.MINOR.PATCH[.BUILD][_TYPE[NUMBER]]`. Supported release types are `alpha`,
 `beta`, `rc`, and `release`, ordered from earliest to latest; omitting the type is
 equivalent to `release`. Version values must be bare versions without comparison

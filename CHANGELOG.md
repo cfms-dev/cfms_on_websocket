@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Increase the protocol version to 22 and remove the exact core version from
+  the unauthenticated `server_info` response to reduce software fingerprinting.
 - Replace request-handler JSON Schema dictionaries with strict Pydantic request
   models. Extensions that register handlers must now define a
   `RequestDataModel` subclass as `request_model`; legacy `schema` dictionaries

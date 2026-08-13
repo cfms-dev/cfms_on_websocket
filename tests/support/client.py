@@ -447,7 +447,7 @@ class CFMSTestClient:
         Get server information.
 
         Returns:
-            Server information including version and protocol version
+            Public server identity, protocol, lockdown, and capability information
         """
         return await self.send_request("server_info", include_auth=False)
 
