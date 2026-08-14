@@ -40,10 +40,14 @@ the current time and `expires_at` defaults to `null`. The interval is
 `[starts_at, expires_at)`. Creating or updating a non-expired rule containing the
 requester's effective IP requires `"confirm_self_block": true`.
 
+`reason` follows the shared 1-to-1024-character operation-reason contract.
 `update_banned_subnet` identifies the rule by `subnet` and accepts any of
-`reason`, `starts_at`, or `expires_at`; omitted values remain unchanged. To change
-the CIDR itself, delete the old rule and create a new one. `delete_banned_subnet`
-accepts only `subnet`.
+`reason`, `starts_at`, or `expires_at`; omitted values remain unchanged and an
+explicit `null` clears the reason. A reason-only update does not refresh the
+active subnet guard. To change the CIDR itself, delete the old rule and create a
+new one. `delete_banned_subnet` accepts only `subnet`. See
+[`OPERATION_REASONS.md`](OPERATION_REASONS.md) for the shared update and audit
+semantics.
 
 ## Authentication lockouts
 

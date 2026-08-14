@@ -69,11 +69,13 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     assert [row["username"] for row in restored["users"]] == ["alice"]
     assert restored["users"][0]["status_comment_id"] == 1
     assert [row["comment_text"] for row in restored["comments"]] == [
-        "Repeated policy violations"
+        "Repeated policy violations",
+        "Original block reason",
     ]
     assert restored["comments"][0]["content_digest"] == bytes.fromhex(
         "e28bca6fb18bcde822a03cfa87a802b94136c6367f1952229382517c9f6d64cc"
     )
+    assert restored["userblock_entries"][0]["reason_comment_id"] == 3
     assert {row["id"] for row in restored["files"]} == {"file-avatar", "file-doc"}
     assert restored["audit_entries"] == []
     assert restored["banned_subnets"] == []

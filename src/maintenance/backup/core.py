@@ -1118,10 +1118,18 @@ def _apply_export_table_filter(
         reference_filters = []
         if BackupComponent.ACCOUNTS in components:
             users = tables["users"]
+            user_blocks = tables["userblock_entries"]
             reference_filters.append(
                 table.c.comment_id.in_(
                     select(users.c.status_comment_id).where(
                         users.c.status_comment_id.is_not(None)
+                    )
+                )
+            )
+            reference_filters.append(
+                table.c.comment_id.in_(
+                    select(user_blocks.c.reason_comment_id).where(
+                        user_blocks.c.reason_comment_id.is_not(None)
                     )
                 )
             )

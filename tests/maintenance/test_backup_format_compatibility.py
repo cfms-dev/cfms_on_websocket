@@ -267,6 +267,15 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                     "comment_text": "manual incident",
                     "comment_data": None,
                 },
+                {
+                    "comment_id": 3,
+                    "digest_version": 1,
+                    "content_digest": bytes.fromhex(
+                        "52e5e2272062cc620938aabd097dc450e046b5e1ea7fb9b1da75f0bc51c4e710"
+                    ),
+                    "comment_text": "Original block reason",
+                    "comment_data": None,
+                },
             ],
         )
         connection.execute(
@@ -499,6 +508,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "not_after": -1.0,
                 "target_type": "document",
                 "target_id": "doc-1",
+                "reason_comment_id": 3,
             },
         )
         connection.execute(
