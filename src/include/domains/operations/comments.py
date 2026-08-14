@@ -1,7 +1,8 @@
 import hashlib
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import orjson
+from pydantic import StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -10,6 +11,25 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from include.database.models.comments import Comment
+
+OperationReason = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=1024),
+]
+
+
+def reason_change_audit_data(
+    previous: str | None,
+    current: str | None,
+) -> dict[str, dict[str, str | None]]:
+    if previous == current:
+        return {}
+    return {
+        "reason_change": {
+            "previous": previous,
+            "current": current,
+        }
+    }
 
 
 class CommentDigestCollisionError(RuntimeError):

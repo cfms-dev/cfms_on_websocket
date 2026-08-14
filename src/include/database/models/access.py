@@ -2,12 +2,13 @@ import secrets
 import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import VARCHAR, Boolean, Float, ForeignKey, Integer
+from sqlalchemy import VARCHAR, BigInteger, Boolean, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
 
 if TYPE_CHECKING:
+    from include.database.models.comments import Comment
     from include.database.models.documents import Node
     from include.database.models.identity import User
 
@@ -34,6 +35,16 @@ class UserBlockEntry(Base):
     # left empty.
     target_type: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
     target_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=True)
+    reason_comment_id: Mapped[int | None] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("comments.comment_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reason_comment: Mapped["Comment | None"] = relationship("Comment")
+
+    @property
+    def reason(self) -> str | None:
+        return self.reason_comment.comment_text if self.reason_comment else None
 
 
 class UserBlockSubEntry(Base):
