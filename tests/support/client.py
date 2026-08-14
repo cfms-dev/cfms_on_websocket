@@ -34,6 +34,13 @@ from include.transport.multiplexing import (
 logger = log.bind(name="test_client.multiplexer")
 
 
+class _RequestValueUnset:
+    pass
+
+
+_REQUEST_VALUE_UNSET = _RequestValueUnset()
+
+
 def calculate_sha256(file_path: str) -> str:
     """
     Calculate SHA256 hash of a file using memory-mapped I/O for efficiency.
@@ -1441,20 +1448,25 @@ class CFMSTestClient:
         )
 
     async def set_lockdown(
-        self, status: bool, reason: str | None = None
+        self,
+        status: bool,
+        reason: str | None | _RequestValueUnset = _REQUEST_VALUE_UNSET,
     ) -> dict[str, Any]:
         """Enable or disable global lockdown."""
         data: dict[str, Any] = {"status": status}
-        if reason is not None:
+        if not isinstance(reason, _RequestValueUnset):
             data["reason"] = reason
         return await self.send_request("lockdown", data)
 
     async def update_user_status(
-        self, username: str, status: str, reason: str | None = None
+        self,
+        username: str,
+        status: str,
+        reason: str | None | _RequestValueUnset = _REQUEST_VALUE_UNSET,
     ) -> dict[str, Any]:
         """Update user status ('active' or 'disabled')."""
         data = {"username": username, "status": status}
-        if reason is not None:
+        if not isinstance(reason, _RequestValueUnset):
             data["reason"] = reason
         return await self.send_request("manage_user_status", data)
 
@@ -1464,6 +1476,7 @@ class CFMSTestClient:
         target_type: str,
         block_types: list[str],
         target_id: str | None = None,
+        reason: str | None = None,
     ) -> dict[str, Any]:
         """Block user from accessing certain things.
         target_type: "all", "directory", "document"
@@ -1476,8 +1489,18 @@ class CFMSTestClient:
         }
         if target_id is not None:
             data["target"]["id"] = target_id
+        if reason is not None:
+            data["reason"] = reason
 
         return await self.send_request("block_user", data)
+
+    async def update_user_block(
+        self, block_id: str, reason: str | None
+    ) -> dict[str, Any]:
+        """Replace or clear a user block's reason."""
+        return await self.send_request(
+            "update_user_block", {"block_id": block_id, "reason": reason}
+        )
 
     async def view_audit_logs(
         self,

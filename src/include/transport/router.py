@@ -81,6 +81,7 @@ from include.domains.identity.handlers.users import (
     RequestSetPasswdHandler,
     RequestSetUserAvatarHandler,
     RequestUnblockUserHandler,
+    RequestUpdateUserBlockHandler,
 )
 from include.domains.keyrings.handlers.keyrings import (
     RequestDeleteUserKeyHandler,
@@ -180,6 +181,7 @@ available_functions: dict[str, type[RequestHandler]] = {
     "manage_user_status": RequestManageUserStatusHandler,
     "block_user": RequestBlockUserHandler,
     "unblock_user": RequestUnblockUserHandler,
+    "update_user_block": RequestUpdateUserBlockHandler,
     "list_user_blocks": RequestListUserBlocksHandler,
     "list_users": RequestListUsersHandler,
     "create_user": RequestCreateUserHandler,
@@ -221,6 +223,7 @@ whitelisted_functions = [
     "validate_2fa",
     "upload_file",
     "download_file",
+    "lockdown",
 ]
 
 

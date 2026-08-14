@@ -100,7 +100,7 @@ def _call(handler_class, data, username="admin"):
 def test_banned_subnet_crud_and_filters(security_admin_context):
     handlers = security_admin_context.handlers
     now = handlers.time.time()
-    _, created = _call(
+    create_result, created = _call(
         handlers.RequestCreateBannedSubnetHandler,
         {
             "subnet": "192.0.2.9/24",
@@ -113,6 +113,10 @@ def test_banned_subnet_crud_and_filters(security_admin_context):
     assert created["data"]["subnet"] == "192.0.2.0/24"
     assert created["data"]["reason"] == "incident"
     assert created["data"]["status"] == "active"
+    assert create_result.data["reason_change"] == {
+        "previous": None,
+        "current": "incident",
+    }
 
     _, duplicate = _call(
         handlers.RequestCreateBannedSubnetHandler,
@@ -126,13 +130,17 @@ def test_banned_subnet_crud_and_filters(security_admin_context):
     )
     assert [item["subnet"] for item in listed["data"]["items"]] == ["192.0.2.0/24"]
 
-    _, updated = _call(
+    update_result, updated = _call(
         handlers.RequestUpdateBannedSubnetHandler,
         {"subnet": "192.0.2.7/24", "reason": None, "expires_at": None},
     )
     assert updated["code"] == 200
     assert updated["data"]["reason"] is None
     assert updated["data"]["expires_at"] is None
+    assert update_result.data["reason_change"] == {
+        "previous": "incident",
+        "current": None,
+    }
 
     _, deleted = _call(
         handlers.RequestDeleteBannedSubnetHandler,
@@ -172,6 +180,33 @@ def test_banned_subnets_reuse_equal_reason_comments(security_admin_context):
         retained = session.get(security_admin_context.BannedSubnet, "198.51.100.0/24")
         assert retained is not None
         assert retained.reason == "shared incident"
+
+
+def test_banned_subnet_reason_only_update_skips_guard_refresh(
+    security_admin_context, monkeypatch
+):
+    handlers = security_admin_context.handlers
+    _, created = _call(
+        handlers.RequestCreateBannedSubnetHandler,
+        {"subnet": "192.0.2.0/24", "reason": "initial"},
+    )
+    assert created["code"] == 200
+    refreshes = []
+    monkeypatch.setattr(
+        handlers, "_refresh_subnet_rules", lambda: refreshes.append(True)
+    )
+
+    result, updated = _call(
+        handlers.RequestUpdateBannedSubnetHandler,
+        {"subnet": "192.0.2.0/24", "reason": "corrected"},
+    )
+
+    assert updated["data"]["reason"] == "corrected"
+    assert result.data["reason_change"] == {
+        "previous": "initial",
+        "current": "corrected",
+    }
+    assert refreshes == []
 
 
 def test_banned_subnet_requires_explicit_self_block_confirmation(
@@ -229,8 +264,16 @@ def test_security_admin_request_models_preserve_schema_constraints(
 
     handlers = security_admin_context.handlers
     handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
-        {"subnet": "192.0.2.0/24", "expires_at": None}
+        {"subnet": "192.0.2.0/24", "reason": "x" * 1024, "expires_at": None}
     )
+    with pytest.raises(ValidationError):
+        handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
+            {"subnet": "192.0.2.0/24", "reason": ""}
+        )
+    with pytest.raises(ValidationError):
+        handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
+            {"subnet": "192.0.2.0/24", "reason": "x" * 1025}
+        )
     with pytest.raises(ValidationError):
         handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
             {"subnet": "192.0.2.0/24", "starts_at": None}

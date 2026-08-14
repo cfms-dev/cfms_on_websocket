@@ -105,7 +105,10 @@ def test_identity_request_models_preserve_conditional_and_alias_rules(
 
     from include.domains.identity.handlers.auth import RequestLoginHandler
     from include.domains.identity.handlers.groups import RequestRenameGroupHandler
-    from include.domains.identity.handlers.users import RequestManageUserStatusHandler
+    from include.domains.identity.handlers.users import (
+        RequestManageUserStatusHandler,
+        RequestUpdateUserBlockHandler,
+    )
 
     RequestLoginHandler.request_model.model_validate(
         {"username": "alice", "password": "secret", "2fa_token": "123456"}
@@ -128,9 +131,26 @@ def test_identity_request_models_preserve_conditional_and_alias_rules(
     RequestManageUserStatusHandler.request_model.model_validate(
         {"status": "disabled", "username": "alice", "reason": "incident"}
     )
+    RequestManageUserStatusHandler.request_model.model_validate(
+        {"status": "disabled", "username": "alice", "reason": None}
+    )
+    RequestUpdateUserBlockHandler.request_model.model_validate(
+        {"block_id": "block", "reason": None}
+    )
+    RequestUpdateUserBlockHandler.request_model.model_validate(
+        {"block_id": "block", "reason": "x" * 1024}
+    )
     with pytest.raises(ValidationError):
         RequestManageUserStatusHandler.request_model.model_validate(
             {"status": "active", "username": "alice", "reason": "resolved"}
+        )
+    with pytest.raises(ValidationError):
+        RequestManageUserStatusHandler.request_model.model_validate(
+            {"status": "active", "username": "alice", "reason": None}
+        )
+    with pytest.raises(ValidationError):
+        RequestUpdateUserBlockHandler.request_model.model_validate(
+            {"block_id": "block", "reason": ""}
         )
 
 

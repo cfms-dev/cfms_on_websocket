@@ -73,6 +73,68 @@ def test_lockdown_reason_is_replaced_and_persisted(lockdown_database) -> None:
         reopened_engine.dispose()
 
 
+def test_active_lockdown_reason_update_skips_transition_side_effects(
+    monkeypatch, lockdown_database
+) -> None:
+    cancellations = []
+    broadcasts = []
+
+    monkeypatch.setattr(
+        lockdown,
+        "_cancel_pending_file_tasks",
+        lambda _session: (cancellations.append(True) or [], 0),
+    )
+    monkeypatch.setattr(
+        lockdown,
+        "_publish_lockdown_state",
+        broadcasts.append,
+    )
+    apply_lockdown(True, "Initial reason")
+    cancellations.clear()
+    broadcasts.clear()
+
+    transition = apply_lockdown(True, "Corrected reason")
+
+    assert transition.applied is True
+    assert transition.previous_state == LockdownState(
+        enabled=True, reason="Initial reason"
+    )
+    assert transition.state == LockdownState(enabled=True, reason="Corrected reason")
+    assert transition.cancelled_file_tasks == 0
+    assert cancellations == []
+    assert broadcasts == [transition.state]
+
+
+def test_active_lockdown_reason_can_be_cleared(lockdown_database) -> None:
+    apply_lockdown(True, "Temporary reason")
+
+    transition = apply_lockdown(True, None)
+
+    assert transition.applied is True
+    assert transition.state == LockdownState(enabled=True)
+    assert lockdown_state_manager.get_state() == transition.state
+
+
+def test_repeated_lockdown_requests_are_idempotent(
+    monkeypatch, lockdown_database
+) -> None:
+    broadcasts = []
+    apply_lockdown(True, "Stable reason")
+    monkeypatch.setattr(lockdown, "_publish_lockdown_state", broadcasts.append)
+
+    repeated_enable = apply_lockdown(True)
+    assert repeated_enable.applied is False
+    assert repeated_enable.state == LockdownState(enabled=True, reason="Stable reason")
+    assert broadcasts == []
+
+    monkeypatch.setattr(lockdown.time, "time", lambda: 100.0)
+    apply_lockdown(False)
+    monkeypatch.setattr(lockdown.time, "time", lambda: 200.0)
+    repeated_disable = apply_lockdown(False)
+    assert repeated_disable.applied is False
+    assert lockdown_state_manager.get_last_disabled_at() == 100.0
+
+
 def test_unlocked_state_rejects_a_reason() -> None:
     with pytest.raises(ValidationError) as error:
         LockdownState(reason="Invalid")
@@ -112,6 +174,7 @@ def test_lockdown_state_uses_strict_validation(values, location, error_type) -> 
     [
         {"status": True},
         {"status": True, "reason": "Maintenance"},
+        {"status": True, "reason": None},
         {"status": False},
     ],
 )
@@ -126,6 +189,7 @@ def test_lockdown_request_model_accepts_valid_data(data) -> None:
         {"status": True, "reason": ""},
         {"status": True, "reason": "x" * 1025},
         {"status": False, "reason": "Maintenance"},
+        {"status": False, "reason": None},
         {"status": True, "unknown": True},
     ],
 )

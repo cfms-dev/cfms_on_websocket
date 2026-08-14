@@ -83,7 +83,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 22,
+            "protocol_version": 23,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {
@@ -212,9 +212,25 @@ class TestSystemManagement:
             "reason": "Scheduled maintenance",
         }
 
+        corrected_reason = "Corrected maintenance window"
+        assert assert_success(
+            await authenticated_client.set_lockdown(True, corrected_reason)
+        ) == {
+            "status": True,
+            "reason": corrected_reason,
+        }
+
+        audit_items = assert_success(
+            await authenticated_client.view_audit_logs(filters=["lockdown"])
+        )["items"]
+        assert audit_items[0]["data"]["reason_change"] == {
+            "previous": "Scheduled maintenance",
+            "current": corrected_reason,
+        }
+
         server_info = assert_success(await authenticated_client.server_info())
         assert server_info["lockdown"] is True
-        assert server_info["lockdown_reason"] == "Scheduled maintenance"
+        assert server_info["lockdown_reason"] == corrected_reason
 
         try:
             # Create a regular user
@@ -233,7 +249,7 @@ class TestSystemManagement:
                 error = assert_error(create_resp, 999)
                 assert error["data"] == {
                     "status": True,
-                    "reason": "Scheduled maintenance",
+                    "reason": corrected_reason,
                 }
             finally:
                 await user_client.disconnect()

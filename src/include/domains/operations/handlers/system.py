@@ -7,6 +7,7 @@ from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.operations.comments import reason_change_audit_data
 from include.domains.operations.lockdown import LockdownReason, apply_lockdown
 from include.domains.pagination import (
     CursorError,
@@ -29,7 +30,7 @@ from include.transport.request_handler import (
 
 class _LockdownRequest(RequestDataModel):
     status: bool
-    reason: Omittable[LockdownReason] = REQUEST_UNSET
+    reason: Omittable[LockdownReason | None] = REQUEST_UNSET
 
     @model_validator(mode="after")
     def reject_reason_when_disabling(self) -> Self:
@@ -52,8 +53,6 @@ class RequestLockdownHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         status_to_change: bool = handler.data["status"]
-        reason: str | None = handler.data.get("reason")
-
         with Session() as session:
             user = User.get_existing(session, handler.username)
 
@@ -61,14 +60,24 @@ class RequestLockdownHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=None, username=handler.username)
 
-        transition = apply_lockdown(status_to_change, reason)
+        transition = (
+            apply_lockdown(status_to_change, handler.data["reason"])
+            if "reason" in handler.data
+            else apply_lockdown(status_to_change)
+        )
 
         response_data = transition.state.as_response_data()
         handler.conclude_request(200, response_data, smsg.SUCCESS)
         return Result(
             code=0,
             target=None,
-            data=response_data,
+            data={
+                **response_data,
+                **reason_change_audit_data(
+                    transition.previous_state.reason,
+                    transition.state.reason,
+                ),
+            },
             username=handler.username,
         )
 

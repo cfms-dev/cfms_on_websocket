@@ -18,7 +18,6 @@ from pydantic import (
     ConfigDict,
     Field,
     FiniteFloat,
-    StringConstraints,
     ValidationError,
     model_validator,
 )
@@ -38,6 +37,7 @@ from include.database.system_states import (
 from include.domains.documents.file_task_signals import (
     publish_cancelled_file_tasks,
 )
+from include.domains.operations.comments import OperationReason
 from include.providers.manager import ProviderManager
 
 logger = log.bind(name="lockdown")
@@ -53,10 +53,14 @@ _ACTIVE_FILE_TASK_STATUSES = (
 )
 
 
-LockdownReason = Annotated[
-    str,
-    StringConstraints(min_length=1, max_length=1024),
-]
+LockdownReason = OperationReason
+
+
+class _ReasonUnset:
+    pass
+
+
+_REASON_UNSET = _ReasonUnset()
 
 
 class _LockdownStateBase(BaseModel):
@@ -96,6 +100,7 @@ class _LockdownPayload(_LockdownStateBase):
 
 @dataclass(frozen=True, slots=True)
 class LockdownTransition:
+    previous_state: LockdownState
     state: LockdownState
     applied: bool
     cancelled_file_tasks: int = 0
@@ -199,18 +204,15 @@ def _cancel_pending_file_tasks(
 
 def apply_lockdown(
     status: bool,
-    reason: str | None = None,
+    reason: str | None | _ReasonUnset = _REASON_UNSET,
     *,
     only_if_inactive: bool = False,
 ) -> LockdownTransition:
     """Persist a lockdown transition and its database effects atomically."""
-    state = LockdownState(
-        enabled=status,
-        reason=reason,
-    )
-
     if not status and only_if_inactive:
         raise ValueError("only_if_inactive is only valid when enabling lockdown")
+    if not status and not isinstance(reason, _ReasonUnset):
+        raise ValueError("A lockdown reason requires lockdown to be enabled")
 
     attempt = 0
 
@@ -220,6 +222,7 @@ def apply_lockdown(
 
         with Session.begin() as session:
             current = _read_lockdown_state(session)
+            previous_state = LockdownState() if current is None else current.state
 
             if (
                 status
@@ -228,13 +231,35 @@ def apply_lockdown(
                 and current.state.enabled
             ):
                 return LockdownTransition(
+                    previous_state=current.state,
                     state=current.state,
                     applied=False,
                 )
 
+            current_reason = previous_state.reason
+            next_reason = (
+                current_reason
+                if status
+                and previous_state.enabled
+                and isinstance(reason, _ReasonUnset)
+                else None
+                if isinstance(reason, _ReasonUnset)
+                else reason
+            )
+            state = LockdownState(enabled=status, reason=next_reason)
+
+            if state == previous_state:
+                return LockdownTransition(
+                    previous_state=previous_state,
+                    state=state,
+                    applied=False,
+                )
+
+            status_changed = state.enabled != previous_state.enabled
+
             last_disabled_at = (
                 time.time()
-                if not status
+                if status_changed and not status
                 else (0.0 if current is None else current.last_disabled_at)
             )
 
@@ -262,7 +287,7 @@ def apply_lockdown(
                     payload=payload,
                 )
 
-            if applied and status:
+            if applied and status_changed and status:
                 task_ids, cancelled_file_tasks = _cancel_pending_file_tasks(session)
 
         if applied:
@@ -270,6 +295,7 @@ def apply_lockdown(
             _publish_lockdown_state(state)
 
             return LockdownTransition(
+                previous_state=previous_state,
                 state=state,
                 applied=True,
                 cancelled_file_tasks=cancelled_file_tasks,

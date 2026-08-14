@@ -35,6 +35,26 @@ class TestUserBlocksAndStatus:
 
         await user_client.disconnect()
 
+        corrected_reason = "Corrected policy violation details"
+        corrected = assert_success(
+            await authenticated_client.update_user_status(
+                username, "disabled", corrected_reason
+            )
+        )
+        assert corrected["reason"] == corrected_reason
+
+        user_client = CFMSTestClient()
+        await user_client.connect()
+        login_resp = await user_client.login(username, test_user["password"])
+        assert login_resp["code"] == 4003
+        assert login_resp["data"] == {"reason": corrected_reason}
+        await user_client.disconnect()
+
+        cleared = assert_success(
+            await authenticated_client.update_user_status(username, "disabled", None)
+        )
+        assert cleared["reason"] is None
+
         # Re-enable user
         enable_resp = await authenticated_client.update_user_status(username, "active")
         assert_success(enable_resp)
@@ -106,7 +126,9 @@ class TestUserBlocksAndStatus:
         username = test_user["username"]
 
         first_block = assert_success(
-            await authenticated_client.block_user(username, "all", ["read"])
+            await authenticated_client.block_user(
+                username, "all", ["read"], reason="initial reason"
+            )
         )
         second_block = assert_success(
             await authenticated_client.block_user(username, "all", ["write"])
@@ -129,6 +151,31 @@ class TestUserBlocksAndStatus:
         assert len(first_page["items"]) == 1
         assert len(second_page["items"]) == 1
         assert first_page["items"][0]["block_id"] != second_page["items"][0]["block_id"]
+
+        blocks_by_id = {
+            item["block_id"]: item
+            for item in [*first_page["items"], *second_page["items"]]
+        }
+        assert blocks_by_id[first_block["block_id"]]["reason"] == "initial reason"
+
+        updated = assert_success(
+            await authenticated_client.update_user_block(
+                first_block["block_id"], "corrected reason"
+            )
+        )
+        assert updated["reason"] == "corrected reason"
+        audit_items = assert_success(
+            await authenticated_client.view_audit_logs(filters=["update_user_block"])
+        )["items"]
+        assert audit_items[0]["target"] == first_block["block_id"]
+        assert audit_items[0]["data"]["reason_change"] == {
+            "previous": "initial reason",
+            "current": "corrected reason",
+        }
+        cleared = assert_success(
+            await authenticated_client.update_user_block(first_block["block_id"], None)
+        )
+        assert cleared["reason"] is None
 
         await authenticated_client.send_request(
             "unblock_user", {"block_id": first_block["block_id"]}

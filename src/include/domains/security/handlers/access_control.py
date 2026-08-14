@@ -20,7 +20,11 @@ from include.database.models.security import (
 )
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.operations.comments import CommentStore
+from include.domains.operations.comments import (
+    CommentStore,
+    OperationReason,
+    reason_change_audit_data,
+)
 from include.domains.pagination import (
     CursorError,
     PaginationCursor,
@@ -44,7 +48,7 @@ from include.transport.request_handler import (
 from include.types import NonNegativeFloat
 
 _Subnet = Annotated[str, StringConstraints(min_length=1, max_length=128)]
-_OptionalReason = Annotated[str, StringConstraints(max_length=255)] | None
+_OptionalReason = OperationReason | None
 _LockoutUsername = Annotated[str, StringConstraints(min_length=1, max_length=255)]
 _IPAddress = Annotated[str, StringConstraints(min_length=1, max_length=45)]
 _UnlockReason = Annotated[str, StringConstraints(min_length=1, max_length=1024)]
@@ -326,7 +330,11 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
         return Result(
             code=200,
             target=str(network),
-            data={"starts_at": starts_at, "expires_at": expires_at},
+            data={
+                "starts_at": starts_at,
+                "expires_at": expires_at,
+                **reason_change_audit_data(None, reason),
+            },
             username=handler.username,
         )
 
@@ -379,8 +387,11 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
                 )
                 return Result(code=409, target=str(network), username=handler.username)
 
+            previous_reason = row.reason
+            current_reason = previous_reason
             if "reason" in handler.data:
                 reason = handler.data["reason"]
+                current_reason = reason
                 row.reason_comment_id = (
                     CommentStore.get_or_create_id(session, reason)
                     if reason is not None
@@ -389,14 +400,22 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
             row.starts_at = starts_at
             row.expires_at = expires_at
             session.flush()
-            response = _serialize_subnet(row, time.time())
+            response = {
+                **_serialize_subnet(row, time.time()),
+                "reason": current_reason,
+            }
 
-        _refresh_subnet_rules()
+        if "starts_at" in handler.data or "expires_at" in handler.data:
+            _refresh_subnet_rules()
         handler.conclude_request(200, response, "Banned subnet updated")
         return Result(
             code=200,
             target=str(network),
-            data={"starts_at": starts_at, "expires_at": expires_at},
+            data={
+                "starts_at": starts_at,
+                "expires_at": expires_at,
+                **reason_change_audit_data(previous_reason, current_reason),
+            },
             username=handler.username,
         )
 

@@ -13,13 +13,14 @@ __all__ = [
     "RequestSetPasswdHandler",
     "RequestSetUserAvatarHandler",
     "RequestUnblockUserHandler",
+    "RequestUpdateUserBlockHandler",
 ]
 
 import time
 from typing import Annotated, Literal, Self
 
 import filetype
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, model_validator
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import selectinload
 
@@ -51,7 +52,11 @@ from include.domains.identity.validators.passwords import (
     RuleRequirementsNotMetError,
     check_passwd_requirements,
 )
-from include.domains.operations.comments import CommentStore
+from include.domains.operations.comments import (
+    CommentStore,
+    OperationReason,
+    reason_change_audit_data,
+)
 from include.domains.pagination import (
     CursorError,
     PaginationCursor,
@@ -73,8 +78,6 @@ from include.transport.request_handler import (
     Result,
 )
 from include.types import NonEmptyString, NonNegativeFloat
-
-_StatusReason = Annotated[str, StringConstraints(min_length=1, max_length=1024)]
 
 
 class _TimedGroup(RequestDataModel):
@@ -111,10 +114,16 @@ class _BlockUserRequest(RequestDataModel):
     block_types: Annotated[list[str], Field(min_length=1)]
     not_before: Omittable[NonNegativeFloat] = REQUEST_UNSET
     not_after: Omittable[float] = REQUEST_UNSET
+    reason: OperationReason | None = None
 
 
 class _BlockIDRequest(RequestDataModel):
     block_id: NonEmptyString
+
+
+class _UpdateUserBlockRequest(RequestDataModel):
+    block_id: NonEmptyString
+    reason: OperationReason | None
 
 
 class _ListUserBlocksRequest(RequestDataModel):
@@ -149,13 +158,26 @@ class _SetPasswordRequest(RequestDataModel):
 class _ManageUserStatusRequest(RequestDataModel):
     status: Literal["active", "disabled"]
     username: NonEmptyString
-    reason: Omittable[_StatusReason] = REQUEST_UNSET
+    reason: Omittable[OperationReason | None] = REQUEST_UNSET
 
     @model_validator(mode="after")
     def reject_reason_when_activating(self) -> Self:
         if self.status == "active" and "reason" in self.model_fields_set:
             raise ValueError("reason is not allowed when activating a user")
         return self
+
+
+def _serialize_user_block(entry: UserBlockEntry) -> dict:
+    return {
+        "block_id": entry.block_id,
+        "timestamp": entry.timestamp,
+        "not_before": entry.not_before,
+        "not_after": entry.not_after,
+        "target_type": entry.target_type,
+        "target_id": entry.target_id,
+        "block_types": [sub_entry.block_type for sub_entry in entry.sub_entries],
+        "reason": entry.reason,
+    }
 
 
 class RequestListUsersHandler(RequestHandler):
@@ -427,6 +449,7 @@ class RequestBlockUserHandler(RequestHandler):
 
         not_before: int | float = handler.data.get("not_before", 0)
         not_after: int | float = handler.data.get("not_after", -1)
+        reason: str | None = handler.data.get("reason")
 
         target_type: str = handler.data["target"]["type"]
         target_id: str | None = handler.data["target"].get("id")
@@ -461,6 +484,11 @@ class RequestBlockUserHandler(RequestHandler):
                 not_after=not_after,
                 target_type=target_type,
                 target_id=target_id,
+                reason_comment_id=(
+                    CommentStore.get_or_create_id(session, reason)
+                    if reason is not None
+                    else None
+                ),
             )
             session.add(block_entry)
 
@@ -470,12 +498,20 @@ class RequestBlockUserHandler(RequestHandler):
                 )
                 session.add(new_sub_entry)
 
+            session.flush()
+            response_data = _serialize_user_block(block_entry)
             session.commit()
-            # get block_id
-            block_id = block_entry.block_id
 
-        handler.conclude_request(200, {"block_id": block_id}, "User blocked")
-        return Result(code=200, target=target_username, username=handler.username)
+        handler.conclude_request(200, response_data, "User blocked")
+        return Result(
+            code=200,
+            target=target_username,
+            data={
+                "block_id": response_data["block_id"],
+                **reason_change_audit_data(None, response_data["reason"]),
+            },
+            username=handler.username,
+        )
 
 
 class RequestUnblockUserHandler(RequestHandler):
@@ -522,6 +558,59 @@ class RequestUnblockUserHandler(RequestHandler):
 
         handler.conclude_request(200, {}, "Unblocked user")
         return Result(code=200, target=block_id, username=handler.username)
+
+
+class RequestUpdateUserBlockHandler(RequestHandler):
+    request_model = _UpdateUserBlockRequest
+    require_auth = True
+    rate_limit_cost = 3
+
+    def handle(self, handler: ConnectionHandler):
+        block_id: str = handler.data["block_id"]
+        reason: str | None = handler.data["reason"]
+
+        with Session() as session:
+            this_user = User.get_existing(session, handler.username)
+            if Permissions.BLOCK not in this_user.all_permissions:
+                handler.conclude_request(
+                    403, {}, "You do not have permission to update user blocks"
+                )
+                return Result(code=403, target=block_id, username=handler.username)
+
+            block_entry = session.get(
+                UserBlockEntry,
+                block_id,
+                options=(selectinload(UserBlockEntry.sub_entries),),
+            )
+            if block_entry is None:
+                handler.conclude_request(404, {}, "Specified entry not found")
+                return Result(code=404, target=block_id, username=handler.username)
+
+            previous_reason = block_entry.reason
+            if previous_reason != reason:
+                block_entry.reason_comment_id = (
+                    CommentStore.get_or_create_id(session, reason)
+                    if reason is not None
+                    else None
+                )
+            session.flush()
+            response_data = {
+                **_serialize_user_block(block_entry),
+                "reason": reason,
+            }
+            target_username = block_entry.username
+            session.commit()
+
+        handler.conclude_request(200, response_data, "User block updated")
+        return Result(
+            code=200,
+            target=block_id,
+            data={
+                "username": target_username,
+                **reason_change_audit_data(previous_reason, reason),
+            },
+            username=handler.username,
+        )
 
 
 class RequestListUserBlocksHandler(RequestHandler):
@@ -573,7 +662,10 @@ class RequestListUserBlocksHandler(RequestHandler):
 
             block_query = (
                 session.query(UserBlockEntry)
-                .options(selectinload(UserBlockEntry.sub_entries))
+                .options(
+                    selectinload(UserBlockEntry.sub_entries),
+                    selectinload(UserBlockEntry.reason_comment),
+                )
                 .filter(UserBlockEntry.username == target_username)
             )
             if last_key is not None:
@@ -596,21 +688,7 @@ class RequestListUserBlocksHandler(RequestHandler):
                 .all()
             )
 
-            blocks_data = []
-            for entry in block_entries:
-                blocks_data.append(
-                    {
-                        "block_id": entry.block_id,
-                        "timestamp": entry.timestamp,
-                        "not_before": entry.not_before,
-                        "not_after": entry.not_after,
-                        "target_type": entry.target_type,
-                        "target_id": entry.target_id,
-                        "block_types": [
-                            sub_entry.block_type for sub_entry in entry.sub_entries
-                        ],
-                    }
-                )
+            blocks_data = [_serialize_user_block(entry) for entry in block_entries]
 
             response_data = make_cursor_response(
                 blocks_data,
@@ -1079,6 +1157,7 @@ class RequestManageUserStatusHandler(RequestHandler):
         new_status: str = handler.data["status"]
         username: str = handler.data["username"]
         reason: str | None = handler.data.get("reason")
+        reason_provided = "reason" in handler.data
 
         with Session() as session:
             this_user = User.get_existing(session, handler.username)
@@ -1105,18 +1184,44 @@ class RequestManageUserStatusHandler(RequestHandler):
                 handler.conclude_request(404, {}, "User does not exist")
                 return Result(code=404, target=None, username=handler.username)
 
-            if user.status == mapping[new_status]:
-                handler.conclude_request(400, {}, f"User is already {new_status}")
-                return Result(code=400, target=None, username=handler.username)
-            else:
+            previous_reason = user.status_reason
+            status_changed = user.status != mapping[new_status]
+            if status_changed:
                 user.status = mapping[new_status]
                 user.status_comment_id = (
                     CommentStore.get_or_create_id(session, reason)
                     if new_status == "disabled" and reason is not None
                     else None
                 )
+            elif new_status == "disabled" and reason_provided:
+                if previous_reason != reason:
+                    user.status_comment_id = (
+                        CommentStore.get_or_create_id(session, reason)
+                        if reason is not None
+                        else None
+                    )
 
+            current_reason = (
+                reason
+                if new_status == "disabled" and (status_changed or reason_provided)
+                else previous_reason
+                if new_status == "disabled"
+                else None
+            )
             session.commit()
 
-        handler.conclude_request(200, {}, "User status updated successfully")
-        return Result(code=200, target=username, username=handler.username)
+        response_data = {
+            "username": username,
+            "status": new_status,
+            "reason": current_reason,
+        }
+        handler.conclude_request(200, response_data, "User status updated successfully")
+        return Result(
+            code=200,
+            target=username,
+            data={
+                "status": new_status,
+                **reason_change_audit_data(previous_reason, response_data["reason"]),
+            },
+            username=handler.username,
+        )
