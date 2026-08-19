@@ -57,7 +57,7 @@ LockdownReason = OperationReason
 
 
 class _ReasonUnset:
-    pass
+    pass  # TODO: Use a sentinel type when Python 3.15 comes out
 
 
 _REASON_UNSET = _ReasonUnset()
@@ -237,15 +237,13 @@ def apply_lockdown(
                 )
 
             current_reason = previous_state.reason
-            next_reason = (
-                current_reason
-                if status
-                and previous_state.enabled
-                and isinstance(reason, _ReasonUnset)
-                else None
-                if isinstance(reason, _ReasonUnset)
-                else reason
-            )
+            if not isinstance(reason, _ReasonUnset):
+                next_reason = reason
+            elif status and previous_state.enabled:
+                next_reason = current_reason
+            else:
+                next_reason = None
+
             state = LockdownState(enabled=status, reason=next_reason)
 
             if state == previous_state:

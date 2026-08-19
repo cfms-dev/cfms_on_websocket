@@ -82,31 +82,6 @@ Extensions are discovered through versioned `manifest.toml` files and are
 enabled by identifier in `config.toml`. See the [extension guide](docs/EXTENSIONS.md)
 for the manifest schema, activation rules, and migration instructions.
 
-## Document Upload Lifecycle
-
-Document upload reservations expire if transfer does not start in time. Once an
-upload is claimed, it receives a separate hard deadline and is also subject to
-an inactivity timeout. Abandoned initial uploads are purged so their document
-names become available again. Per-creator reservation limits and per-account and
-per-IP creation limits protect the namespace from abuse. Download task issuance
-and transfer starts have an independent adaptive policy that defaults to
-observation mode; bearer credentials and resumable downloads remain supported.
-
-Deleting a document cancels transfers only when the underlying file is no longer
-reachable from another active document, a user avatar, or an extension-owned
-foreign-key reference. See the
-[document upload lifecycle guide](docs/DOCUMENT_UPLOAD_LIFECYCLE.md) for states,
-client errors, configuration, and upgrade behavior.
-
-## Request Rate Control
-
-Every connection and logical request passes through process-local admission
-ceilings. Optional token-bucket quotas then control connection attempts and
-request rates by IP address and authenticated account. Start with observation
-mode, and use the Redis provider when quotas must be shared by multiple server
-processes. See the [request rate-control guide](docs/REQUEST_RATE_CONTROL.md) for
-configuration, client responses, rollout, and failure behavior.
-
 ## Configuration Maintenance
 
 After updating CFMS, run the template synchronization command from `src` to add
