@@ -3,6 +3,7 @@ from pathlib import Path
 from shutil import copyfile
 from types import SimpleNamespace
 
+import orjson
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -32,6 +33,7 @@ def security_admin_context(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
     import include.database.models  # noqa: F401
+    from include.config.constants import LOGIN_GUARD_EVENT_CHANNEL
     from include.database.models.comments import Comment
     from include.database.models.identity import User, UserPermission
     from include.database.models.security import (
@@ -45,6 +47,7 @@ def security_admin_context(monkeypatch, tmp_path):
     from include.domains.security.guards import login
     from include.domains.security.handlers import access_control
     from include.providers.caching.memory import MemoryCachingProvider
+    from include.providers.events.local import LocalEventBusProvider
     from include.providers.manager import ProviderManager
 
     engine = create_engine(f"sqlite:///{tmp_path / 'security-admin.db'}")
@@ -53,8 +56,12 @@ def security_admin_context(monkeypatch, tmp_path):
     monkeypatch.setattr(access_control, "Session", test_session)
     monkeypatch.setattr(login, "Session", test_session)
     monkeypatch.setattr(access_control, "get_client_ip", lambda _ws: "203.0.113.10")
-    monkeypatch.setattr(access_control, "_publish_guard_event", lambda _payload: None)
     ProviderManager().register(MemoryCachingProvider())
+    event_bus = LocalEventBusProvider()
+    published_events = []
+    event_bus.subscribe(LOGIN_GUARD_EVENT_CHANNEL, login.LoginGuard.handle_event)
+    event_bus.subscribe(LOGIN_GUARD_EVENT_CHANNEL, published_events.append)
+    ProviderManager().register(event_bus)
     monkeypatch.setattr(login.LoginGuard, "_banned_rules", [])
     monkeypatch.setattr(login.LoginGuard, "_networks_loaded", True)
 
@@ -86,6 +93,7 @@ def security_admin_context(monkeypatch, tmp_path):
         LoginThrottle=LoginThrottle,
         TrafficThrottle=TrafficThrottle,
         Comment=Comment,
+        published_events=published_events,
     )
     engine.dispose()
 
@@ -183,7 +191,7 @@ def test_banned_subnets_reuse_equal_reason_comments(security_admin_context):
 
 
 def test_banned_subnet_reason_only_update_skips_guard_refresh(
-    security_admin_context, monkeypatch
+    security_admin_context,
 ):
     handlers = security_admin_context.handlers
     _, created = _call(
@@ -191,10 +199,7 @@ def test_banned_subnet_reason_only_update_skips_guard_refresh(
         {"subnet": "192.0.2.0/24", "reason": "initial"},
     )
     assert created["code"] == 200
-    refreshes = []
-    monkeypatch.setattr(
-        handlers, "_refresh_subnet_rules", lambda: refreshes.append(True)
-    )
+    security_admin_context.published_events.clear()
 
     result, updated = _call(
         handlers.RequestUpdateBannedSubnetHandler,
@@ -206,7 +211,129 @@ def test_banned_subnet_reason_only_update_skips_guard_refresh(
         "previous": "initial",
         "current": "corrected",
     }
-    assert refreshes == []
+    assert security_admin_context.published_events == []
+
+
+def test_banned_subnet_mutations_reload_once_through_local_event_consumer(
+    security_admin_context, monkeypatch
+):
+    handlers = security_admin_context.handlers
+    guard = security_admin_context.login.LoginGuard
+    reloads = []
+    original_reload = guard.reload_networks
+
+    def track_reload(_cls):
+        reloads.append(True)
+        original_reload()
+
+    monkeypatch.setattr(
+        guard,
+        "reload_networks",
+        classmethod(track_reload),
+    )
+    security_admin_context.published_events.clear()
+    log_messages = []
+    sink_id = handlers.logger.add(log_messages.append, format="{message}")
+
+    try:
+        _, created = _call(
+            handlers.RequestCreateBannedSubnetHandler,
+            {"subnet": "192.0.2.0/24"},
+        )
+        _, updated = _call(
+            handlers.RequestUpdateBannedSubnetHandler,
+            {"subnet": "192.0.2.0/24", "starts_at": handlers.time.time() + 60},
+        )
+        _, deleted = _call(
+            handlers.RequestDeleteBannedSubnetHandler,
+            {"subnet": "192.0.2.0/24"},
+        )
+    finally:
+        handlers.logger.remove(sink_id)
+
+    assert created["code"] == updated["code"] == deleted["code"] == 200
+    assert reloads == [True, True, True]
+    assert (
+        sum(
+            "banned subnet rule(s) from database." in str(message)
+            for message in log_messages
+        )
+        == 3
+    )
+    assert [
+        orjson.loads(message) for message in security_admin_context.published_events
+    ] == [{"type": "reload_subnets"}] * 3
+    with security_admin_context.Session() as session:
+        assert session.get(security_admin_context.BannedSubnet, "192.0.2.0/24") is None
+
+
+def test_banned_subnet_reload_waits_for_event_consumer(
+    security_admin_context, monkeypatch
+):
+    handlers = security_admin_context.handlers
+    guard = security_admin_context.login.LoginGuard
+    published = []
+    event_bus = SimpleNamespace(
+        publish=lambda channel, message: published.append((channel, message))
+    )
+    monkeypatch.setattr(
+        handlers, "ProviderManager", lambda: SimpleNamespace(event_bus=event_bus)
+    )
+    reloads = []
+    monkeypatch.setattr(
+        guard, "reload_networks", classmethod(lambda _cls: reloads.append(True))
+    )
+
+    _, created = _call(
+        handlers.RequestCreateBannedSubnetHandler,
+        {"subnet": "192.0.2.0/24"},
+    )
+
+    assert created["code"] == 200
+    assert reloads == []
+    assert len(published) == 1
+    channel, message = published[0]
+    assert channel == handlers.LOGIN_GUARD_EVENT_CHANNEL
+    assert orjson.loads(message) == {"type": "reload_subnets"}
+
+    guard.handle_event(message)
+    assert reloads == [True]
+
+
+def test_banned_subnet_publish_failure_keeps_committed_change(
+    security_admin_context, monkeypatch
+):
+    handlers = security_admin_context.handlers
+    guard = security_admin_context.login.LoginGuard
+
+    def fail_publish(_channel, _message):
+        raise RuntimeError("event bus unavailable")
+
+    event_bus = SimpleNamespace(publish=fail_publish)
+    monkeypatch.setattr(
+        handlers, "ProviderManager", lambda: SimpleNamespace(event_bus=event_bus)
+    )
+    reloads = []
+    monkeypatch.setattr(
+        guard, "reload_networks", classmethod(lambda _cls: reloads.append(True))
+    )
+    log_messages = []
+    sink_id = handlers.logger.add(log_messages.append, format="{message}")
+    try:
+        _, created = _call(
+            handlers.RequestCreateBannedSubnetHandler,
+            {"subnet": "192.0.2.0/24"},
+        )
+    finally:
+        handlers.logger.remove(sink_id)
+
+    assert created["code"] == 200
+    assert reloads == []
+    assert any("runtime state may be stale" in str(message) for message in log_messages)
+    with security_admin_context.Session() as session:
+        assert (
+            session.get(security_admin_context.BannedSubnet, "192.0.2.0/24") is not None
+        )
 
 
 def test_banned_subnet_requires_explicit_self_block_confirmation(

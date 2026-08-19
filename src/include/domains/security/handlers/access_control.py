@@ -176,13 +176,10 @@ def _publish_guard_event(payload: dict[str, Any]) -> None:
         ProviderManager().event_bus.publish(
             LOGIN_GUARD_EVENT_CHANNEL, orjson.dumps(payload).decode()
         )
-    except Exception:  # noqa: BLE001 - local state is already consistent.
-        logger.exception("Failed to publish login guard invalidation event")
-
-
-def _refresh_subnet_rules() -> None:
-    LoginGuard.reload_networks()
-    _publish_guard_event({"type": "reload_subnets"})
+    except Exception:  # noqa: BLE001 - the database change is already committed.
+        logger.exception(
+            "Failed to publish login guard invalidation event; runtime state may be stale"
+        )
 
 
 class RequestListBannedSubnetsHandler(RequestHandler):
@@ -325,7 +322,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
             handler.conclude_request(409, {}, "Subnet rule already exists")
             return Result(code=409, target=str(network), username=handler.username)
 
-        _refresh_subnet_rules()
+        _publish_guard_event({"type": "reload_subnets"})
         handler.conclude_request(200, response, "Banned subnet created")
         return Result(
             code=200,
@@ -406,7 +403,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
             }
 
         if "starts_at" in handler.data or "expires_at" in handler.data:
-            _refresh_subnet_rules()
+            _publish_guard_event({"type": "reload_subnets"})
         handler.conclude_request(200, response, "Banned subnet updated")
         return Result(
             code=200,
@@ -444,7 +441,7 @@ class RequestDeleteBannedSubnetHandler(RequestHandler):
                 return Result(code=404, target=subnet, username=handler.username)
             session.delete(row)
 
-        _refresh_subnet_rules()
+        _publish_guard_event({"type": "reload_subnets"})
         handler.conclude_request(200, {}, "Banned subnet deleted")
         return Result(code=200, target=subnet, username=handler.username)
 
