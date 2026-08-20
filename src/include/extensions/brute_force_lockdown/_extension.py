@@ -194,11 +194,6 @@ def ext_validate_config(config: Mapping[str, Any]) -> None:
 
 
 @hookimpl
-def ext_register_extension_flags() -> set[str]:
-    return {"brute_force_lockdown"}
-
-
-@hookimpl
 def ext_post_request(
     action: str,
     handler: "ConnectionHandler",
