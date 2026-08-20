@@ -1,6 +1,6 @@
 from typing import Literal
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from include.config.constants import AVAILABLE_BLOCK_TYPES
 from include.database.models.access import (
@@ -71,14 +71,32 @@ def batch_prefetch_granted_ids(
     if not obj_ids:
         return set()
 
-    entity_identifiers = [user.username] + [g.group_name for g in user.groups]
+    active_group_names = {
+        membership.group_name
+        for membership in user.groups
+        if (membership.start_time is None or membership.start_time <= now)
+        and (membership.end_time is None or membership.end_time >= now)
+    }
+    principal_filters = [
+        and_(
+            ObjectAccessEntry.entity_type == "user",
+            ObjectAccessEntry.entity_identifier == user.username,
+        )
+    ]
+    if active_group_names:
+        principal_filters.append(
+            and_(
+                ObjectAccessEntry.entity_type == "group",
+                ObjectAccessEntry.entity_identifier.in_(active_group_names),
+            )
+        )
 
     rows = (
         session.query(ObjectAccessEntry.target_identifier)
         .filter(
             ObjectAccessEntry.target_type == target_type,
             ObjectAccessEntry.target_identifier.in_(obj_ids),
-            ObjectAccessEntry.entity_identifier.in_(entity_identifiers),
+            or_(*principal_filters),
             ObjectAccessEntry.access_type == access_type,
             ObjectAccessEntry.start_time <= now,
             or_(
