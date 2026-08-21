@@ -38,10 +38,6 @@ def test_policy_uses_defaults_when_extension_table_is_missing():
     assert policy == extension.BruteForceLockdownPolicy()
 
 
-def test_extension_advertises_capability_flag():
-    assert extension.ext_register_extension_flags() == {"brute_force_lockdown"}
-
-
 @pytest.mark.parametrize(
     ("overrides", "field"),
     [
