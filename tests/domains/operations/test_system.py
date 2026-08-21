@@ -11,7 +11,7 @@ from websockets.exceptions import ConnectionClosed
 from include.config.constants import CORE_VERSION
 from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings
-from tests.support.utils import assert_error, assert_success
+from tests.support.utils import assert_error, assert_success, permission_entry
 
 
 def _format_ws_host(host: str) -> str:
@@ -83,7 +83,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 23,
+            "protocol_version": 24,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {
@@ -165,7 +165,7 @@ class TestSystemManagement:
         user = await user_factory()
         assert_success(
             await authenticated_client.change_user_permissions(
-                user["username"], ["diagnostics"]
+                user["username"], [permission_entry("diagnostics")]
             )
         )
         diagnostics_client = CFMSTestClient(

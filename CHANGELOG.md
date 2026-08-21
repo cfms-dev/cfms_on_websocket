@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Increase the protocol version to 24 and replace identity permission string
+  lists with structured grant/revocation entries and explicit effective-permission
+  fields. Protocol 23 clients must upgrade together with the server.
 - Increase the protocol version to 22 and remove the exact core version from
   the unauthenticated `server_info` response to reduce software fingerprinting.
 - Replace request-handler JSON Schema dictionaries with strict Pydantic request

@@ -12,9 +12,10 @@ from include.database.models.identity import (
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.identity.commands.groups import create_group
+from include.domains.identity.permission_entries import serialize_permission_entries
 from include.domains.identity.request_models import (
     OffsetPaginationRequest,
-    TimedPermission,
+    PermissionEntry,
 )
 from include.domains.pagination import get_offset_pagination
 from include.messages import Messages as smsg
@@ -32,7 +33,7 @@ from include.types import NonEmptyString
 class _CreateGroupRequest(RequestDataModel):
     group_name: NonEmptyString
     display_name: str | None = None
-    permissions: Omittable[list[TimedPermission]] = REQUEST_UNSET
+    permissions: Omittable[list[PermissionEntry]] = REQUEST_UNSET
 
 
 class _GroupNameRequest(RequestDataModel):
@@ -46,7 +47,7 @@ class _RenameGroupRequest(RequestDataModel):
 
 class _ChangeGroupPermissionsRequest(RequestDataModel):
     group_name: NonEmptyString
-    permissions: list[str]
+    permissions: list[PermissionEntry]
 
 
 class RequestListGroupsHandler(RequestHandler):
@@ -85,7 +86,10 @@ class RequestListGroupsHandler(RequestHandler):
                         {
                             "name": group.group_name,
                             "display_name": group.group_display_name,
-                            "permissions": list(group.all_permissions),
+                            "permissions": serialize_permission_entries(
+                                group.permissions
+                            ),
+                            "effective_permissions": sorted(group.all_permissions),
                             "members": list(group.members),
                         }
                         for group in groups
@@ -304,7 +308,8 @@ class RequestGetGroupInfoHandler(RequestHandler):
                 "data": {
                     "name": group.group_name,
                     "display_name": group.group_display_name,
-                    "permissions": list(group.all_permissions),
+                    "permissions": serialize_permission_entries(group.permissions),
+                    "effective_permissions": sorted(group.all_permissions),
                     "members": list(group.members),
                 },
             }
@@ -356,18 +361,8 @@ class RequestChangeGroupPermissionsHandler(RequestHandler):
                 )
 
             new_permissions = handler.data.get("permissions", [])
-
-            # Check if all elements in new_permissions are of type str
-            if not all(isinstance(permission, str) for permission in new_permissions):
-                handler.conclude_request(
-                    code=400, message="All permissions must be of type str", data={}
-                )
-                return
-
-            # Avoid unnecessary DB work.
-            if set(new_permissions) != group.all_permissions:
-                group.all_permissions = new_permissions
-                session.commit()
+            group.all_permissions = new_permissions
+            session.commit()
 
         response = {
             "code": 200,

@@ -171,6 +171,7 @@ async def user_factory(
         password="TestPassword123!",
         nickname="Test User",
         groups=None,
+        permissions=None,
     ):
         if not username:
             username = f"user_{secrets.token_hex(4)}"
@@ -179,6 +180,7 @@ async def user_factory(
             password=password,
             nickname=nickname,
             groups=groups,
+            permissions=permissions,
         )
         assert_success(response)
         created_users.append(username)

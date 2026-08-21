@@ -58,6 +58,8 @@ def _permission_grants_and_revocations(
     revoked_permissions = set()
 
     for entry in permission_entries:
+        if entry.start_time is not None and entry.start_time > now:
+            continue
         if entry.end_time is not None and entry.end_time < now:
             continue
 
@@ -79,16 +81,15 @@ def _effective_permissions(
 def _replace_permission_entries(
     session,
     current_entries: list[Any],
-    new_permission_list: list[str],
-    create_entry: Callable[[str, float], Any],
+    new_permission_entries: list[dict[str, Any]],
+    create_entry: Callable[[dict[str, Any]], Any],
 ) -> None:
     for old_permission in list(current_entries):
         session.delete(old_permission)
     current_entries.clear()
 
-    now = time.time()
-    for permission_name in new_permission_list:
-        permission = create_entry(permission_name, now)
+    for entry_data in new_permission_entries:
+        permission = create_entry(entry_data)
         session.add(permission)
         current_entries.append(permission)
 
@@ -405,7 +406,7 @@ class User(Base):
         return _effective_permissions(self.rights)
 
     @own_permissions.setter
-    def own_permissions(self, new_permission_list: list[str]):
+    def own_permissions(self, new_permission_entries: list[dict[str, Any]]):
         session = object_session(self)
         if not session:
             raise RuntimeError()
@@ -413,13 +414,14 @@ class User(Base):
         _replace_permission_entries(
             session,
             self.rights,
-            new_permission_list,
-            lambda permission, now: UserPermission(
+            new_permission_entries,
+            lambda entry: UserPermission(
                 user=self,
                 username=self.username,
-                permission=permission,
-                start_time=now,
-                end_time=None,
+                permission=entry["permission"],
+                granted=entry["granted"],
+                start_time=entry["start_time"],
+                end_time=entry["end_time"],
             ),
         )
 
@@ -517,22 +519,6 @@ class UserPermission(Base):
         )
 
 
-@event.listens_for(User, "load")
-def filter_permissions_on_load(target, context):
-    now = time.time()
-    # Keep only granted permissions that have not expired.
-    valid_permissions = []
-    session = object_session(target)
-    for perm in list(target.rights):
-        if not perm.granted or (perm.end_time is not None and perm.end_time < now):
-            # Permanently delete expired or revoked permissions from the DB.
-            if session is not None:
-                session.delete(perm)
-        else:
-            valid_permissions.append(perm)
-    target.rights = valid_permissions
-
-
 # User group memberships with validity windows.
 class UserMembership(Base):
     __tablename__ = "user_memberships"
@@ -583,7 +569,7 @@ class UserGroup(Base):
         return _effective_permissions(self.permissions)
 
     @all_permissions.setter
-    def all_permissions(self, new_permission_list: list[str]):
+    def all_permissions(self, new_permission_entries: list[dict[str, Any]]):
         session = object_session(self)
         if not session:
             raise RuntimeError()
@@ -591,13 +577,14 @@ class UserGroup(Base):
         _replace_permission_entries(
             session,
             self.permissions,
-            new_permission_list,
-            lambda permission, now: UserGroupPermission(
+            new_permission_entries,
+            lambda entry: UserGroupPermission(
                 group=self,
                 group_name=self.group_name,
-                permission=permission,
-                start_time=now,
-                end_time=None,
+                permission=entry["permission"],
+                granted=entry["granted"],
+                start_time=entry["start_time"],
+                end_time=entry["end_time"],
             ),
         )
 

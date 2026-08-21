@@ -8,7 +8,7 @@ import time
 import pytest
 
 from tests.support.client import CFMSTestClient
-from tests.support.utils import assert_error, assert_success
+from tests.support.utils import assert_error, assert_success, permission_entry
 
 
 class TestDirectoryOperations:
@@ -140,7 +140,7 @@ class TestDirectoryOperations:
             )
             assert_success(
                 await authenticated_client.change_user_permissions(
-                    user["username"], ["super_list_directory"]
+                    user["username"], [permission_entry("super_list_directory")]
                 )
             )
             await user_client.connect()
@@ -245,7 +245,10 @@ class TestDirectoryOperations:
         assert_success(
             await authenticated_client.change_user_permissions(
                 user["username"],
-                ["create_directory", "super_create_directory"],
+                [
+                    permission_entry("create_directory"),
+                    permission_entry("super_create_directory"),
+                ],
             )
         )
 

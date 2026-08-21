@@ -5,7 +5,6 @@ from include.database.session import Session
 
 
 def create_group(**kwargs) -> None:
-
     with Session() as session:
         group = UserGroup(
             group_name=kwargs["group_name"],
@@ -17,7 +16,7 @@ def create_group(**kwargs) -> None:
                 permission=i["permission"],
                 granted=i.get("granted", True),
                 start_time=i.get("start_time", time.time()),
-                end_time=i.get("end_time", None),
+                end_time=i.get("end_time"),
             )
             group.permissions.append(permission)
 

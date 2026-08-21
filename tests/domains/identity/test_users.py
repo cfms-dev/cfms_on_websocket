@@ -5,7 +5,7 @@ from include.config.constants import (
     PAGINATION_MAX_PAGE_SIZE,
 )
 from tests.support.client import CFMSTestClient
-from tests.support.utils import assert_error, assert_success
+from tests.support.utils import assert_error, assert_success, permission_entry
 
 
 class TestUserOperations:
@@ -154,7 +154,9 @@ class TestUserOperations:
         username = user["username"]
         new_password = "UpdatedPassword456!"
         assert_success(
-            await authenticated_client.change_user_permissions(username, ["set_passwd"])
+            await authenticated_client.change_user_permissions(
+                username, [permission_entry("set_passwd")]
+            )
         )
 
         failed = await unauthenticated_client.send_request(
@@ -197,6 +199,14 @@ class TestUserOperations:
 
         usernames = [user.get("username") for user in data["users"]]
         assert "admin" in usernames
+        admin = next(user for user in data["users"] if user["username"] == "admin")
+        assert set(admin) >= {
+            "permissions",
+            "effective_permissions",
+            "effective_own_permissions",
+            "effective_inherited_permissions",
+        }
+        assert all(isinstance(entry, dict) for entry in admin["permissions"])
 
     @pytest.mark.asyncio
     async def test_list_users_with_pagination(
@@ -241,8 +251,15 @@ class TestUserOperations:
     async def test_create_user(
         self, authenticated_client: CFMSTestClient, user_factory
     ):
-        created_user = await user_factory()
+        permissions = [permission_entry("list_users", granted=False)]
+        created_user = await user_factory(permissions=permissions)
         assert created_user["username"]
+
+        data = assert_success(
+            await authenticated_client.get_user_info(created_user["username"])
+        )
+        assert data["permissions"] == permissions
+        assert data["effective_permissions"] == []
 
     @pytest.mark.asyncio
     async def test_get_user_info(
@@ -304,26 +321,39 @@ class TestUserOperations:
     async def test_change_user_permissions(
         self, authenticated_client: CFMSTestClient, test_user: dict
     ):
+        permissions = [permission_entry("list_users")]
         response = await authenticated_client.change_user_permissions(
-            test_user["username"], ["list_users"]
+            test_user["username"], permissions
         )
         assert_success(response)
 
         info_response = await authenticated_client.get_user_info(test_user["username"])
         data = assert_success(info_response)
-        assert "list_users" in data["permissions"]
+        assert data["permissions"] == permissions
+        assert data["effective_permissions"] == ["list_users"]
+        assert data["effective_own_permissions"] == ["list_users"]
+
+        replacement = [permission_entry("get_user_info", granted=False)]
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                test_user["username"], replacement
+            )
+        )
+        replaced = assert_success(
+            await authenticated_client.get_user_info(test_user["username"])
+        )
+        assert replaced["permissions"] == replacement
+        assert replaced["effective_permissions"] == []
 
     @pytest.mark.asyncio
     async def test_get_user_info_splits_own_and_inherited_permissions(
         self, authenticated_client: CFMSTestClient, user_factory, group_factory
     ):
-        test_group = await group_factory(
-            permissions=[{"permission": "list_groups", "start_time": 0}]
-        )
+        test_group = await group_factory(permissions=[permission_entry("list_groups")])
         test_user = await user_factory()
 
         permissions_response = await authenticated_client.change_user_permissions(
-            test_user["username"], ["list_users"]
+            test_user["username"], [permission_entry("list_users")]
         )
         assert_success(permissions_response)
 
@@ -339,10 +369,60 @@ class TestUserOperations:
         info_response = await authenticated_client.get_user_info(test_user["username"])
         data = assert_success(info_response)
 
-        assert "list_users" in data["own_permissions"]
-        assert "list_groups" in data["inherited_permissions"]
-        assert "list_users" in data["permissions"]
-        assert "list_groups" in data["permissions"]
+        assert data["effective_own_permissions"] == ["list_users"]
+        assert data["effective_inherited_permissions"] == ["list_groups"]
+        assert data["effective_permissions"] == ["list_groups", "list_users"]
+        assert "own_permissions" not in data
+        assert "inherited_permissions" not in data
+
+    @pytest.mark.asyncio
+    async def test_user_revocation_overrides_group_grant(
+        self, authenticated_client: CFMSTestClient, user_factory, group_factory
+    ):
+        group = await group_factory(permissions=[permission_entry("list_users")])
+        user = await user_factory(
+            groups=[{"group_name": group["group_name"], "start_time": 0.0}]
+        )
+        permissions = [
+            permission_entry("list_users", granted=False),
+            permission_entry("create_user"),
+            permission_entry(
+                "create_user",
+                granted=False,
+                start_time=32503680000.0,
+            ),
+            permission_entry(
+                "create_user",
+                granted=False,
+                start_time=0.0,
+                end_time=1.0,
+            ),
+        ]
+
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                user["username"], permissions
+            )
+        )
+        data = assert_success(
+            await authenticated_client.get_user_info(user["username"])
+        )
+
+        assert data["permissions"] == permissions
+        assert data["effective_own_permissions"] == ["create_user"]
+        assert data["effective_inherited_permissions"] == ["list_users"]
+        assert data["effective_permissions"] == ["create_user"]
+
+    @pytest.mark.asyncio
+    async def test_change_user_permissions_rejects_legacy_string_entries(
+        self, authenticated_client: CFMSTestClient, test_user: dict
+    ):
+        response = await authenticated_client.send_request(
+            "change_user_permissions",
+            {"username": test_user["username"], "permissions": ["list_users"]},
+        )
+
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_change_user_permissions_requires_set_user_permissions(
@@ -360,7 +440,7 @@ class TestUserOperations:
         assert_success(login_response)
 
         response = await unauthenticated_client.change_user_permissions(
-            target_user["username"], ["list_users"]
+            target_user["username"], [permission_entry("list_users")]
         )
         error = assert_error(response, 403)
         assert error["message"] == "You do not have permission to set user permissions"
@@ -369,7 +449,7 @@ class TestUserOperations:
             target_user["username"]
         )
         data = assert_success(info_response)
-        assert "list_users" not in data["permissions"]
+        assert "list_users" not in data["effective_permissions"]
 
 
 class TestUserWithoutAuth:

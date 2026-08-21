@@ -185,7 +185,7 @@ def test_set_password_request_preserves_compatible_mode_values(
     assert "old_passwd" in provided.model_fields_set
 
 
-def test_nested_identity_and_keyring_models_preserve_omission_rules(
+def test_identity_permission_requests_require_complete_structured_entries(
     monkeypatch, tmp_path
 ) -> None:
     from pydantic import ValidationError
@@ -193,26 +193,51 @@ def test_nested_identity_and_keyring_models_preserve_omission_rules(
     copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
     monkeypatch.chdir(tmp_path)
 
-    from include.domains.identity.handlers.users import RequestCreateUserHandler
+    from include.domains.identity.handlers.groups import (
+        RequestChangeGroupPermissionsHandler,
+        RequestCreateGroupHandler,
+    )
+    from include.domains.identity.handlers.users import (
+        RequestChangeUserPermissionsHandler,
+        RequestCreateUserHandler,
+    )
     from include.domains.keyrings.handlers.keyrings import RequestListUserKeysHandler
 
-    RequestCreateUserHandler.request_model.model_validate(
-        {
-            "username": "alice",
-            "password": "",
-            "permissions": [{"permission": "read", "start_time": 0}],
-        }
+    permission = {
+        "permission": "read",
+        "granted": False,
+        "start_time": 10.0,
+        "end_time": None,
+    }
+    request_cases = (
+        (
+            RequestCreateUserHandler.request_model,
+            {"username": "alice", "password": ""},
+        ),
+        (
+            RequestChangeUserPermissionsHandler.request_model,
+            {"username": "alice"},
+        ),
+        (RequestCreateGroupHandler.request_model, {"group_name": "staff"}),
+        (
+            RequestChangeGroupPermissionsHandler.request_model,
+            {"group_name": "staff"},
+        ),
     )
-    with pytest.raises(ValidationError):
-        RequestCreateUserHandler.request_model.model_validate(
-            {
-                "username": "alice",
-                "password": "",
-                "permissions": [
-                    {"permission": "read", "start_time": 0, "end_time": None}
-                ],
-            }
+
+    for request_model, base_data in request_cases:
+        request_model.model_validate({**base_data, "permissions": [permission]})
+
+        invalid_permissions = (
+            ["read"],
+            [{key: value for key, value in permission.items() if key != "granted"}],
+            [{**permission, "unexpected": True}],
+            [{**permission, "granted": "false"}],
+            [{**permission, "end_time": 9.0}],
         )
+        for invalid in invalid_permissions:
+            with pytest.raises(ValidationError):
+                request_model.model_validate({**base_data, "permissions": invalid})
 
     RequestListUserKeysHandler.request_model.model_validate(
         {"offset": 1.0, "count": 10.0}

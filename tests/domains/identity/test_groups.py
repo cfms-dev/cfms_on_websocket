@@ -1,7 +1,7 @@
 import pytest
 
 from tests.support.client import CFMSTestClient
-from tests.support.utils import assert_error, assert_success
+from tests.support.utils import assert_error, assert_success, permission_entry
 
 
 class TestGroupOperations:
@@ -18,6 +18,9 @@ class TestGroupOperations:
 
         group_names = [group.get("name") for group in data["groups"]]
         assert "sysop" in group_names
+        sysop = next(group for group in data["groups"] if group["name"] == "sysop")
+        assert "effective_permissions" in sysop
+        assert all(isinstance(entry, dict) for entry in sysop["permissions"])
 
     @pytest.mark.asyncio
     async def test_list_groups_with_pagination(
@@ -41,8 +44,15 @@ class TestGroupOperations:
     async def test_create_group(
         self, authenticated_client: CFMSTestClient, group_factory
     ):
-        test_group = await group_factory()
+        permissions = [permission_entry("list_users", granted=False)]
+        test_group = await group_factory(permissions=permissions)
         assert test_group["group_name"]
+
+        data = assert_success(
+            await authenticated_client.get_group_info(test_group["group_name"])
+        )
+        assert data["permissions"] == permissions
+        assert data["effective_permissions"] == []
 
     @pytest.mark.asyncio
     async def test_get_group_info(
@@ -51,6 +61,65 @@ class TestGroupOperations:
         response = await authenticated_client.get_group_info(test_group["group_name"])
         data = assert_success(response)
         assert isinstance(data.get("permissions"), list)
+        assert isinstance(data.get("effective_permissions"), list)
+
+    @pytest.mark.asyncio
+    async def test_change_group_permissions_replaces_structured_entries(
+        self, authenticated_client: CFMSTestClient, group_factory
+    ):
+        group = await group_factory(permissions=[permission_entry("list_users")])
+        replacement = [permission_entry("create_user", granted=False)]
+
+        assert_success(
+            await authenticated_client.change_group_permissions(
+                group["group_name"], replacement
+            )
+        )
+        data = assert_success(
+            await authenticated_client.get_group_info(group["group_name"])
+        )
+
+        assert data["permissions"] == replacement
+        assert data["effective_permissions"] == []
+
+    @pytest.mark.asyncio
+    async def test_group_revocation_overrides_user_and_other_group_grants(
+        self,
+        authenticated_client: CFMSTestClient,
+        group_factory,
+        user_factory,
+    ):
+        granting_group = await group_factory(
+            permissions=[permission_entry("list_users")]
+        )
+        revoking_group = await group_factory(
+            permissions=[permission_entry("list_users", granted=False)]
+        )
+        user = await user_factory(
+            permissions=[permission_entry("list_users")],
+            groups=[
+                {"group_name": granting_group["group_name"], "start_time": 0.0},
+                {"group_name": revoking_group["group_name"], "start_time": 0.0},
+            ],
+        )
+
+        data = assert_success(
+            await authenticated_client.get_user_info(user["username"])
+        )
+        assert data["effective_own_permissions"] == ["list_users"]
+        assert data["effective_inherited_permissions"] == []
+        assert data["effective_permissions"] == []
+
+    @pytest.mark.asyncio
+    async def test_change_group_permissions_rejects_legacy_string_entries(
+        self, authenticated_client: CFMSTestClient, test_group: dict
+    ):
+        response = await authenticated_client.send_request(
+            "change_group_permissions",
+            {"group_name": test_group["group_name"], "permissions": ["list_users"]},
+        )
+
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_get_nonexistent_group_info(

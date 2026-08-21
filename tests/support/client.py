@@ -754,6 +754,7 @@ class CFMSTestClient:
         password: str,
         nickname: str | None = None,
         groups: list | None = None,
+        permissions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         Create a new user.
@@ -763,6 +764,7 @@ class CFMSTestClient:
             password: Password for the new user
             nickname: Optional nickname
             groups: Optional list of group assignments
+            permissions: Optional list of structured permission entries
 
         Returns:
             Response with created user information
@@ -772,6 +774,8 @@ class CFMSTestClient:
             data["nickname"] = nickname
         if groups is not None:
             data["groups"] = groups
+        if permissions is not None:
+            data["permissions"] = permissions
         return await self.send_request("create_user", data)
 
     async def delete_user(self, username: str) -> dict[str, Any]:
@@ -799,7 +803,7 @@ class CFMSTestClient:
         return await self.send_request("get_user_info", {"username": username})
 
     async def change_user_permissions(
-        self, username: str, permissions: list[str]
+        self, username: str, permissions: list[dict[str, Any]]
     ) -> dict[str, Any]:
         return await self.send_request(
             "change_user_permissions",
@@ -871,6 +875,14 @@ class CFMSTestClient:
             Group information
         """
         return await self.send_request("get_group_info", {"group_name": group_name})
+
+    async def change_group_permissions(
+        self, group_name: str, permissions: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return await self.send_request(
+            "change_group_permissions",
+            {"group_name": group_name, "permissions": permissions},
+        )
 
     async def download_file_from_server(self, dl_task_id: str, dest_path: str):
         if self.multiplexer is None:

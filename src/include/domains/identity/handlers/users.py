@@ -42,9 +42,10 @@ from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import create_file_task
 from include.domains.identity.commands.users import create_user
 from include.domains.identity.password_auth import verify_password_or_dummy
+from include.domains.identity.permission_entries import serialize_permission_entries
 from include.domains.identity.request_models import (
     OffsetPaginationRequest,
-    TimedPermission,
+    PermissionEntry,
 )
 from include.domains.identity.types import RequestUsername
 from include.domains.identity.validators.passwords import (
@@ -90,7 +91,7 @@ class _CreateUserRequest(RequestDataModel):
     username: RequestUsername
     password: str
     nickname: Omittable[str] = REQUEST_UNSET
-    permissions: Omittable[list[TimedPermission]] = REQUEST_UNSET
+    permissions: Omittable[list[PermissionEntry]] = REQUEST_UNSET
     groups: Omittable[list[_TimedGroup]] = REQUEST_UNSET
 
 
@@ -144,7 +145,7 @@ class _ChangeUserGroupsRequest(RequestDataModel):
 
 class _ChangeUserPermissionsRequest(RequestDataModel):
     username: NonEmptyString
-    permissions: list[str]
+    permissions: list[PermissionEntry]
 
 
 class _SetPasswordRequest(RequestDataModel):
@@ -214,7 +215,12 @@ class RequestListUsersHandler(RequestHandler):
                     "nickname": user.nickname,
                     "created_time": user.created_time,
                     "last_login": user.last_login,
-                    "permissions": list(user.all_permissions),
+                    "permissions": serialize_permission_entries(user.rights),
+                    "effective_permissions": sorted(user.all_permissions),
+                    "effective_own_permissions": sorted(user.own_permissions),
+                    "effective_inherited_permissions": sorted(
+                        user.inherited_permissions
+                    ),
                     "groups": list(user.all_groups),
                 }
                 for user in users
@@ -737,9 +743,12 @@ class RequestGetUserInfoHandler(RequestHandler):
                 "nickname": user_to_get.nickname,
                 "username": user_to_get.username,
                 "status": UserStatus(user_to_get.status).value,
-                "permissions": list(user_to_get.all_permissions),
-                "own_permissions": list(user_to_get.own_permissions),
-                "inherited_permissions": list(user_to_get.inherited_permissions),
+                "permissions": serialize_permission_entries(user_to_get.rights),
+                "effective_permissions": sorted(user_to_get.all_permissions),
+                "effective_own_permissions": sorted(user_to_get.own_permissions),
+                "effective_inherited_permissions": sorted(
+                    user_to_get.inherited_permissions
+                ),
                 "groups": list(user_to_get.all_groups),
                 "last_login": user_to_get.last_login,
                 "created_time": user_to_get.created_time,
@@ -969,16 +978,8 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
                 )
 
             new_permissions = handler.data.get("permissions", [])
-
-            if not all(isinstance(permission, str) for permission in new_permissions):
-                handler.conclude_request(
-                    code=400, message="All permissions must be of type str", data={}
-                )
-                return
-
-            if set(new_permissions) != user_to_change.own_permissions:
-                user_to_change.own_permissions = new_permissions
-                session.commit()
+            user_to_change.own_permissions = new_permissions
+            session.commit()
 
         response = {
             "code": 200,
