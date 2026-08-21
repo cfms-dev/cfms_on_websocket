@@ -32,6 +32,7 @@ __all__ = [
     "DocumentCreationRiskPolicy",
     "DocumentDownloadRiskPolicy",
     "DocumentUploadPolicy",
+    "IdentityPermissionRetentionPolicy",
     "RequestRateControlPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
@@ -189,6 +190,20 @@ class AdmissionControlPolicy(_ConfigPolicy):
     max_inflight_requests_per_connection: PositiveInt = 8
     max_pending_streams_per_connection: PositiveInt = 16
     busy_retry_after_seconds: PositiveInt = 1
+
+
+@dataclass(frozen=True)
+class IdentityPermissionRetentionPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (
+            _Section("identity"),
+            _Section("permission_retention"),
+        )
+    )
+
+    retention_days: PositiveInt = 30
+    cleanup_interval_seconds: PositiveInt = 3600
+    batch_size: PositiveInt = 500
 
 
 @dataclass(frozen=True)
@@ -464,6 +479,7 @@ def validate_config(config: _ConfigSource) -> None:
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
     AdmissionControlPolicy.from_config(config)
+    IdentityPermissionRetentionPolicy.from_config(config)
     RequestRateControlPolicy.from_config(config)
     DocumentUploadPolicy.from_config(config)
     DocumentCreationRiskPolicy.from_config(config)

@@ -23,10 +23,23 @@ Every permission entry has four required fields:
 - `end_time` is an inclusive Unix timestamp or `null` for no expiry. A finite
   end time must not be earlier than the start time.
 
-Entries that have not started or have expired remain stored and visible but do
-not affect authorization. For active entries, every revocation takes precedence
-over every grant. A user's effective permissions therefore equal all active
-direct and group grants minus all active direct and group revocations.
+Entries that have not started remain stored and visible. Expired entries remain
+stored and visible during the configured retention period, then may be removed
+by background or operator-triggered cleanup. Neither kind affects authorization.
+For active entries, every revocation takes precedence over every grant. A user's
+effective permissions therefore equal all active direct and group grants minus
+all active direct and group revocations.
+
+The default retention period is 30 days and is configured under
+`identity.permission_retention` in `config.toml`. Cleanup never removes an entry
+whose `end_time` is `null`, including permanent revocations.
+
+Operators can preview or run the same cleanup policy explicitly:
+
+```console
+maintain permission purge-expired --dry-run
+maintain permission purge-expired --yes
+```
 
 ## Write actions
 

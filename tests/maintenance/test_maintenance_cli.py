@@ -166,6 +166,73 @@ with Session() as session:
     return json.loads(result.stdout)
 
 
+def _seed_permission_entries(src_dir: Path) -> None:
+    _run_python(
+        src_dir,
+        """
+import time
+
+from maintenance.runtime import load_database_models
+
+load_database_models()
+
+from include.database.models.identity import (
+    User,
+    UserGroup,
+    UserGroupPermission,
+    UserPermission,
+)
+from include.database.session import Base, Session, engine
+
+Base.metadata.create_all(engine)
+now = time.time()
+old_end = now - 31 * 24 * 60 * 60
+recent_end = now - 29 * 24 * 60 * 60
+with Session.begin() as session:
+    user = User(username="alice", pass_hash="hash", created_time=now)
+    user.rights.extend(
+        [
+            UserPermission(permission="old_user", granted=True, start_time=0.0, end_time=old_end),
+            UserPermission(permission="recent_user", granted=True, start_time=0.0, end_time=recent_end),
+            UserPermission(permission="permanent_user_revocation", granted=False, start_time=0.0, end_time=None),
+        ]
+    )
+    group = UserGroup(group_name="staff")
+    group.permissions.extend(
+        [
+            UserGroupPermission(permission="old_group", granted=False, start_time=0.0, end_time=old_end),
+            UserGroupPermission(permission="recent_group", granted=True, start_time=0.0, end_time=recent_end),
+            UserGroupPermission(permission="permanent_group_revocation", granted=False, start_time=0.0, end_time=None),
+        ]
+    )
+    session.add_all([user, group])
+""",
+    )
+
+
+def _read_permission_entries(src_dir: Path) -> dict:
+    result = _run_python(
+        src_dir,
+        """
+import json
+
+from maintenance.runtime import load_database_models
+
+load_database_models()
+
+from include.database.models.identity import UserGroupPermission, UserPermission
+from include.database.session import Session
+
+with Session() as session:
+    print(json.dumps({
+        "user": [entry.permission for entry in session.query(UserPermission).order_by(UserPermission.id)],
+        "group": [entry.permission for entry in session.query(UserGroupPermission).order_by(UserGroupPermission.id)],
+    }, sort_keys=True))
+""",
+    )
+    return json.loads(result.stdout)
+
+
 def test_run_prints_error_after_status_exits(monkeypatch):
     from maintenance import cli
     from maintenance.operations.exceptions import MaintenanceOperationError
@@ -233,6 +300,10 @@ def test_incomplete_commands_show_contextual_hints(tmp_path):
         (
             ["config"],
             ["Maintain configuration.", "fill-pepper", "sync-template"],
+        ),
+        (
+            ["permission"],
+            ["Maintain permission entries.", "purge-expired"],
         ),
         (
             ["backup"],
@@ -448,6 +519,54 @@ def test_clear_totp_all_abort_uses_typer_abort_and_keeps_users(tmp_path):
     assert "Aborted." in result.stderr
     assert state["alice"]["totp_enabled"] is True
     assert state["bob"]["totp_enabled"] is True
+
+
+def test_permission_purge_dry_run_confirmation_and_idempotency(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_permission_entries(src_dir)
+
+    dry_run = _run_maintain(
+        src_dir,
+        ["permission", "purge-expired", "--dry-run"],
+    )
+    dry_run_output = _normalize_cli_output(dry_run.stdout)
+
+    assert "User permission entries 1" in dry_run_output
+    assert "Group permission entries 1" in dry_run_output
+    assert _read_permission_entries(src_dir) == {
+        "user": ["old_user", "recent_user", "permanent_user_revocation"],
+        "group": ["old_group", "recent_group", "permanent_group_revocation"],
+    }
+
+    aborted = _run_maintain(
+        src_dir,
+        ["permission", "purge-expired"],
+        check=False,
+        input_text="n\n",
+    )
+
+    assert aborted.returncode == 1
+    assert "Aborted." in aborted.stderr
+    assert len(_read_permission_entries(src_dir)["user"]) == 3
+    assert len(_read_permission_entries(src_dir)["group"]) == 3
+
+    purged = _run_maintain(
+        src_dir,
+        ["permission", "purge-expired", "--yes"],
+    )
+
+    assert "Purged Permission Entries" in purged.stdout
+    assert _read_permission_entries(src_dir) == {
+        "user": ["recent_user", "permanent_user_revocation"],
+        "group": ["recent_group", "permanent_group_revocation"],
+    }
+
+    repeated = _run_maintain(
+        src_dir,
+        ["permission", "purge-expired", "--yes"],
+    )
+
+    assert "No expired permission entries are eligible" in repeated.stdout
 
 
 def test_backup_import_abort_uses_typer_abort_before_operation(tmp_path):

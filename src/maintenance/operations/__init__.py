@@ -14,6 +14,11 @@ from maintenance.operations.config import (
     sync_config_template,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
+from maintenance.operations.permissions import (
+    PermissionPurgeResult,
+    inspect_expired_permissions,
+    purge_expired_permissions,
+)
 from maintenance.operations.users import (
     PasswordResetResult,
     TotpClearResult,
@@ -30,6 +35,7 @@ __all__ = [
     "MaintenanceOperationError",
     "PasswordResetResult",
     "PepperFillResult",
+    "PermissionPurgeResult",
     "TotpClearResult",
     "build_random_password",
     "clear_totp",
@@ -37,6 +43,8 @@ __all__ = [
     "fill_pepper",
     "import_backup",
     "inspect_config_template",
+    "inspect_expired_permissions",
+    "purge_expired_permissions",
     "read_backup_info",
     "reset_password",
     "sync_config_template",

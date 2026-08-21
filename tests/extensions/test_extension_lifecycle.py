@@ -18,6 +18,11 @@ def builtin_extension(monkeypatch, protected_test_config):
         "file_deduplication_worker",
         SimpleNamespace(start=lambda: None, stop=lambda: None),
     )
+    monkeypatch.setattr(
+        _extension,
+        "permission_cleanup_worker",
+        SimpleNamespace(start=lambda: None, stop=lambda: None),
+    )
     yield _extension
     _extension.ext_on_shutdown()
     _extension.global_config.stop()
@@ -125,7 +130,7 @@ def test_startup_hook_server_argument_is_optional_for_implementations():
     assert server in calls
 
 
-def test_builtin_lifecycle_owns_deduplication_worker(monkeypatch, builtin_extension):
+def test_builtin_lifecycle_owns_background_workers(monkeypatch, builtin_extension):
     started = []
     stopped = []
     server = _FakeServer()
@@ -133,8 +138,16 @@ def test_builtin_lifecycle_owns_deduplication_worker(monkeypatch, builtin_extens
         builtin_extension,
         "file_deduplication_worker",
         SimpleNamespace(
-            start=lambda: started.append(True),
-            stop=lambda: stopped.append(True),
+            start=lambda: started.append("deduplication"),
+            stop=lambda: stopped.append("deduplication"),
+        ),
+    )
+    monkeypatch.setattr(
+        builtin_extension,
+        "permission_cleanup_worker",
+        SimpleNamespace(
+            start=lambda: started.append("permission_cleanup"),
+            stop=lambda: stopped.append("permission_cleanup"),
         ),
     )
 
@@ -144,13 +157,19 @@ def test_builtin_lifecycle_owns_deduplication_worker(monkeypatch, builtin_extens
     builtin_extension.ext_on_shutdown()
     builtin_extension.ext_on_shutdown()
 
-    assert started == [True]
-    assert stopped == [True, True]
+    assert started == ["deduplication", "permission_cleanup"]
+    assert stopped == [
+        "permission_cleanup",
+        "deduplication",
+        "permission_cleanup",
+        "deduplication",
+    ]
 
 
 def test_builtin_startup_failure_cleans_worker_and_server_state(
     monkeypatch, builtin_extension
 ):
+    started = []
     stopped = []
 
     def fail_start():
@@ -159,7 +178,18 @@ def test_builtin_startup_failure_cleans_worker_and_server_state(
     monkeypatch.setattr(
         builtin_extension,
         "file_deduplication_worker",
-        SimpleNamespace(start=fail_start, stop=lambda: stopped.append(True)),
+        SimpleNamespace(
+            start=lambda: started.append("deduplication"),
+            stop=lambda: stopped.append("deduplication"),
+        ),
+    )
+    monkeypatch.setattr(
+        builtin_extension,
+        "permission_cleanup_worker",
+        SimpleNamespace(
+            start=fail_start,
+            stop=lambda: stopped.append("permission_cleanup"),
+        ),
     )
 
     with pytest.raises(RuntimeError, match="worker failed"):
@@ -167,13 +197,22 @@ def test_builtin_startup_failure_cleans_worker_and_server_state(
 
     monkeypatch.setattr(
         builtin_extension,
-        "file_deduplication_worker",
-        SimpleNamespace(start=lambda: None, stop=lambda: stopped.append(True)),
+        "permission_cleanup_worker",
+        SimpleNamespace(
+            start=lambda: started.append("permission_cleanup"),
+            stop=lambda: stopped.append("permission_cleanup"),
+        ),
     )
     builtin_extension.ext_on_startup(_FakeServer())
     builtin_extension.ext_on_shutdown()
 
-    assert stopped == [True, True]
+    assert started == ["deduplication", "deduplication", "permission_cleanup"]
+    assert stopped == [
+        "permission_cleanup",
+        "deduplication",
+        "permission_cleanup",
+        "deduplication",
+    ]
 
 
 def test_builtin_shutdown_handler_stops_active_server(monkeypatch, builtin_extension):

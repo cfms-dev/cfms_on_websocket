@@ -12,6 +12,7 @@ from include.config.validation import (
     DocumentCreationRiskPolicy,
     DocumentDownloadRiskPolicy,
     DocumentUploadPolicy,
+    IdentityPermissionRetentionPolicy,
     RequestRateControlPolicy,
     get_config_warnings,
     get_enabled_extensions,
@@ -183,6 +184,46 @@ def test_request_rate_control_defaults_to_observation_mode():
     assert policy.mode == "observe"
     assert policy.cost_for("unconfigured") == 1
     assert AdmissionControlPolicy.from_config(config).max_connections == 64
+
+
+def test_identity_permission_retention_defaults_and_overrides():
+    config = _valid_config()
+    policy = IdentityPermissionRetentionPolicy.from_config(config)
+
+    assert policy.retention_days == 30
+    assert policy.cleanup_interval_seconds == 3600
+    assert policy.batch_size == 500
+
+    config["identity"] = {
+        "permission_retention": {
+            "retention_days": 14,
+            "cleanup_interval_seconds": 600,
+            "batch_size": 100,
+        }
+    }
+    policy = IdentityPermissionRetentionPolicy.from_config(config)
+
+    assert policy.retention_days == 14
+    assert policy.cleanup_interval_seconds == 600
+    assert policy.batch_size == 100
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("retention_days", 0),
+        ("cleanup_interval_seconds", -1),
+        ("batch_size", True),
+    ],
+)
+def test_identity_permission_retention_rejects_invalid_values(setting, value):
+    config = _valid_config()
+    config["identity"] = {"permission_retention": {setting: value}}
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(config)
+
+    assert f"identity.permission_retention.{setting}" in str(error.value)
 
 
 @pytest.mark.parametrize(

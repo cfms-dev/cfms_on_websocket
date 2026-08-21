@@ -15,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Text,
     event,
@@ -495,6 +496,7 @@ class User(Base):
 # User permission table with grants, revocations, and validity windows.
 class UserPermission(Base):
     __tablename__ = "user_permissions"
+    __table_args__ = (Index("ix_user_permissions_end_time_id", "end_time", "id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(
         ForeignKey("users.username", ondelete="CASCADE")
@@ -616,6 +618,7 @@ class UserGroup(Base):
 # Group permission table with grants, revocations, and validity windows.
 class UserGroupPermission(Base):
     __tablename__ = "group_permissions"
+    __table_args__ = (Index("ix_group_permissions_end_time_id", "end_time", "id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     group_name: Mapped[str] = mapped_column(
         ForeignKey("user_groups.group_name", ondelete="CASCADE")

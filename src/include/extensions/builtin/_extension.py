@@ -34,6 +34,7 @@ from ._file_deduplication import (
     release_file_deduplication,
     schedule_file_deduplication,
 )
+from ._permission_cleanup import permission_cleanup_worker
 
 logger = log.bind(name="builtin")
 _active_server_lock = threading.Lock()
@@ -192,13 +193,17 @@ def ext_on_startup(server: Server) -> None:
         _active_server = server
     try:
         file_deduplication_worker.start()
+        permission_cleanup_worker.start()
     except Exception:
         try:
-            file_deduplication_worker.stop()
+            permission_cleanup_worker.stop()
         finally:
-            with _active_server_lock:
-                if _active_server is server:
-                    _active_server = None
+            try:
+                file_deduplication_worker.stop()
+            finally:
+                with _active_server_lock:
+                    if _active_server is server:
+                        _active_server = None
         raise
 
 
@@ -207,10 +212,13 @@ def ext_on_shutdown() -> None:
     global _active_server
 
     try:
-        file_deduplication_worker.stop()
+        permission_cleanup_worker.stop()
     finally:
-        with _active_server_lock:
-            _active_server = None
+        try:
+            file_deduplication_worker.stop()
+        finally:
+            with _active_server_lock:
+                _active_server = None
 
 
 @hookimpl

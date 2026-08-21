@@ -5,7 +5,7 @@ import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 
 from alembic import command
 from tests.support.config import reserve_local_port, write_test_config
@@ -36,11 +36,27 @@ def test_upgrade_to_head_succeeds(
                 MigrationContext.configure(connection).get_current_heads()
                 != expected_heads
             )
+            assert "ix_user_permissions_end_time_id" not in {
+                index["name"]
+                for index in inspect(connection).get_indexes("user_permissions")
+            }
+            assert "ix_group_permissions_end_time_id" not in {
+                index["name"]
+                for index in inspect(connection).get_indexes("group_permissions")
+            }
 
         command.upgrade(config, "head")
         with engine.connect() as connection:
             assert MigrationContext.configure(connection).get_current_heads() == (
                 expected_heads
             )
+            assert "ix_user_permissions_end_time_id" in {
+                index["name"]
+                for index in inspect(connection).get_indexes("user_permissions")
+            }
+            assert "ix_group_permissions_end_time_id" in {
+                index["name"]
+                for index in inspect(connection).get_indexes("group_permissions")
+            }
     finally:
         engine.dispose()

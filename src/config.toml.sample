@@ -128,6 +128,14 @@ auto_provision = false
 # Groups assigned to auto-provisioned users.
 default_groups = ["user"]
 
+[identity.permission_retention]
+# Expired direct-user and group permission entries remain visible for this many days.
+retention_days = 30
+# Run one bounded background cleanup pass at this interval.
+cleanup_interval_seconds = 3600
+# Maximum entries removed from each permission table per background pass.
+batch_size = 500
+
 [access]
 # Enable recursive access checks.
 # When enabled, access rules will be checked for the requested object itself, 
