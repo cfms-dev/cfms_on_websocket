@@ -742,7 +742,7 @@ class RequestGetUserInfoHandler(RequestHandler):
             user_info = {
                 "nickname": user_to_get.nickname,
                 "username": user_to_get.username,
-                "status": UserStatus(user_to_get.status).value,
+                "status": user_to_get.status,
                 "permissions": serialize_permission_entries(user_to_get.rights),
                 "effective_permissions": sorted(user_to_get.all_permissions),
                 "effective_own_permissions": sorted(user_to_get.own_permissions),

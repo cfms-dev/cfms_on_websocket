@@ -2,6 +2,8 @@ import ast
 from pathlib import Path
 from shutil import copyfile
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_CORE_ACTION_COSTS = {
@@ -162,3 +164,49 @@ def test_all_known_costs_fit_default_request_buckets():
     assert len(all_costs) == 80
     assert set(all_costs) == {1, 2, 3, 5, 10, 20}
     assert all(0 < cost <= capacity for cost in all_costs)
+
+
+@pytest.mark.parametrize("declared_cost", [True, 0, -1, 1.5, 121])
+def test_handler_cost_validation_rejects_invalid_declared_cost_even_when_overridden(
+    monkeypatch, tmp_path, declared_cost
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.config.validation import RequestRateControlPolicy
+    from include.domains.security.guards import request_rate_control
+
+    policy = RequestRateControlPolicy(action_costs=(("custom_action", 1),))
+    monkeypatch.setattr(
+        request_rate_control.RequestRateControlPolicy,
+        "from_config",
+        classmethod(lambda cls: policy),
+    )
+    handler = type("CustomHandler", (), {"rate_limit_cost": declared_cost})
+
+    with pytest.raises(ValueError, match="custom_action.*rate_limit_cost"):
+        request_rate_control.validate_handler_rate_limit_costs(
+            {"custom_action": handler}
+        )
+
+
+def test_handler_cost_validation_reports_configured_unknown_actions(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.config.validation import RequestRateControlPolicy
+    from include.domains.security.guards import request_rate_control
+
+    policy = RequestRateControlPolicy(
+        action_costs=(("known_action", 2), ("unknown_action", 3))
+    )
+    monkeypatch.setattr(
+        request_rate_control.RequestRateControlPolicy,
+        "from_config",
+        classmethod(lambda cls: policy),
+    )
+    handler = type("CustomHandler", (), {"rate_limit_cost": 1})
+
+    assert request_rate_control.validate_handler_rate_limit_costs(
+        {"known_action": handler}
+    ) == ("unknown_action",)

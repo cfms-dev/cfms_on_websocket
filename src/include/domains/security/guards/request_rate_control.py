@@ -161,14 +161,18 @@ def validate_handler_rate_limit_costs(
     handlers: dict[str, type],
 ) -> tuple[str, ...]:
     policy = RequestRateControlPolicy.from_config()
+    maximum_cost = min(policy.account_capacity, policy.ip_capacity)
     for action, handler in handlers.items():
-        cost = policy.cost_for(action, handler.rate_limit_cost)
+        cost = handler.rate_limit_cost
         if (
             isinstance(cost, bool)
             or not isinstance(cost, int)
             or cost <= 0
-            or cost > min(policy.account_capacity, policy.ip_capacity)
+            or cost > maximum_cost
         ):
-            raise ValueError(f"Invalid request rate-limit cost for action {action!r}")
+            raise ValueError(
+                f"Request handler for action {action!r} must declare a positive "
+                f"integer rate_limit_cost not exceeding {maximum_cost}"
+            )
     configured_actions = {action for action, _cost in policy.action_costs}
     return tuple(sorted(configured_actions - handlers.keys()))

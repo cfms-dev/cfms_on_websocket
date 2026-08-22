@@ -115,7 +115,7 @@ class User(Base):
     last_login: Mapped[float | None] = mapped_column(Float)
     created_time: Mapped[float | None] = mapped_column(Float, nullable=False)
 
-    status: Mapped[UserStatus] = mapped_column(
+    status: Mapped[int] = mapped_column(
         Integer, default=UserStatus.ACTIVE.value, nullable=False
     )
     status_comment_id: Mapped[int | None] = mapped_column(

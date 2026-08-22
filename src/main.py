@@ -199,10 +199,11 @@ def server_init():
         ],
     )
 
-    # Initialize providers
+    # Initialize providers, since we need to use the storage provider later.
     initialize_providers()
 
-    # Add sample file and document
+    # Read from sample document source and write back to storage.
+    # This is necessary because the storage provider cannot be determined in advance.
     sample_source_path = "content/hello"
 
     today = datetime.datetime.now(datetime.UTC).date()
@@ -272,6 +273,9 @@ def server_init():
     with open(ROOT_ABSPATH / "admin_password.txt", "w", encoding="utf-8") as pwd_file:
         pwd_file.write(f"{password}\n")
 
+    # Logs, certificates, and private keys are all stored on the server's file system;
+    # therefore, the `os` library is used for read/write operations instead of
+    # `StorageProvider`.
     os.makedirs(ROOT_ABSPATH / "content", exist_ok=True)
 
     import datetime
@@ -347,13 +351,14 @@ def prepare_handlers():
     It also populates the `whitelisted_functions` list with actions that are
     allowed even during lockdown.
     """
-
-    # Debugging
-    if global_config["debug"]:
+    if global_config["debug"]:  # Debugging
         available_functions["throw_exception"] = RequestThrowExceptionHandler
 
     # Load available request handlers from extensions
     extension_handlers = pm.hook.ext_register_handlers()
+
+    # If multiple extensions attempt to register the same action, the behavior is
+    # undefined.
     for handler_dict in extension_handlers:
         available_functions.update(handler_dict)
 
@@ -417,6 +422,8 @@ def main():
 
     logger.info("Initializating CFMS WebSocket server...")
     logger.info(f"CFMS Core Version: {CORE_VERSION}")
+
+    # TODO: Add support for TLS ECH when upstream libraries support it.
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_context.load_cert_chain(
         certfile=global_config["server"]["ssl_certfile"],
@@ -431,9 +438,6 @@ def main():
         ssl_context.verify_mode = ssl.CERT_REQUIRED
 
         ssl_context.verify_flags |= ssl.VERIFY_X509_STRICT
-        # ssl_context.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
-        # ssl_context.verify_flags |= ssl.VERIFY_CRL_CHECK_CHAIN
-
         ssl_context.load_verify_locations(capath=client_ca_path)
         logger.info(
             f"Mutual TLS enabled: client certificates will be verified "
@@ -459,7 +463,6 @@ def main():
     # Ensure the root folder record exists (handles upgrades from older versions)
     ensure_root_folder()
 
-    # Initialize Providers
     initialize_providers()
 
     # Register global broadcast handler
@@ -471,7 +474,7 @@ def main():
     )
     ProviderManager().event_bus.subscribe(FILE_TASK_EVENT_CHANNEL, on_file_task_event)
 
-    # Register plugins after database initialization
+    # Register extensions after database initialization
     extension_root = ROOT_ABSPATH / "include" / "extensions"
     load_extensions_from_directory(
         extension_root,
