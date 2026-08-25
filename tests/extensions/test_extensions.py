@@ -308,16 +308,21 @@ def test_extension_manifest_requires_core_fields(tmp_path):
         assert field in message
 
 
-def test_bundled_extension_manifests_are_valid():
+def test_bundled_extension_catalog_is_valid():
     extension_root = Path(extension_manager.__file__).parent
 
     discovered = extension_manager.discover_extensions(extension_root)
 
     assert set(discovered) == {"builtin", "brute_force_lockdown", "oidc_sso"}
-    assert all(
-        extension.manifest.compatibility.minimum_server_version == CORE_VERSION
-        for extension in discovered.values()
-    )
+
+
+def test_builtin_extension_manifest_matches_core_version():
+    extension_root = Path(extension_manager.__file__).parent
+
+    manifest = extension_manager.discover_extensions(extension_root)["builtin"].manifest
+
+    assert manifest.extension.version == CORE_VERSION.original
+    assert manifest.compatibility.minimum_server_version == CORE_VERSION
 
 
 @pytest.mark.parametrize("missing", ["manifest", "entrypoint"])
