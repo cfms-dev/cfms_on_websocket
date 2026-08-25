@@ -1,7 +1,7 @@
 """enforce node name uniqueness
 
 Revision ID: fe8863687aa4
-Revises: 18adc63ce5b1
+Revises:
 Create Date: 2026-07-27 11:27:39.529427
 
 """
@@ -13,7 +13,7 @@ from alembic import op
 
 
 revision: str = "fe8863687aa4"
-down_revision: str | Sequence[str] | None = "18adc63ce5b1"
+down_revision: str | Sequence[str] | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

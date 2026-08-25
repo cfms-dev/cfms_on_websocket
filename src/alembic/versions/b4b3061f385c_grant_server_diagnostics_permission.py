@@ -1,7 +1,7 @@
 """grant server diagnostics permission
 
 Revision ID: b4b3061f385c
-Revises: bb835a9f2cf4
+Revises: fe8863687aa4
 Create Date: 2026-08-13 13:57:12.127223
 
 """
@@ -13,7 +13,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "b4b3061f385c"
-down_revision: str | Sequence[str] | None = "bb835a9f2cf4"
+down_revision: str | Sequence[str] | None = "fe8863687aa4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
