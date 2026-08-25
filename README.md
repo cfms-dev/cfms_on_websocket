@@ -19,6 +19,13 @@ forget to check the source code for verification.
 
 ## Quick Setup
 
+By default, this server-side component runs on SQLite and requires no additional database engine support.
+
+> [!IMPORTANT]
+> Differences in implementation and configuration across various database engines may lead to variations in certain behaviors of this server-side implementation. 
+> 
+> For example, if you want to maintain case sensitivity for usernames, filenames, and directory names in MySQL—consistent with SQLite—you should consider setting `collation-server = utf8mb4_0900_bin`.
+
 ```bash
 # Clone repo
 git clone https://github.com/cfms-dev/cfms_on_websocket.git
