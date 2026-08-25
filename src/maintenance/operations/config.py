@@ -155,7 +155,7 @@ def sync_config_template(
     changed = rendered != current_source
     backup_path = None
     if write and changed:
-        backup_path = _write_config_atomically(config_path, current_source, rendered)
+        backup_path = write_config_atomically(config_path, current_source, rendered)
 
     return ConfigSyncResult(
         config_path=config_path,
@@ -452,7 +452,7 @@ def _set_path(config: Any, dotted_path: str, value: Any) -> None:
     target[parts[-1]] = value
 
 
-def _write_config_atomically(
+def write_config_atomically(
     config_path: Path, current_source: str, rendered: str
 ) -> Path:
     timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S.%fZ")

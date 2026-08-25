@@ -13,6 +13,10 @@ from maintenance.operations.config import (
     inspect_config_template,
     sync_config_template,
 )
+from maintenance.operations.database import (
+    DatabaseMigrationResult,
+    migrate_database,
+)
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.permissions import (
     PermissionPurgeResult,
@@ -32,6 +36,7 @@ __all__ = [
     "BackupImportResult",
     "ConfigSyncResult",
     "ConfigTemplateInspection",
+    "DatabaseMigrationResult",
     "MaintenanceOperationError",
     "PasswordResetResult",
     "PepperFillResult",
@@ -44,6 +49,7 @@ __all__ = [
     "import_backup",
     "inspect_config_template",
     "inspect_expired_permissions",
+    "migrate_database",
     "purge_expired_permissions",
     "read_backup_info",
     "reset_password",

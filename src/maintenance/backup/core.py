@@ -67,6 +67,7 @@ from include.domains.documents.commands.name_conflicts import is_node_name_confl
 from include.domains.operations.comments import CommentStore
 from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
+from maintenance.database_tables import DEFERRED_COLUMNS, DEFERRED_UPDATE_ORDER
 
 _MODEL_IMPORTS = (
     UserBlockEntry,
@@ -173,20 +174,6 @@ INSERT_ORDER = (
     "userblock_entries",
     "userblock_sub_entries",
     "banned_subnets",
-)
-
-DEFERRED_COLUMNS = {
-    "users": ("preference_dek_id",),
-    "documents": ("current_revision_id",),
-    "document_revisions": ("parent_revision_id",),
-    "nodes": ("access_rule_set_id",),
-}
-
-DEFERRED_UPDATE_ORDER = (
-    ("users", "username", ("preference_dek_id",)),
-    ("document_revisions", "id", ("parent_revision_id",)),
-    ("documents", "id", ("current_revision_id",)),
-    ("nodes", "id", ("access_rule_set_id",)),
 )
 
 

@@ -1,0 +1,48 @@
+APPLICATION_TABLE_NAMES = (
+    "files",
+    "comments",
+    "users",
+    "user_groups",
+    "group_permissions",
+    "user_memberships",
+    "user_permissions",
+    "keyrings",
+    "nodes",
+    "folders",
+    "documents",
+    "document_revisions",
+    "document_metadata",
+    "document_metadata_tags",
+    "object_access_entries",
+    "compiled_access_rule_sets",
+    "compiled_access_rules",
+    "compiled_access_rule_groups",
+    "compiled_access_rule_memberships",
+    "compiled_access_rule_rights",
+    "audit_entries",
+    "userblock_entries",
+    "userblock_sub_entries",
+    "banned_subnets",
+    "account_throttles",
+    "file_tasks",
+    "login_throttles",
+    "rate_limit_buckets",
+    "risk_ip_accounts",
+    "system_states",
+    "traffic_throttles",
+    "file_deduplication_tasks",
+)
+
+DEFERRED_COLUMNS = {
+    "users": ("preference_dek_id",),
+    "documents": ("current_revision_id",),
+    "document_revisions": ("parent_revision_id",),
+    "nodes": ("access_rule_set_id",),
+}
+
+DEFERRED_UPDATE_ORDER = (
+    ("users", "username", ("preference_dek_id",)),
+    ("document_revisions", "id", ("parent_revision_id",)),
+    ("documents", "id", ("current_revision_id",)),
+    ("nodes", "id", ("access_rule_set_id",)),
+)

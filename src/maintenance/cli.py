@@ -78,11 +78,17 @@ permission_app = typer.Typer(
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
+database_app = typer.Typer(
+    help="Maintain databases.",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
 
 app.add_typer(user_app, name="user")
 app.add_typer(config_app, name="config")
 app.add_typer(backup_app, name="backup")
 app.add_typer(permission_app, name="permission")
+app.add_typer(database_app, name="database")
 
 
 def _run[T](action: Callable[[], T], *, status: str | None = None) -> T:
@@ -198,6 +204,73 @@ def _build_backup_progress() -> Progress:
         TimeElapsedColumn(),
         console=error_console,
     )
+
+
+@database_app.command(
+    "migrate",
+    no_args_is_help=True,
+    epilog=(
+        "Example:\n"
+        "  maintain database migrate --target-config config.mysql.toml "
+        "--activate --yes"
+    ),
+)
+def migrate_database(
+    target_config_path: Annotated[
+        Path,
+        typer.Option(
+            "--target-config",
+            help="TOML file containing the target [database] settings.",
+        ),
+    ],
+    activate: Annotated[
+        bool,
+        typer.Option(
+            "--activate",
+            help="Back up config.toml and switch it to the verified target.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            help="Confirm that the server is stopped and the target is disposable.",
+        ),
+    ] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Clone the stopped server database into an empty database engine."""
+
+    _configure_logging(verbose)
+    _confirm_or_abort(
+        "The CFMS server must be stopped. The target database must be empty and "
+        "will be cleaned if migration fails. Continue?",
+        yes,
+    )
+    with _build_backup_progress() as progress:
+        result = _run(
+            lambda: operations.migrate_database(
+                target_config_path,
+                activate=activate,
+                progress=progress,
+            )
+        )
+
+    table = Table(title="Database Migration", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Source", result.source_dialect)
+    table.add_row("Target", result.target_dialect)
+    table.add_row("Migrated tables", str(result.table_count))
+    table.add_row("Migrated rows", str(result.row_count))
+    table.add_row("Elapsed", f"{result.elapsed_seconds:.2f} seconds")
+    table.add_row("Target config", str(result.target_config_path))
+    if result.config_backup_path is not None:
+        table.add_row("Previous config backup", str(result.config_backup_path))
+        table.add_row("Activation", "config.toml updated; restart required")
+    else:
+        table.add_row("Activation", "not requested")
+    console.print(table)
 
 
 def _confirm_or_abort(message: str, yes: bool) -> None:
