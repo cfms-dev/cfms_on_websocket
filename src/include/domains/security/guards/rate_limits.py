@@ -1,5 +1,7 @@
 import math
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select, update
@@ -9,6 +11,17 @@ from sqlalchemy.orm import Session
 from include.database.models.operations import RateLimitBucket, RiskIPAccount
 
 rate_limit_lock = threading.Lock()
+
+
+@contextmanager
+def risk_control_transaction(session: Session) -> Iterator[None]:
+    lock = (
+        rate_limit_lock
+        if session.get_bind().dialect.name == "sqlite"
+        else nullcontext()
+    )
+    with lock, session.begin():
+        yield
 
 
 @dataclass(frozen=True, slots=True)

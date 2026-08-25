@@ -23,6 +23,7 @@ from include.domains.pagination import (
     get_page_size,
     make_cursor_response,
 )
+from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
@@ -145,59 +146,57 @@ class RequestGetRevisionHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         revision_id = handler.data["id"]
 
-        with Session() as session:
+        with Session() as session, risk_control_transaction(session):
             user = User.get_existing(session, handler.username)
             revision = session.get(DocumentRevision, revision_id)
 
             if revision is None:
-                handler.conclude_request(404, {}, "Revision not found")
-                return Result(code=404, target=revision_id, username=handler.username)
-
-            if (
+                response_code = result_code = 404
+                data = {}
+                message = "Revision not found"
+            elif (
                 Permissions.VIEW_REVISION not in user.all_permissions
                 or not revision.document.check_access_requirements(user, "read")
             ):
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return Result(code=403, target=revision_id, username=handler.username)
-
-            limit_decision = check_download_issue_limits(
-                session,
-                user.username,
-                handler.remote_address,
-                account_created_at=user.created_time,
-                bypass_rate_limit=(
-                    Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT
-                    in user.all_permissions
-                ),
-            )
-            if not limit_decision.allowed:
-                session.commit()
-                data = {
-                    "scope": limit_decision.scope,
-                    "limit": limit_decision.limit,
-                    "retry_after_seconds": limit_decision.retry_after_seconds,
-                }
-                handler.conclude_request(
-                    429,
-                    data,
-                    "Download request limit exceeded. Please try again later.",
+                response_code = result_code = 403
+                data = {}
+                message = smsg.ACCESS_DENIED
+            else:
+                limit_decision = check_download_issue_limits(
+                    session,
+                    user.username,
+                    handler.remote_address,
+                    account_created_at=user.created_time,
+                    bypass_rate_limit=(
+                        Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT
+                        in user.all_permissions
+                    ),
                 )
-                return Result(
-                    code=429,
-                    target=revision_id,
-                    data=data,
-                    username=handler.username,
-                )
+                if not limit_decision.allowed:
+                    response_code = result_code = 429
+                    data = {
+                        "scope": limit_decision.scope,
+                        "limit": limit_decision.limit,
+                        "retry_after_seconds": limit_decision.retry_after_seconds,
+                    }
+                    message = "Download request limit exceeded. Please try again later."
+                else:
+                    task_data = create_file_task(
+                        session,
+                        revision.file,
+                        issued_by_username=user.username,
+                    )
+                    response_code = result_code = 200
+                    data = {"task_data": task_data}
+                    message = smsg.SUCCESS
 
-            task_data = create_file_task(
-                session,
-                revision.file,
-                issued_by_username=user.username,
-            )
-            session.commit()
-
-        handler.conclude_request(200, {"task_data": task_data}, smsg.SUCCESS)
-        return Result(code=200, target=revision_id, username=handler.username)
+        handler.conclude_request(response_code, data, message)
+        return Result(
+            code=result_code,
+            target=revision_id,
+            data=data if result_code == 429 else None,
+            username=handler.username,
+        )
 
 
 class RequestSetDocumentRevisionHandler(RequestHandler):

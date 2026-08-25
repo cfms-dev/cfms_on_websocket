@@ -28,7 +28,6 @@ from include.domains.security.guards.rate_limits import (
     consume_bucket,
     count_ip_accounts,
     lock_rate_bucket,
-    rate_limit_lock,
     record_denial,
     record_ip_account,
     refresh_denials,
@@ -165,122 +164,119 @@ def check_document_creation_limits(
     upload_policy = DocumentUploadPolicy.from_config()
     risk_policy = DocumentCreationRiskPolicy.from_config()
 
-    with rate_limit_lock:
-        _maybe_cleanup(session, now, upload_policy, risk_policy)
-        account_bucket = lock_rate_bucket(
-            session,
-            _RISK_NAMESPACE,
-            "account",
-            username,
-            now,
-            risk_policy.account_capacity,
-        )
-        touch_rate_bucket(session, account_bucket, now)
-        session.flush()
-        pending_count = count_pending_documents(session, username, now)
-        pending_decision = _pending_limit_decision(
-            session,
-            username,
-            now,
-            pending_count,
-            upload_policy.max_pending_documents_per_creator,
-        )
-        if bypass_rate_limit:
-            return pending_decision or CreationLimitDecision(True)
+    _maybe_cleanup(session, now, upload_policy, risk_policy)
+    account_bucket = lock_rate_bucket(
+        session,
+        _RISK_NAMESPACE,
+        "account",
+        username,
+        now,
+        risk_policy.account_capacity,
+    )
+    touch_rate_bucket(session, account_bucket, now)
+    session.flush()
+    pending_count = count_pending_documents(session, username, now)
+    pending_decision = _pending_limit_decision(
+        session,
+        username,
+        now,
+        pending_count,
+        upload_policy.max_pending_documents_per_creator,
+    )
+    if bypass_rate_limit:
+        return pending_decision or CreationLimitDecision(True)
 
-        ip_bucket = lock_rate_bucket(
-            session,
-            _RISK_NAMESPACE,
-            "ip",
-            ip_address,
-            now,
-            risk_policy.ip_capacity,
-        )
-        record_ip_account(session, _RISK_NAMESPACE, ip_address, username, now)
-        refresh_denials(account_bucket, now, risk_policy.denial_window_seconds)
-        refresh_denials(ip_bucket, now, risk_policy.denial_window_seconds)
-        ip_account_count = count_ip_accounts(
-            session,
-            _RISK_NAMESPACE,
-            ip_address,
-            now - risk_policy.ip_account_window_seconds,
-        )
-        assessment = assess_creation_risk(
-            CreationRiskSignals(
-                new_account=(
-                    account_created_at is None
-                    or now - account_created_at < risk_policy.new_account_seconds
-                ),
-                pending_ratio=(
-                    pending_count / upload_policy.max_pending_documents_per_creator
-                ),
-                ip_account_count=ip_account_count,
-                denial_count=max(
-                    account_bucket.denial_count,
-                    ip_bucket.denial_count,
-                ),
+    ip_bucket = lock_rate_bucket(
+        session,
+        _RISK_NAMESPACE,
+        "ip",
+        ip_address,
+        now,
+        risk_policy.ip_capacity,
+    )
+    record_ip_account(session, _RISK_NAMESPACE, ip_address, username, now)
+    refresh_denials(account_bucket, now, risk_policy.denial_window_seconds)
+    refresh_denials(ip_bucket, now, risk_policy.denial_window_seconds)
+    ip_account_count = count_ip_accounts(
+        session,
+        _RISK_NAMESPACE,
+        ip_address,
+        now - risk_policy.ip_account_window_seconds,
+    )
+    assessment = assess_creation_risk(
+        CreationRiskSignals(
+            new_account=(
+                account_created_at is None
+                or now - account_created_at < risk_policy.new_account_seconds
             ),
-            risk_policy,
-        )
-        cost = _risk_cost(assessment, risk_policy)
-        account_decision = consume_bucket(
-            account_bucket,
-            now=now,
-            capacity=risk_policy.account_capacity,
-            refill_tokens=risk_policy.account_refill_tokens,
-            refill_period_seconds=risk_policy.refill_period_seconds,
-            cost=cost,
-        )
-        ip_decision = consume_bucket(
-            ip_bucket,
-            now=now,
-            capacity=risk_policy.ip_capacity,
-            refill_tokens=risk_policy.ip_refill_tokens,
-            refill_period_seconds=risk_policy.refill_period_seconds,
-            cost=cost,
-        )
-        denied = [
-            decision
-            for decision in (account_decision, ip_decision)
-            if not decision.allowed
-        ]
-        would_block = bool(denied)
-        if would_block:
-            record_denial(account_bucket, now, risk_policy.denial_window_seconds)
-            record_denial(ip_bucket, now, risk_policy.denial_window_seconds)
-        session.flush()
+            pending_ratio=(
+                pending_count / upload_policy.max_pending_documents_per_creator
+            ),
+            ip_account_count=ip_account_count,
+            denial_count=max(
+                account_bucket.denial_count,
+                ip_bucket.denial_count,
+            ),
+        ),
+        risk_policy,
+    )
+    cost = _risk_cost(assessment, risk_policy)
+    account_decision = consume_bucket(
+        account_bucket,
+        now=now,
+        capacity=risk_policy.account_capacity,
+        refill_tokens=risk_policy.account_refill_tokens,
+        refill_period_seconds=risk_policy.refill_period_seconds,
+        cost=cost,
+    )
+    ip_decision = consume_bucket(
+        ip_bucket,
+        now=now,
+        capacity=risk_policy.ip_capacity,
+        refill_tokens=risk_policy.ip_refill_tokens,
+        refill_period_seconds=risk_policy.refill_period_seconds,
+        cost=cost,
+    )
+    denied = [
+        decision for decision in (account_decision, ip_decision) if not decision.allowed
+    ]
+    would_block = bool(denied)
+    if would_block:
+        record_denial(account_bucket, now, risk_policy.denial_window_seconds)
+        record_denial(ip_bucket, now, risk_policy.denial_window_seconds)
+    session.flush()
 
-        if assessment.level != CreationRiskLevel.NORMAL or would_block:
-            log = logger.bind(
-                name="document_creation_risk",
-                username=username,
-                remote_address=ip_address,
-                risk_level=assessment.level.value,
-                risk_reasons=assessment.reasons,
-                mode=risk_policy.mode,
-                would_block=would_block,
-            )
-            if would_block or assessment.level == CreationRiskLevel.HIGH:
-                log.warning("Document creation risk evaluated")
-            else:
-                log.info("Document creation risk evaluated")
-
-        if would_block and risk_policy.mode == "enforce":
-            limiting = max(denied, key=lambda decision: decision.retry_after_seconds)
-            return CreationLimitDecision(
-                False,
-                scope=limiting.scope,
-                limit=limiting.effective_limit,
-                retry_after_seconds=limiting.retry_after_seconds,
-                risk_level=assessment.level,
-                risk_reasons=assessment.reasons,
-                would_block=True,
-            )
-        if pending_decision is not None:
-            return pending_decision
-        return CreationLimitDecision(
-            True,
-            risk_level=assessment.level,
+    if assessment.level != CreationRiskLevel.NORMAL or would_block:
+        log = logger.bind(
+            name="document_creation_risk",
+            username=username,
+            remote_address=ip_address,
+            risk_level=assessment.level.value,
             risk_reasons=assessment.reasons,
+            mode=risk_policy.mode,
             would_block=would_block,
         )
+        if would_block or assessment.level == CreationRiskLevel.HIGH:
+            log.warning("Document creation risk evaluated")
+        else:
+            log.info("Document creation risk evaluated")
+
+    if would_block and risk_policy.mode == "enforce":
+        limiting = max(denied, key=lambda decision: decision.retry_after_seconds)
+        return CreationLimitDecision(
+            False,
+            scope=limiting.scope,
+            limit=limiting.effective_limit,
+            retry_after_seconds=limiting.retry_after_seconds,
+            risk_level=assessment.level,
+            risk_reasons=assessment.reasons,
+            would_block=True,
+        )
+    if pending_decision is not None:
+        return pending_decision
+    return CreationLimitDecision(
+        True,
+        risk_level=assessment.level,
+        risk_reasons=assessment.reasons,
+        would_block=would_block,
+    )

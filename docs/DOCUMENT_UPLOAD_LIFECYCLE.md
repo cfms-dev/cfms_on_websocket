@@ -243,6 +243,27 @@ downloads. These values are observability signals only: the policy does not
 charge per byte, shape bandwidth continuously, or impose a hard concurrency
 cap.
 
+Persistent risk checks participate in a caller-owned short transaction. On
+SQLite, that transaction acquires the process risk-control lock before any
+database write and keeps it through commit or rollback; task issuance, task
+claim/release, and their token changes therefore use one lock order. MySQL and
+PostgreSQL rely on row locks and uniqueness constraints instead of the process
+lock. Response delivery, WebSocket waits, file access, and provider calls must
+run only after this transaction exits.
+
+The SQLite lock is process-local, so SQLite production deployments must remain
+single-process. If a normal peak still produces `database is locked`, or the
+service needs multiple processes or hosts, migrate to the configured MySQL
+backend instead of increasing `busy_timeout`. Before that cutover, run all
+Alembic upgrade/downgrade paths plus file-task claim and risk-limit concurrency
+tests against temporary MySQL. Shared multi-instance token buckets may use the
+Redis provider, but adaptive fanout and denial state needs a separately designed
+atomic Redis operation.
+
+Before deploying SQLite, print `sqlite3.sqlite_version` from the production
+Python runtime. WAL deployments affected by the upstream concurrent reset bug
+must use a runtime linked to SQLite 3.50.7, 3.51.3, or a later patched release.
+
 ## File chunk negotiation and transfer resume
 
 Uploads and downloads use the same initial chunk-size selection rule: the

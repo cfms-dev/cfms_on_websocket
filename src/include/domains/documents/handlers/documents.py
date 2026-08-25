@@ -74,6 +74,7 @@ from include.domains.documents.queries.listing import (
     fetch_latest_active_revisions_by_document,
 )
 from include.domains.documents.types import RevisionID
+from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.connection import ConnectionHandler
@@ -354,70 +355,70 @@ class RequestGetDocumentHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         document_id: str = handler.data["document_id"]
 
-        with Session() as session:
+        with Session() as session, risk_control_transaction(session):
             user = User.get_existing(session, handler.username)
             document = session.get(Document, document_id)
 
             if not document:
-                handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                response_code = result_code = 404
+                data = {}
+                message = smsg.DOCUMENT_NOT_FOUND
+            elif not document.check_access_requirements(user):
+                response_code = result_code = 403
+                data = {}
+                message = smsg.ACCESS_DENIED
+            else:
+                latest_revision = fetch_latest_active_revisions_by_document(
+                    session, [document.id]
+                ).get(document.id)
+                if latest_revision is None:
+                    response_code = 404
+                    result_code = 4041
+                    data = {}
+                    message = "No active revisions found for this document"
+                else:
+                    limit_decision = check_download_issue_limits(
+                        session,
+                        user.username,
+                        handler.remote_address,
+                        account_created_at=user.created_time,
+                        bypass_rate_limit=(
+                            Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT
+                            in user.all_permissions
+                        ),
+                    )
+                    if not limit_decision.allowed:
+                        response_code = result_code = 429
+                        data = {
+                            "scope": limit_decision.scope,
+                            "limit": limit_decision.limit,
+                            "retry_after_seconds": (limit_decision.retry_after_seconds),
+                        }
+                        message = (
+                            "Download request limit exceeded. Please try again later."
+                        )
+                    else:
+                        task_data = create_file_task(
+                            session,
+                            latest_revision.file,
+                            issued_by_username=user.username,
+                        )
+                        response_code = 200
+                        result_code = 0
+                        data = {
+                            "document_id": document.id,
+                            "title": document.title,
+                            "task_data": task_data,
+                        }
+                        message = "Document successfully fetched"
 
-            if not document.check_access_requirements(user):
-                handler.conclude_access_denial()
-                return Result(code=403, target=document_id, username=handler.username)
-
-            latest_revision = fetch_latest_active_revisions_by_document(
-                session, [document.id]
-            ).get(document.id)
-            if latest_revision is None:
-                handler.conclude_request(
-                    404, {}, "No active revisions found for this document"
-                )
-                return Result(code=4041, target=document_id, username=handler.username)
-
-            limit_decision = check_download_issue_limits(
-                session,
-                user.username,
-                handler.remote_address,
-                account_created_at=user.created_time,
-                bypass_rate_limit=(
-                    Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT
-                    in user.all_permissions
-                ),
-            )
-            if not limit_decision.allowed:
-                session.commit()
-                data = {
-                    "scope": limit_decision.scope,
-                    "limit": limit_decision.limit,
-                    "retry_after_seconds": limit_decision.retry_after_seconds,
-                }
-                handler.conclude_request(
-                    429,
-                    data,
-                    "Download request limit exceeded. Please try again later.",
-                )
-                return Result(
-                    code=429,
-                    target=document_id,
-                    data=data,
-                    username=handler.username,
-                )
-
-            task_data = create_file_task(
-                session,
-                latest_revision.file,
-                issued_by_username=user.username,
-            )
-            session.commit()
-            data = {
-                "document_id": document.id,
-                "title": document.title,
-                "task_data": task_data,
-            }
-
-            handler.conclude_request(200, data, "Document successfully fetched")
-            return Result(code=0, target=document_id, username=handler.username)
+        handler.conclude_request(response_code, data, message)
+        return Result(
+            code=result_code,
+            target=document_id,
+            data=data if result_code == 429 else None,
+            username=handler.username,
+        )
 
 
 class RequestCreateDocumentHandler(RequestHandler):
@@ -441,134 +442,135 @@ class RequestCreateDocumentHandler(RequestHandler):
         maybe_reclaim_abandoned_uploads()
         try_reclaim_abandoned_uploads(folder_id=folder_id, title=title)
 
+        conflict_response: tuple[dict, str] | None = None
         with Session() as session:
-            user = User.get_existing(session, handler.username)
-
-            if Permissions.CREATE_DOCUMENT not in user.all_permissions:
-                handler.conclude_permission_denial()
-                return Result(
-                    code=403,
-                    target=folder_id,
-                    data={"title": title},
-                    username=handler.username,
-                )
-
-            _folder, err_code, err_msg = get_target_folder_and_check_write(
-                session, user, folder_id, Permissions.SUPER_CREATE_DOCUMENT
-            )
-            if err_code != 0:
-                handler.conclude_request(err_code, {}, err_msg)
-                return Result(
-                    code=err_code,
-                    target=folder_id,
-                    data={"title": title},
-                    username=handler.username,
-                )
-
-            limit_decision = check_document_creation_limits(
-                session,
-                user.username,
-                handler.remote_address,
-                account_created_at=user.created_time,
-                bypass_rate_limit=(
-                    Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT
-                    in user.all_permissions
-                ),
-            )
-            if not limit_decision.allowed:
-                session.commit()
-                data = {
-                    "scope": limit_decision.scope,
-                    "limit": limit_decision.limit,
-                    "retry_after_seconds": limit_decision.retry_after_seconds,
-                }
-                handler.conclude_request(
-                    429,
-                    data,
-                    "Document creation limit exceeded. Please try again later.",
-                )
-                return Result(
-                    code=429,
-                    target=folder_id,
-                    data={"title": title, **data},
-                    username=handler.username,
-                )
-
-            today = datetime.datetime.now(datetime.UTC).date()
-            file_id = secrets.token_hex(32)
-            real_filename = secrets.token_hex(32)
-
-            new_file = File(
-                id=file_id,
-                path=f"content/files/{today.year}/{today.month}/{real_filename}",
-            )
-            new_document = Document(
-                id=secrets.token_hex(32),
-                title=title,
-                folder_id=folder_id,
-            )
-            new_document.metadata_record = DocumentMetadata(
-                creator_username=user.username,
-                last_modified_by_username=user.username,
-            )
-            new_revision = DocumentRevision(file_id=new_file.id)
-            new_document.revisions.append(new_revision)
-            session.add(new_file)
-            session.add(new_document)
-            session.add(new_revision)
-
             try:
-                with node_name_mutation(session, folder_id, title):
-                    if not apply_access_rules(
-                        new_document, access_rules, user, inherit_parent
-                    ):
-                        session.rollback()
-                        handler.conclude_access_denial()
-                        return Result(
-                            code=403,
-                            target=folder_id,
-                            data={"title": title},
-                            username=handler.username,
+                with risk_control_transaction(session):
+                    user = User.get_existing(session, handler.username)
+
+                    if Permissions.CREATE_DOCUMENT not in user.all_permissions:
+                        response_code = result_code = 403
+                        response_data = {}
+                        result_data = {"title": title}
+                        message = smsg.PERMISSION_DENIED
+                    else:
+                        _folder, err_code, err_msg = get_target_folder_and_check_write(
+                            session,
+                            user,
+                            folder_id,
+                            Permissions.SUPER_CREATE_DOCUMENT,
                         )
+                        if err_code != 0:
+                            response_code = result_code = err_code
+                            response_data = {}
+                            result_data = {"title": title}
+                            message = err_msg
+                        else:
+                            limit_decision = check_document_creation_limits(
+                                session,
+                                user.username,
+                                handler.remote_address,
+                                account_created_at=user.created_time,
+                                bypass_rate_limit=(
+                                    Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT
+                                    in user.all_permissions
+                                ),
+                            )
+                            if not limit_decision.allowed:
+                                response_code = result_code = 429
+                                response_data = {
+                                    "scope": limit_decision.scope,
+                                    "limit": limit_decision.limit,
+                                    "retry_after_seconds": (
+                                        limit_decision.retry_after_seconds
+                                    ),
+                                }
+                                result_data = {"title": title, **response_data}
+                                message = (
+                                    "Document creation limit exceeded. "
+                                    "Please try again later."
+                                )
+                            else:
+                                today = datetime.datetime.now(datetime.UTC).date()
+                                file_id = secrets.token_hex(32)
+                                real_filename = secrets.token_hex(32)
 
-                    new_document.current_revision = new_revision
-                    task_data = create_file_task(
-                        session, new_file, transfer_mode=TransferMode.UPLOAD
-                    )
-                    session.commit()
-                handler.conclude_request(
-                    200,
-                    {"document_id": new_document.id, "task_data": task_data},
-                    "Task successfully created",
-                )
+                                new_file = File(
+                                    id=file_id,
+                                    path=(
+                                        f"content/files/{today.year}/"
+                                        f"{today.month}/{real_filename}"
+                                    ),
+                                )
+                                new_document = Document(
+                                    id=secrets.token_hex(32),
+                                    title=title,
+                                    folder_id=folder_id,
+                                )
+                                new_document.metadata_record = DocumentMetadata(
+                                    creator_username=user.username,
+                                    last_modified_by_username=user.username,
+                                )
+                                new_revision = DocumentRevision(file_id=new_file.id)
+                                new_document.revisions.append(new_revision)
+                                session.add(new_file)
+                                session.add(new_document)
+                                session.add(new_revision)
 
-                return Result(
-                    code=0,
-                    target=folder_id,
-                    data={"title": title},
-                    username=handler.username,
-                )
-
+                                with node_name_mutation(session, folder_id, title):
+                                    if not apply_access_rules(
+                                        new_document,
+                                        access_rules,
+                                        user,
+                                        inherit_parent,
+                                    ):
+                                        session.rollback()
+                                        response_code = result_code = 403
+                                        response_data = {}
+                                        result_data = {"title": title}
+                                        message = smsg.ACCESS_DENIED
+                                    else:
+                                        new_document.current_revision = new_revision
+                                        task_data = create_file_task(
+                                            session,
+                                            new_file,
+                                            transfer_mode=TransferMode.UPLOAD,
+                                        )
+                                        response_code = 200
+                                        result_code = 0
+                                        response_data = {
+                                            "document_id": new_document.id,
+                                            "task_data": task_data,
+                                        }
+                                        result_data = {"title": title}
+                                        message = "Task successfully created"
             except NodeNameConflictError:
-                payload, message = describe_node_name_conflict(
+                conflict_response = describe_node_name_conflict(
                     session, user, folder_id, title
                 )
-                return respond_to_node_name_conflict(
-                    handler,
-                    payload,
-                    message,
-                    target=folder_id,
-                    result_data={"title": title},
-                )
             except (ValueError, jsonschema.ValidationError) as exc:
-                session.rollback()
-                handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
-                return Result(
-                    code=400,
-                    target=folder_id,
-                    data={"title": title},
-                    username=handler.username,
-                )
+                response_code = result_code = 400
+                response_data = {}
+                result_data = {"title": title}
+                message = f"Set access rules failed: {exc!s}"
+
+        if conflict_response is not None:
+            payload, message = conflict_response
+            return respond_to_node_name_conflict(
+                handler,
+                payload,
+                message,
+                target=folder_id,
+                result_data={"title": title},
+            )
+
+        handler.conclude_request(response_code, response_data, message)
+        return Result(
+            code=result_code,
+            target=folder_id,
+            data=result_data,
+            username=handler.username,
+        )
 
 
 class RequestUploadDocumentHandler(RequestHandler):

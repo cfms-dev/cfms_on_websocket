@@ -1,9 +1,11 @@
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from shutil import copyfile
+from threading import Event
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -192,3 +194,132 @@ def test_download_bypass_does_not_create_shadow_state(download_limit_context):
     with session_factory() as session:
         assert session.scalar(select(func.count(models.RateLimitBucket.namespace))) == 0
         assert session.scalar(select(func.count(models.RiskIPAccount.namespace))) == 0
+
+
+def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
+    download_limit_context, tmp_path
+):
+    from include.domains.documents.commands.file_tasks import (
+        ClaimedFileTask,
+        claim_file_task,
+    )
+    from include.domains.security.guards.rate_limits import (
+        rate_limit_lock,
+        risk_control_transaction,
+    )
+
+    download_limits, models, _session_factory, policy = download_limit_context
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'download-concurrency.db'}",
+        connect_args={"timeout": 0.2},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=200")
+        cursor.close()
+
+    models.User.metadata.create_all(engine)
+    concurrent_sessions = sessionmaker(bind=engine)
+    with concurrent_sessions.begin() as session:
+        download_file = models.File(id="download-file", path="download.bin")
+        download_file.size = 1
+        session.add_all(
+            [
+                models.User(username="alice", pass_hash="unused", created_time=0.0),
+                download_file,
+                models.File(id="issued-file", path="issued.bin"),
+                models.FileTask(
+                    id="download-task",
+                    file=download_file,
+                    issued_by_username="alice",
+                    mode=models.TransferMode.DOWNLOAD,
+                    status=models.FileTaskStatus.PENDING,
+                    start_time=900.0,
+                    end_time=1100.0,
+                ),
+            ]
+        )
+
+    claim_has_write_lock = Event()
+    issue_is_waiting_for_risk_lock = Event()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def _pause_after_claim_update(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        normalized = " ".join(statement.upper().split())
+        if not normalized.startswith("UPDATE FILE_TASKS SET STATUS="):
+            return
+        assert rate_limit_lock.locked()
+        claim_has_write_lock.set()
+        assert issue_is_waiting_for_risk_lock.wait(timeout=1)
+
+    def transfer_claim():
+        with concurrent_sessions() as session, risk_control_transaction(session):
+            claimed = claim_file_task(
+                session,
+                "download-task",
+                models.TransferMode.DOWNLOAD,
+                now=1000.0,
+            )
+            assert isinstance(claimed, ClaimedFileTask)
+            decision = download_limits.check_download_transfer_limits(
+                session,
+                "alice",
+                "203.0.113.1",
+                "download-task",
+                account_created_at=0.0,
+                bypass_rate_limit=False,
+                now=1000.0,
+            )
+            assert decision.allowed
+
+    def issue_task():
+        issue_is_waiting_for_risk_lock.set()
+        with concurrent_sessions() as session, risk_control_transaction(session):
+            decision = _issue(download_limits, session)
+            assert decision.allowed
+            session.add(
+                models.FileTask(
+                    id="issued-task",
+                    file_id="issued-file",
+                    issued_by_username="alice",
+                    mode=models.TransferMode.DOWNLOAD,
+                    status=models.FileTaskStatus.PENDING,
+                    start_time=1000.0,
+                    end_time=1100.0,
+                )
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        transfer_future = executor.submit(transfer_claim)
+        assert claim_has_write_lock.wait(timeout=1)
+        issue_future = executor.submit(issue_task)
+        transfer_future.result(timeout=2)
+        issue_future.result(timeout=2)
+
+    with concurrent_sessions() as session:
+        task = session.get(models.FileTask, "download-task")
+        issued_task = session.get(models.FileTask, "issued-task")
+        issue_bucket = session.get(
+            models.RateLimitBucket,
+            ("download_issue", "account", "alice"),
+        )
+        transfer_bucket = session.get(
+            models.RateLimitBucket,
+            ("download_transfer", "account", "alice"),
+        )
+        assert task.status == models.FileTaskStatus.IN_PROGRESS
+        assert issued_task.status == models.FileTaskStatus.PENDING
+        assert issue_bucket.tokens == policy.issue_account_capacity - 1
+        assert transfer_bucket.tokens == policy.transfer_account_capacity - 1
+
+    engine.dispose()

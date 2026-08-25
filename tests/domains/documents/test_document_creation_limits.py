@@ -336,6 +336,10 @@ def test_reduced_capacity_caps_existing_balance(creation_limit_context, monkeypa
 def test_concurrent_bypass_requests_do_not_cross_pending_limit(
     creation_limit_context, tmp_path
 ):
+    from include.domains.security.guards.rate_limits import (
+        risk_control_transaction,
+    )
+
     creation_limits, models, _session_factory, upload_policy, _risk = (
         creation_limit_context
     )
@@ -354,7 +358,7 @@ def test_concurrent_bypass_requests_do_not_cross_pending_limit(
         )
 
     def create_pending(number):
-        with concurrent_sessions.begin() as session:
+        with concurrent_sessions() as session, risk_control_transaction(session):
             decision = _check(
                 creation_limits,
                 session,

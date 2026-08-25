@@ -40,6 +40,7 @@ from include.domains.documents.download_limits import (
     check_download_transfer_limits,
 )
 from include.domains.documents.file_task_signals import watch_file_task
+from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.extensions.manager import pm
 from include.messages import Messages as smsg
 from include.observability.exception_logging import log_exception_with_id
@@ -282,7 +283,7 @@ class ConnectionHandler:
         """
 
         limit_decision: DownloadLimitDecision | None = None
-        with Session() as session, session.begin():
+        with Session() as session, risk_control_transaction(session):
             claim_result = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
             if isinstance(claim_result, ClaimedFileTask):
                 issuer = (

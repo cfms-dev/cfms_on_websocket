@@ -610,6 +610,8 @@ def test_missing_transfer_task_reports_non_enumerable_invalid_status(
     response = _sent_json_messages(stream)[-1]
     assert response["code"] == 46000
     assert response["data"] == {"retryable": False}
+    with file_task_context.session() as session:
+        assert session.query(file_task_context.RateLimitBucket).count() == 0
 
 
 def test_download_limit_denial_releases_claimed_task(
@@ -698,6 +700,8 @@ def test_concurrent_download_reports_in_progress(file_task_context) -> None:
     response = _sent_json_messages(stream)[-1]
     assert response["code"] == 46001
     assert response["data"] == {"task_status": "in_progress", "retryable": True}
+    with file_task_context.session() as session:
+        assert session.query(file_task_context.RateLimitBucket).count() == 0
 
 
 def test_claim_state_race_reports_retryable_conflict(
