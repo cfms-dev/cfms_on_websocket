@@ -22,6 +22,7 @@ def _integrity_error(original: Exception) -> IntegrityError:
 @pytest.mark.parametrize(
     "original",
     [
+        _OriginalError("UNIQUE constraint failed: nodes.parent_id, nodes.active_name"),
         _OriginalError("UNIQUE constraint failed: nodes.active_parent_id, nodes.name"),
         _OriginalError("Duplicate entry for key 'uq_nodes_active_parent_name'"),
         SimpleNamespace(
@@ -67,7 +68,7 @@ def test_name_mutation_rolls_back_and_translates_name_conflict() -> None:
 
     session.rollback = rollback
     original = _OriginalError(
-        "UNIQUE constraint failed: nodes.active_parent_id, nodes.name"
+        "UNIQUE constraint failed: nodes.parent_id, nodes.active_name"
     )
     original.sqlite_errorname = "SQLITE_CONSTRAINT_UNIQUE"
 

@@ -427,7 +427,7 @@ def test_current_access_rule_backup_manifest_uses_compiled_tables(
         staging_dir / "tables" / "compiled_access_rule_sets.jsonl"
     )
     exported_nodes = _read_jsonl(staging_dir / "tables" / "nodes.jsonl")
-    assert all("active_parent_id" not in row for row in exported_nodes)
+    assert all("active_name" not in row for row in exported_nodes)
     assert {row["id"] for row in exported_rule_sets} == {
         "rule-set-doc-1",
         "rule-set-folder-1",

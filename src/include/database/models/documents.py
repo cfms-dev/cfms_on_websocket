@@ -95,11 +95,10 @@ class Node(Base):
         nullable=True,
         default=_default_node_parent_id,
     )
-    active_parent_id: Mapped[str | None] = mapped_column(
+    active_name: Mapped[str | None] = mapped_column(
         VARCHAR(255),
         Computed(
-            f"CASE WHEN status = {EntityStatus.DELETED.value} "
-            "THEN NULL ELSE parent_id END",
+            f"CASE WHEN status = {EntityStatus.DELETED.value} THEN NULL ELSE name END",
             persisted=True,
         ),
         nullable=True,
@@ -115,8 +114,8 @@ class Node(Base):
             name="ck_nodes_root_parent",
         ),
         UniqueConstraint(
-            "active_parent_id",
-            "name",
+            "parent_id",
+            "active_name",
             name="uq_nodes_active_parent_name",
         ),
         Index(

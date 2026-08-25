@@ -41,7 +41,9 @@ def is_node_name_conflict(exc: IntegrityError) -> bool:
 
     sqlite_error_name = getattr(original, "sqlite_errorname", "")
     return sqlite_error_name in {"SQLITE_CONSTRAINT", "SQLITE_CONSTRAINT_UNIQUE"} and (
-        "nodes.active_parent_id, nodes.name" in lower_message
+        "nodes.parent_id, nodes.active_name" in lower_message
+        or "nodes.active_name, nodes.parent_id" in lower_message
+        or "nodes.active_parent_id, nodes.name" in lower_message
         or "nodes.name, nodes.active_parent_id" in lower_message
     )
 

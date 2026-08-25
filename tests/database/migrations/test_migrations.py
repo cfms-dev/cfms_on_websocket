@@ -30,7 +30,7 @@ def test_upgrade_to_head_succeeds(
     try:
         database_models.User.metadata.create_all(engine)
         command.stamp(config, "head")
-        command.downgrade(config, "-1")
+        command.downgrade(config, "-2")
         with engine.connect() as connection:
             assert (
                 MigrationContext.configure(connection).get_current_heads()
@@ -44,6 +44,11 @@ def test_upgrade_to_head_succeeds(
                 index["name"]
                 for index in inspect(connection).get_indexes("group_permissions")
             }
+            node_columns = {
+                column["name"] for column in inspect(connection).get_columns("nodes")
+            }
+            assert "active_parent_id" in node_columns
+            assert "active_name" not in node_columns
 
         command.upgrade(config, "head")
         with engine.connect() as connection:
@@ -58,5 +63,10 @@ def test_upgrade_to_head_succeeds(
                 index["name"]
                 for index in inspect(connection).get_indexes("group_permissions")
             }
+            node_columns = {
+                column["name"] for column in inspect(connection).get_columns("nodes")
+            }
+            assert "active_name" in node_columns
+            assert "active_parent_id" not in node_columns
     finally:
         engine.dispose()

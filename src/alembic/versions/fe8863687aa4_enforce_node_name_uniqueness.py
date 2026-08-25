@@ -67,10 +67,10 @@ def upgrade() -> None:
         )
         batch_op.add_column(
             sa.Column(
-                "active_parent_id",
+                "active_name",
                 sa.VARCHAR(length=255),
                 sa.Computed(
-                    "CASE WHEN status = 1 THEN NULL ELSE parent_id END",
+                    "CASE WHEN status = 1 THEN NULL ELSE name END",
                     persisted=True,
                 ),
                 nullable=True,
@@ -83,7 +83,7 @@ def upgrade() -> None:
         )
         batch_op.create_unique_constraint(
             "uq_nodes_active_parent_name",
-            ["active_parent_id", "name"],
+            ["parent_id", "active_name"],
         )
         batch_op.create_foreign_key(
             "fk_nodes_parent_id_folders",
@@ -212,7 +212,7 @@ def downgrade() -> None:
         batch_op.drop_constraint("uq_nodes_active_parent_name", type_="unique")
         batch_op.drop_constraint("ck_nodes_root_parent", type_="check")
         batch_op.drop_index(batch_op.f("ix_nodes_name"))
-        batch_op.drop_column("active_parent_id")
+        batch_op.drop_column("active_name")
         batch_op.drop_column("parent_id")
         batch_op.drop_column("name")
 
