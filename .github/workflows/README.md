@@ -14,14 +14,15 @@ This workflow runs the pytest test suite automatically when:
    the `skip-changelog` label
 4. Creates necessary directories for the server
 5. Runs the full test suite with pytest
-6. Runs focused SQLite-to-MySQL and MySQL-to-SQLite migration tests against a
-   MySQL 8.4 service
+6. Runs focused SQLite-to-MySQL and MySQL-to-SQLite migration tests against
+   MySQL 8.4 and 9.7 LTS services
 7. Uploads test results and logs as artifacts (retained for 7 days)
 
 ### Configuration:
 - **Timeout**: 10 minutes per test run
 - **Python version**: Tests run on Python 3.14
-- **Database integration**: Cross-engine migration tests run on MySQL 8.4
+- **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
+  9.7 LTS
 - **Artifacts**: Test cache and server logs are uploaded for debugging
 
 ### Viewing Results:

@@ -144,9 +144,9 @@ alembic upgrade head
 
 ### Migrating Between SQLite and MySQL
 
-The maintenance CLI can clone a stopped server database between SQLite and
-MySQL 8.4. The source must already be at the current Alembic head, and the
-target database must contain no tables. The command migrates and verifies all
+The maintenance CLI can clone a stopped server database between SQLite and MySQL
+8.4.x or 9.7.x LTS. The source must already be at the current Alembic head, and
+the target database must contain no tables. The command migrates and verifies all
 application tables, including transfer tasks, throttles, deduplication work,
 and persisted system state. It does not copy file storage or other providers.
 
@@ -169,6 +169,10 @@ password = "replace-with-a-secret"
 name = "app_db"
 charset = "utf8mb4"
 ```
+
+MySQL 9.7 uses `caching_sha2_password` by default and no longer provides
+`mysql_native_password`. Ensure the configured database account uses
+`caching_sha2_password`; Connector/Python in the locked environment supports it.
 
 Stop CFMS, retain a source backup, and run the migration from `src`:
 

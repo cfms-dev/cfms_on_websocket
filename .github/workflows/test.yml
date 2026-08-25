@@ -69,9 +69,12 @@ jobs:
 
   mysql-database-migration:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mysql-version: ["8.4", "9.7"]
     services:
       mysql:
-        image: mysql:8.4
+        image: mysql:${{ matrix.mysql-version }}
         env:
           MYSQL_DATABASE: cfms_migration
           MYSQL_USER: cfms

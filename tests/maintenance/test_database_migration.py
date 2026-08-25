@@ -1,16 +1,29 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import tomlkit
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, insert, inspect, select
+from sqlalchemy import (
+    Column,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    insert,
+    inspect,
+    select,
+)
 from sqlalchemy.dialects import mysql
 
 from include.database.engine import create_database_engine
 from maintenance.database_migration import (
     DatabaseMigrationError,
+    _table_signature,
+    _validate_mysql_version,
     migrate_database,
     transfer_database_contents,
 )
@@ -45,6 +58,34 @@ def test_mysql_schema_preserves_python_float_precision(backup_context) -> None:
                 assert column.type.compile(dialect=mysql.dialect()) == "DOUBLE"
 
     assert "file_tasks.end_time" in float_columns
+
+
+def test_table_signature_scopes_streaming_to_its_select() -> None:
+    metadata = MetaData()
+    items = Table(
+        "items",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("value", String(32), nullable=False),
+    )
+    engine = create_engine("sqlite:///:memory:")
+    try:
+        metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                insert(items),
+                [
+                    {"id": 1, "value": "first"},
+                    {"id": 2, "value": "second"},
+                ],
+            )
+
+            row_count, _digest = _table_signature(connection, items)
+
+            assert row_count == 2
+            assert "stream_results" not in connection.get_execution_options()
+    finally:
+        engine.dispose()
 
 
 def test_transfer_clones_every_application_table(backup_context, tmp_path) -> None:
@@ -176,6 +217,28 @@ def test_public_migration_rejects_same_database_engine() -> None:
         match="Source and target database engines must be different",
     ):
         migrate_database(source_engine, target_engine, object(), object())
+
+
+@pytest.mark.parametrize("version", [(8, 4, 12), (9, 7, 3)])
+def test_database_migration_accepts_supported_mysql_lts_series(version) -> None:
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="mysql", server_version_info=version)
+    )
+
+    _validate_mysql_version(connection)
+
+
+@pytest.mark.parametrize("version", [None, (8, 0, 46), (9, 6, 0), (26, 7, 1)])
+def test_database_migration_rejects_unsupported_mysql_series(version) -> None:
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="mysql", server_version_info=version)
+    )
+
+    with pytest.raises(
+        DatabaseMigrationError,
+        match=r"requires MySQL 8\.4\.x or 9\.7\.x LTS",
+    ):
+        _validate_mysql_version(connection)
 
 
 def test_target_config_is_validated_and_can_be_activated(tmp_path) -> None:

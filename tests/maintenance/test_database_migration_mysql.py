@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.parametrize("direction", ["sqlite-to-mysql", "mysql-to-sqlite"])
-def test_database_migration_round_trip_with_mysql_84(
+def test_database_migration_round_trip_with_supported_mysql_lts(
     backup_context,
     tmp_path,
     direction,

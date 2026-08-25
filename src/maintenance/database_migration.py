@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 _BATCH_SIZE = 1000
 _ALEMBIC_TABLE_NAME = "alembic_version"
 _SUPPORTED_DIALECTS = frozenset({"mysql", "sqlite"})
+_SUPPORTED_MYSQL_LTS_SERIES = frozenset({(8, 4), (9, 7)})
 _NODE_TABLE_NAMES = frozenset({"nodes", "folders", "documents"})
 LOGGER = logging.getLogger(__name__)
 
@@ -172,10 +173,11 @@ def _validate_mysql_version(connection: Connection) -> None:
     if connection.dialect.name != "mysql":
         return
     version = connection.dialect.server_version_info
-    if version is None or version[:2] != (8, 4):
+    if version is None or version[:2] not in _SUPPORTED_MYSQL_LTS_SERIES:
         rendered = "unknown" if version is None else ".".join(map(str, version))
         raise DatabaseMigrationError(
-            f"Database migration requires MySQL 8.4.x; connected to {rendered}"
+            "Database migration requires MySQL 8.4.x or 9.7.x LTS; "
+            f"connected to {rendered}"
         )
 
 
@@ -261,9 +263,10 @@ def _copy_tables(
                 f"Application table {table_name!r} has no primary key"
             )
         statement = select(*columns).order_by(*order_by)
-        rows = (
-            source.execution_options(stream_results=True).execute(statement).mappings()
-        )
+        rows = source.execute(
+            statement,
+            execution_options={"stream_results": True},
+        ).mappings()
         for partition in rows.partitions(_BATCH_SIZE):
             insert_rows = []
             for row in partition:
@@ -326,7 +329,10 @@ def _copy_node_tables(
     node_rows = []
     folder_rows = []
     document_rows = []
-    rows = source.execution_options(stream_results=True).execute(statement).mappings()
+    rows = source.execute(
+        statement,
+        execution_options={"stream_results": True},
+    ).mappings()
     for row in rows:
         depth = row["migration_depth"]
         if node_rows and (depth != current_depth or len(node_rows) == _BATCH_SIZE):
@@ -433,9 +439,10 @@ def _restore_deferred_columns(
                 }
             )
         )
-        rows = (
-            source.execution_options(stream_results=True).execute(statement).mappings()
-        )
+        rows = source.execute(
+            statement,
+            execution_options={"stream_results": True},
+        ).mappings()
         for partition in rows.partitions(_BATCH_SIZE):
             parameters = [
                 {
@@ -484,9 +491,10 @@ def _table_signature(connection: Connection, table) -> tuple[int, str]:
     statement = select(*columns).order_by(*table.primary_key.columns)
     digest = hashlib.sha256()
     row_count = 0
-    rows = (
-        connection.execution_options(stream_results=True).execute(statement).mappings()
-    )
+    rows = connection.execute(
+        statement,
+        execution_options={"stream_results": True},
+    ).mappings()
     for partition in rows.partitions(_BATCH_SIZE):
         for row in partition:
             _update_digest(digest, columns, row)
