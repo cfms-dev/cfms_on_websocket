@@ -52,6 +52,7 @@ else:
     host = global_config["database"]["host"]
     port = global_config["database"]["port"]
     db_name = global_config["database"]["name"]
+    charset = global_config["database"]["charset"]
 
     url = URL.create(
         drivername=drivername,
@@ -60,6 +61,7 @@ else:
         host=host,
         port=port,
         database=db_name,
+        query={"charset": charset},
     )
     engine = create_engine(
         url,
