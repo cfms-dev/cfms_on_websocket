@@ -66,3 +66,45 @@ jobs:
           src/content/logs/
           test_logs/
         retention-days: 7
+
+  mysql-database-migration:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: cfms_migration
+          MYSQL_USER: cfms
+          MYSQL_PASSWORD: cfms-test-password
+          MYSQL_ROOT_PASSWORD: cfms-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pcfms-test-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Set up Python 3.14
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.14"
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      with:
+        version: "0.11.16"
+
+    - name: Install test and MySQL dependencies
+      run: uv sync --locked --dev --extra mysql
+
+    - name: Run bidirectional database migration tests
+      env:
+        CFMS_TEST_MYSQL_URL: "mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_migration?charset=utf8mb4"
+      run: uv run --locked pytest tests/maintenance/test_database_migration_mysql.py -q
+      timeout-minutes: 10

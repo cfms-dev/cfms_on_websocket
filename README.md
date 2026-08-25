@@ -142,6 +142,55 @@ Then checkout the server version you wanted and run:
 alembic upgrade head 
 ``` 
 
+### Migrating Between SQLite and MySQL
+
+The maintenance CLI can clone a stopped server database between SQLite and
+MySQL 8.4. The source must already be at the current Alembic head, and the
+target database must contain no tables. The command migrates and verifies all
+application tables, including transfer tasks, throttles, deduplication work,
+and persisted system state. It does not copy file storage or other providers.
+
+Install the MySQL driver on any host that connects to MySQL:
+
+```bash
+uv sync --locked --extra mysql
+```
+
+Create a separate target TOML file. It may be a complete CFMS configuration or
+contain only the target database table:
+
+```toml
+[database]
+type = "mysql"
+host = "mysql.example.net"
+port = 3306
+username = "cfms"
+password = "replace-with-a-secret"
+name = "app_db"
+charset = "utf8mb4"
+```
+
+Stop CFMS, retain a source backup, and run the migration from `src`:
+
+```bash
+maintain database migrate --target-config config.mysql.toml
+```
+
+The source remains unchanged. By default, successful migration does not edit
+`config.toml`; update it manually after reviewing the result. To make the same
+successful migration perform an atomic, backed-up switch, include `--activate`
+in the initial command:
+
+```bash
+maintain database migrate --target-config config.mysql.toml --activate
+```
+
+`--activate` changes only the database table in `config.toml` and prints the
+backup path. Restart CFMS after activation. Use `--yes` only for unattended
+runs where the server-stop and empty-target preconditions have already been
+enforced. If copying or verification fails, the tool keeps the source intact
+and attempts to return the initially empty target schema to an empty state.
+
 ## Development
 
 Consider using pre-commit to provide an automated code standardization experience.

@@ -40,6 +40,36 @@ def test_transfer_clones_every_application_table(backup_context, tmp_path) -> No
     storage_root = tmp_path / "storage"
     storage_root.mkdir()
     _seed_source(base, source_engine, storage_root)
+    _seed_runtime_tables(base, source_engine)
+
+    scripts = _script_directory()
+    head = scripts.get_current_head()
+    assert head is not None
+    results = transfer_database_contents(
+        source_engine,
+        target_engine,
+        base.metadata,
+        scripts,
+        head,
+    )
+
+    assert tuple(result.name for result in results) == APPLICATION_TABLE_NAMES
+    rows_by_table = {result.name: result.rows for result in results}
+    assert rows_by_table["file_tasks"] == 1
+    assert rows_by_table["system_states"] == 1
+    assert rows_by_table["file_deduplication_tasks"] == 1
+    with source_engine.connect() as source, target_engine.connect() as target:
+        for table_name in APPLICATION_TABLE_NAMES:
+            table = base.metadata.tables[table_name]
+            statement = select(table).order_by(*table.primary_key.columns)
+            assert target.execute(statement).all() == source.execute(statement).all()
+        assert MigrationContext.configure(target).get_current_heads() == (head,)
+
+    source_engine.dispose()
+    target_engine.dispose()
+
+
+def _seed_runtime_tables(base, source_engine) -> None:
     tables = base.metadata.tables
     with source_engine.begin() as connection:
         connection.execute(
@@ -87,32 +117,6 @@ def test_transfer_clones_every_application_table(backup_context, tmp_path) -> No
                 "created_time": 1_700_000_000.0,
             },
         )
-
-    scripts = _script_directory()
-    head = scripts.get_current_head()
-    assert head is not None
-    results = transfer_database_contents(
-        source_engine,
-        target_engine,
-        base.metadata,
-        scripts,
-        head,
-    )
-
-    assert tuple(result.name for result in results) == APPLICATION_TABLE_NAMES
-    rows_by_table = {result.name: result.rows for result in results}
-    assert rows_by_table["file_tasks"] == 1
-    assert rows_by_table["system_states"] == 1
-    assert rows_by_table["file_deduplication_tasks"] == 1
-    with source_engine.connect() as source, target_engine.connect() as target:
-        for table_name in APPLICATION_TABLE_NAMES:
-            table = tables[table_name]
-            statement = select(table).order_by(*table.primary_key.columns)
-            assert target.execute(statement).all() == source.execute(statement).all()
-        assert MigrationContext.configure(target).get_current_heads() == (head,)
-
-    source_engine.dispose()
-    target_engine.dispose()
 
 
 def test_transfer_cleans_target_when_verification_fails(

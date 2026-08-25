@@ -220,7 +220,7 @@ def migrate_database(
         Path,
         typer.Option(
             "--target-config",
-            help="TOML file containing the target [database] settings.",
+            help="TOML file containing the target database settings.",
         ),
     ],
     activate: Annotated[
