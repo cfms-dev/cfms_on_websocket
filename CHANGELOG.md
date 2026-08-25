@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 <!-- insertion marker -->
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.2.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.6.0...HEAD)</small>
 
 <!-- insertion marker -->
+
+## [v0.6.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.6.0) - 2026-08-25
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.2.0...v0.6.0)</small>
 
 ### Added
 
