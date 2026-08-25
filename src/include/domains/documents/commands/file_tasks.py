@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, cast
 
 from sqlalchemy import or_, select, update
@@ -29,6 +30,23 @@ class ClaimedFileTask:
     upload_session_id: str | None = field(repr=False)
     upload_checkpoint_size: int | None
     upload_checkpoint_data: str | None = field(repr=False)
+
+
+class FileTaskClaimFailure(StrEnum):
+    INVALID = "invalid"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    CONFLICT = "conflict"
+
+
+_CLAIM_FAILURE_BY_STATUS = {
+    FileTaskStatus.IN_PROGRESS: FileTaskClaimFailure.IN_PROGRESS,
+    FileTaskStatus.COMPLETED: FileTaskClaimFailure.COMPLETED,
+    FileTaskStatus.CANCELLED: FileTaskClaimFailure.CANCELLED,
+    FileTaskStatus.EXPIRED: FileTaskClaimFailure.EXPIRED,
+}
 
 
 def serialize_file_task(task: FileTask) -> dict[str, Any]:
@@ -83,7 +101,7 @@ def claim_file_task(
     transfer_mode: TransferMode,
     *,
     now: float | None = None,
-) -> ClaimedFileTask | None:
+) -> ClaimedFileTask | FileTaskClaimFailure:
     now = time.time() if now is None else now
     is_upload = transfer_mode == TransferMode.UPLOAD
 
@@ -93,15 +111,17 @@ def claim_file_task(
         options=(joinedload(FileTask.file),),
     )
     if task is None or task.mode != transfer_mode:
-        return None
+        return FileTaskClaimFailure.INVALID
 
     status = expire_file_task_if_due(session, task_id, now=now)
     if status != FileTaskStatus.PENDING:
-        return None
+        if status is None:
+            return FileTaskClaimFailure.INVALID
+        return _CLAIM_FAILURE_BY_STATUS.get(status, FileTaskClaimFailure.INVALID)
 
     # The following line is used to avoid executing an UPDATE that is bound to fail.
     if task.start_time > now:
-        return None
+        return FileTaskClaimFailure.INVALID
 
     values: dict[str, object] = {
         "status": FileTaskStatus.IN_PROGRESS,
@@ -146,7 +166,10 @@ def claim_file_task(
 
     if result.rowcount != 1:
         session.expire(task)
-        return None
+        status = expire_file_task_if_due(session, task_id, now=now)
+        if status is None:
+            return FileTaskClaimFailure.CONFLICT
+        return _CLAIM_FAILURE_BY_STATUS.get(status, FileTaskClaimFailure.CONFLICT)
 
     try:
         stored_file = task.file

@@ -413,7 +413,7 @@ def test_upload_task_lifecycle_uses_two_stage_deadline(
         claimed = file_tasks.claim_file_task(
             session, task_id, TransferMode.UPLOAD, now=1000.0
         )
-        assert claimed is not None
+        assert isinstance(claimed, file_tasks.ClaimedFileTask)
 
     with file_task_context.session() as session:
         task = session.get(file_task_context.FileTask, task_id)
@@ -431,7 +431,7 @@ def test_upload_task_lifecycle_uses_two_stage_deadline(
         claimed = file_tasks.claim_file_task(
             session, task_id, TransferMode.UPLOAD, now=1002.0
         )
-        assert claimed is not None
+        assert isinstance(claimed, file_tasks.ClaimedFileTask)
         assert file_tasks.complete_file_task(session, task_id) is True
         assert file_tasks.complete_file_task(session, task_id) is False
 
@@ -443,7 +443,10 @@ def test_upload_task_lifecycle_uses_two_stage_deadline(
 
 def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
-    from include.domains.documents.commands.file_tasks import claim_file_task
+    from include.domains.documents.commands.file_tasks import (
+        ClaimedFileTask,
+        claim_file_task,
+    )
 
     task_id, file_id = _create_file_task(
         file_task_context, "snapshot.bin", mode=TransferMode.DOWNLOAD
@@ -457,7 +460,7 @@ def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
     with file_task_context.session.begin() as session:
         claimed = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
 
-    assert claimed is not None
+    assert isinstance(claimed, ClaimedFileTask)
     assert claimed.task_id == task_id
     assert claimed.file_id == file_id
     assert claimed.file_path == "snapshot.bin"
@@ -475,7 +478,11 @@ def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
 
 def test_claim_rejects_invalid_or_competing_requests(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
-    from include.domains.documents.commands.file_tasks import claim_file_task
+    from include.domains.documents.commands.file_tasks import (
+        ClaimedFileTask,
+        FileTaskClaimFailure,
+        claim_file_task,
+    )
 
     upload_task_id, _file_id = _create_file_task(
         file_task_context, "claim-once.bin", mode=TransferMode.UPLOAD
@@ -494,23 +501,23 @@ def test_claim_rejects_invalid_or_competing_requests(file_task_context) -> None:
     with file_task_context.session.begin() as session:
         assert (
             claim_file_task(session, "missing-task", TransferMode.UPLOAD, now=100.0)
-            is None
+            == FileTaskClaimFailure.INVALID
         )
         assert (
             claim_file_task(session, upload_task_id, TransferMode.DOWNLOAD, now=100.0)
-            is None
+            == FileTaskClaimFailure.INVALID
         )
         assert (
             claim_file_task(session, future_task_id, TransferMode.UPLOAD, now=100.0)
-            is None
+            == FileTaskClaimFailure.INVALID
+        )
+        assert isinstance(
+            claim_file_task(session, upload_task_id, TransferMode.UPLOAD, now=100.0),
+            ClaimedFileTask,
         )
         assert (
             claim_file_task(session, upload_task_id, TransferMode.UPLOAD, now=100.0)
-            is not None
-        )
-        assert (
-            claim_file_task(session, upload_task_id, TransferMode.UPLOAD, now=100.0)
-            is None
+            == FileTaskClaimFailure.IN_PROGRESS
         )
 
     with file_task_context.session() as session:
@@ -522,7 +529,10 @@ def test_claim_rejects_invalid_or_competing_requests(file_task_context) -> None:
 
 def test_claim_marks_due_task_expired(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
-    from include.domains.documents.commands.file_tasks import claim_file_task
+    from include.domains.documents.commands.file_tasks import (
+        FileTaskClaimFailure,
+        claim_file_task,
+    )
 
     task_id, _file_id = _create_file_task(
         file_task_context, "uploads/expired.bin", mode=TransferMode.UPLOAD
@@ -532,7 +542,10 @@ def test_claim_marks_due_task_expired(file_task_context) -> None:
         task.end_time = 10.0
 
     with file_task_context.session.begin() as session:
-        assert claim_file_task(session, task_id, TransferMode.UPLOAD, now=11.0) is None
+        assert (
+            claim_file_task(session, task_id, TransferMode.UPLOAD, now=11.0)
+            == FileTaskClaimFailure.EXPIRED
+        )
 
     with file_task_context.session() as session:
         assert (
@@ -577,8 +590,8 @@ def test_transfer_claim_race_reports_expired_status(file_task_context) -> None:
     handler.send_file(task_id, offset=0, max_chunk_size=64 * 1024)
 
     response = _sent_json_messages(stream)[-1]
-    assert response["code"] == 410
-    assert response["data"] == {"task_status": "expired"}
+    assert response["code"] == 46004
+    assert response["data"] == {"task_status": "expired", "retryable": False}
     with file_task_context.session() as session:
         assert (
             session.get(file_task_context.FileTask, task_id).status
@@ -586,15 +599,17 @@ def test_transfer_claim_race_reports_expired_status(file_task_context) -> None:
         )
 
 
-def test_missing_transfer_task_reports_not_found(file_task_context) -> None:
+def test_missing_transfer_task_reports_non_enumerable_invalid_status(
+    file_task_context,
+) -> None:
     stream = _FakeDownloadStream()
     handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
 
     handler.send_file("missing-task", offset=0, max_chunk_size=64 * 1024)
 
     response = _sent_json_messages(stream)[-1]
-    assert response["code"] == 404
-    assert response["data"] == {}
+    assert response["code"] == 46000
+    assert response["data"] == {"retryable": False}
 
 
 def test_download_limit_denial_releases_claimed_task(
@@ -662,11 +677,11 @@ def test_concurrent_upload_reports_conflict(file_task_context) -> None:
     handler.receive_file(task_id, 1, hashlib.sha256(b"x").hexdigest(), 512, False)
 
     response = _sent_json_messages(stream)[-1]
-    assert response["code"] == 409
-    assert response["data"] == {"task_status": "in_progress"}
+    assert response["code"] == 46001
+    assert response["data"] == {"task_status": "in_progress", "retryable": True}
 
 
-def test_concurrent_download_remains_bad_request(file_task_context) -> None:
+def test_concurrent_download_reports_in_progress(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
 
     task_id, _file_id = _create_file_task(
@@ -681,11 +696,33 @@ def test_concurrent_download_remains_bad_request(file_task_context) -> None:
     handler.send_file(task_id, offset=0, max_chunk_size=64 * 1024)
 
     response = _sent_json_messages(stream)[-1]
-    assert response["code"] == 400
-    assert response["data"] == {}
+    assert response["code"] == 46001
+    assert response["data"] == {"task_status": "in_progress", "retryable": True}
 
 
-def test_wrong_mode_and_future_task_report_bad_request(file_task_context) -> None:
+def test_claim_state_race_reports_retryable_conflict(
+    file_task_context, monkeypatch
+) -> None:
+    from include.domains.documents.commands.file_tasks import FileTaskClaimFailure
+
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "claim_file_task",
+        lambda _session, _task_id, _mode: FileTaskClaimFailure.CONFLICT,
+    )
+    stream = _FakeDownloadStream()
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.send_file("racing-task", offset=0, max_chunk_size=64 * 1024)
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 46005
+    assert response["data"] == {"retryable": True}
+
+
+def test_wrong_mode_and_future_task_do_not_disclose_claim_details(
+    file_task_context,
+) -> None:
     from include.database.models.files import TransferMode
 
     upload_task_id, _file_id = _create_file_task(
@@ -706,8 +743,39 @@ def test_wrong_mode_and_future_task_report_bad_request(file_task_context) -> Non
         handler.send_file(task_id, offset=0, max_chunk_size=64 * 1024)
 
         response = _sent_json_messages(stream)[-1]
-        assert response["code"] == 400
-        assert response["data"] == {}
+        assert response["code"] == 46000
+        assert response["data"] == {"retryable": False}
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_code", "expected_status"),
+    [
+        (1, 46002, "completed"),
+        (2, 46003, "cancelled"),
+    ],
+)
+def test_terminal_transfer_task_reports_specific_status(
+    file_task_context, status, expected_code, expected_status
+) -> None:
+    from include.database.models.files import TransferMode
+
+    task_id, _file_id = _create_file_task(
+        file_task_context,
+        f"{expected_status}-download.bin",
+        mode=TransferMode.DOWNLOAD,
+        status=status,
+    )
+    stream = _FakeDownloadStream()
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.send_file(task_id, offset=0, max_chunk_size=64 * 1024)
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == expected_code
+    assert response["data"] == {
+        "task_status": expected_status,
+        "retryable": False,
+    }
 
 
 def test_file_request_handlers_delegate_claiming(file_task_context) -> None:

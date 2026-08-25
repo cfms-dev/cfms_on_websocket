@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Increase the protocol version to 25 and replace ambiguous file-task claim
+  failures with dedicated `46000` through `46005` conclusion codes. Invalid
+  credentials, transfer-mode mismatches, and tasks that are not yet claimable
+  remain indistinguishable to prevent task probing.
 - Increase the protocol version to 24 and replace identity permission string
   lists with structured grant/revocation entries and explicit effective-permission
   fields. Expired entries are retained for a configurable period before bounded

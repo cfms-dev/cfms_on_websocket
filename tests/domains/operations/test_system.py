@@ -83,7 +83,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 24,
+            "protocol_version": 25,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {

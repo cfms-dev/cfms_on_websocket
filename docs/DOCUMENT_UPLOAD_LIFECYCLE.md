@@ -148,6 +148,24 @@ a regression and the introducing commit needs to be isolated.
 
 ## Limits and client responses
 
+Protocol version 25 replaces ambiguous file-task claim failures with a dedicated
+conclusion-code namespace:
+
+| Code | Meaning | Client action |
+| --- | --- | --- |
+| `46000` | The task credential is invalid or cannot be used for this request. | Discard it and obtain a new task. |
+| `46001` | Another connection is processing the task. | Wait for that connection to finish or disconnect before retrying. |
+| `46002` | The task is already completed. | Obtain a new task if another transfer is needed. |
+| `46003` | The task is cancelled. | Do not retry it. |
+| `46004` | The task is expired. | Obtain a new task. |
+| `46005` | The claim conflicted with another state transition. | Retry with bounded backoff. |
+
+Codes `46001` through `46004` include `data.task_status` and all six responses
+include `data.retryable`. Code `46000` deliberately combines an unknown task,
+a transfer-mode mismatch, and a task whose start time has not arrived. Responses
+never expose the expected mode, task timing, file identity or path, issuer, or
+the database condition that rejected a claim.
+
 Each creator may hold at most 16 empty documents with live uploads by default.
 Document creation also uses persistent, cross-instance token buckets for the
 account and source IP. At normal risk, the buckets refill at 300 requests per

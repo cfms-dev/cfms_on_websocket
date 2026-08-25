@@ -75,7 +75,8 @@ class TestFileTransfer:
         download_dest = str(tmp_path / "invalid_download.bin")
 
         with pytest.raises(
-            RuntimeError, match=re.escape("Download failed (404): Task not found")
+            RuntimeError,
+            match=re.escape("Download failed (46000): Task cannot be claimed"),
         ):
             await authenticated_client.download_file_from_server(
                 "missing-download-task-id", download_dest

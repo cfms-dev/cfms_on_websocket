@@ -3,6 +3,7 @@ import hashlib
 import os
 import threading
 import time
+from enum import IntEnum
 
 import jsonschema
 import orjson
@@ -28,6 +29,7 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import (
     ClaimedFileTask,
+    FileTaskClaimFailure,
     claim_file_task,
     complete_file_task,
     expire_file_task_if_due,
@@ -47,6 +49,15 @@ from include.transport.client_address import get_client_ip
 from include.transport.multiplexing import FrameType, Stream
 
 logger = log.bind(name="conn")
+
+
+class FileTaskConclusionCode(IntEnum):
+    INVALID = 46000
+    IN_PROGRESS = 46001
+    COMPLETED = 46002
+    CANCELLED = 46003
+    EXPIRED = 46004
+    CLAIM_CONFLICT = 46005
 
 
 def send_conclusion(
@@ -189,33 +200,47 @@ class ConnectionHandler:
         if status != FileTaskStatus.IN_PROGRESS:
             raise FileTaskEnded(status)
 
-    def _conclude_file_task_claim_failure(
-        self, task_id: str, transfer_mode: TransferMode
-    ) -> None:
-        with Session() as session:
-            task = session.get(FileTask, task_id)
-            if task is None:
-                self.conclude_request(404, {}, smsg.TASK_NOT_FOUND)
-                return
-            status = FileTaskStatus(task.status)
-        if status in (FileTaskStatus.CANCELLED, FileTaskStatus.EXPIRED):
+    def _conclude_file_task_claim_failure(self, failure: FileTaskClaimFailure) -> None:
+        if failure == FileTaskClaimFailure.INVALID:
             self.conclude_request(
-                410,
-                {"task_status": status.name.lower()},
-                "Task is no longer available",
+                FileTaskConclusionCode.INVALID,
+                {"retryable": False},
+                "Task cannot be claimed",
             )
             return
-        if (
-            status == FileTaskStatus.IN_PROGRESS
-            and transfer_mode == TransferMode.UPLOAD
-        ):
+        if failure == FileTaskClaimFailure.IN_PROGRESS:
             self.conclude_request(
-                409,
-                {"task_status": status.name.lower()},
+                FileTaskConclusionCode.IN_PROGRESS,
+                {"task_status": failure.value, "retryable": True},
                 "Task is already in progress",
             )
             return
-        self.conclude_request(400, {}, "Task cannot be claimed")
+        if failure == FileTaskClaimFailure.COMPLETED:
+            self.conclude_request(
+                FileTaskConclusionCode.COMPLETED,
+                {"task_status": failure.value, "retryable": False},
+                "Task is already completed",
+            )
+            return
+        if failure == FileTaskClaimFailure.CANCELLED:
+            self.conclude_request(
+                FileTaskConclusionCode.CANCELLED,
+                {"task_status": failure.value, "retryable": False},
+                "Task is cancelled",
+            )
+            return
+        if failure == FileTaskClaimFailure.EXPIRED:
+            self.conclude_request(
+                FileTaskConclusionCode.EXPIRED,
+                {"task_status": failure.value, "retryable": False},
+                "Task is expired",
+            )
+            return
+        self.conclude_request(
+            FileTaskConclusionCode.CLAIM_CONFLICT,
+            {"retryable": True},
+            "Task claim conflicted with another request",
+        )
 
     def _recv_file_task_frame(
         self,
@@ -258,11 +283,11 @@ class ConnectionHandler:
 
         limit_decision: DownloadLimitDecision | None = None
         with Session() as session, session.begin():
-            claimed = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
-            if claimed is not None:
+            claim_result = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
+            if isinstance(claim_result, ClaimedFileTask):
                 issuer = (
-                    session.get(User, claimed.issued_by_username)
-                    if claimed.issued_by_username is not None
+                    session.get(User, claim_result.issued_by_username)
+                    if claim_result.issued_by_username is not None
                     else None
                 )
                 limit_decision = check_download_transfer_limits(
@@ -282,9 +307,10 @@ class ConnectionHandler:
                 if not limit_decision.allowed:
                     release_file_task(session, task_id)
 
-        if claimed is None:
-            self._conclude_file_task_claim_failure(task_id, TransferMode.DOWNLOAD)
+        if isinstance(claim_result, FileTaskClaimFailure):
+            self._conclude_file_task_claim_failure(claim_result)
             return
+        claimed = claim_result
         assert limit_decision is not None
         if not limit_decision.allowed:
             self.conclude_request(
@@ -600,11 +626,12 @@ class ConnectionHandler:
         restart: bool,
     ) -> None:
         with Session() as session, session.begin():
-            claimed = claim_file_task(session, task_id, TransferMode.UPLOAD)
+            claim_result = claim_file_task(session, task_id, TransferMode.UPLOAD)
 
-        if claimed is None:
-            self._conclude_file_task_claim_failure(task_id, TransferMode.UPLOAD)
+        if isinstance(claim_result, FileTaskClaimFailure):
+            self._conclude_file_task_claim_failure(claim_result)
             return
+        claimed = claim_result
 
         with watch_file_task(task_id) as cancelled:
             try:
