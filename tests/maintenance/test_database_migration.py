@@ -6,6 +6,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, insert, inspect, select
+from sqlalchemy.dialects import mysql
 
 from include.database.engine import create_database_engine
 from maintenance.database_migration import (
@@ -29,6 +30,21 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def _script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(Config(_PROJECT_ROOT / "src" / "alembic.ini"))
+
+
+def test_mysql_schema_preserves_python_float_precision(backup_context) -> None:
+    float_columns = []
+    for table in backup_context.Base.metadata.tables.values():
+        for column in table.columns:
+            try:
+                python_type = column.type.python_type
+            except NotImplementedError:
+                continue
+            if python_type is float:
+                float_columns.append(f"{table.name}.{column.name}")
+                assert column.type.compile(dialect=mysql.dialect()) == "DOUBLE"
+
+    assert "file_tasks.end_time" in float_columns
 
 
 def test_transfer_clones_every_application_table(backup_context, tmp_path) -> None:

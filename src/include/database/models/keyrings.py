@@ -2,7 +2,7 @@ import secrets
 import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import VARCHAR, Float, ForeignKey, Text
+from sqlalchemy import VARCHAR, Double, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -35,7 +35,7 @@ class UserKey(Base):
     # label is reserved for future use and is currently optional.
     label: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
     created_time: Mapped[float] = mapped_column(
-        Float, nullable=False, default=time.time
+        Double, nullable=False, default=time.time
     )
 
     user: Mapped["User"] = relationship(

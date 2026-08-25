@@ -7,7 +7,7 @@ from sqlalchemy import (
     VARCHAR,
     BigInteger,
     CheckConstraint,
-    Float,
+    Double,
     ForeignKey,
     Integer,
 )
@@ -32,7 +32,7 @@ class AuditEntry(Base):
     result: Mapped[int] = mapped_column(Integer, nullable=False)
     remote_address: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
     logged_time: Mapped[float | None] = mapped_column(
-        Float, nullable=False, default=time.time, index=True
+        Double, nullable=False, default=time.time, index=True
     )
 
 
@@ -42,12 +42,12 @@ class RateLimitBucket(Base):
     namespace: Mapped[str] = mapped_column(VARCHAR(64), primary_key=True)
     scope: Mapped[str] = mapped_column(VARCHAR(16), primary_key=True)
     identity: Mapped[str] = mapped_column(VARCHAR(256), primary_key=True)
-    tokens: Mapped[float] = mapped_column(Float, nullable=False)
-    last_refill_at: Mapped[float] = mapped_column(Float, nullable=False)
+    tokens: Mapped[float] = mapped_column(Double, nullable=False)
+    last_refill_at: Mapped[float] = mapped_column(Double, nullable=False)
     denial_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_denied_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_denied_at: Mapped[float | None] = mapped_column(Double, nullable=True)
     last_attempt: Mapped[float] = mapped_column(
-        Float, nullable=False, default=time.time, index=True
+        Double, nullable=False, default=time.time, index=True
     )
 
 
@@ -58,7 +58,7 @@ class RiskIPAccount(Base):
     ip_address: Mapped[str] = mapped_column(VARCHAR(45), primary_key=True)
     username: Mapped[str] = mapped_column(VARCHAR(256), primary_key=True)
     last_attempt: Mapped[float] = mapped_column(
-        Float, nullable=False, default=time.time, index=True
+        Double, nullable=False, default=time.time, index=True
     )
 
 
@@ -76,4 +76,4 @@ class SystemStateEntry(Base):
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
-    updated_at: Mapped[float] = mapped_column(Float, nullable=False)
+    updated_at: Mapped[float] = mapped_column(Double, nullable=False)

@@ -21,7 +21,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Computed,
-    Float,
+    Double,
     ForeignKey,
     Index,
     Integer,
@@ -273,7 +273,7 @@ class Folder(Node):  # Document folder.
         primary_key=True,
     )
     created_time: Mapped[float] = mapped_column(
-        Float, nullable=False, default=lambda: time.time()
+        Double, nullable=False, default=lambda: time.time()
     )
     parent: Mapped[Folder | None] = relationship(
         "Folder",
@@ -344,7 +344,7 @@ class Document(Node):
     title = synonym("name")
     folder_id = synonym("parent_id")
     created_time: Mapped[float] = mapped_column(
-        Float, nullable=False, default=lambda: time.time()
+        Double, nullable=False, default=lambda: time.time()
     )
     folder: Mapped[Folder | None] = relationship(
         "Folder",
@@ -539,7 +539,7 @@ class DocumentRevision(Base):
     )
     file_id: Mapped[str] = mapped_column(ForeignKey("files.id"), index=True)
     created_time: Mapped[float] = mapped_column(
-        Float, nullable=False, default=lambda: time.time()
+        Double, nullable=False, default=lambda: time.time()
     )
 
     document: Mapped[Document] = relationship(

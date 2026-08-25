@@ -2,7 +2,7 @@ import secrets
 import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import VARCHAR, BigInteger, Boolean, Float, ForeignKey, Integer
+from sqlalchemy import VARCHAR, BigInteger, Boolean, Double, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -25,10 +25,10 @@ class UserBlockEntry(Base):
     sub_entries: Mapped[list["UserBlockSubEntry"]] = relationship(
         "UserBlockSubEntry", back_populates="parent_entry", cascade="all, delete-orphan"
     )
-    timestamp: Mapped[float] = mapped_column(Float, nullable=False)
+    timestamp: Mapped[float] = mapped_column(Double, nullable=False)
 
-    not_before: Mapped[float] = mapped_column(Float, nullable=False)
-    not_after: Mapped[float] = mapped_column(Float, nullable=False)
+    not_before: Mapped[float] = mapped_column(Double, nullable=False)
+    not_after: Mapped[float] = mapped_column(Double, nullable=False)
 
     # Due to technical issues in the implementation of ORM, target_type and target_id are
     # stored as two separate columns, but when 'target_type' is 'all', target_id can be
@@ -82,8 +82,8 @@ class ObjectAccessEntry(Base):
     # read, write, move
     access_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
 
-    start_time: Mapped[float] = mapped_column(Float, nullable=False)
-    end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    start_time: Mapped[float] = mapped_column(Double, nullable=False)
+    end_time: Mapped[float | None] = mapped_column(Double, nullable=True)
 
 
 class CompiledAccessRule(Base):
@@ -127,7 +127,7 @@ class CompiledAccessRuleSet(Base):
         index=True,
     )
     created_at: Mapped[float] = mapped_column(
-        Float, nullable=False, default=lambda: time.time()
+        Double, nullable=False, default=lambda: time.time()
     )
 
     node: Mapped["Node"] = relationship(

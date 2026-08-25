@@ -9,7 +9,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
-    Float,
+    Double,
     ForeignKey,
     Index,
     Integer,
@@ -127,7 +127,7 @@ class File(Base):
     path: Mapped[str] = mapped_column(Text, nullable=False)
     _size: Mapped[int | None] = mapped_column("size", BigInteger, nullable=True)
     created_time: Mapped[float] = mapped_column(
-        Float, nullable=False, default=lambda: time.time()
+        Double, nullable=False, default=lambda: time.time()
     )
     tasks: Mapped[list["FileTask"]] = relationship(
         "FileTask", back_populates="file", cascade="all, delete-orphan"
@@ -267,8 +267,8 @@ class FileTask(Base):
     mode: Mapped[int] = mapped_column(
         Integer, nullable=False, comment="0: download, 1: upload"
     )
-    start_time: Mapped[float] = mapped_column(Float, nullable=False)
-    end_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    start_time: Mapped[float] = mapped_column(Double, nullable=False)
+    end_time: Mapped[float | None] = mapped_column(Double, nullable=True)
 
     issued_by_username: Mapped[str | None] = mapped_column(
         VARCHAR(256),
@@ -332,11 +332,11 @@ class FileDeduplicationTask(Base):
     phase: Mapped[FileDeduplicationPhase] = mapped_column(
         Integer, nullable=False, default=FileDeduplicationPhase.MERGE
     )
-    available_at: Mapped[float] = mapped_column(Float, nullable=False)
+    available_at: Mapped[float] = mapped_column(Double, nullable=False)
     lease_owner: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
-    lease_expires_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lease_expires_at: Mapped[float | None] = mapped_column(Double, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_time: Mapped[float] = mapped_column(
-        Float, nullable=False, default=lambda: time.time()
+        Double, nullable=False, default=lambda: time.time()
     )

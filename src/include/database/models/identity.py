@@ -13,7 +13,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from sqlalchemy import (
     VARCHAR,
     Boolean,
-    Float,
+    Double,
     ForeignKey,
     Index,
     Integer,
@@ -103,7 +103,7 @@ class User(Base):
     )
     pass_hash: Mapped[str] = mapped_column(Text)
     passwd_last_modified: Mapped[float] = mapped_column(
-        Float, default=0, nullable=False
+        Double, default=0, nullable=False
     )
     nickname: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
@@ -112,8 +112,8 @@ class User(Base):
     )
     avatar: Mapped["File | None"] = relationship("File")
 
-    last_login: Mapped[float | None] = mapped_column(Float)
-    created_time: Mapped[float | None] = mapped_column(Float, nullable=False)
+    last_login: Mapped[float | None] = mapped_column(Double)
+    created_time: Mapped[float | None] = mapped_column(Double, nullable=False)
 
     status: Mapped[int] = mapped_column(
         Integer, default=UserStatus.ACTIVE.value, nullable=False
@@ -506,10 +506,10 @@ class UserPermission(Base):
         Boolean, default=True
     )  # True grants the permission; False revokes it.
     start_time: Mapped[float | None] = mapped_column(
-        Float, nullable=False
+        Double, nullable=False
     )  # Permission start timestamp.
     end_time: Mapped[float | None] = mapped_column(
-        Float, nullable=True
+        Double, nullable=True
     )  # Permission end timestamp.
     user: Mapped[User] = relationship("User", back_populates="rights")
 
@@ -531,9 +531,9 @@ class UserMembership(Base):
     group_name: Mapped[str] = mapped_column(
         ForeignKey("user_groups.group_name", ondelete="CASCADE")
     )
-    start_time: Mapped[float] = mapped_column(Float, nullable=False)  # Join timestamp.
+    start_time: Mapped[float] = mapped_column(Double, nullable=False)  # Join timestamp.
     end_time: Mapped[float | None] = mapped_column(
-        Float, nullable=True
+        Double, nullable=True
     )  # Leave timestamp.
     user: Mapped[User] = relationship("User", back_populates="groups")
     group: Mapped[UserGroup] = relationship("UserGroup", back_populates="memberships")
@@ -628,10 +628,10 @@ class UserGroupPermission(Base):
         Boolean, default=True
     )  # True grants the permission; False revokes it.
     start_time: Mapped[float | None] = mapped_column(
-        Float, nullable=False, default=0.0
+        Double, nullable=False, default=0.0
     )  # Permission start timestamp.
     end_time: Mapped[float | None] = mapped_column(
-        Float, nullable=True
+        Double, nullable=True
     )  # Permission end timestamp.
     group: Mapped[UserGroup] = relationship("UserGroup", back_populates="permissions")
 

@@ -30,7 +30,7 @@ def test_upgrade_to_head_succeeds(
     try:
         database_models.User.metadata.create_all(engine)
         command.stamp(config, "head")
-        command.downgrade(config, "-2")
+        command.downgrade(config, "76f1c7621e23")
         with engine.connect() as connection:
             assert (
                 MigrationContext.configure(connection).get_current_heads()
