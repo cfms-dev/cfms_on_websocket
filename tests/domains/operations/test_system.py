@@ -120,7 +120,7 @@ class TestSystemManagement:
         assert diagnostics["extensions"][0] == {
             "identifier": "builtin",
             "name": "CFMS Built-in Extension",
-            "version": "0.6.0",
+            "version": CORE_VERSION.original,
         }
         assert isinstance(diagnostics["extension_flags"], list)
         assert diagnostics["lockdown"] == {"enabled": False, "reason": None}

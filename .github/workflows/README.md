@@ -10,9 +10,11 @@ This workflow runs the pytest test suite automatically when:
 ### What it does:
 1. Sets up a Python 3.14 environment
 2. Installs project dependencies and test requirements
-3. Creates necessary directories for the server
-4. Runs the full test suite with pytest
-5. Uploads test results and logs as artifacts (retained for 7 days)
+3. Requires a Towncrier fragment on pull requests unless the pull request has
+   the `skip-changelog` label
+4. Creates necessary directories for the server
+5. Runs the full test suite with pytest
+6. Uploads test results and logs as artifacts (retained for 7 days)
 
 ### Configuration:
 - **Timeout**: 10 minutes per test run
@@ -29,7 +31,10 @@ This workflow runs the pytest test suite automatically when:
 This workflow runs when a stable `vX.Y.Z` tag is pushed. The tag must match
 `project.version` in `pyproject.toml`. It calls `test.yml`, then builds and
 smoke-tests reproducible source deployment archives before creating or updating
-the matching GitHub Release.
+the matching GitHub Release. The tag, core version, package metadata, built-in
+extension manifest, lock file, and CHANGELOG release are validated as a single
+version. GitHub Release notes are extracted from that Towncrier-generated
+CHANGELOG section.
 
 Release assets:
 

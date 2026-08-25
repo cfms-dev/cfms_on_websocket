@@ -48,6 +48,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-timeout>=2.4.0",
     "pre-commit>=4.5.1",
+    "towncrier>=25.8.0",
 ]
 
 [build-system]
@@ -88,3 +89,31 @@ extend-select = ["I", "UP"] # , "D"
 
 [tool.ruff.lint.isort]
 known-first-party = ["include", "maintenance"]
+
+[tool.towncrier]
+directory = "changelog.d"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [v{version}](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v{version}) - {project_date}"
+issue_format = "[#{issue}](https://github.com/cfms-dev/cfms_on_websocket/issues/{issue})"
+underlines = ["", "", ""]
+ignore = []
+wrap = true
+
+[[tool.towncrier.type]]
+name = "Security"
+
+[[tool.towncrier.type]]
+name = "Removed"
+
+[[tool.towncrier.type]]
+name = "Deprecated"
+
+[[tool.towncrier.type]]
+name = "Added"
+
+[[tool.towncrier.type]]
+name = "Changed"
+
+[[tool.towncrier.type]]
+name = "Fixed"

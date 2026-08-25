@@ -4,13 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
+Changes for the next release are collected as
+[Towncrier fragments](https://towncrier.readthedocs.io/) in `changelog.d`.
 
-<!-- insertion marker -->
 ## Unreleased
 
 <small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.6.0...HEAD)</small>
 
-<!-- insertion marker -->
+<!-- towncrier release notes start -->
 
 ## [v0.6.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.6.0) - 2026-08-25
 

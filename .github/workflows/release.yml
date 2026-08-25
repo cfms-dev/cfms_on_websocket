@@ -62,6 +62,11 @@ jobs:
           echo "VERSION=${version}" >> "${GITHUB_ENV}"
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${GITHUB_SHA}")" >> "${GITHUB_ENV}"
 
+      - name: Validate synchronized release metadata
+        run: >-
+          python tools/manage_release.py check "${VERSION}"
+          --notes-output "${RUNNER_TEMP}/release-notes.md"
+
       - name: Build release archives
         run: >-
           python tools/build_release.py
@@ -111,9 +116,12 @@ jobs:
 
           if gh release view "${tag}" >/dev/null 2>&1; then
             gh release upload "${tag}" "${assets[@]}" --clobber
+            gh release edit "${tag}" \
+              --notes-file "${RUNNER_TEMP}/release-notes.md" \
+              --title "${tag}"
           else
             gh release create "${tag}" "${assets[@]}" \
               --verify-tag \
-              --generate-notes \
+              --notes-file "${RUNNER_TEMP}/release-notes.md" \
               --title "${tag}"
           fi
