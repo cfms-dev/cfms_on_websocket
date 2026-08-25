@@ -1,6 +1,6 @@
 from typing import Any, Self
 
-from sqlalchemy import URL, create_engine, event
+from sqlalchemy import event
 from sqlalchemy.orm import (
     DeclarativeBase,
     ORMExecuteState,
@@ -11,63 +11,13 @@ from sqlalchemy.orm import (
     Session as _Session,
 )
 
-from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
 from include.config.settings import global_config
+from include.database.engine import create_database_engine
 
 __all__ = ["Base", "Session", "engine"]
 
-SUPPORTED_DB_TYPES = {
-    "mysql": "mysql+mysqlconnector",
-    "postgresql": "postgresql+psycopg2",
-    "sqlite": "sqlite",
-}
-
-
 debug_enabled = global_config["debug"]
-
-db_type = global_config["database"]["type"]
-drivername = SUPPORTED_DB_TYPES.get(db_type)
-if not drivername:
-    raise ValueError(f"Unsupported database type: {db_type}")
-
-if db_type == "sqlite":
-    db_file = global_config["database"]["file"]
-    engine = create_engine(
-        f"sqlite:///{db_file}",
-        connect_args={"timeout": 30},
-        echo=debug_enabled,
-    )
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.close()
-else:
-    username = global_config["database"]["username"]
-    password = global_config["database"]["password"]
-    host = global_config["database"]["host"]
-    port = global_config["database"]["port"]
-    db_name = global_config["database"]["name"]
-    charset = global_config["database"]["charset"]
-
-    url = URL.create(
-        drivername=drivername,
-        username=username,
-        password=password,
-        host=host,
-        port=port,
-        database=db_name,
-        query={"charset": charset},
-    )
-    engine = create_engine(
-        url,
-        pool_recycle=DEFAULT_TOKEN_EXPIRY_SECONDS,
-        echo=debug_enabled,
-    )
+engine = create_database_engine(global_config["database"], echo=debug_enabled)
 
 Session = sessionmaker(bind=engine)
 

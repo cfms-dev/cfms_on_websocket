@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from sqlalchemy.schema import CreateTable
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 
 @pytest.fixture(autouse=True)
@@ -204,3 +204,13 @@ def test_node_namespace_ddl_is_portable(dialect_name: str) -> None:
     assert "ck_nodes_root_parent" in ddl
     assert repr(ROOT_DIRECTORY_ID) in ddl
     assert f"status = {EntityStatus.DELETED.value}" in ddl
+
+    index_ddl = {
+        index.name: str(CreateIndex(index).compile(dialect=dialects[dialect_name]))
+        for index in Node.__table__.indexes
+    }
+    assert "ix_nodes_parent_status_lower_name_id" in index_ddl
+    assert "ix_nodes_status_lower_name_id" in index_ddl
+    if dialect_name == "mysql":
+        assert "(lower(name))" in index_ddl["ix_nodes_parent_status_lower_name_id"]
+        assert "(lower(name))" in index_ddl["ix_nodes_status_lower_name_id"]

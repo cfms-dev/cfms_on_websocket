@@ -26,8 +26,8 @@ from sqlalchemy import (
     Index,
     Integer,
     UniqueConstraint,
+    func,
     select,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 from sqlalchemy.orm.session import object_session
@@ -123,13 +123,13 @@ class Node(Base):
             "ix_nodes_parent_status_lower_name_id",
             "parent_id",
             "status",
-            text("lower(name)"),
+            func.lower(name),
             "id",
         ),
         Index(
             "ix_nodes_status_lower_name_id",
             "status",
-            text("lower(name)"),
+            func.lower(name),
             "id",
         ),
     )
