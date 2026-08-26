@@ -9,9 +9,42 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.6.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.7.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.7.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.7.0) - 2026-08-26
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.6.0...v0.7.0)</small>
+
+### Added
+
+- Add Towncrier-based changelog fragments and a single release-preparation
+  command that keeps the server, package, bundled extension, and release notes
+  in sync.
+- Add an offline maintenance command that migrates and verifies every
+  application database table between SQLite and MySQL 8.4, with an optional
+  backed-up configuration switch.
+- Added manual audit-log preview, filtered JSONL export, and
+  archive-before-purge maintenance commands with configurable retention and
+  bounded deletion batches.
+
+### Changed
+
+- Database migration and CI now support MySQL 9.7 LTS while retaining MySQL 8.4
+  LTS support. Streaming reads are scoped to their statements so they cannot
+  affect subsequent migration DDL.
+
+### Fixed
+
+- Fix abandoned upload cleanup on MySQL when processing distinct tasks in
+  deadline
+  order.
+- Make the active-node name uniqueness schema compatible with MySQL 8.4 while
+  preserving cascading directory deletion and existing SQLite databases.
+- Prevent concurrent document download risk tracking on MySQL from returning an
+  internal server error when two requests record the same IP and account.
+
 
 ## [v0.6.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.6.0) - 2026-08-25
 
