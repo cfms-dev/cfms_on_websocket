@@ -5,7 +5,7 @@
 This workflow runs the pytest test suite automatically when:
 - Code is pushed to any branch
 - A pull request is opened or updated
-- Another workflow calls it as a reusable test gate
+- A release needs tests for a commit without an existing test run
 
 ### What it does:
 1. Sets up a Python 3.14 environment
@@ -33,12 +33,19 @@ This workflow runs the pytest test suite automatically when:
 ## release.yml - Deployment Bundles
 
 This workflow runs when a stable `vX.Y.Z` tag is pushed. The tag must match
-`project.version` in `pyproject.toml`. It calls `test.yml`, then builds and
-smoke-tests reproducible source deployment archives before creating or updating
-the matching GitHub Release. The tag, core version, package metadata, built-in
-extension manifest, lock file, and CHANGELOG release are validated as a single
-version. GitHub Release notes are extracted from that Towncrier-generated
-CHANGELOG section.
+`project.version` in `pyproject.toml`. Before publishing, it looks for a
+successful `test.yml` run for the exact tagged commit. It reuses that result (or
+waits for the run if it is still in progress) instead of running the same test
+suite again. The release briefly waits for a simultaneously pushed branch run
+to be registered. If no run exists, it calls `test.yml` once as a fallback; an
+existing successful run takes precedence, while only failed or cancelled runs
+stop the release instead of being hidden by a retry.
+
+After the test gate passes, the workflow builds and smoke-tests reproducible
+source deployment archives before creating or updating the matching GitHub
+Release. The tag, core version, package metadata, built-in extension manifest,
+lock file, and CHANGELOG release are validated as a single version. GitHub
+Release notes are extracted from that Towncrier-generated CHANGELOG section.
 
 Release assets:
 
