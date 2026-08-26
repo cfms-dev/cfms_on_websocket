@@ -854,13 +854,16 @@ def test_audit_purge_requires_archive_and_timezone(tmp_path):
         ["audit", "purge", "--dry-run", "--before", "not-a-time"],
         check=False,
     )
+    missing_archive_error = _normalize_cli_output(missing_archive.stderr)
+    naive_time_error = _normalize_cli_output(naive_time.stderr)
+    invalid_time_error = _normalize_cli_output(invalid_time.stderr)
 
     assert missing_archive.returncode == 2
-    assert "--archive is required" in missing_archive.stderr
+    assert "--archive is required" in missing_archive_error
     assert naive_time.returncode == 2
-    assert "must include a timezone" in naive_time.stderr
+    assert "must include a timezone" in naive_time_error
     assert invalid_time.returncode == 2
-    assert "must be an ISO 8601 timestamp" in invalid_time.stderr
+    assert "must be an ISO 8601 timestamp" in invalid_time_error
 
 
 def test_audit_purge_partial_failure_keeps_complete_archive(tmp_path):
