@@ -86,7 +86,7 @@ def _find_cleanup_candidates(
     limit: int | None,
 ) -> list[tuple[str, str, FileTaskStatus]]:
     statement = (
-        select(FileTask.id, FileTask.file_id, FileTask.status)
+        select(FileTask.id, FileTask.file_id, FileTask.status, FileTask.end_time)
         .join(File, File.id == FileTask.file_id)
         .join(DocumentRevision, DocumentRevision.file_id == File.id)
         .join(Document, Document.id == DocumentRevision.document_id)
@@ -117,7 +117,7 @@ def _find_cleanup_candidates(
         statement = statement.limit(limit)
     return [
         (task_id, file_id, FileTaskStatus(status))
-        for task_id, file_id, status in session.execute(statement).all()
+        for task_id, file_id, status, _end_time in session.execute(statement).all()
     ]
 
 
