@@ -306,6 +306,20 @@ def test_document_request_models_preserve_transfer_and_restore_constraints(
         )
 
 
+def test_search_query_length_matches_node_name_capacity(monkeypatch, tmp_path) -> None:
+    from pydantic import ValidationError
+
+    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
+    monkeypatch.chdir(tmp_path)
+
+    from include.domains.documents.handlers.search import RequestSearchHandler
+
+    request_model = RequestSearchHandler.request_model
+    assert request_model.model_validate({"query": "x" * 255}).query == "x" * 255
+    with pytest.raises(ValidationError):
+        request_model.model_validate({"query": "x" * 256})
+
+
 def test_handler_contract_requires_a_pydantic_request_model(
     monkeypatch, tmp_path
 ) -> None:

@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -97,6 +97,14 @@ def test_expired_initial_upload_removes_empty_document(
                 context.models.Document,
                 "document",
                 execution_options={"include_deleted": True},
+            )
+            is None
+        )
+        assert (
+            session.scalar(
+                select(context.models.Node.__table__.c.id).where(
+                    context.models.Node.__table__.c.id == "document"
+                )
             )
             is None
         )

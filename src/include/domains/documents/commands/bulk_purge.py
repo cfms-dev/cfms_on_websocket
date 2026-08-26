@@ -1,12 +1,14 @@
 from itertools import batched
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.models.documents import (
     Document,
     DocumentRevision,
+    Node,
+    NodeType,
 )
 from include.database.models.files import (
     File,
@@ -44,10 +46,14 @@ def purge_documents_bulk(session: Session, document_ids: list[str]):
         )
 
     if not revision_data:
-        # If none of these documents have revisions, delete document rows only.
+        # If none of these documents have revisions, delete their node rows.
         for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-            session.query(Document).filter(Document.id.in_(chunk)).delete(
-                synchronize_session=False
+            session.execute(
+                delete(Node).where(
+                    Node.id.in_(chunk),
+                    Node.type == NodeType.DOCUMENT.value,
+                ),
+                execution_options={"synchronize_session": False},
             )
         return
 
@@ -119,6 +125,10 @@ def purge_documents_bulk(session: Session, document_ids: list[str]):
             )
 
     for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
-        session.query(Document).filter(Document.id.in_(chunk)).delete(
-            synchronize_session=False
+        session.execute(
+            delete(Node).where(
+                Node.id.in_(chunk),
+                Node.type == NodeType.DOCUMENT.value,
+            ),
+            execution_options={"synchronize_session": False},
         )

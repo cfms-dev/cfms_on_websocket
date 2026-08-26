@@ -23,10 +23,21 @@ class MFile(_Base):
     path: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class MNode(_Base):
+    __tablename__ = "nodes"
+
+    id: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
+    type: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+
+
 class MDocument(_Base):
     __tablename__ = "documents"
 
-    id: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
+    id: Mapped[str] = mapped_column(
+        VARCHAR(255),
+        ForeignKey("nodes.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     current_revision_id: Mapped[str | None] = mapped_column(
         VARCHAR(64), ForeignKey("document_revisions.id"), nullable=True
     )
@@ -92,6 +103,10 @@ def bulk_purge_module(monkeypatch):
     entity_module.Document = MDocument
     entity_module.DocumentRevision = MDocumentRevision
     entity_module.Folder = MFolder
+    entity_module.Node = MNode
+    entity_module.NodeType = types.SimpleNamespace(
+        DOCUMENT=types.SimpleNamespace(value="document")
+    )
 
     file_module = types.ModuleType("include.database.models.files")
     file_module.File = MFile
@@ -144,6 +159,8 @@ def _seed_document_with_revision(
     session: Session, doc_id: str, rev_id: str, file_id: str
 ) -> None:
     session.add(MFile(id=file_id, path=f"/tmp/{file_id}"))
+    session.add(MNode(id=doc_id, type="document"))
+    session.flush()
     session.add(MDocument(id=doc_id))
     session.flush()
     session.add(MDocumentRevision(id=rev_id, document_id=doc_id, file_id=file_id))
@@ -178,6 +195,7 @@ def test_purge_documents_bulk_deletes_revisions_before_files(
     session.commit()
 
     assert session.query(MDocument).count() == 0
+    assert session.query(MNode).count() == 0
     assert session.query(MDocumentRevision).count() == 0
     assert session.query(MCompiledAccessRuleSet).count() == 0
     assert session.query(MFileTask).count() == 0
@@ -189,6 +207,13 @@ def test_purge_documents_bulk_keeps_shared_files(
     session, bulk_purge_module, monkeypatch
 ):
     session.add(MFile(id="shared", path="/tmp/shared"))
+    session.add_all(
+        [
+            MNode(id="doc1", type="document"),
+            MNode(id="doc2", type="document"),
+        ]
+    )
+    session.flush()
     session.add_all([MDocument(id="doc1"), MDocument(id="doc2")])
     session.flush()
     session.add(MCompiledAccessRuleSet(id="rule-set-doc1", node_id="doc1"))
@@ -217,9 +242,24 @@ def test_purge_documents_bulk_keeps_shared_files(
     session.commit()
 
     assert session.get(MDocument, "doc1") is None
+    assert session.get(MNode, "doc1") is None
     assert session.get(MDocumentRevision, "rev1") is None
     assert session.get(MDocument, "doc2") is not None
+    assert session.get(MNode, "doc2") is not None
     assert session.get(MDocumentRevision, "rev2") is not None
     assert session.query(MCompiledAccessRuleSet).count() == 0
     assert session.get(MFile, "shared") is not None
     assert "queued_files" not in session.info
+
+
+def test_purge_documents_bulk_removes_empty_document_node(session, bulk_purge_module):
+    session.add(MNode(id="empty", type="document"))
+    session.flush()
+    session.add(MDocument(id="empty"))
+    session.commit()
+
+    bulk_purge_module.purge_documents_bulk(session, ["empty"])
+    session.commit()
+
+    assert session.get(MDocument, "empty") is None
+    assert session.get(MNode, "empty") is None
