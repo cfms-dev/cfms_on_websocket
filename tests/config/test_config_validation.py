@@ -7,6 +7,7 @@ from tomlkit import parse
 from include.config.settings import GlobalConfig
 from include.config.validation import (
     AdmissionControlPolicy,
+    AuditRetentionPolicy,
     AuthThrottlePolicy,
     ConfigValidationError,
     DocumentCreationRiskPolicy,
@@ -206,6 +207,44 @@ def test_identity_permission_retention_defaults_and_overrides():
     assert policy.retention_days == 14
     assert policy.cleanup_interval_seconds == 600
     assert policy.batch_size == 100
+
+
+def test_audit_retention_defaults_and_overrides():
+    config = _valid_config()
+    policy = AuditRetentionPolicy.from_config(config)
+
+    assert policy.retention_days == 365
+    assert policy.batch_size == 500
+
+    config["maintenance"] = {
+        "audit_retention": {
+            "retention_days": 730,
+            "batch_size": 100,
+        }
+    }
+    policy = AuditRetentionPolicy.from_config(config)
+
+    assert policy.retention_days == 730
+    assert policy.batch_size == 100
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("retention_days", 0),
+        ("retention_days", "365"),
+        ("batch_size", -1),
+        ("batch_size", True),
+    ],
+)
+def test_audit_retention_rejects_invalid_values(setting, value):
+    config = _valid_config()
+    config["maintenance"] = {"audit_retention": {setting: value}}
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(config)
+
+    assert f"maintenance.audit_retention.{setting}" in str(error.value)
 
 
 @pytest.mark.parametrize(

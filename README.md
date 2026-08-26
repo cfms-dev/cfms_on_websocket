@@ -113,6 +113,13 @@ restart-only, including extension activation, still require a restart. Protect t
 backup files as carefully as `config.toml` because they contain the previous
 credentials and secrets.
 
+## Audit Log Maintenance
+
+Administrators can preview, selectively export, and archive old audit entries
+before deleting them with the `maintain audit` commands. See the
+[audit log maintenance guide](docs/AUDIT_LOG_MAINTENANCE.md) for retention,
+filtering, archive-safety, and recovery details.
+
 ## Run
 ```bash
 python main.py # DO NOT use `-O`!

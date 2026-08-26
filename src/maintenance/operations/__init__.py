@@ -1,3 +1,13 @@
+from maintenance.operations.audit import (
+    AuditExportResult,
+    AuditInspectionResult,
+    AuditPurgeResult,
+    AuditSelection,
+    create_audit_selection,
+    export_audit_entries,
+    inspect_audit_entries,
+    purge_audit_entries,
+)
 from maintenance.operations.backups import (
     BackupExportResult,
     BackupImportResult,
@@ -32,6 +42,10 @@ from maintenance.operations.users import (
 )
 
 __all__ = [
+    "AuditExportResult",
+    "AuditInspectionResult",
+    "AuditPurgeResult",
+    "AuditSelection",
     "BackupExportResult",
     "BackupImportResult",
     "ConfigSyncResult",
@@ -44,12 +58,16 @@ __all__ = [
     "TotpClearResult",
     "build_random_password",
     "clear_totp",
+    "create_audit_selection",
+    "export_audit_entries",
     "export_backup",
     "fill_pepper",
     "import_backup",
+    "inspect_audit_entries",
     "inspect_config_template",
     "inspect_expired_permissions",
     "migrate_database",
+    "purge_audit_entries",
     "purge_expired_permissions",
     "read_backup_info",
     "reset_password",

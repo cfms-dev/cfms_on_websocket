@@ -136,6 +136,12 @@ cleanup_interval_seconds = 3600
 # Maximum entries removed from each permission table per background pass.
 batch_size = 500
 
+[maintenance.audit_retention]
+# Default age threshold used by manual audit maintenance commands.
+retention_days = 365
+# Maximum archived audit entries deleted in each transaction.
+batch_size = 500
+
 [access]
 # Enable recursive access checks.
 # When enabled, access rules will be checked for the requested object itself, 

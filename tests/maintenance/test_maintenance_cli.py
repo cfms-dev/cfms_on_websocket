@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import re
 import subprocess
@@ -233,6 +234,105 @@ with Session() as session:
     return json.loads(result.stdout)
 
 
+def _seed_audit_entries(src_dir: Path, *, batch_size: int = 2) -> None:
+    config_path = src_dir / "config.toml"
+    config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    config["maintenance"] = {
+        "audit_retention": {
+            "retention_days": 365,
+            "batch_size": batch_size,
+        }
+    }
+    config_path.write_text(tomlkit.dumps(config), encoding="utf-8")
+    _run_python(
+        src_dir,
+        """
+from maintenance.runtime import load_database_models
+
+load_database_models()
+
+from include.database.models.identity import User
+from include.database.models.operations import AuditEntry
+from include.database.session import Base, Session, engine
+
+Base.metadata.create_all(engine)
+with Session.begin() as session:
+    session.add(User(username="alice", pass_hash="hash", created_time=1.0))
+    session.add_all(
+        [
+            AuditEntry(
+                id="old-login",
+                action="login",
+                username="alice",
+                target="alice",
+                data={"detail": {"message": "重要记录"}},
+                result=401,
+                remote_address="203.0.113.10",
+                logged_time=100.0,
+            ),
+            AuditEntry(
+                id="old-update",
+                action="update_document",
+                username=None,
+                target="document-1",
+                data=None,
+                result=0,
+                remote_address=None,
+                logged_time=150.0,
+            ),
+            AuditEntry(
+                id="cutoff",
+                action="login",
+                username="alice",
+                target="alice",
+                data={},
+                result=401,
+                remote_address="203.0.113.10",
+                logged_time=200.0,
+            ),
+            AuditEntry(
+                id="new-entry",
+                action="login",
+                username="alice",
+                target="alice",
+                data={},
+                result=0,
+                remote_address="203.0.113.10",
+                logged_time=300.0,
+            ),
+        ]
+    )
+""",
+    )
+
+
+def _read_audit_ids(src_dir: Path) -> list[str]:
+    result = _run_python(
+        src_dir,
+        """
+import json
+
+from maintenance.runtime import load_database_models
+
+load_database_models()
+
+from include.database.models.operations import AuditEntry
+from include.database.session import Session
+
+with Session() as session:
+    print(json.dumps([entry.id for entry in session.query(AuditEntry).order_by(AuditEntry.logged_time, AuditEntry.id)]))
+""",
+    )
+    return json.loads(result.stdout)
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+_AUDIT_CUTOFF = dt.datetime.fromtimestamp(200, dt.UTC).isoformat()
+
+
 def test_run_prints_error_after_status_exits(monkeypatch):
     from maintenance import cli
     from maintenance.operations.exceptions import MaintenanceOperationError
@@ -300,6 +400,10 @@ def test_incomplete_commands_show_contextual_hints(tmp_path):
         (
             ["config"],
             ["Maintain configuration.", "fill-pepper", "sync-template"],
+        ),
+        (
+            ["audit"],
+            ["Maintain audit log entries.", "export", "purge"],
         ),
         (
             ["permission"],
@@ -567,6 +671,284 @@ def test_permission_purge_dry_run_confirmation_and_idempotency(tmp_path):
     )
 
     assert "No expired permission entries are eligible" in repeated.stdout
+
+
+def test_audit_export_filters_orders_and_refuses_overwrite(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_audit_entries(src_dir)
+    output_path = src_dir / "important.jsonl"
+
+    result = _run_maintain(
+        src_dir,
+        [
+            "audit",
+            "export",
+            str(output_path),
+            "--before",
+            _AUDIT_CUTOFF,
+            "--action",
+            "update_document",
+            "--action",
+            "login",
+            "--result",
+            "401",
+            "--username",
+            "alice",
+            "--target",
+            "alice",
+            "--remote-address",
+            "203.0.113.10",
+        ],
+    )
+    rows = _read_jsonl(output_path)
+
+    assert "Records" in result.stdout
+    assert [row["id"] for row in rows] == ["old-login"]
+    assert rows[0] == {
+        "action": "login",
+        "data": {"detail": {"message": "重要记录"}},
+        "id": "old-login",
+        "logged_time": 100.0,
+        "remote_address": "203.0.113.10",
+        "result": 401,
+        "target": "alice",
+        "username": "alice",
+    }
+
+    repeated = _run_maintain(
+        src_dir,
+        ["audit", "export", str(output_path), "--before", _AUDIT_CUTOFF],
+        check=False,
+    )
+
+    assert repeated.returncode == 1
+    assert "already exists" in repeated.stdout + repeated.stderr
+    assert _read_jsonl(output_path) == rows
+
+
+def test_audit_purge_dry_run_abort_archive_and_idempotency(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_audit_entries(src_dir, batch_size=1)
+    archive_path = src_dir / "expired.jsonl"
+
+    dry_run = _run_maintain(
+        src_dir,
+        ["audit", "purge", "--dry-run", "--before", _AUDIT_CUTOFF],
+    )
+    dry_run_output = _normalize_cli_output(dry_run.stdout)
+
+    assert "Total 2" in dry_run_output
+    assert "login 1" in dry_run_output
+    assert "update_document 1" in dry_run_output
+    assert "401 1" in dry_run_output
+    assert not archive_path.exists()
+    assert _read_audit_ids(src_dir) == [
+        "old-login",
+        "old-update",
+        "cutoff",
+        "new-entry",
+    ]
+
+    aborted = _run_maintain(
+        src_dir,
+        [
+            "audit",
+            "purge",
+            "--archive",
+            str(archive_path),
+            "--before",
+            _AUDIT_CUTOFF,
+        ],
+        check=False,
+        input_text="n\n",
+    )
+
+    assert aborted.returncode == 1
+    assert "Aborted." in aborted.stderr
+    assert not archive_path.exists()
+
+    archive_path.write_text("existing archive", encoding="utf-8")
+    blocked = _run_maintain(
+        src_dir,
+        [
+            "audit",
+            "purge",
+            "--archive",
+            str(archive_path),
+            "--before",
+            _AUDIT_CUTOFF,
+            "--yes",
+        ],
+        check=False,
+    )
+
+    assert blocked.returncode == 1
+    assert "already exists" in blocked.stdout + blocked.stderr
+    assert archive_path.read_text(encoding="utf-8") == "existing archive"
+    assert _read_audit_ids(src_dir) == [
+        "old-login",
+        "old-update",
+        "cutoff",
+        "new-entry",
+    ]
+    archive_path.unlink()
+
+    purged = _run_maintain(
+        src_dir,
+        [
+            "audit",
+            "purge",
+            "--archive",
+            str(archive_path),
+            "--before",
+            _AUDIT_CUTOFF,
+            "--yes",
+        ],
+    )
+
+    archived_rows = _read_jsonl(archive_path)
+    assert [row["id"] for row in archived_rows] == [
+        "old-login",
+        "old-update",
+    ]
+    assert archived_rows[1]["username"] is None
+    assert archived_rows[1]["data"] is None
+    assert archived_rows[1]["remote_address"] is None
+    assert "Archived" in purged.stdout
+    assert "Deleted" in purged.stdout
+    assert _read_audit_ids(src_dir) == ["cutoff", "new-entry"]
+
+    repeated_archive = src_dir / "repeated.jsonl"
+    repeated = _run_maintain(
+        src_dir,
+        [
+            "audit",
+            "purge",
+            "--archive",
+            str(repeated_archive),
+            "--before",
+            _AUDIT_CUTOFF,
+            "--yes",
+        ],
+    )
+
+    assert "No audit entries are eligible" in repeated.stdout
+    assert not repeated_archive.exists()
+
+
+def test_audit_purge_requires_archive_and_timezone(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+
+    missing_archive = _run_maintain(
+        src_dir,
+        ["audit", "purge", "--before", _AUDIT_CUTOFF, "--yes"],
+        check=False,
+    )
+    naive_time = _run_maintain(
+        src_dir,
+        ["audit", "purge", "--dry-run", "--before", "2026-01-01T00:00:00"],
+        check=False,
+    )
+    invalid_time = _run_maintain(
+        src_dir,
+        ["audit", "purge", "--dry-run", "--before", "not-a-time"],
+        check=False,
+    )
+
+    assert missing_archive.returncode == 2
+    assert "--archive is required" in missing_archive.stderr
+    assert naive_time.returncode == 2
+    assert "must include a timezone" in naive_time.stderr
+    assert invalid_time.returncode == 2
+    assert "must be an ISO 8601 timestamp" in invalid_time.stderr
+
+
+def test_audit_purge_partial_failure_keeps_complete_archive(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_audit_entries(src_dir, batch_size=1)
+    archive_path = src_dir / "partial.jsonl"
+    _run_python(
+        src_dir,
+        '''
+from maintenance.runtime import load_database_models
+
+load_database_models()
+
+from include.database.session import engine
+
+with engine.begin() as connection:
+    connection.exec_driver_sql(
+        """CREATE TRIGGER reject_old_update
+        BEFORE DELETE ON audit_entries
+        WHEN OLD.id = 'old-update'
+        BEGIN
+            SELECT RAISE(ABORT, 'simulated audit deletion failure');
+        END"""
+    )
+''',
+    )
+
+    result = _run_maintain(
+        src_dir,
+        [
+            "audit",
+            "purge",
+            "--archive",
+            str(archive_path),
+            "--before",
+            _AUDIT_CUTOFF,
+            "--yes",
+        ],
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "after deleting 1 of 2 archived entries" in result.stdout + result.stderr
+    assert [row["id"] for row in _read_jsonl(archive_path)] == [
+        "old-login",
+        "old-update",
+    ]
+    assert _read_audit_ids(src_dir) == ["old-update", "cutoff", "new-entry"]
+
+
+def test_audit_purge_rejects_changed_candidate_count_before_deletion(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_audit_entries(src_dir)
+    archive_path = src_dir / "changed.jsonl"
+    result = _run_python(
+        src_dir,
+        f"""
+import datetime as dt
+
+from maintenance.operations import (
+    MaintenanceOperationError,
+    create_audit_selection,
+    purge_audit_entries,
+)
+
+selection = create_audit_selection(
+    before=dt.datetime.fromisoformat({_AUDIT_CUTOFF!r})
+)
+try:
+    purge_audit_entries({str(archive_path)!r}, selection, expected_count=1)
+except MaintenanceOperationError as exc:
+    print(exc)
+else:
+    raise AssertionError("candidate-count change was not rejected")
+""",
+    )
+
+    assert "Expected 1, archived 2" in result.stdout
+    assert [row["id"] for row in _read_jsonl(archive_path)] == [
+        "old-login",
+        "old-update",
+    ]
+    assert _read_audit_ids(src_dir) == [
+        "old-login",
+        "old-update",
+        "cutoff",
+        "new-entry",
+    ]
 
 
 def test_backup_import_abort_uses_typer_abort_before_operation(tmp_path):

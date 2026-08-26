@@ -27,6 +27,7 @@ from include.types import PositiveInt, UnitRatio
 
 __all__ = [
     "AdmissionControlPolicy",
+    "AuditRetentionPolicy",
     "AuthThrottlePolicy",
     "ConfigValidationError",
     "DocumentCreationRiskPolicy",
@@ -190,6 +191,19 @@ class AdmissionControlPolicy(_ConfigPolicy):
     max_inflight_requests_per_connection: PositiveInt = 8
     max_pending_streams_per_connection: PositiveInt = 16
     busy_retry_after_seconds: PositiveInt = 1
+
+
+@dataclass(frozen=True)
+class AuditRetentionPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (
+            _Section("maintenance"),
+            _Section("audit_retention"),
+        )
+    )
+
+    retention_days: PositiveInt = 365
+    batch_size: PositiveInt = 500
 
 
 @dataclass(frozen=True)
@@ -479,6 +493,7 @@ def validate_config(config: _ConfigSource) -> None:
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
     AdmissionControlPolicy.from_config(config)
+    AuditRetentionPolicy.from_config(config)
     IdentityPermissionRetentionPolicy.from_config(config)
     RequestRateControlPolicy.from_config(config)
     DocumentUploadPolicy.from_config(config)
