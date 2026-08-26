@@ -3,8 +3,9 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from typing import Any, cast
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -109,10 +110,20 @@ def record_ip_account(
             )
             session.flush()
     except IntegrityError:
-        row = session.get(RiskIPAccount, identity)
-        if row is None:
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                update(RiskIPAccount)
+                .where(
+                    RiskIPAccount.namespace == namespace,
+                    RiskIPAccount.ip_address == ip_address,
+                    RiskIPAccount.username == username,
+                )
+                .values(last_attempt=now)
+            ),
+        )
+        if result.rowcount == 0:
             raise
-        row.last_attempt = now
 
 
 def count_ip_accounts(

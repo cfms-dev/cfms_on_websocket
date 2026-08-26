@@ -111,5 +111,6 @@ jobs:
         CFMS_TEST_MYSQL_URL: "mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_migration?charset=utf8mb4"
       run: |
         uv run --locked pytest tests/domains/documents/test_upload_cleanup_mysql.py -q
+        uv run --locked pytest tests/domains/documents/test_rate_limits_mysql.py -q
         uv run --locked pytest tests/maintenance/test_database_migration_mysql.py -q
       timeout-minutes: 10
