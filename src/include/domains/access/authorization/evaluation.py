@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import object_session
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
+from include.config.settings import global_config
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
@@ -18,6 +19,7 @@ from include.domains.access.authorization.compiled_rules import (
 )
 from include.domains.access.authorization.grants import prefetch_user_blocks
 from include.domains.access.authorization.searchable_tree import (
+    load_document_access_context,
     load_user_folder_access_context,
 )
 
@@ -26,6 +28,60 @@ class SingleNodeCheckResult(IntEnum):
     ALLOWED_OAE = 2
     ALLOWED = 1
     DENIED = 0
+
+
+def check_access_requirements(
+    session: Session,
+    target: Document | Folder,
+    user: User,
+    access_type: str = "read",
+    *,
+    recursive: bool | None = None,
+) -> bool:
+    if recursive is None:
+        recursive = global_config["access"]["enable_access_recursive_check"]
+
+    now = time.time()
+    if isinstance(target, Document):
+        folders, oae_by_target = load_document_access_context(
+            session, [target], now=now
+        )
+        target_type: TargetType = "document"
+    else:
+        ancestors, oae_by_target = load_user_folder_access_context(
+            session,
+            [target],
+            user,
+            access_type,
+            now=now,
+        )
+        folders = [target, *ancestors]
+        target_type = "directory"
+
+    folder_map = {folder.id: folder for folder in folders}
+    compiled_rules_by_target = fetch_compiled_access_rules_for_targets(
+        session,
+        [
+            (target_type, target.id),
+            *(("directory", folder.id) for folder in folders),
+        ],
+        access_type=access_type,
+    )
+    is_globally_blocked, blocked_ids = prefetch_user_blocks(
+        session, user, access_type, now
+    )
+    return check_access_for_object(
+        target,
+        user,
+        access_type,
+        all_folders=folders,
+        oae_by_target=oae_by_target,
+        recursive=recursive,
+        compiled_rules_by_target=compiled_rules_by_target,
+        folder_map=folder_map,
+        is_globally_blocked=is_globally_blocked,
+        blocked_ids=blocked_ids,
+    )
 
 
 @dataclass(slots=True)

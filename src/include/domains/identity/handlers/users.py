@@ -38,6 +38,7 @@ from include.database.models.identity import (
     UserStatus,
 )
 from include.database.session import Session
+from include.domains.access.authorization.evaluation import check_access_requirements
 from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import create_file_task
 from include.domains.identity.commands.users import create_user
@@ -871,7 +872,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
                 handler.conclude_request(404, {}, "Document does not exist")
                 return
 
-            if not document.check_access_requirements(user_to_update, "read"):
+            if not check_access_requirements(session, document, user_to_update, "read"):
                 handler.conclude_request(
                     403, {}, "User does not have access to the specified document"
                 )

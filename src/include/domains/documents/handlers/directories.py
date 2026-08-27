@@ -22,6 +22,7 @@ from include.domains.access.authorization.compiled_rules import (
 )
 from include.domains.access.authorization.evaluation import (
     FolderAccessEvaluationContext,
+    check_access_requirements,
     load_folder_access_evaluation_context,
 )
 from include.domains.access.permissions import Permissions
@@ -363,7 +364,9 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
                 return Result(code=404, target=directory_id, username=handler.username)
 
             if (
-                not directory.check_access_requirements(user, access_type="read")
+                not check_access_requirements(
+                    session, directory, user, access_type="read"
+                )
                 or Permissions.VIEW_ACCESS_RULES not in user.all_permissions
             ):
                 handler.conclude_access_denial()
@@ -429,7 +432,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
             if not parent:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=parent_id, username=handler.username)
-            if not parent.check_access_requirements(this_user, "write"):
+            if not check_access_requirements(session, parent, this_user, "write"):
                 if (
                     parent_id == ROOT_DIRECTORY_ID
                     and Permissions.SUPER_CREATE_DIRECTORY in this_user.all_permissions
@@ -530,7 +533,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
                 return Result(code=404, target=folder_id, username=handler.username)
             if (
                 Permissions.DELETE_DIRECTORY not in this_user.all_permissions
-                or not folder.check_access_requirements(this_user, "write")
+                or not check_access_requirements(session, folder, this_user, "write")
             ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, username=handler.username)
@@ -635,7 +638,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
             if (
                 Permissions.RENAME_DIRECTORY not in this_user.all_permissions
-                or not folder.check_access_requirements(this_user, "write")
+                or not check_access_requirements(session, folder, this_user, "write")
             ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, username=handler.username)
@@ -704,7 +707,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
                 )
                 return Result(code=404, target=folder_id, username=handler.username)
 
-            if not folder.check_access_requirements(user, "move"):
+            if not check_access_requirements(session, folder, user, "move"):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MOVE_DIRECTORY)
                 return Result(code=403, target=folder_id, username=handler.username)
 
@@ -715,7 +718,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
                 )
                 return Result(code=404, target=folder_id, username=handler.username)
 
-            if not target_folder.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, target_folder, user, "write"):
                 if (
                     target_folder_id == ROOT_DIRECTORY_ID
                     and Permissions.SUPER_CREATE_DIRECTORY in user.all_permissions
@@ -786,7 +789,9 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_SET_ACCESS_RULES)
                 return Result(code=403, target=directory_id, username=handler.username)
 
-            if not directory.check_access_requirements(user, access_type="manage"):
+            if not check_access_requirements(
+                session, directory, user, access_type="manage"
+            ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=directory_id, username=handler.username)
 
@@ -850,7 +855,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
                 )
                 return Result(code=400, target=folder_id, username=handler.username)
 
-            if not folder.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, folder, user, "write"):
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, username=handler.username)
 
@@ -941,7 +946,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DELETED_DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, username=handler.username)
 
-            if not folder.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, folder, user, "write"):
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, username=handler.username)
 
@@ -962,7 +967,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
                 handler.conclude_request(409, {}, smsg.TARGET_DIRECTORY_NOT_ACTIVE)
                 return Result(code=409, target=db_parent_id, username=handler.username)
 
-            if not target_parent.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, target_parent, user, "write"):
                 handler.conclude_access_denial()
                 return Result(code=403, target=db_parent_id, username=handler.username)
 
@@ -1045,7 +1050,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
 
             if (
                 Permissions.SUPER_LIST_DIRECTORY not in user.all_permissions
-                and not parent_folder.check_access_requirements(user, "read")
+                and not check_access_requirements(session, parent_folder, user, "read")
             ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, username=handler.username)

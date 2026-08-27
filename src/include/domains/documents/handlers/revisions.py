@@ -3,6 +3,7 @@ from sqlalchemy import and_, or_
 from include.database.models.documents import Document, DocumentRevision
 from include.database.models.identity import User
 from include.database.session import Session
+from include.domains.access.authorization.evaluation import check_access_requirements
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import cancel_file_tasks_for_files
 from include.domains.documents.download_limits import check_download_issue_limits
@@ -72,7 +73,7 @@ class RequestListRevisionsHandler(RequestHandler):
 
             if (
                 Permissions.LIST_REVISIONS not in user.all_permissions
-                or not document.check_access_requirements(user, "read")
+                or not check_access_requirements(session, document, user, "read")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, username=handler.username)
@@ -156,7 +157,9 @@ class RequestGetRevisionHandler(RequestHandler):
                 message = "Revision not found"
             elif (
                 Permissions.VIEW_REVISION not in user.all_permissions
-                or not revision.document.check_access_requirements(user, "read")
+                or not check_access_requirements(
+                    session, revision.document, user, "read"
+                )
             ):
                 response_code = result_code = 403
                 data = {}
@@ -224,7 +227,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
 
             if (
                 Permissions.SET_CURRENT_REVISION not in user.all_permissions
-                or not document.check_access_requirements(user, "write")
+                or not check_access_requirements(session, document, user, "write")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, username=handler.username)
@@ -267,7 +270,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
 
             if (
                 Permissions.DELETE_REVISION not in user.all_permissions
-                or document.check_access_requirements(user, "write") is False
+                or check_access_requirements(session, document, user, "write") is False
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, username=handler.username)

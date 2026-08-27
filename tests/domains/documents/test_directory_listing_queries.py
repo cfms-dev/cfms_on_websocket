@@ -241,9 +241,9 @@ def test_document_info_reads_revision_and_file_consistently_during_deduplication
         classmethod(lambda _cls, _session, _username: user),
     )
     monkeypatch.setattr(
-        directory_models.Document,
+        directory_models.document_handlers,
         "check_access_requirements",
-        lambda _document, _user, access_type="read": access_type == "read",
+        lambda _session, _document, _user, access_type="read": access_type == "read",
     )
 
     handler = SimpleNamespace(

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from include.config.constants import ROOT_DIRECTORY_ID
 from include.database.models.documents import Document, EntityStatus, Folder, Node
 from include.database.models.identity import User
+from include.domains.access.authorization.evaluation import check_access_requirements
 from include.messages import Messages as smsg
 
 NODE_NAME_UNIQUE_CONSTRAINT = "uq_nodes_active_parent_name"
@@ -74,7 +75,7 @@ def get_target_folder_and_check_write(
     if not target_folder:
         return None, 404, smsg.TARGET_DIRECTORY_NOT_FOUND
 
-    if not target_folder.check_access_requirements(user, "write"):
+    if not check_access_requirements(session, target_folder, user, "write"):
         if (
             target_folder_id == ROOT_DIRECTORY_ID
             and super_permission in user.all_permissions
@@ -103,7 +104,7 @@ def describe_node_name_conflict(
             f"Node name conflict winner disappeared under {parent_id!r}: {name!r}"
         )
 
-    return _describe_node_name_conflict_winner(winner, user)
+    return _describe_node_name_conflict_winner(session, winner, user)
 
 
 def describe_subtree_restore_name_conflict(
@@ -142,14 +143,16 @@ def describe_subtree_restore_name_conflict(
                 execution_options={"include_deleted": True},
             )
             if winning_node is not None:
-                return _describe_node_name_conflict_winner(winning_node, user)
+                return _describe_node_name_conflict_winner(session, winning_node, user)
 
     return describe_node_name_conflict(session, user, parent_id, name)
 
 
-def _describe_node_name_conflict_winner(winner: Node, user: User) -> tuple[dict, str]:
+def _describe_node_name_conflict_winner(
+    session: Session, winner: Node, user: User
+) -> tuple[dict, str]:
 
-    readable = winner.check_access_requirements(user, "read")
+    readable = check_access_requirements(session, winner, user, "read")
     visible_id = winner.id if readable else None
     if isinstance(winner, Document):
         payload = {"type": "document", "id": visible_id}

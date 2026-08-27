@@ -45,6 +45,7 @@ from include.domains.access.authorization.compiled_rules import (
     get_access_rules_dict,
     get_access_rules_list,
 )
+from include.domains.access.authorization.evaluation import check_access_requirements
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import (
     cancel_file_tasks_for_files,
@@ -272,7 +273,9 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 )
                 return Result(code=404, target=document_id, username=handler.username)
 
-            if not document.check_access_requirements(user, access_type="read"):
+            if not check_access_requirements(
+                session, document, user, access_type="read"
+            ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, username=handler.username)
 
@@ -323,7 +326,9 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
                 return Result(code=404, target=document_id, username=handler.username)
 
             if (
-                not document.check_access_requirements(user, access_type="read")
+                not check_access_requirements(
+                    session, document, user, access_type="read"
+                )
                 or Permissions.VIEW_ACCESS_RULES not in user.all_permissions
             ):
                 handler.conclude_access_denial()
@@ -363,7 +368,7 @@ class RequestGetDocumentHandler(RequestHandler):
                 response_code = result_code = 404
                 data = {}
                 message = smsg.DOCUMENT_NOT_FOUND
-            elif not document.check_access_requirements(user):
+            elif not check_access_requirements(session, document, user):
                 response_code = result_code = 403
                 data = {}
                 message = smsg.ACCESS_DENIED
@@ -592,8 +597,8 @@ class RequestUploadDocumentHandler(RequestHandler):
             this_user = User.get_existing(session, handler.username)
 
             if document:
-                if not document.check_access_requirements(
-                    this_user, access_type="write"
+                if not check_access_requirements(
+                    session, document, this_user, access_type="write"
                 ):
                     handler.conclude_access_denial()
                     return Result(
@@ -732,7 +737,9 @@ class RequestDeleteDocumentHandler(RequestHandler):
 
             if (
                 Permissions.DELETE_DOCUMENT not in user.all_permissions
-                or not document.check_access_requirements(user, access_type="write")
+                or not check_access_requirements(
+                    session, document, user, access_type="write"
+                )
             ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, username=handler.username)
@@ -780,7 +787,7 @@ class RequestRenameDocumentHandler(RequestHandler):
 
             if (
                 Permissions.RENAME_DOCUMENT not in this_user.all_permissions
-                or not document.check_access_requirements(this_user, "write")
+                or not check_access_requirements(session, document, this_user, "write")
             ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, username=handler.username)
@@ -887,7 +894,9 @@ class RequestSetDocumentRulesHandler(RequestHandler):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_SET_ACCESS_RULES)
                 return Result(code=403, target=document_id, username=handler.username)
 
-            if not document.check_access_requirements(user, access_type="manage"):
+            if not check_access_requirements(
+                session, document, user, access_type="manage"
+            ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, username=handler.username)
 
@@ -960,7 +969,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            if not document.check_access_requirements(user, "move"):
+            if not check_access_requirements(session, document, user, "move"):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MOVE_DOCUMENT)
                 return Result(
                     code=403,
@@ -981,7 +990,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     username=handler.username,
                 )
 
-            if not target_folder.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, target_folder, user, "write"):
                 if (
                     target_folder_id == ROOT_DIRECTORY_ID
                     and Permissions.SUPER_CREATE_DOCUMENT in user.all_permissions
@@ -1059,7 +1068,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
                 )
                 return
 
-            if not document.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, document, user, "write"):
                 handler.conclude_access_denial()
                 return
 
@@ -1105,7 +1114,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.DELETED_DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=doc_id, username=handler.username)
 
-            if not document.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, document, user, "write"):
                 handler.conclude_access_denial()
                 return Result(code=403, target=doc_id, username=handler.username)
 
@@ -1123,7 +1132,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 handler.conclude_request(404, {}, smsg.TARGET_DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=db_folder_id, username=handler.username)
 
-            if not target_folder.check_access_requirements(user, "write"):
+            if not check_access_requirements(session, target_folder, user, "write"):
                 handler.conclude_access_denial()
                 return Result(code=403, target=db_folder_id, username=handler.username)
 
@@ -1196,7 +1205,9 @@ class RequestSetDocumentTagsHandler(RequestHandler):
 
             if (
                 Permissions.SET_METADATA_TAGS not in user.all_permissions
-                or not document.check_access_requirements(user, access_type="write")
+                or not check_access_requirements(
+                    session, document, user, access_type="write"
+                )
             ):
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, username=handler.username)

@@ -99,6 +99,7 @@ def test_conflict_description_hides_unreadable_winner_id(monkeypatch, readable) 
     import include.database.models  # noqa: F401
     from include.database.models.documents import Folder
     from include.database.session import Base
+    from include.domains.documents.commands import name_conflicts
     from include.domains.documents.commands.name_conflicts import (
         describe_node_name_conflict,
     )
@@ -107,9 +108,9 @@ def test_conflict_description_hides_unreadable_winner_id(monkeypatch, readable) 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
-        Folder,
+        name_conflicts,
         "check_access_requirements",
-        lambda self, user, access_type: readable,
+        lambda session, target, user, access_type: readable,
     )
     with Session(engine) as session:
         root = Folder(id="/", name="/")
@@ -165,6 +166,7 @@ def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None
     import include.database.models  # noqa: F401
     from include.database.models.documents import EntityStatus, Folder
     from include.database.session import Base
+    from include.domains.documents.commands import name_conflicts
     from include.domains.documents.commands.name_conflicts import (
         describe_subtree_restore_name_conflict,
     )
@@ -172,9 +174,9 @@ def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
-        Folder,
+        name_conflicts,
         "check_access_requirements",
-        lambda self, user, access_type: True,
+        lambda session, target, user, access_type: True,
     )
     with Session(engine) as session:
         root = Folder(id="/", name="/")

@@ -174,6 +174,9 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
         find_compiled_access_rule_mismatches,
         get_access_rules_dict,
     )
+    from include.domains.access.authorization.evaluation import (
+        check_access_requirements,
+    )
 
     now = time.time()
     user = models.User(
@@ -295,8 +298,8 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
             is allowed
         )
         assert (
-            document.check_access_requirements(
-                user, access_type, _no_recursive_check=True
+            check_access_requirements(
+                session, document, user, access_type, recursive=False
             )
             is allowed
         )
@@ -844,6 +847,9 @@ def test_compiled_access_rule_edge_cases_match_legacy_json_evaluator(
         find_compiled_access_rule_mismatches,
         get_access_rules_dict,
     )
+    from include.domains.access.authorization.evaluation import (
+        check_access_requirements,
+    )
 
     user = _make_rule_user(
         models,
@@ -890,7 +896,7 @@ def test_compiled_access_rule_edge_cases_match_legacy_json_evaluator(
         is expected
     )
     assert (
-        document.check_access_requirements(user, access_type, _no_recursive_check=True)
+        check_access_requirements(session, document, user, access_type, recursive=False)
         is expected
     )
 

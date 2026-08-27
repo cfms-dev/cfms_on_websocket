@@ -155,6 +155,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
 ):
     models, session = access_rule_session
     from include.domains.access.authorization.evaluation import (
+        check_access_requirements,
         load_folder_access_evaluation_context,
     )
 
@@ -186,7 +187,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
     )
     assert denied_context.allows(child) is False
     assert denied_context.allows(parent) is False
-    assert child.check_access_requirements(user, "read") is False
+    assert check_access_requirements(session, child, user, "read") is False
 
     expired_entry = models.ObjectAccessEntry(
         entity_type="user",
@@ -222,7 +223,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
     )
     assert granted_context.allows(child) is True
     assert granted_context.allows(parent) is False
-    assert child.check_access_requirements(user, "read") is True
+    assert check_access_requirements(session, child, user, "read") is True
 
     block.target_type = "all"
     block.target_id = None
@@ -231,7 +232,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
         session, [child], user, "read"
     )
     assert globally_blocked_context.allows(child) is False
-    assert child.check_access_requirements(user, "read") is False
+    assert check_access_requirements(session, child, user, "read") is False
 
     block.target_type = "directory"
     block.target_id = parent.id
@@ -262,7 +263,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
         session, [child], user, "read"
     )
     assert group_context.allows(child) is True
-    assert child.check_access_requirements(user, "read") is True
+    assert check_access_requirements(session, child, user, "read") is True
 
     child.inherit = False
     session.query(models.ObjectAccessEntry).filter_by(entity_type="group").delete()
@@ -272,12 +273,13 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
     )
     assert non_inheriting_context.allows(child) is True
     assert non_inheriting_context.allows(parent) is False
-    assert child.check_access_requirements(user, "read") is True
+    assert check_access_requirements(session, child, user, "read") is True
 
 
 def test_folder_access_context_reuses_queries_across_depth(access_rule_session):
     models, session = access_rule_session
     from include.domains.access.authorization.evaluation import (
+        check_access_requirements,
         load_folder_access_evaluation_context,
     )
 
@@ -344,9 +346,14 @@ def test_folder_access_context_reuses_queries_across_depth(access_rule_session):
 
         event.listen(session.bind, "before_cursor_execute", collect_direct_statement)
         try:
-            assert folder.check_access_requirements(direct_user, "read") is True
+            assert (
+                check_access_requirements(session, folder, direct_user, "read") is True
+            )
             assert folder.parent is not None
-            assert folder.parent.check_access_requirements(direct_user, "read") is True
+            assert (
+                check_access_requirements(session, folder.parent, direct_user, "read")
+                is True
+            )
         finally:
             event.remove(
                 session.bind, "before_cursor_execute", collect_direct_statement

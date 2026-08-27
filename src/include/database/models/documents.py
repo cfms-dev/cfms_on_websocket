@@ -13,7 +13,7 @@ import secrets
 import time
 from enum import IntEnum, StrEnum
 from itertools import batched
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar
 from warnings import deprecated
 
 from sqlalchemy import (
@@ -37,17 +37,12 @@ from include.config.constants import (
     ROOT_DIRECTORY_ID,
     USERNAME_DATABASE_MAX_LENGTH,
 )
-from include.config.settings import global_config
 from include.database.models.files import (
     File,
     FileTask,
     _queue_deferred_file_deletion,
 )
 from include.database.session import Base
-from include.domains.access.authorization.grants import (
-    batch_prefetch_granted_ids,
-    prefetch_user_blocks,
-)
 from include.domains.documents.queries.file_references import count_file_references
 from include.domains.documents.queries.revisions import batch_count_other_revisions
 from include.exceptions.misc import NoActiveRevisionsError
@@ -171,93 +166,6 @@ class Node(Base):
         "polymorphic_on": type,
         "polymorphic_identity": "node",
     }
-
-    def check_access_requirements(
-        self, user: "User", access_type: str = "read", _no_recursive_check=False
-    ) -> bool:
-        """Checks if a given user meets the access requirements for a specific access type based on defined access rules.
-
-        Args:
-            user (User): The user object whose permissions and groups are to be checked.
-            access_type (int, optional): The type of access to check for. Defaults to `"read"`.
-            _no_recursive_check (bool, optional): Useful when performing batch queries. Defaults to False.
-
-        Returns:
-            bool: True if the user meets all access requirements for the specified access type, False otherwise.
-
-        Raises:
-            ValueError: If the "match" value in any rule is not "all" or "any".
-        Access rules are evaluated as follows:
-            - Each rule may specify required permissions ("rights") and/or groups ("groups").
-            - Each requirement can specify a "match" mode: "all" (all required items must be present) or "any" (at least one must be present).
-            - Rules are grouped and evaluated according to their match modes and requirements.
-            - If no access rules are defined, access is granted by default.
-
-        """
-        _TARGET_TYPE_MAPPING = {
-            "folders": NodeType.DIRECTORY.value,
-            "documents": NodeType.DOCUMENT.value,
-        }
-
-        _session = object_session(user)
-        if not _session:
-            raise RuntimeError("No active session found for user")
-
-        now = time.time()
-
-        is_globally_blocked, blocked_ids = prefetch_user_blocks(
-            _session, user, access_type, now
-        )
-        if is_globally_blocked or self.id in blocked_ids:
-            return False
-
-        self_type = cast(
-            Literal["document", "directory"], _TARGET_TYPE_MAPPING[self.__tablename__]
-        )
-        explicitly_granted_ids = batch_prefetch_granted_ids(
-            _session, user, [self.id], self_type, access_type, now
-        )
-
-        if self.id in explicitly_granted_ids:
-            return True
-
-        if (
-            global_config["access"]["enable_access_recursive_check"]
-            and self.inherit
-            and not _no_recursive_check
-        ):
-            parent = None
-            if isinstance(self, Document):
-                parent = self.folder
-            elif isinstance(self, Folder):
-                parent = self.parent
-
-            visited_folder_ids = set()
-            while parent is not None:
-                if parent.id in visited_folder_ids:
-                    raise RuntimeError("Cycle detected in folder hierarchy")
-                visited_folder_ids.add(parent.id)
-
-                if not parent.check_access_requirements(user, access_type=access_type):
-                    return False
-
-                if not parent.inherit:
-                    break
-
-                parent = parent.parent
-
-        # FIXME: Use lazy import when Python 3.15 comes out
-        from include.domains.access.authorization.compiled_rules import (
-            compiled_rules_allow,
-        )
-
-        return compiled_rules_allow(
-            _session,
-            target_type=self_type,
-            target_id=self.id,
-            user=user,
-            access_type=access_type,
-        )
 
 
 class DocumentRevisionStatus(IntEnum):
