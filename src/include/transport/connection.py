@@ -31,11 +31,17 @@ from include.domains.documents.commands.file_tasks import (
     ClaimedFileTask,
     FileTaskChunkSizeConflict,
     FileTaskClaimFailure,
+    UploadMetadataConflict,
+    apply_upload_file_task_preparation,
     claim_file_task,
+    clear_upload_progress,
     complete_file_task,
     expire_file_task_if_due,
     get_or_set_download_encryption_key,
     get_or_set_file_task_chunk_size,
+    plan_upload_file_task,
+    record_upload_checkpoint,
+    record_upload_storage_session,
     release_file_task,
 )
 from include.domains.documents.download_limits import (
@@ -672,18 +678,6 @@ class ConnectionHandler:
         storage.remove(claimed.file_path)
 
     @staticmethod
-    def _clear_upload_state(task_id: str) -> None:
-        with Session() as session, session.begin():
-            task = session.get(FileTask, task_id)
-            if task is None:
-                return
-            task.upload_file_size = None
-            task.upload_sha256 = None
-            task.upload_session_id = None
-            task.upload_checkpoint_size = None
-            task.upload_checkpoint_data = None
-
-    @staticmethod
     def _storage_sha256(path: str) -> str:
         hasher = hashlib.sha256()
         with ProviderManager().storage.fopen(path, "rb") as stored_file:
@@ -705,42 +699,36 @@ class ConnectionHandler:
         file_path = claimed.file_path
         storage = ProviderManager().storage
         policy = DocumentUploadPolicy.from_config()
-        resumable = sha256 is not None and file_size > 0
-
-        if claimed.chunk_size is not None:
-            chunk_size = claimed.chunk_size
-            if chunk_size > max_chunk_size:
-                self.conclude_request(
-                    409,
-                    {"chunk_size": chunk_size},
-                    "Resume chunk size exceeds the client maximum",
-                )
-                with Session() as session, session.begin():
-                    release_file_task(session, task_id)
-                return
-        else:
-            chunk_size = _negotiate_file_chunk_size(
-                max_chunk_size,
-                configured_chunk_size=global_config["server"]["file_chunk_size"],
-                hard_max_chunk_size=UPLOAD_TRANSFER_MAX_CHUNK_SIZE,
-            )
-
-        stored_metadata = claimed.upload_file_size is not None
-        metadata_matches = (
-            claimed.upload_file_size == file_size and claimed.upload_sha256 == sha256
+        proposed_chunk_size = _negotiate_file_chunk_size(
+            max_chunk_size,
+            configured_chunk_size=global_config["server"]["file_chunk_size"],
+            hard_max_chunk_size=UPLOAD_TRANSFER_MAX_CHUNK_SIZE,
         )
-        if (
-            stored_metadata
-            and claimed.upload_sha256 is not None
-            and not metadata_matches
-            and not restart
-        ):
+        try:
+            preparation = plan_upload_file_task(
+                claimed,
+                file_size=file_size,
+                sha256=sha256,
+                proposed_chunk_size=proposed_chunk_size,
+                client_max_chunk_size=max_chunk_size,
+                restart=restart,
+            )
+        except FileTaskChunkSizeConflict as exc:
+            self.conclude_request(
+                409,
+                {"chunk_size": exc.chunk_size},
+                "Resume chunk size exceeds the client maximum",
+            )
+            with Session() as session, session.begin():
+                release_file_task(session, task_id)
+            return
+        except UploadMetadataConflict as exc:
             self.conclude_request(
                 409,
                 {
-                    "file_size": claimed.upload_file_size,
-                    "sha256": claimed.upload_sha256,
-                    "chunk_size": chunk_size,
+                    "file_size": exc.file_size,
+                    "sha256": exc.sha256,
+                    "chunk_size": exc.chunk_size,
                 },
                 "Upload metadata does not match the resumable task",
             )
@@ -748,65 +736,45 @@ class ConnectionHandler:
                 release_file_task(session, task_id)
             return
 
-        discard_existing = restart or (stored_metadata and not resumable)
-        if discard_existing:
+        if preparation.discard_existing:
             self._discard_upload_progress(claimed)
-            claimed = ClaimedFileTask(
-                task_id=claimed.task_id,
-                file_id=claimed.file_id,
-                file_path=claimed.file_path,
-                stored_file_size=claimed.stored_file_size,
-                issued_by_username=claimed.issued_by_username,
-                encryption_key=claimed.encryption_key,
-                chunk_size=chunk_size,
-                upload_file_size=None,
-                upload_sha256=None,
-                upload_session_id=None,
-                upload_checkpoint_size=None,
-                upload_checkpoint_data=None,
-            )
 
         with Session() as session, session.begin():
-            task = session.get(FileTask, task_id)
-            if task is None:
+            preparation_status = apply_upload_file_task_preparation(
+                session,
+                task_id,
+                preparation,
+                file_size=file_size,
+                sha256=sha256,
+            )
+            if preparation_status is None:
                 raise ValueError(f"File transfer task not found for task_id: {task_id}")
-            if task.status != FileTaskStatus.IN_PROGRESS:
-                raise FileTaskEnded(FileTaskStatus(task.status))
-            if task.chunk_size is None:
-                task.chunk_size = chunk_size
-            task.upload_file_size = file_size
-            task.upload_sha256 = sha256
-            if discard_existing:
-                task.upload_session_id = None
-                task.upload_checkpoint_size = None
-                task.upload_checkpoint_data = None
+            if preparation_status != FileTaskStatus.IN_PROGRESS:
+                raise FileTaskEnded(preparation_status)
 
         storage.makedirs(os.path.dirname(file_path), exist_ok=True)
-        prior_session_id = None if discard_existing else claimed.upload_session_id
+        prior_session_id = preparation.prior_session_id
 
         def persist_checkpoint(checkpoint_data: str) -> None:
             with Session() as session, session.begin():
-                task = session.get(FileTask, task_id)
-                if task is None:
+                checkpoint_status = record_upload_checkpoint(
+                    session, task_id, checkpoint_data
+                )
+                if checkpoint_status is None:
                     raise ValueError(
                         f"File transfer task not found for task_id: {task_id}"
                     )
-                if task.status != FileTaskStatus.IN_PROGRESS:
-                    raise FileTaskEnded(FileTaskStatus(task.status))
-                task.upload_checkpoint_data = checkpoint_data
+                if checkpoint_status != FileTaskStatus.IN_PROGRESS:
+                    raise FileTaskEnded(checkpoint_status)
 
         try:
             upload = storage.open_resumable_upload(
                 file_path,
                 file_size=file_size,
-                chunk_size=chunk_size,
+                chunk_size=preparation.chunk_size,
                 session_id=prior_session_id,
-                checkpoint_size=(
-                    None if discard_existing else claimed.upload_checkpoint_size
-                ),
-                checkpoint_data=(
-                    None if discard_existing else claimed.upload_checkpoint_data
-                ),
+                checkpoint_size=preparation.checkpoint_size,
+                checkpoint_data=preparation.checkpoint_data,
                 checkpoint_callback=persist_checkpoint,
             )
         except ResumableUploadSizeError:
@@ -817,16 +785,19 @@ class ConnectionHandler:
 
         try:
             with Session() as session, session.begin():
-                task = session.get(FileTask, task_id)
-                if task is None:
+                storage_status = record_upload_storage_session(
+                    session,
+                    task_id,
+                    session_id=upload.session_id,
+                    checkpoint_size=upload.checkpoint_size,
+                    checkpoint_data=upload.checkpoint_data,
+                )
+                if storage_status is None:
                     raise ValueError(
                         f"File transfer task not found for task_id: {task_id}"
                     )
-                if task.status != FileTaskStatus.IN_PROGRESS:
-                    raise FileTaskEnded(FileTaskStatus(task.status))
-                task.upload_session_id = upload.session_id
-                task.upload_checkpoint_size = upload.checkpoint_size
-                task.upload_checkpoint_data = upload.checkpoint_data
+                if storage_status != FileTaskStatus.IN_PROGRESS:
+                    raise FileTaskEnded(storage_status)
         except Exception:
             if prior_session_id is None:
                 upload.abort()
@@ -844,9 +815,9 @@ class ConnectionHandler:
                         "action": "transfer_file",
                         "data": {
                             "file_size": file_size,
-                            "chunk_size": chunk_size,
+                            "chunk_size": preparation.chunk_size,
                             "offset": initial_offset,
-                            "supports_resume": resumable,
+                            "supports_resume": preparation.resumable,
                         },
                     }
                 )
@@ -856,7 +827,7 @@ class ConnectionHandler:
                 data = self._recv_file_task_frame(
                     task_id, cancelled, policy.idle_timeout_seconds
                 ).data
-                expected_size = min(chunk_size, file_size - received_size)
+                expected_size = min(preparation.chunk_size, file_size - received_size)
                 if len(data) != expected_size:
                     self.conclude_request(
                         400,
@@ -864,10 +835,11 @@ class ConnectionHandler:
                         "Invalid upload chunk size",
                     )
                     upload.close()
-                    if not resumable:
+                    if not preparation.resumable:
                         upload.abort()
                         storage.remove(file_path)
-                        self._clear_upload_state(task_id)
+                        with Session() as session, session.begin():
+                            clear_upload_progress(session, task_id)
                     with Session() as session, session.begin():
                         release_file_task(session, task_id)
                     return
@@ -891,7 +863,8 @@ class ConnectionHandler:
                 )
                 if actual_sha256 != sha256:
                     storage.remove(file_path)
-                    self._clear_upload_state(task_id)
+                    with Session() as session, session.begin():
+                        clear_upload_progress(session, task_id)
                     self.conclude_request(400, {}, "SHA256 mismatch")
                     with Session() as session, session.begin():
                         release_file_task(session, task_id)
@@ -950,7 +923,8 @@ class ConnectionHandler:
         except FileTaskEnded:
             upload.abort()
             storage.remove(file_path)
-            self._clear_upload_state(task_id)
+            with Session() as session, session.begin():
+                clear_upload_progress(session, task_id)
             status = self._get_file_task_status(task_id)
             self.conclude_request(
                 410,
@@ -960,28 +934,31 @@ class ConnectionHandler:
         except ConnectionError:
             self.logger.info("File reception aborted: Connection closed")
             upload.close()
-            if not resumable:
+            if not preparation.resumable:
                 upload.abort()
                 storage.remove(file_path)
-                self._clear_upload_state(task_id)
+                with Session() as session, session.begin():
+                    clear_upload_progress(session, task_id)
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
         except TimeoutError:
             self.logger.info("File reception aborted: idle timeout")
             upload.close()
-            if not resumable:
+            if not preparation.resumable:
                 upload.abort()
                 storage.remove(file_path)
-                self._clear_upload_state(task_id)
+                with Session() as session, session.begin():
+                    clear_upload_progress(session, task_id)
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.conclude_request(408, {}, "File upload timed out")
         except Exception as error:  # noqa: BLE001 - report transfer failures.
             upload.close()
-            if not resumable:
+            if not preparation.resumable:
                 upload.abort()
                 storage.remove(file_path)
-                self._clear_upload_state(task_id)
+                with Session() as session, session.begin():
+                    clear_upload_progress(session, task_id)
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.report_error(error, context=f"Error receiving file for task {task_id}")

@@ -47,12 +47,145 @@ class FileTaskChunkSizeConflict(ValueError):
         super().__init__("Persisted chunk size exceeds the client maximum")
 
 
+class UploadMetadataConflict(ValueError):
+    def __init__(
+        self,
+        *,
+        file_size: int,
+        sha256: str,
+        chunk_size: int,
+    ) -> None:
+        self.file_size = file_size
+        self.sha256 = sha256
+        self.chunk_size = chunk_size
+        super().__init__("Upload metadata does not match the resumable task")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UploadPreparation:
+    chunk_size: int
+    resumable: bool
+    discard_existing: bool
+    prior_session_id: str | None = field(repr=False)
+    checkpoint_size: int | None
+    checkpoint_data: str | None = field(repr=False)
+
+
 _CLAIM_FAILURE_BY_STATUS = {
     FileTaskStatus.IN_PROGRESS: FileTaskClaimFailure.IN_PROGRESS,
     FileTaskStatus.COMPLETED: FileTaskClaimFailure.COMPLETED,
     FileTaskStatus.CANCELLED: FileTaskClaimFailure.CANCELLED,
     FileTaskStatus.EXPIRED: FileTaskClaimFailure.EXPIRED,
 }
+
+
+def plan_upload_file_task(
+    claimed: ClaimedFileTask,
+    *,
+    file_size: int,
+    sha256: str | None,
+    proposed_chunk_size: int,
+    client_max_chunk_size: int,
+    restart: bool,
+) -> UploadPreparation:
+    chunk_size = claimed.chunk_size or proposed_chunk_size
+    if chunk_size > client_max_chunk_size:
+        raise FileTaskChunkSizeConflict(chunk_size)
+
+    resumable = sha256 is not None and file_size > 0
+    stored_metadata = claimed.upload_file_size is not None
+    metadata_matches = (
+        claimed.upload_file_size == file_size and claimed.upload_sha256 == sha256
+    )
+    if (
+        stored_metadata
+        and claimed.upload_sha256 is not None
+        and not metadata_matches
+        and not restart
+    ):
+        raise UploadMetadataConflict(
+            file_size=claimed.upload_file_size,
+            sha256=claimed.upload_sha256,
+            chunk_size=chunk_size,
+        )
+
+    discard_existing = restart or (stored_metadata and not resumable)
+    return UploadPreparation(
+        chunk_size=chunk_size,
+        resumable=resumable,
+        discard_existing=discard_existing,
+        prior_session_id=(None if discard_existing else claimed.upload_session_id),
+        checkpoint_size=(None if discard_existing else claimed.upload_checkpoint_size),
+        checkpoint_data=(None if discard_existing else claimed.upload_checkpoint_data),
+    )
+
+
+def apply_upload_file_task_preparation(
+    session: Session,
+    task_id: str,
+    preparation: UploadPreparation,
+    *,
+    file_size: int,
+    sha256: str | None,
+) -> FileTaskStatus | None:
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return None
+    status = FileTaskStatus(task.status)
+    if status != FileTaskStatus.IN_PROGRESS:
+        return status
+    if task.chunk_size is None:
+        task.chunk_size = preparation.chunk_size
+    task.upload_file_size = file_size
+    task.upload_sha256 = sha256
+    if preparation.discard_existing:
+        task.upload_session_id = None
+        task.upload_checkpoint_size = None
+        task.upload_checkpoint_data = None
+    return status
+
+
+def record_upload_checkpoint(
+    session: Session, task_id: str, checkpoint_data: str
+) -> FileTaskStatus | None:
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return None
+    status = FileTaskStatus(task.status)
+    if status == FileTaskStatus.IN_PROGRESS:
+        task.upload_checkpoint_data = checkpoint_data
+    return status
+
+
+def record_upload_storage_session(
+    session: Session,
+    task_id: str,
+    *,
+    session_id: str | None,
+    checkpoint_size: int | None,
+    checkpoint_data: str | None,
+) -> FileTaskStatus | None:
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return None
+    status = FileTaskStatus(task.status)
+    if status == FileTaskStatus.IN_PROGRESS:
+        task.upload_session_id = session_id
+        task.upload_checkpoint_size = checkpoint_size
+        task.upload_checkpoint_data = checkpoint_data
+    return status
+
+
+def clear_upload_progress(session: Session, task_id: str) -> bool:
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return False
+    task.upload_file_size = None
+    task.upload_sha256 = None
+    task.upload_session_id = None
+    task.upload_checkpoint_size = None
+    task.upload_checkpoint_data = None
+    return True
 
 
 def serialize_file_task(task: FileTask) -> dict[str, Any]:
