@@ -2,6 +2,7 @@ import hashlib
 import os
 import re
 
+import orjson
 import pytest
 
 from tests.domains.documents.test_file_task_lifecycle import (
@@ -204,6 +205,25 @@ def test_empty_download_marks_file_task_completed(file_task_context, tmp_path):
     assert stream.sent_payloads[-1].frame_type == file_task_context.FrameType.CONCLUSION
 
 
+def test_download_completion_is_committed_before_response(file_task_context, tmp_path):
+    relative_path = "download-commit-order.bin"
+    (tmp_path / relative_path).write_bytes(b"payload")
+    task_id, _file_id = _create_file_task(file_task_context, relative_path, mode=0)
+
+    class CommitObservingStream(_FakeDownloadStream):
+        def send(self, data, frame_type=None, **kwargs):
+            if frame_type == file_task_context.FrameType.CONCLUSION:
+                with file_task_context.session() as session:
+                    assert session.get(file_task_context.FileTask, task_id).status == 1
+            super().send(data, frame_type, **kwargs)
+
+    handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, CommitObservingStream()
+    )
+
+    handler.send_file(task_id, offset=0, max_chunk_size=64 * 1024)
+
+
 def test_download_does_not_hold_db_session_while_waiting_for_client(
     file_task_context, monkeypatch, tmp_path
 ):
@@ -259,6 +279,37 @@ def test_exact_chunk_upload_marks_file_task_completed(
         message.get("code") == 200
         and message.get("message") == "File received successfully"
         for message in sent_messages
+    )
+
+
+def test_upload_completion_is_committed_before_response(file_task_context):
+    relative_path = "uploads/commit-order.bin"
+    task_id, file_id = _create_file_task(file_task_context, relative_path, mode=1)
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    payload = b"c" * chunk_size
+
+    class CommitObservingStream(_FakeUploadStream):
+        def send(self, data, frame_type=None, **kwargs):
+            message = orjson.loads(data)
+            if message.get("code") == 200:
+                with file_task_context.session() as session:
+                    task = session.get(file_task_context.FileTask, task_id)
+                    file = session.get(file_task_context.File, file_id)
+                    assert task.status == 1
+                    assert file.active is True
+                    assert file.size == len(payload)
+            super().send(data, frame_type, **kwargs)
+
+    handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, CommitObservingStream([payload])
+    )
+
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
     )
 
 
