@@ -23,7 +23,7 @@ from include.config.constants import (
 )
 from include.config.settings import global_config
 from include.config.validation import DocumentUploadPolicy
-from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
+from include.database.models.files import File, FileTaskStatus, TransferMode
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
@@ -37,6 +37,7 @@ from include.domains.documents.commands.file_tasks import (
     clear_upload_progress,
     complete_file_task,
     expire_file_task_if_due,
+    finalize_upload_task,
     get_or_set_download_encryption_key,
     get_or_set_file_task_chunk_size,
     plan_upload_file_task,
@@ -871,28 +872,25 @@ class ConnectionHandler:
                     return
 
             with Session() as session, session.begin():
-                file_task = session.get(FileTask, task_id)
-                if file_task is None:
+                completed_status = finalize_upload_task(
+                    session,
+                    task_id,
+                    file_id,
+                    sha256=sha256,
+                    size=actual_size,
+                )
+                if completed_status is None:
                     raise ValueError(
                         f"File transfer task not found for task_id: {task_id}"
                     )
-                file = session.get(File, file_id)
-                if file is None:
-                    raise ValueError(f"File not found for file_id: {file_id}")
-                if not complete_file_task(session, task_id):
+                if completed_status != FileTaskStatus.COMPLETED:
                     storage.remove(file_path)
                     self.conclude_request(
                         410,
-                        {"task_status": FileTaskStatus(file_task.status).name.lower()},
+                        {"task_status": completed_status.name.lower()},
                         "Task ended",
                     )
                     return
-                file_task.upload_session_id = None
-                file_task.upload_checkpoint_size = None
-                file_task.upload_checkpoint_data = None
-                file.sha256 = sha256
-                file.size = actual_size
-                file.active = True
                 if file_size:
                     pm.hook.ext_before_file_upload_finalize(
                         session=session,

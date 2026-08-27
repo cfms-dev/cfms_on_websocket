@@ -8,7 +8,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, joinedload
 
 from include.config.validation import DocumentUploadPolicy
-from include.database.models.files import FileTask, FileTaskStatus, TransferMode
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 
 ACTIVE_FILE_TASK_STATUSES = (
     FileTaskStatus.PENDING,
@@ -381,6 +381,34 @@ def complete_file_task(session: Session, task_id: str) -> FileTaskStatus | None:
         return FileTaskStatus.COMPLETED
     task = session.get(FileTask, task_id)
     return None if task is None else FileTaskStatus(task.status)
+
+
+def finalize_upload_task(
+    session: Session,
+    task_id: str,
+    file_id: str,
+    *,
+    sha256: str | None,
+    size: int,
+) -> FileTaskStatus | None:
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return None
+    file = session.get(File, file_id)
+    if file is None:
+        raise ValueError(f"File not found for file_id: {file_id}")
+
+    status = complete_file_task(session, task_id)
+    if status != FileTaskStatus.COMPLETED:
+        return status
+
+    task.upload_session_id = None
+    task.upload_checkpoint_size = None
+    task.upload_checkpoint_data = None
+    file.sha256 = sha256
+    file.size = size
+    file.active = True
+    return status
 
 
 def release_file_task(
