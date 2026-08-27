@@ -41,6 +41,12 @@ class FileTaskClaimFailure(StrEnum):
     CONFLICT = "conflict"
 
 
+class FileTaskChunkSizeConflict(ValueError):
+    def __init__(self, chunk_size: int) -> None:
+        self.chunk_size = chunk_size
+        super().__init__("Persisted chunk size exceeds the client maximum")
+
+
 _CLAIM_FAILURE_BY_STATUS = {
     FileTaskStatus.IN_PROGRESS: FileTaskClaimFailure.IN_PROGRESS,
     FileTaskStatus.COMPLETED: FileTaskClaimFailure.COMPLETED,
@@ -192,7 +198,41 @@ def claim_file_task(
         session.expire(task)
 
 
-def complete_file_task(session: Session, task_id: str) -> bool:
+def get_or_set_file_task_chunk_size(
+    session: Session,
+    task_id: str,
+    proposed_chunk_size: int,
+    client_max_chunk_size: int,
+) -> int | FileTaskStatus | None:
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return None
+    status = FileTaskStatus(task.status)
+    if status != FileTaskStatus.IN_PROGRESS:
+        return status
+    if task.chunk_size is None:
+        task.chunk_size = proposed_chunk_size
+        return proposed_chunk_size
+    if task.chunk_size > client_max_chunk_size:
+        raise FileTaskChunkSizeConflict(task.chunk_size)
+    return task.chunk_size
+
+
+def get_or_set_download_encryption_key(
+    session: Session, task_id: str, proposed_key: str
+) -> str | FileTaskStatus | None:
+    task = session.get(FileTask, task_id)
+    if task is None:
+        return None
+    status = FileTaskStatus(task.status)
+    if status != FileTaskStatus.IN_PROGRESS:
+        return status
+    if task.encryption_key is None:
+        task.encryption_key = proposed_key
+    return task.encryption_key
+
+
+def complete_file_task(session: Session, task_id: str) -> FileTaskStatus | None:
     result = cast(
         CursorResult[Any],
         session.execute(
@@ -204,7 +244,10 @@ def complete_file_task(session: Session, task_id: str) -> bool:
             .values(status=FileTaskStatus.COMPLETED)
         ),
     )
-    return result.rowcount == 1
+    if result.rowcount == 1:
+        return FileTaskStatus.COMPLETED
+    task = session.get(FileTask, task_id)
+    return None if task is None else FileTaskStatus(task.status)
 
 
 def release_file_task(

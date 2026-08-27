@@ -432,8 +432,14 @@ def test_upload_task_lifecycle_uses_two_stage_deadline(
             session, task_id, TransferMode.UPLOAD, now=1002.0
         )
         assert isinstance(claimed, file_tasks.ClaimedFileTask)
-        assert file_tasks.complete_file_task(session, task_id) is True
-        assert file_tasks.complete_file_task(session, task_id) is False
+        assert (
+            file_tasks.complete_file_task(session, task_id)
+            == file_tasks.FileTaskStatus.COMPLETED
+        )
+        assert (
+            file_tasks.complete_file_task(session, task_id)
+            == file_tasks.FileTaskStatus.COMPLETED
+        )
 
     with file_task_context.session() as session:
         task = session.get(file_task_context.FileTask, task_id)
