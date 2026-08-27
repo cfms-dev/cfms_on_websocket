@@ -32,6 +32,7 @@ from include.domains.documents.commands.file_tasks import (
     FileTaskChunkSizeConflict,
     FileTaskClaimFailure,
     UploadMetadataConflict,
+    UploadPreparation,
     apply_upload_file_task_preparation,
     claim_file_task,
     clear_upload_progress,
@@ -54,7 +55,7 @@ from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.extensions.manager import pm
 from include.messages import Messages as smsg
 from include.observability.exception_logging import log_exception_with_id
-from include.providers.base import ResumableUploadSizeError
+from include.providers.base import ResumableUpload, ResumableUploadSizeError
 from include.providers.manager import ProviderManager
 from include.transport.client_address import get_client_ip
 from include.transport.multiplexing import FrameType, Stream
@@ -359,6 +360,54 @@ class ConnectionHandler:
         cancelled: threading.Event,
         limit_decision: DownloadLimitDecision,
     ) -> None:
+        prepared = self._prepare_download_transfer(
+            claimed,
+            offset,
+            max_chunk_size,
+            cancelled,
+            limit_decision,
+        )
+        if prepared is None:
+            return
+
+        file_size, chunk_size = prepared
+        if not self._send_download_contents(
+            claimed,
+            offset,
+            file_size,
+            chunk_size,
+            cancelled,
+        ):
+            return
+
+        with Session() as session, session.begin():
+            completed_status = complete_file_task(session, claimed.task_id)
+            if completed_status is None:
+                raise ValueError(
+                    f"File transfer task not found for task_id: {claimed.task_id}"
+                )
+            if completed_status != FileTaskStatus.COMPLETED:
+                self.conclude_request(
+                    410,
+                    {"task_status": completed_status.name.lower()},
+                    "Task ended",
+                )
+                return
+
+        self.stream.send(
+            orjson.dumps({"action": "transfer_complete", "data": {}}),
+            FrameType.CONCLUSION,
+        )
+        self.logger.info(f"File {claimed.file_path} sent successfully.")
+
+    def _prepare_download_transfer(
+        self,
+        claimed: ClaimedFileTask,
+        offset: int,
+        max_chunk_size: int,
+        cancelled: threading.Event,
+        limit_decision: DownloadLimitDecision,
+    ) -> tuple[int, int] | None:
         task_id = claimed.task_id
         file_id = claimed.file_id
         file_path = claimed.file_path
@@ -411,7 +460,7 @@ class ConnectionHandler:
             )
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            return
+            return None
         if chunk_size is None:
             raise ValueError(f"File transfer task not found for task_id: {task_id}")
         if isinstance(chunk_size, FileTaskStatus):
@@ -421,7 +470,7 @@ class ConnectionHandler:
             self.conclude_request(400, {}, "Invalid offset: exceeds file size")
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            return
+            return None
 
         if offset != file_size and offset % chunk_size != 0:
             self.conclude_request(
@@ -431,7 +480,7 @@ class ConnectionHandler:
             )
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            return
+            return None
 
         total_chunks = (file_size + chunk_size - 1) // chunk_size
 
@@ -461,8 +510,19 @@ class ConnectionHandler:
             self.conclude_request(400, {}, "Client not ready for file transfer")
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            return
+            return None
 
+        return file_size, chunk_size
+
+    def _send_download_contents(
+        self,
+        claimed: ClaimedFileTask,
+        offset: int,
+        file_size: int,
+        chunk_size: int,
+        cancelled: threading.Event,
+    ) -> bool:
+        task_id = claimed.task_id
         if file_size == 0:
             self.logger.info("Empty file, no need to send")
             self.stream.send(
@@ -484,25 +544,8 @@ class ConnectionHandler:
                 self.conclude_request(400, {}, "Client did not confirm file completion")
                 with Session() as session, session.begin():
                     release_file_task(session, task_id)
-                return
-            with Session() as session, session.begin():
-                completed_status = complete_file_task(session, task_id)
-                if completed_status is None:
-                    raise ValueError(
-                        f"File transfer task not found for task_id: {task_id}"
-                    )
-                if completed_status != FileTaskStatus.COMPLETED:
-                    self.conclude_request(
-                        410,
-                        {"task_status": completed_status.name.lower()},
-                        "Task ended",
-                    )
-                    return
-            self.stream.send(
-                orjson.dumps({"action": "transfer_complete", "data": {}}),
-                FrameType.CONCLUSION,
-            )
-            return
+                return False
+            return True
 
         if claimed.encryption_key:
             aes_key = base64.b64decode(claimed.encryption_key)
@@ -524,7 +567,7 @@ class ConnectionHandler:
         self.logger.info(f"File transmission begin. Offset: {offset}")
 
         try:
-            with ProviderManager().storage.fopen(file_path) as file:
+            with ProviderManager().storage.fopen(claimed.file_path) as file:
                 if offset > 0:
                     if not file.seekable():
                         self.logger.error(
@@ -537,7 +580,7 @@ class ConnectionHandler:
                         )
                         with Session() as session, session.begin():
                             release_file_task(session, task_id)
-                        return
+                        return False
 
                     file.seek(offset)
                     chunk_index = offset // chunk_size
@@ -592,26 +635,7 @@ class ConnectionHandler:
                 self.conclude_request(400, {}, "Client did not confirm file completion")
                 with Session() as session, session.begin():
                     release_file_task(session, task_id)
-                return
-
-            with Session() as session, session.begin():
-                completed_status = complete_file_task(session, task_id)
-                if completed_status is None:
-                    raise ValueError(
-                        f"File transfer task not found for task_id: {task_id}"
-                    )
-                if completed_status != FileTaskStatus.COMPLETED:
-                    self.conclude_request(
-                        410,
-                        {"task_status": completed_status.name.lower()},
-                        "Task ended",
-                    )
-                    return
-
-            self.stream.send(
-                orjson.dumps({"action": "transfer_complete", "data": {}}),
-                FrameType.CONCLUSION,
-            )
+                return False
 
         except (
             ConnectionClosed,
@@ -620,16 +644,16 @@ class ConnectionHandler:
             self.logger.info("File transmission aborted: Connection closed")
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            return
+            return False
         except FileTaskEnded:
             raise
         except Exception as e:  # noqa: BLE001 - report unexpected transfer failures to the client.
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            self.report_error(e, context=f"Error sending file {file_path}")
-            return
+            self.report_error(e, context=f"Error sending file {claimed.file_path}")
+            return False
 
-        self.logger.info(f"File {file_path} sent successfully.")
+        return True
 
     def receive_file(
         self,
@@ -695,11 +719,90 @@ class ConnectionHandler:
         restart: bool,
         cancelled: threading.Event,
     ) -> None:
+        prepared = self._prepare_upload_transfer(
+            claimed,
+            file_size,
+            sha256,
+            max_chunk_size,
+            restart,
+        )
+        if prepared is None:
+            return
+
+        preparation, upload = prepared
         task_id = claimed.task_id
-        file_id = claimed.file_id
+        storage = ProviderManager().storage
+        try:
+            actual_size = self._receive_upload_contents(
+                claimed,
+                preparation,
+                upload,
+                file_size,
+                sha256,
+                cancelled,
+            )
+            if actual_size is None:
+                return
+            self._finalize_upload_transfer(
+                claimed,
+                actual_size,
+                file_size,
+                sha256,
+            )
+        except FileTaskEnded:
+            upload.abort()
+            storage.remove(claimed.file_path)
+            with Session() as session, session.begin():
+                clear_upload_progress(session, task_id)
+            status = self._get_file_task_status(task_id)
+            self.conclude_request(
+                410,
+                {"task_status": status.name.lower()},
+                "Task is no longer available",
+            )
+        except ConnectionError:
+            self.logger.info("File reception aborted: Connection closed")
+            upload.close()
+            if not preparation.resumable:
+                upload.abort()
+                storage.remove(claimed.file_path)
+                with Session() as session, session.begin():
+                    clear_upload_progress(session, task_id)
+            with Session() as session, session.begin():
+                release_file_task(session, task_id)
+        except TimeoutError:
+            self.logger.info("File reception aborted: idle timeout")
+            upload.close()
+            if not preparation.resumable:
+                upload.abort()
+                storage.remove(claimed.file_path)
+                with Session() as session, session.begin():
+                    clear_upload_progress(session, task_id)
+            with Session() as session, session.begin():
+                release_file_task(session, task_id)
+            self.conclude_request(408, {}, "File upload timed out")
+        except Exception as error:  # noqa: BLE001 - report transfer failures.
+            upload.close()
+            if not preparation.resumable:
+                upload.abort()
+                storage.remove(claimed.file_path)
+                with Session() as session, session.begin():
+                    clear_upload_progress(session, task_id)
+            with Session() as session, session.begin():
+                release_file_task(session, task_id)
+            self.report_error(error, context=f"Error receiving file for task {task_id}")
+
+    def _prepare_upload_transfer(
+        self,
+        claimed: ClaimedFileTask,
+        file_size: int,
+        sha256: str | None,
+        max_chunk_size: int,
+        restart: bool,
+    ) -> tuple[UploadPreparation, ResumableUpload] | None:
+        task_id = claimed.task_id
         file_path = claimed.file_path
         storage = ProviderManager().storage
-        policy = DocumentUploadPolicy.from_config()
         proposed_chunk_size = _negotiate_file_chunk_size(
             max_chunk_size,
             configured_chunk_size=global_config["server"]["file_chunk_size"],
@@ -722,7 +825,7 @@ class ConnectionHandler:
             )
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            return
+            return None
         except UploadMetadataConflict as exc:
             self.conclude_request(
                 409,
@@ -735,7 +838,7 @@ class ConnectionHandler:
             )
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
-            return
+            return None
 
         if preparation.discard_existing:
             self._discard_upload_progress(claimed)
@@ -782,7 +885,7 @@ class ConnectionHandler:
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.conclude_request(413, {}, "File exceeds storage upload limits")
-            return
+            return None
 
         try:
             with Session() as session, session.begin():
@@ -806,160 +909,140 @@ class ConnectionHandler:
                 upload.close()
             raise
 
+        return preparation, upload
+
+    def _receive_upload_contents(
+        self,
+        claimed: ClaimedFileTask,
+        preparation: UploadPreparation,
+        upload: ResumableUpload,
+        file_size: int,
+        sha256: str | None,
+        cancelled: threading.Event,
+    ) -> int | None:
+        task_id = claimed.task_id
+        file_path = claimed.file_path
+        storage = ProviderManager().storage
+        policy = DocumentUploadPolicy.from_config()
         initial_offset = upload.offset
         hasher = hashlib.sha256()
         received_size = initial_offset
-        try:
-            self.stream.send(
-                orjson.dumps(
-                    {
-                        "action": "transfer_file",
-                        "data": {
-                            "file_size": file_size,
-                            "chunk_size": preparation.chunk_size,
-                            "offset": initial_offset,
-                            "supports_resume": preparation.resumable,
-                        },
-                    }
-                )
+        self.stream.send(
+            orjson.dumps(
+                {
+                    "action": "transfer_file",
+                    "data": {
+                        "file_size": file_size,
+                        "chunk_size": preparation.chunk_size,
+                        "offset": initial_offset,
+                        "supports_resume": preparation.resumable,
+                    },
+                }
             )
-            logger.info("Receiving file: transfer started")
-            while received_size < file_size:
-                data = self._recv_file_task_frame(
-                    task_id, cancelled, policy.idle_timeout_seconds
-                ).data
-                expected_size = min(preparation.chunk_size, file_size - received_size)
-                if len(data) != expected_size:
-                    self.conclude_request(
-                        400,
-                        {"offset": upload.offset},
-                        "Invalid upload chunk size",
-                    )
-                    upload.close()
-                    if not preparation.resumable:
-                        upload.abort()
-                        storage.remove(file_path)
-                        with Session() as session, session.begin():
-                            clear_upload_progress(session, task_id)
-                    with Session() as session, session.begin():
-                        release_file_task(session, task_id)
-                    return
-                upload.write(data)
-                if initial_offset == 0 and sha256 is not None:
-                    hasher.update(data)
-                received_size += len(data)
-
-            upload.finish()
-            actual_size = storage.getsize(file_path)
-            if actual_size != file_size:
-                raise ValueError(
-                    f"File size mismatch: expected {file_size}, got {actual_size}"
+        )
+        logger.info("Receiving file: transfer started")
+        while received_size < file_size:
+            data = self._recv_file_task_frame(
+                task_id, cancelled, policy.idle_timeout_seconds
+            ).data
+            expected_size = min(preparation.chunk_size, file_size - received_size)
+            if len(data) != expected_size:
+                self.conclude_request(
+                    400,
+                    {"offset": upload.offset},
+                    "Invalid upload chunk size",
                 )
-
-            if sha256 is not None:
-                actual_sha256 = (
-                    hasher.hexdigest()
-                    if initial_offset == 0
-                    else self._storage_sha256(file_path)
-                )
-                if actual_sha256 != sha256:
+                upload.close()
+                if not preparation.resumable:
+                    upload.abort()
                     storage.remove(file_path)
                     with Session() as session, session.begin():
                         clear_upload_progress(session, task_id)
-                    self.conclude_request(400, {}, "SHA256 mismatch")
-                    with Session() as session, session.begin():
-                        release_file_task(session, task_id)
-                    return
+                with Session() as session, session.begin():
+                    release_file_task(session, task_id)
+                return None
+            upload.write(data)
+            if initial_offset == 0 and sha256 is not None:
+                hasher.update(data)
+            received_size += len(data)
 
-            with Session() as session, session.begin():
-                completed_status = finalize_upload_task(
-                    session,
-                    task_id,
-                    file_id,
-                    sha256=sha256,
-                    size=actual_size,
+        upload.finish()
+        actual_size = storage.getsize(file_path)
+        if actual_size != file_size:
+            raise ValueError(
+                f"File size mismatch: expected {file_size}, got {actual_size}"
+            )
+
+        if sha256 is not None:
+            actual_sha256 = (
+                hasher.hexdigest()
+                if initial_offset == 0
+                else self._storage_sha256(file_path)
+            )
+            if actual_sha256 != sha256:
+                storage.remove(file_path)
+                with Session() as session, session.begin():
+                    clear_upload_progress(session, task_id)
+                self.conclude_request(400, {}, "SHA256 mismatch")
+                with Session() as session, session.begin():
+                    release_file_task(session, task_id)
+                return None
+
+        return actual_size
+
+    def _finalize_upload_transfer(
+        self,
+        claimed: ClaimedFileTask,
+        actual_size: int,
+        file_size: int,
+        sha256: str | None,
+    ) -> None:
+        with Session() as session, session.begin():
+            completed_status = finalize_upload_task(
+                session,
+                claimed.task_id,
+                claimed.file_id,
+                sha256=sha256,
+                size=actual_size,
+            )
+            if completed_status is None:
+                raise ValueError(
+                    f"File transfer task not found for task_id: {claimed.task_id}"
                 )
-                if completed_status is None:
-                    raise ValueError(
-                        f"File transfer task not found for task_id: {task_id}"
-                    )
-                if completed_status != FileTaskStatus.COMPLETED:
-                    storage.remove(file_path)
-                    self.conclude_request(
-                        410,
-                        {"task_status": completed_status.name.lower()},
-                        "Task ended",
-                    )
-                    return
-                if file_size:
-                    pm.hook.ext_before_file_upload_finalize(
-                        session=session,
-                        id=file_id,
-                        path=file_path,
-                        sha256=sha256,
-                    )
-
-            self.logger.info(
-                f"File received and saved to {file_path}, total size: {actual_size}"
-            )
-            self.conclude_request(200, {}, "File received successfully")
-
+            if completed_status != FileTaskStatus.COMPLETED:
+                ProviderManager().storage.remove(claimed.file_path)
+                self.conclude_request(
+                    410,
+                    {"task_status": completed_status.name.lower()},
+                    "Task ended",
+                )
+                return
             if file_size:
-                try:
-                    pm.hook.ext_on_file_upload_completed(
-                        id=file_id,
-                        path=file_path,
-                        sha256=sha256,
-                    )
-                except Exception as error:  # noqa: BLE001 - upload is acknowledged.
-                    self.report_error(
-                        error,
-                        context="Post-upload response hook failed",
-                        send_to_client=False,
-                    )
+                pm.hook.ext_before_file_upload_finalize(
+                    session=session,
+                    id=claimed.file_id,
+                    path=claimed.file_path,
+                    sha256=sha256,
+                )
 
-        except FileTaskEnded:
-            upload.abort()
-            storage.remove(file_path)
-            with Session() as session, session.begin():
-                clear_upload_progress(session, task_id)
-            status = self._get_file_task_status(task_id)
-            self.conclude_request(
-                410,
-                {"task_status": status.name.lower()},
-                "Task is no longer available",
-            )
-        except ConnectionError:
-            self.logger.info("File reception aborted: Connection closed")
-            upload.close()
-            if not preparation.resumable:
-                upload.abort()
-                storage.remove(file_path)
-                with Session() as session, session.begin():
-                    clear_upload_progress(session, task_id)
-            with Session() as session, session.begin():
-                release_file_task(session, task_id)
-        except TimeoutError:
-            self.logger.info("File reception aborted: idle timeout")
-            upload.close()
-            if not preparation.resumable:
-                upload.abort()
-                storage.remove(file_path)
-                with Session() as session, session.begin():
-                    clear_upload_progress(session, task_id)
-            with Session() as session, session.begin():
-                release_file_task(session, task_id)
-            self.conclude_request(408, {}, "File upload timed out")
-        except Exception as error:  # noqa: BLE001 - report transfer failures.
-            upload.close()
-            if not preparation.resumable:
-                upload.abort()
-                storage.remove(file_path)
-                with Session() as session, session.begin():
-                    clear_upload_progress(session, task_id)
-            with Session() as session, session.begin():
-                release_file_task(session, task_id)
-            self.report_error(error, context=f"Error receiving file for task {task_id}")
+        self.logger.info(
+            f"File received and saved to {claimed.file_path}, total size: {actual_size}"
+        )
+        self.conclude_request(200, {}, "File received successfully")
+
+        if file_size:
+            try:
+                pm.hook.ext_on_file_upload_completed(
+                    id=claimed.file_id,
+                    path=claimed.file_path,
+                    sha256=sha256,
+                )
+            except Exception as error:  # noqa: BLE001 - upload is acknowledged.
+                self.report_error(
+                    error,
+                    context="Post-upload response hook failed",
+                    send_to_client=False,
+                )
 
     def broadcast(
         self,
