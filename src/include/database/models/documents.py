@@ -12,7 +12,6 @@ __all__ = [
 import secrets
 import time
 from enum import IntEnum, StrEnum
-from itertools import batched
 from typing import TYPE_CHECKING, ClassVar
 from warnings import deprecated
 
@@ -27,24 +26,15 @@ from sqlalchemy import (
     Integer,
     UniqueConstraint,
     func,
-    select,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
-from sqlalchemy.orm.session import object_session
 
 from include.config.constants import (
-    QUERY_CHUNK_SIZE,
     ROOT_DIRECTORY_ID,
     USERNAME_DATABASE_MAX_LENGTH,
 )
-from include.database.models.files import (
-    File,
-    FileTask,
-    _queue_deferred_file_deletion,
-)
+from include.database.models.files import File
 from include.database.session import Base
-from include.domains.documents.queries.file_references import count_file_references
-from include.domains.documents.queries.revisions import batch_count_other_revisions
 from include.exceptions.misc import NoActiveRevisionsError
 
 if TYPE_CHECKING:
@@ -340,93 +330,6 @@ class Document(Node):
 
         return max(active_revisions, key=lambda rev: rev.created_time)
 
-    def delete_all_revisions(self, do_commit: bool = True):
-        session = object_session(self)
-        if not session:
-            raise RuntimeError("The object is not associated with a session")
-
-        # Task 4: Lightweight tuple query — fetch only the IDs we need for logic.
-        # Avoids loading the full ORM graph (revisions + files) just for reference counting.
-        revision_tuples = (
-            session.query(DocumentRevision.id, DocumentRevision.file_id)
-            .filter(DocumentRevision.document_id == self.id)
-            .all()
-        )
-        if not revision_tuples:
-            return
-
-        revision_ids = [row[0] for row in revision_tuples]
-        all_file_ids = {row[1] for row in revision_tuples if row[1]}
-
-        # Task 3: Chunked batch reference count queries to avoid variable limit.
-        other_counts = batch_count_other_revisions(session, all_file_ids, self.id)
-
-        # Determine which files are exclusively referenced by this document's revisions.
-        deletable_file_ids = {
-            fid for fid in all_file_ids if other_counts.get(fid, 0) == 0
-        }
-
-        # Load File ORM objects needed for deletion (chunked to stay within SQLite limits).
-        # Task 4: Only loads files that are actually going to be deleted.
-        files_to_delete: list = []
-        if deletable_file_ids:
-            for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
-                files_to_delete.extend(
-                    session.query(File).filter(File.id.in_(list(chunk))).all()
-                )
-
-        self.current_revision_id = None
-        self.current_revision = None
-
-        with session.no_autoflush:
-            # Task 2: Batch delete all FileTask rows for deletable files in one query per chunk.
-            # Replaces N individual DELETE queries (one per file) with one per chunk.
-            upload_sessions_by_file: dict[str, list[str]] = {}
-            if deletable_file_ids:
-                for chunk in batched(deletable_file_ids, QUERY_CHUNK_SIZE):
-                    for file_id, upload_session_id in session.execute(
-                        select(FileTask.file_id, FileTask.upload_session_id).where(
-                            FileTask.file_id.in_(list(chunk)),
-                            FileTask.upload_session_id.is_not(None),
-                        )
-                    ):
-                        if upload_session_id is not None:
-                            upload_sessions_by_file.setdefault(file_id, []).append(
-                                upload_session_id
-                            )
-                    session.query(FileTask).filter(
-                        FileTask.file_id.in_(list(chunk))
-                    ).delete(synchronize_session=False)
-
-            # Load DocumentRevision ORM objects for deletion (chunked).
-            revisions: list = []
-            for chunk in batched(revision_ids, QUERY_CHUNK_SIZE):
-                revisions.extend(
-                    session.query(DocumentRevision)
-                    .filter(DocumentRevision.id.in_(list(chunk)))
-                    .all()
-                )
-
-            # ORM-level delete so SQLAlchemy handles FK ordering correctly at flush time.
-            for revision in revisions:
-                session.delete(revision)
-            for file_obj in files_to_delete:
-                session.delete(file_obj)
-
-        # Task 1: Queue physical file paths for deferred deletion.
-        # Files are removed from disk ONLY after session.commit() succeeds.
-        # If the transaction rolls back, the queued paths are discarded automatically.
-        for file_obj in files_to_delete:
-            _queue_deferred_file_deletion(
-                session,
-                file_obj.path,
-                tuple(upload_sessions_by_file.get(file_obj.id, ())),
-            )
-
-        self.revisions = []
-        if do_commit:
-            session.commit()
-
     def __repr__(self) -> str:
         return f"Document(id={self.id!r}, created_time={self.created_time!r})"
 
@@ -488,21 +391,6 @@ class DocumentRevision(Base):
     @property
     def writeable(self):
         return self.file.writeable
-
-    def before_delete(self):
-        session = object_session(self)
-        if not session:
-            raise RuntimeError("The object is not associated with a session")
-        if not self.file_id:
-            return
-        # Use centralized reference counting across all FK references.
-        total = count_file_references(session, [self.file_id]).get(self.file_id, 0)
-        # Subtract this revision's own reference.
-        other_refs = max(0, total - 1)
-
-        if other_refs == 0:
-            self.file.delete()
-            session.delete(self.file)
 
     def __repr__(self) -> str:
         return (

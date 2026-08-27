@@ -23,6 +23,9 @@ from include.domains.documents.commands.file_tasks import (
     ACTIVE_FILE_TASK_STATUSES,
     expire_file_task_if_due,
 )
+from include.domains.documents.commands.revision_deletion import (
+    delete_revision_and_unreferenced_file,
+)
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 
 logger = log.bind(name="upload_cleanup")
@@ -193,8 +196,7 @@ def reclaim_abandoned_uploads(
                 document = session.get(Document, document_id_for_revision)
                 if document is not None and document.current_revision_id == revision.id:
                     document.current_revision = revision.parent_revision
-                revision.before_delete()
-                session.delete(revision)
+                delete_revision_and_unreferenced_file(session, revision)
                 removed_revisions += 1
 
     storage_cleanup_failures = int(session.info.pop("deferred_delete_failure_count", 0))

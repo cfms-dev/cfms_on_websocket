@@ -6,6 +6,9 @@ from include.database.session import Session
 from include.domains.access.authorization.evaluation import check_access_requirements
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import cancel_file_tasks_for_files
+from include.domains.documents.commands.revision_deletion import (
+    delete_revision_and_unreferenced_file,
+)
 from include.domains.documents.download_limits import check_download_issue_limits
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.documents import (
@@ -286,9 +289,8 @@ class RequestDeleteRevisionHandler(RequestHandler):
                 cancelled_task_ids = cancel_file_tasks_for_files(
                     session, unreachable_file_ids
                 )
-                revision.before_delete()
                 mark_document_modified(document, user.username)
-                session.delete(revision)
+                delete_revision_and_unreferenced_file(session, revision)
             session.commit()
 
         publish_cancelled_file_tasks(cancelled_task_ids)

@@ -58,6 +58,9 @@ from include.domains.documents.commands.name_conflicts import (
     get_target_folder_and_check_write,
     node_name_mutation,
 )
+from include.domains.documents.commands.revision_deletion import (
+    delete_all_document_revisions,
+)
 from include.domains.documents.commands.upload_cleanup import (
     maybe_reclaim_abandoned_uploads,
     try_reclaim_abandoned_uploads,
@@ -1072,7 +1075,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
                 handler.conclude_access_denial()
                 return
 
-            document.delete_all_revisions(do_commit=False)
+            delete_all_document_revisions(session, document)
             mark_document_modified(document, user.username)
             session.delete(document)
             session.commit()
