@@ -267,7 +267,7 @@ def file_task_context(monkeypatch, tmp_path):
     from include.database.models.identity import User
     from include.database.models.operations import RateLimitBucket, RiskIPAccount
     from include.database.session import Base
-    from include.extensions.builtin._file_deduplication import (
+    from include.extensions.builtin.file_deduplication import (
         schedule_file_deduplication,
     )
     from include.transport.multiplexing import FrameType

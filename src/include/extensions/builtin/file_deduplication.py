@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from loguru import logger as log
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import CursorResult, delete, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
 
@@ -68,13 +68,16 @@ def release_file_deduplication(file_id: str, *, now: float | None = None) -> boo
     timestamp = time.time() if now is None else now
     try:
         with Session() as session, session.begin():
-            result = session.execute(
-                update(FileDeduplicationTask)
-                .where(
-                    FileDeduplicationTask.file_id == file_id,
-                    FileDeduplicationTask.phase == FileDeduplicationPhase.MERGE,
-                )
-                .values(available_at=timestamp)
+            result = cast(
+                CursorResult,
+                session.execute(
+                    update(FileDeduplicationTask)
+                    .where(
+                        FileDeduplicationTask.file_id == file_id,
+                        FileDeduplicationTask.phase == FileDeduplicationPhase.MERGE,
+                    )
+                    .values(available_at=timestamp)
+                ),
             )
         released = result.rowcount == 1
     except Exception:
@@ -114,21 +117,24 @@ def _claim_next_task(now: float | None = None) -> ClaimedDeduplicationTask | Non
 
         file_id, previous_lease_expires_at = candidate
         lease_owner = secrets.token_hex(32)
-        result = session.execute(
-            update(FileDeduplicationTask)
-            .where(
-                FileDeduplicationTask.file_id == file_id,
-                FileDeduplicationTask.available_at <= timestamp,
-                or_(
-                    FileDeduplicationTask.lease_expires_at.is_(None),
-                    FileDeduplicationTask.lease_expires_at <= timestamp,
-                ),
-            )
-            .values(
-                lease_owner=lease_owner,
-                lease_expires_at=timestamp + _LEASE_SECONDS,
-                attempts=FileDeduplicationTask.attempts + 1,
-            )
+        result = cast(
+            CursorResult,
+            session.execute(
+                update(FileDeduplicationTask)
+                .where(
+                    FileDeduplicationTask.file_id == file_id,
+                    FileDeduplicationTask.available_at <= timestamp,
+                    or_(
+                        FileDeduplicationTask.lease_expires_at.is_(None),
+                        FileDeduplicationTask.lease_expires_at <= timestamp,
+                    ),
+                )
+                .values(
+                    lease_owner=lease_owner,
+                    lease_expires_at=timestamp + _LEASE_SECONDS,
+                    attempts=FileDeduplicationTask.attempts + 1,
+                )
+            ),
         )
         if result.rowcount != 1:
             return None
@@ -355,7 +361,7 @@ def process_one_file_deduplication_task() -> bool:
                 _process_storage_delete(claim)
         else:
             _process_storage_delete(claim)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         _reschedule_failed_task(claim, error)
 
     return True

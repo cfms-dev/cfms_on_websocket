@@ -3,11 +3,11 @@ from types import SimpleNamespace
 
 
 def test_permission_cleanup_worker_runs_immediately_and_restarts(monkeypatch):
-    from include.extensions.builtin import _permission_cleanup
+    from include.extensions.builtin import permission_cleanup
 
     policy = SimpleNamespace(cleanup_interval_seconds=60)
     monkeypatch.setattr(
-        _permission_cleanup,
+        permission_cleanup,
         "IdentityPermissionRetentionPolicy",
         SimpleNamespace(from_config=lambda: policy),
     )
@@ -19,11 +19,11 @@ def test_permission_cleanup_worker_runs_immediately_and_restarts(monkeypatch):
         called.set()
 
     monkeypatch.setattr(
-        _permission_cleanup,
+        permission_cleanup,
         "cleanup_expired_permission_entries",
         cleanup,
     )
-    worker = _permission_cleanup.PermissionCleanupWorker()
+    worker = permission_cleanup.PermissionCleanupWorker()
 
     worker.start()
     assert called.wait(1.0)
@@ -39,11 +39,11 @@ def test_permission_cleanup_worker_runs_immediately_and_restarts(monkeypatch):
 
 
 def test_permission_cleanup_worker_retries_after_failure(monkeypatch):
-    from include.extensions.builtin import _permission_cleanup
+    from include.extensions.builtin import permission_cleanup
 
     policy = SimpleNamespace(cleanup_interval_seconds=1)
     monkeypatch.setattr(
-        _permission_cleanup,
+        permission_cleanup,
         "IdentityPermissionRetentionPolicy",
         SimpleNamespace(from_config=lambda: policy),
     )
@@ -58,11 +58,11 @@ def test_permission_cleanup_worker_retries_after_failure(monkeypatch):
         recovered.set()
 
     monkeypatch.setattr(
-        _permission_cleanup,
+        permission_cleanup,
         "cleanup_expired_permission_entries",
         cleanup,
     )
-    worker = _permission_cleanup.PermissionCleanupWorker()
+    worker = permission_cleanup.PermissionCleanupWorker()
 
     worker.start()
     try:

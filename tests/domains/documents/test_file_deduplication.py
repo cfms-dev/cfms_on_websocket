@@ -55,7 +55,7 @@ def deduplication_context(monkeypatch, tmp_path):
     from include.domains.documents.queries.file_references import (
         _clear_file_references_cache,
     )
-    from include.extensions.builtin import _file_deduplication as file_deduplication
+    from include.extensions.builtin import file_deduplication as file_deduplication
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'deduplication.db'}",

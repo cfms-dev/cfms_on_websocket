@@ -29,12 +29,12 @@ from include.transport.request_handler import (
     Result,
 )
 
-from ._file_deduplication import (
+from .file_deduplication import (
     file_deduplication_worker,
     release_file_deduplication,
     schedule_file_deduplication,
 )
-from ._permission_cleanup import permission_cleanup_worker
+from .permission_cleanup import permission_cleanup_worker
 
 logger = log.bind(name="builtin")
 _active_server_lock = threading.Lock()
