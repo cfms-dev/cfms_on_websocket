@@ -76,7 +76,7 @@ class RequestListRevisionsHandler(RequestHandler):
 
             if (
                 Permissions.LIST_REVISIONS not in user.all_permissions
-                or not check_access_requirements(session, document, user, "read")
+                or not check_access_requirements(session, user, document, "read")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, username=handler.username)
@@ -161,7 +161,7 @@ class RequestGetRevisionHandler(RequestHandler):
             elif (
                 Permissions.VIEW_REVISION not in user.all_permissions
                 or not check_access_requirements(
-                    session, revision.document, user, "read"
+                    session, user, revision.document, "read"
                 )
             ):
                 response_code = result_code = 403
@@ -230,7 +230,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
 
             if (
                 Permissions.SET_CURRENT_REVISION not in user.all_permissions
-                or not check_access_requirements(session, document, user, "write")
+                or not check_access_requirements(session, user, document, "write")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, username=handler.username)
@@ -273,7 +273,7 @@ class RequestDeleteRevisionHandler(RequestHandler):
 
             if (
                 Permissions.DELETE_REVISION not in user.all_permissions
-                or check_access_requirements(session, document, user, "write") is False
+                or check_access_requirements(session, user, document, "write") is False
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, username=handler.username)

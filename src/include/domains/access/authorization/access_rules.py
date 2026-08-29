@@ -204,7 +204,7 @@ def apply_access_rules(
         session.flush()
 
     for access_type in new_access_rules:
-        if not check_access_requirements(session, target, user, access_type):
+        if not check_access_requirements(session, user, target, access_type):
             return False
 
     return True

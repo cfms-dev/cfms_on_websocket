@@ -75,7 +75,7 @@ def get_target_folder_and_check_write(
     if not target_folder:
         return None, 404, smsg.TARGET_DIRECTORY_NOT_FOUND
 
-    if not check_access_requirements(session, target_folder, user, "write"):
+    if not check_access_requirements(session, user, target_folder, "write"):
         if (
             target_folder_id == ROOT_DIRECTORY_ID
             and super_permission in user.all_permissions
@@ -152,7 +152,7 @@ def _describe_node_name_conflict_winner(
     session: Session, winner: Node, user: User
 ) -> tuple[dict, str]:
 
-    readable = check_access_requirements(session, winner, user, "read")
+    readable = check_access_requirements(session, user, winner, "read")
     visible_id = winner.id if readable else None
     if isinstance(winner, Document):
         payload = {"type": "document", "id": visible_id}

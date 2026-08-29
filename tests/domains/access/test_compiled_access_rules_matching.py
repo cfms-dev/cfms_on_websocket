@@ -299,7 +299,7 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
         )
         assert (
             check_access_requirements(
-                session, document, user, access_type, recursive=False
+                session, user, document, access_type, recursive=False
             )
             is allowed
         )
@@ -896,7 +896,7 @@ def test_compiled_access_rule_edge_cases_match_legacy_json_evaluator(
         is expected
     )
     assert (
-        check_access_requirements(session, document, user, access_type, recursive=False)
+        check_access_requirements(session, user, document, access_type, recursive=False)
         is expected
     )
 

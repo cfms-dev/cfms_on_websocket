@@ -32,8 +32,8 @@ class SingleNodeCheckResult(IntEnum):
 
 def check_access_requirements(
     session: Session,
-    target: Document | Folder,
     user: User,
+    target: Document | Folder,
     access_type: str = "read",
     *,
     recursive: bool | None = None,

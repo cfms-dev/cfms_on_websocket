@@ -872,7 +872,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
                 handler.conclude_request(404, {}, "Document does not exist")
                 return
 
-            if not check_access_requirements(session, document, user_to_update, "read"):
+            if not check_access_requirements(session, user_to_update, document, "read"):
                 handler.conclude_request(
                     403, {}, "User does not have access to the specified document"
                 )

@@ -113,7 +113,7 @@ class RequestGrantAccessHandler(RequestHandler):
 
             for access_type in access_types:
                 if not check_access_requirements(
-                    session, target, operator, access_type
+                    session, operator, target, access_type
                 ):
                     handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                     return Result(
