@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from include.providers.base import StorageProvider
 from include.providers.storage import local as local_storage
 from include.providers.storage.local import LocalStorageProvider
 
@@ -14,6 +15,30 @@ from include.providers.storage.local import LocalStorageProvider
 def _as_bytes(data: Buffer) -> bytes:
     with memoryview(data) as source_view, source_view.cast("B") as byte_view:
         return byte_view.tobytes()
+
+
+def test_storage_provider_requires_resumable_upload_operations():
+    class IncompleteStorageProvider(StorageProvider):
+        def fopen(self, path, mode="rb"):
+            raise NotImplementedError
+
+        def exists(self, path):
+            raise NotImplementedError
+
+        def remove(self, path):
+            raise NotImplementedError
+
+        def mkdir(self, path, mode=0o777):
+            raise NotImplementedError
+
+        def makedirs(self, name, mode=0o777, exist_ok=False):
+            raise NotImplementedError
+
+        def getsize(self, filename, /):
+            raise NotImplementedError
+
+    with pytest.raises(TypeError, match="abstract"):
+        IncompleteStorageProvider()
 
 
 @pytest.mark.parametrize(

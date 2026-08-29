@@ -511,8 +511,6 @@ class S3FileObject(FileObject):
 
 
 class S3StorageProvider(StorageProvider):
-    supports_resumable_uploads = True
-
     def __init__(
         self,
         bucket_name: str,

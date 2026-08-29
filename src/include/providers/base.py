@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Buffer, Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from io import UnsupportedOperation
 from types import TracebackType
 from typing import Any, ClassVar, Self
 
@@ -150,7 +149,6 @@ class StorageProvider(Provider):
     """
 
     identifier: ClassVar[str] = "storage"
-    supports_resumable_uploads: ClassVar[bool] = False
 
     @abstractmethod
     def fopen(self, path: str, mode: str = "rb") -> FileObject:
@@ -176,6 +174,7 @@ class StorageProvider(Provider):
     def getsize(self, filename: str, /) -> int:
         pass
 
+    @abstractmethod
     def open_resumable_upload(
         self,
         path: str,
@@ -187,10 +186,11 @@ class StorageProvider(Provider):
         checkpoint_data: str | None = None,
         checkpoint_callback: Callable[[str], None] | None = None,
     ) -> ResumableUpload:
-        raise UnsupportedOperation("This storage provider cannot resume uploads")
+        pass
 
+    @abstractmethod
     def abort_resumable_upload(self, path: str, session_id: str) -> None:
-        raise UnsupportedOperation("This storage provider cannot abort upload sessions")
+        pass
 
 
 class EventBusProvider(Provider):
