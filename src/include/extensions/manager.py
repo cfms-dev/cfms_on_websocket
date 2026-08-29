@@ -1,6 +1,7 @@
 __all__ = [
     "DiscoveredExtension",
     "ExtensionCompatibility",
+    "ExtensionDependencies",
     "ExtensionDiscoveryError",
     "ExtensionLoadError",
     "ExtensionManifest",
@@ -27,12 +28,15 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 import pluggy
 import websockets.sync.server
 from loguru import logger as log
+from packaging.version import InvalidVersion
+from packaging.version import Version as PackageVersion
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from include.config.constants import CORE_VERSION
@@ -107,6 +111,31 @@ class ExtensionCompatibility(BaseModel):
         return value
 
 
+class ExtensionDependencies(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
+
+    extensions: dict[ExtensionIdentifier, TrimmedNonEmptyString] = Field(
+        default_factory=dict
+    )
+
+    @field_validator("extensions")
+    @classmethod
+    def validate_minimum_versions(cls, value):
+        for identifier, minimum_version in value.items():
+            try:
+                PackageVersion(minimum_version)
+            except InvalidVersion as exc:
+                raise ValueError(
+                    f"Invalid minimum version for extension {identifier!r}: "
+                    f"{minimum_version!r}"
+                ) from exc
+        return value
+
+
 class ExtensionManifest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -114,11 +143,25 @@ class ExtensionManifest(BaseModel):
         strict=True,
     )
 
-    manifest_version: Literal[2]  # := SUPPORTED_MANIFEST_VERSION
+    manifest_version: Literal[2, 3]
     extension: ExtensionMetadata
     compatibility: ExtensionCompatibility = Field(
         default_factory=ExtensionCompatibility
     )
+    dependencies: ExtensionDependencies = Field(default_factory=ExtensionDependencies)
+
+    @model_validator(mode="after")
+    def validate_manifest_version_contract(self):
+        if self.manifest_version == 2 and "dependencies" in self.model_fields_set:
+            raise ValueError("manifest version 2 does not support dependencies")
+        if self.manifest_version == 3:
+            try:
+                PackageVersion(self.extension.version)
+            except InvalidVersion as exc:
+                raise ValueError(
+                    "manifest version 3 requires a valid PEP 440 extension version"
+                ) from exc
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +424,113 @@ def _load_extension(extension: DiscoveredExtension) -> None:
             _rollback_extension(ext_name)
 
 
+def _find_dependency_cycle(
+    dependencies: dict[str, tuple[str, ...]],
+    selected: tuple[str, ...],
+) -> tuple[str, ...]:
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    path: list[str] = []
+
+    def visit(identifier: str) -> tuple[str, ...] | None:
+        if identifier in visiting:
+            start = path.index(identifier)
+            return (*path[start:], identifier)
+        if identifier in visited:
+            return None
+
+        visiting.add(identifier)
+        path.append(identifier)
+        for dependency in dependencies[identifier]:
+            cycle = visit(dependency)
+            if cycle is not None:
+                return cycle
+        path.pop()
+        visiting.remove(identifier)
+        visited.add(identifier)
+        return None
+
+    for identifier in selected:
+        cycle = visit(identifier)
+        if cycle is not None:
+            return cycle
+    return ()
+
+
+def _resolve_extension_load_order(
+    discovered: dict[str, DiscoveredExtension],
+    selected: tuple[str, ...],
+) -> tuple[DiscoveredExtension, ...]:
+    selected_set = set(selected)
+    order_index = {identifier: index for index, identifier in enumerate(selected)}
+    dependencies: dict[str, tuple[str, ...]] = {}
+    dependents: dict[str, list[str]] = {identifier: [] for identifier in selected}
+    indegree: dict[str, int] = {}
+
+    for identifier in selected:
+        extension = discovered[identifier]
+        required = tuple(extension.manifest.dependencies.extensions)
+        if identifier == "builtin" and required:
+            raise ExtensionLoadError(
+                "The built-in extension cannot declare extension dependencies"
+            )
+        if identifier in required:
+            raise ExtensionLoadError(
+                f"Extension {identifier!r} cannot depend on itself"
+            )
+        for (
+            dependency,
+            minimum_version,
+        ) in extension.manifest.dependencies.extensions.items():
+            installed = discovered.get(dependency)
+            if installed is None:
+                raise ExtensionLoadError(
+                    f"Extension {identifier!r} requires extension {dependency!r}, "
+                    "but it is not installed"
+                )
+            if dependency not in selected_set:
+                raise ExtensionLoadError(
+                    f"Extension {identifier!r} requires extension {dependency!r}, "
+                    "but it is not enabled"
+                )
+            try:
+                installed_version = PackageVersion(installed.manifest.extension.version)
+            except InvalidVersion as exc:
+                raise ExtensionLoadError(
+                    f"Extension {dependency!r} has an invalid version "
+                    f"{installed.manifest.extension.version!r}"
+                ) from exc
+            required_version = PackageVersion(minimum_version)
+            if installed_version < required_version:
+                raise ExtensionLoadError(
+                    f"Extension {identifier!r} requires extension {dependency!r} "
+                    f"version {minimum_version} or newer; installed version is "
+                    f"{installed.manifest.extension.version}"
+                )
+            dependents[dependency].append(identifier)
+        dependencies[identifier] = required
+        indegree[identifier] = len(required)
+
+    ready = [identifier for identifier in selected if indegree[identifier] == 0]
+    resolved = []
+    while ready:
+        ready.sort(key=order_index.__getitem__)
+        identifier = ready.pop(0)
+        resolved.append(identifier)
+        for dependent in dependents[identifier]:
+            indegree[dependent] -= 1
+            if indegree[dependent] == 0:
+                ready.append(dependent)
+
+    if len(resolved) != len(selected):
+        cycle = _find_dependency_cycle(dependencies, selected)
+        raise ExtensionLoadError(
+            "Extension dependency cycle detected: " + " -> ".join(cycle)
+        )
+
+    return tuple(discovered[identifier] for identifier in resolved)
+
+
 def validate_extension_config(config: Any) -> None:
     """Validate configuration through all registered extension hooks."""
     pm.hook.ext_validate_config(config=config)
@@ -413,16 +563,10 @@ def load_extensions_from_directory(
             "Configured extensions were not found: " + ", ".join(missing)
         )
 
-    extensions_to_load = []
-    if not pm.has_plugin("builtin"):
-        extensions_to_load.append(builtin_ext)
-    extensions_to_load.extend(
-        discovered[identifier]
-        for identifier in enabled
-        if not pm.has_plugin(identifier)
-    )
+    selected_identifiers = ("builtin", *enabled)
+    ordered_extensions = _resolve_extension_load_order(discovered, selected_identifiers)
 
-    for extension in extensions_to_load:
+    for extension in ordered_extensions:
         minimum_version = extension.manifest.compatibility.minimum_server_version
         if minimum_version is not None and CORE_VERSION < minimum_version:
             identifier = extension.manifest.extension.identifier
@@ -430,6 +574,12 @@ def load_extensions_from_directory(
                 f"Extension {identifier!r} requires server version "
                 f"{minimum_version} or newer; current server version is {CORE_VERSION}"
             )
+
+    extensions_to_load = [
+        extension
+        for extension in ordered_extensions
+        if not pm.has_plugin(extension.manifest.extension.identifier)
+    ]
 
     loaded_extensions: list[DiscoveredExtension] = []
     try:

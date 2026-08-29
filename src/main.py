@@ -62,6 +62,7 @@ from include.transport.router import (
     handle_connection,
     whitelisted_functions,
 )
+from include.transport.tls import create_server_ssl_context
 
 # fix
 os.makedirs(ROOT_ABSPATH / "content" / "logs", exist_ok=True)
@@ -424,24 +425,20 @@ def main():
     logger.info(f"CFMS Core Version: {CORE_VERSION}")
 
     # TODO: Add support for TLS ECH when upstream libraries support it.
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ssl_context.load_cert_chain(
-        certfile=global_config["server"]["ssl_certfile"],
-        keyfile=global_config["server"]["ssl_keyfile"],
-    )
-    ssl_context.minimum_version = ssl.TLSVersion.TLSv1_3
-
-    # Mutual TLS: require and verify client certificates if configured
     security_cfg = global_config.get("security", {})
-    if security_cfg.get("require_client_cert", False):
-        client_ca_path: str = security_cfg["client_cert_ca_path"]
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
-
-        ssl_context.verify_flags |= ssl.VERIFY_X509_STRICT
-        ssl_context.load_verify_locations(capath=client_ca_path)
+    require_client_cert = security_cfg.get("require_client_cert", False)
+    ssl_context = create_server_ssl_context(
+        global_config["server"]["ssl_certfile"],
+        global_config["server"]["ssl_keyfile"],
+        require_client_cert=require_client_cert,
+        client_ca_path=(
+            security_cfg["client_cert_ca_path"] if require_client_cert else None
+        ),
+    )
+    if require_client_cert:
         logger.info(
             f"Mutual TLS enabled: client certificates will be verified "
-            f"against CA path '{client_ca_path}'."
+            f"against CA path '{security_cfg['client_cert_ca_path']}'."
         )
 
     for warning in get_config_warnings(global_config):
