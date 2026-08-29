@@ -14,6 +14,21 @@ distinct_account_threshold = 10
 distinct_ip_threshold = 10
 reason = "Automatic security lockdown: suspected credential-guessing attack detected."
 
+# Optional HTTPS API framework for extension-owned APIRouter registrations.
+# Install with `uv sync --extra ext_http_api` and add "http_api" to enabled.
+[extensions.http_api]
+host = "localhost"
+port = 5105
+# Omit both values to reuse server.ssl_certfile and server.ssl_keyfile.
+# ssl_certfile = "./content/ssl/http-cert.pem"
+# ssl_keyfile = "./content/ssl/http-key.pem"
+max_concurrency = 64
+max_request_body_bytes = 1048576
+startup_timeout_seconds = 10.0
+shutdown_timeout_seconds = 10.0
+cors_allowed_origins = []
+docs_enabled = false
+
 [server]
 # Name of the server
 name = "CFMS WebSocket Server"

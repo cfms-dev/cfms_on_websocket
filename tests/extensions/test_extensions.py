@@ -12,8 +12,13 @@ from include.config.version import Version
 EXTENSION_MODULE_NAMES = {
     "builtin",
     "compatible_ext",
+    "consumer_ext",
+    "cycle_a",
+    "cycle_b",
+    "dependency_ext",
     "disabled_ext",
     "first_ext",
+    "http_api",
     "incompatible_ext",
     "missing_entry_ext",
     "plain_validator_ext",
@@ -37,6 +42,7 @@ def _manifest_source(
     *,
     manifest_version: int = 2,
     compatibility: dict | None = None,
+    dependencies: dict | None = None,
     **overrides,
 ) -> str:
     values = {
@@ -53,6 +59,10 @@ def _manifest_source(
     if compatibility is not None:
         lines.extend(("", "[compatibility]"))
         for key, value in compatibility.items():
+            lines.append(f"{key} = {_toml_value(value)}")
+    if dependencies is not None:
+        lines.extend(("", "[dependencies.extensions]"))
+        for key, value in dependencies.items():
             lines.append(f"{key} = {_toml_value(value)}")
     return "\n".join(lines) + "\n"
 
@@ -203,10 +213,55 @@ def test_extension_manifest_compatibility_is_optional(tmp_path):
     assert manifest.compatibility.minimum_server_version is None
 
 
+def test_manifest_version_three_parses_pep440_dependencies(tmp_path):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(
+        _manifest_source(
+            "consumer_ext",
+            manifest_version=3,
+            version="1.0.0rc1",
+            dependencies={"dependency_ext": "2.1"},
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = extension_manager.parse_extension_manifest(manifest_path)
+
+    assert manifest.manifest_version == 3
+    assert manifest.dependencies.extensions == {"dependency_ext": "2.1"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        _manifest_source(
+            "consumer_ext",
+            manifest_version=3,
+            version="not a version",
+        ),
+        _manifest_source(
+            "consumer_ext",
+            manifest_version=3,
+            dependencies={"dependency_ext": "not a version"},
+        ),
+        _manifest_source(
+            "consumer_ext",
+            dependencies={"dependency_ext": "1.0.0"},
+        ),
+    ],
+)
+def test_invalid_manifest_dependency_versions_are_rejected(tmp_path, source):
+    manifest_path = tmp_path / "manifest.toml"
+    manifest_path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(extension_manager.ExtensionManifestError):
+        extension_manager.parse_extension_manifest(manifest_path)
+
+
 @pytest.mark.parametrize(
     ("overrides", "field"),
     [
-        ({"manifest_version": 3}, "manifest_version"),
+        ({"manifest_version": 4}, "manifest_version"),
         ({"identifier": 1}, "identifier"),
         ({"identifier": "Invalid-Identifier"}, "identifier"),
         ({"identifier": " sample_ext "}, "identifier"),
@@ -313,7 +368,12 @@ def test_bundled_extension_catalog_is_valid():
 
     discovered = extension_manager.discover_extensions(extension_root)
 
-    assert set(discovered) == {"builtin", "brute_force_lockdown", "oidc_sso"}
+    assert set(discovered) == {
+        "builtin",
+        "brute_force_lockdown",
+        "http_api",
+        "oidc_sso",
+    }
 
 
 def test_builtin_extension_manifest_matches_core_version():
@@ -452,6 +512,255 @@ def test_extensions_are_registered_in_configuration_order(monkeypatch, tmp_path)
         "second_ext",
     ]
     assert [entry.version for entry in metadata] == ["1.0.0", "1.0.0", "1.0.0"]
+
+
+def test_dependencies_load_first_with_stable_configuration_order(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    consumer = _write_extension(tmp_path, "consumer")
+    dependency = _write_extension(tmp_path, "dependency")
+    unrelated = _write_extension(tmp_path, "unrelated")
+    _write_manifest(
+        consumer,
+        "consumer_ext",
+        manifest_version=3,
+        dependencies={"dependency_ext": "1.0.0"},
+    )
+    _write_manifest(dependency, "dependency_ext", manifest_version=3)
+    _write_manifest(unrelated, "first_ext")
+
+    _load_extensions(
+        tmp_path,
+        ["consumer_ext", "dependency_ext", "first_ext"],
+    )
+
+    assert [name for name, _plugin in pm.list_name_plugin()] == [
+        "builtin",
+        "dependency_ext",
+        "consumer_ext",
+        "first_ext",
+    ]
+
+
+def test_dependency_can_add_hook_spec_before_consumer_registration(
+    monkeypatch, tmp_path
+):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    framework = _write_extension(
+        tmp_path,
+        "http_framework",
+        "\n".join(
+            [
+                "from include.extensions.manager import hookimpl, hookspec, pm",
+                "class HttpHookSpecs:",
+                "    @hookspec",
+                "    def ext_register_http_routers(self):",
+                "        pass",
+                "pm.add_hookspecs(HttpHookSpecs)",
+                "http_hookimpl = hookimpl",
+                "",
+            ]
+        ),
+    )
+    consumer = _write_extension(
+        tmp_path,
+        "consumer",
+        "\n".join(
+            [
+                "from http_api import http_hookimpl",
+                "@http_hookimpl",
+                "def ext_register_http_routers():",
+                "    return ('consumer',)",
+                "",
+            ]
+        ),
+    )
+    _write_manifest(framework, "http_api", manifest_version=3)
+    _write_manifest(
+        consumer,
+        "consumer_ext",
+        manifest_version=3,
+        dependencies={"http_api": "1.0.0"},
+    )
+
+    _load_extensions(tmp_path, ["consumer_ext", "http_api"])
+
+    assert hasattr(pm.hook, "ext_register_http_routers")
+    assert pm.hook.ext_register_http_routers() == [("consumer",)]
+
+
+@pytest.mark.parametrize(
+    ("install_dependency", "enabled", "message"),
+    [
+        (False, ["consumer_ext"], "but it is not installed"),
+        (True, ["consumer_ext"], "but it is not enabled"),
+    ],
+)
+def test_missing_or_disabled_dependency_prevents_all_imports(
+    monkeypatch,
+    tmp_path,
+    install_dependency,
+    enabled,
+    message,
+):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    imported_marker = tmp_path / "builtin-imported"
+    _write_builtin(
+        tmp_path,
+        f"open({str(imported_marker)!r}, 'w').close()\n",
+    )
+    consumer = _write_extension(tmp_path, "consumer")
+    _write_manifest(
+        consumer,
+        "consumer_ext",
+        manifest_version=3,
+        dependencies={"dependency_ext": "1.0.0"},
+    )
+    if install_dependency:
+        dependency = _write_extension(tmp_path, "dependency")
+        _write_manifest(dependency, "dependency_ext", manifest_version=3)
+
+    with pytest.raises(extension_manager.ExtensionLoadError, match=message):
+        _load_extensions(tmp_path, enabled)
+
+    assert pm.list_name_plugin() == []
+    assert not imported_marker.exists()
+
+
+def test_dependency_minimum_version_is_enforced_before_import(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    imported_marker = tmp_path / "builtin-imported"
+    _write_builtin(
+        tmp_path,
+        f"open({str(imported_marker)!r}, 'w').close()\n",
+    )
+    consumer = _write_extension(tmp_path, "consumer")
+    dependency = _write_extension(tmp_path, "dependency")
+    _write_manifest(
+        consumer,
+        "consumer_ext",
+        manifest_version=3,
+        dependencies={"dependency_ext": "2.0.0"},
+    )
+    _write_manifest(
+        dependency,
+        "dependency_ext",
+        manifest_version=3,
+        version="1.9.9",
+    )
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match="version 2.0.0 or newer; installed version is 1.9.9",
+    ):
+        _load_extensions(tmp_path, ["consumer_ext", "dependency_ext"])
+
+    assert pm.list_name_plugin() == []
+    assert not imported_marker.exists()
+
+
+def test_transitive_dependencies_must_all_be_explicitly_enabled(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    consumer = _write_extension(tmp_path, "consumer")
+    dependency = _write_extension(tmp_path, "dependency")
+    transitive = _write_extension(tmp_path, "transitive")
+    _write_manifest(
+        consumer,
+        "consumer_ext",
+        manifest_version=3,
+        dependencies={"dependency_ext": "1.0.0"},
+    )
+    _write_manifest(
+        dependency,
+        "dependency_ext",
+        manifest_version=3,
+        dependencies={"second_ext": "1.0.0"},
+    )
+    _write_manifest(transitive, "second_ext", manifest_version=3)
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match="requires extension 'second_ext', but it is not enabled",
+    ):
+        _load_extensions(tmp_path, ["consumer_ext", "dependency_ext"])
+
+    assert pm.list_name_plugin() == []
+
+
+def test_self_dependency_is_rejected_before_import(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    consumer = _write_extension(tmp_path, "consumer")
+    _write_manifest(
+        consumer,
+        "consumer_ext",
+        manifest_version=3,
+        dependencies={"consumer_ext": "1.0.0"},
+    )
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match="cannot depend on itself",
+    ):
+        _load_extensions(tmp_path, ["consumer_ext"])
+
+    assert pm.list_name_plugin() == []
+
+
+def test_dependency_cycle_is_rejected_before_import(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(tmp_path)
+    first = _write_extension(tmp_path, "cycle_a")
+    second = _write_extension(tmp_path, "cycle_b")
+    _write_manifest(
+        first,
+        "cycle_a",
+        manifest_version=3,
+        dependencies={"cycle_b": "1.0.0"},
+    )
+    _write_manifest(
+        second,
+        "cycle_b",
+        manifest_version=3,
+        dependencies={"cycle_a": "1.0.0"},
+    )
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match="cycle_a -> cycle_b -> cycle_a",
+    ):
+        _load_extensions(tmp_path, ["cycle_a", "cycle_b"])
+
+    assert pm.list_name_plugin() == []
+
+
+def test_builtin_extension_cannot_declare_dependencies(monkeypatch, tmp_path):
+    pm = _fresh_plugin_manager()
+    monkeypatch.setattr(extension_manager, "pm", pm)
+    _write_builtin(
+        tmp_path,
+        manifest_version=3,
+        dependencies={"dependency_ext": "1.0.0"},
+    )
+    dependency = _write_extension(tmp_path, "dependency")
+    _write_manifest(dependency, "dependency_ext", manifest_version=3)
+
+    with pytest.raises(
+        extension_manager.ExtensionLoadError,
+        match="built-in extension cannot declare extension dependencies",
+    ):
+        _load_extensions(tmp_path, ["dependency_ext"])
+
+    assert pm.list_name_plugin() == []
 
 
 def test_duplicate_enabled_extension_identifiers_are_rejected(monkeypatch, tmp_path):

@@ -31,18 +31,35 @@ minimum_server_version = "0.5.0.260812_alpha"
 `minimum_server_version` are optional. Omitting the minimum version declares no
 server-version floor. Unknown tables and fields are rejected.
 
-Use semantic versions for the extension's own `version` and an SPDX license
-identifier where possible. `minimum_server_version` uses the CFMS core version
-format:
+Use an SPDX license identifier where possible. Version 2 retains its historical
+string treatment for the extension's own `version`. `minimum_server_version`
+uses the CFMS core version format:
 `MAJOR.MINOR.PATCH[.BUILD][_TYPE[NUMBER]]`. Supported release types are `alpha`,
 `beta`, `rc`, and `release`, ordered from earliest to latest; omitting the type is
 equivalent to `release`. Version values must be bare versions without comparison
 operators. Authorized administrators can read the running core version from
 `diagnostics.server.core_version`.
 
-Flat manifest version 1 files are no longer supported. Extension developers must
-set `manifest_version = 2`, move descriptive fields into `[extension]`, and add
-`[compatibility]` when the extension requires a particular server version.
+Manifest version 3 adds explicit extension dependencies:
+
+```toml
+manifest_version = 3
+
+[extension]
+identifier = "example_http_api"
+name = "Example HTTP API"
+version = "1.0.0"
+authors = ["Example Author"]
+license = "Apache-2.0"
+
+[dependencies.extensions]
+http_api = "1.0.0"
+```
+
+Version 3 extension versions and dependency minimums must be valid PEP 440
+versions. A dependency value means “this version or newer”. Version 2 manifests
+remain supported, but cannot declare `[dependencies]`. Flat manifest version 1
+files are no longer supported.
 
 The identifier is the stable configuration and Pluggy registration key. It must
 match `^[a-z][a-z0-9_]*$`, contain at most 255 characters, must not be `core`,
@@ -52,7 +69,7 @@ exactly as written and are never trimmed or otherwise normalized.
 
 ## Activation
 
-Optional extensions are loaded in the order listed in the server configuration:
+Optional extensions are selected in the server configuration:
 
 ```toml
 [extensions]
@@ -62,10 +79,14 @@ enabled = ["example_extension"]
 The `builtin` extension provides core server behavior and is always loaded first;
 do not list it in `enabled`. Configuration changes require a server restart. The
 server validates every installed extension manifest at startup, but imports only
-the built-in extension and identifiers listed in `enabled`.
+the built-in extension and identifiers listed in `enabled`. Dependencies must be
+installed and explicitly enabled; they are not enabled transitively.
 
 Before importing any extension code, the server checks the complete set of
-extensions selected for this load. If the current core version is lower than any
+extensions selected for this load. It rejects missing or disabled dependencies,
+insufficient versions, self-dependencies, and dependency cycles. It then performs
+a stable topological sort: dependencies load first while unrelated extensions
+retain configuration order. If the current core version is lower than any
 selected extension's `minimum_server_version`, startup fails with the extension
 identifier, required version, and current version, and none of the selected
 extensions are imported. An installed but disabled extension may target a newer
@@ -165,6 +186,87 @@ been sent and must not attempt to change the completed client result.
 The `builtin` extension uses these hooks together with its startup and shutdown
 hooks to own durable file deduplication. Core upload handling publishes the
 lifecycle events but does not schedule or run deduplication itself.
+
+## HTTP API framework
+
+The optional `http_api` extension runs a single-worker FastAPI application on a
+separate HTTPS port in the CFMS process. Install its dependencies and enable it:
+
+```bash
+uv sync --extra ext_http_api
+```
+
+```toml
+[extensions]
+enabled = ["http_api", "example_http_api"]
+
+[extensions.http_api]
+host = "localhost"
+port = 5105
+max_concurrency = 64
+max_request_body_bytes = 1048576
+startup_timeout_seconds = 10.0
+shutdown_timeout_seconds = 10.0
+cors_allowed_origins = []
+docs_enabled = false
+```
+
+Omit `ssl_certfile` and `ssl_keyfile` to reuse the WebSocket server certificate.
+If one is set, both are required. TLS is always enabled with a TLS 1.3 minimum;
+the core client-certificate CA and requirement are inherited. Trusted proxies
+come from `server.trusted_proxy_networks`. CORS and the OpenAPI UI are disabled
+by default. When enabled, the schema and UI are available at
+`/api/v1/openapi.json` and `/api/v1/docs`. `/healthz` is always available and
+does not disclose versions or enabled extensions. Listener changes require a
+restart.
+
+Consumers use a version 3 manifest dependency and register HTTP-only routers:
+
+```toml
+manifest_version = 3
+
+[extension]
+identifier = "example_http_api"
+name = "Example HTTP API"
+version = "1.0.0"
+authors = ["Example Author"]
+license = "Apache-2.0"
+
+[dependencies.extensions]
+http_api = "1.0.0"
+```
+
+```python
+from fastapi import APIRouter
+
+from http_api import HttpRouterRegistration, http_hookimpl
+
+router = APIRouter(prefix="/example")
+
+
+@router.get("/status")
+def status() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@http_hookimpl
+def ext_register_http_routers() -> tuple[HttpRouterRegistration, ...]:
+    return (HttpRouterRegistration(owner="example_http_api", router=router),)
+```
+
+Every router must declare a non-empty sub-prefix. The framework prepends
+`/api/v1`, rejects duplicate method/final-path pairs, and verifies that each
+owner is a loaded extension. Registering a router never creates a WebSocket
+action. Use the exported authentication, permission, shared rate-limit, client
+address, and audit helpers explicitly for each endpoint; public endpoints that
+accept anonymous traffic should still opt into IP rate limiting.
+
+Bearer authentication uses an unverified username only to locate the database
+row, then calls the user's complete token validator before building an immutable
+`HttpPrincipal`. Unverified claims never grant access. Blocking database work
+should be implemented in normal `def` endpoints so FastAPI runs it in its thread
+pool. Each endpoint must open, commit or roll back, and close its own SQLAlchemy
+session; sessions and ORM objects must not cross request threads.
 
 ## Persistent runtime state
 
