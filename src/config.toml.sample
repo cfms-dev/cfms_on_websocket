@@ -276,5 +276,11 @@ endpoint_url = ""
 access_key_id = ""
 # S3 Secret Access Key
 secret_access_key = ""
+# S3 session token for temporary explicit credentials (optional)
+session_token = ""
 # S3 region name (e.g., "us-east-1")
 region_name = ""
+# S3 addressing style ("auto", "virtual", or "path")
+addressing_style = "auto"
+# Number of reusable HTTP connections; defaults to server admission capacity
+max_pool_connections = 64

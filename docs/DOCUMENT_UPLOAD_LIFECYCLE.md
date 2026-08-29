@@ -296,6 +296,29 @@ an S3 lifecycle rule that aborts old incomplete multipart uploads is also
 recommended. An active S3 session created before authoritative manifests were
 persisted restarts from offset zero and overwrites its unrecorded parts.
 
+S3 downloads use byte-range GET requests after a non-zero seek, so the storage
+provider remains seekable for protocol download resumes without transferring
+and discarding the object prefix. The first seek may issue a HEAD request to
+establish the object size; sequential reads issue a single GET request.
+
+An empty S3 endpoint or region delegates endpoint resolution to Boto3. When
+both configured access-key fields are empty, Boto3's standard credential chain
+is used; an optional session token may accompany explicit temporary
+credentials. `addressing_style` defaults to `auto`, and
+`max_pool_connections` defaults to the server admission-control capacity. S3
+provider configuration changes require a server restart because providers are
+constructed during startup.
+
+The optional compatibility integration test writes only beneath a unique key
+prefix in a pre-existing dedicated test bucket. Set `CFMS_TEST_S3_WRITE=1` and
+`CFMS_TEST_S3_BUCKET`, optionally set `CFMS_TEST_S3_ENDPOINT_URL`,
+`CFMS_TEST_S3_REGION`, and `CFMS_TEST_S3_ADDRESSING_STYLE`, then run:
+
+```powershell
+uv run --locked --extra cluster pytest `
+    tests/providers/test_s3_compatibility_integration.py
+```
+
 Every `download_file.data` object must include
 `max_chunk_size` in the inclusive range 16 KiB through 2 MiB. The server chooses
 the result using the shared rule with a 2 MiB download hard limit, stores it on

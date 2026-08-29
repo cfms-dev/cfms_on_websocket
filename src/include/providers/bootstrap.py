@@ -1,4 +1,5 @@
 from include.config.settings import global_config
+from include.config.validation import AdmissionControlPolicy, S3StoragePolicy
 from include.providers.manager import ProviderManager
 from include.providers.storage import LocalStorageProvider
 
@@ -14,13 +15,19 @@ def initialize_providers(config=global_config) -> None:
         case "s3":
             from include.providers.storage.s3 import S3StorageProvider
 
-            s3_cfg = config["s3"]
+            s3_policy = S3StoragePolicy.from_config(config)
             storage_provider = S3StorageProvider(
-                bucket_name=s3_cfg["bucket"],
-                endpoint_url=s3_cfg["endpoint_url"],
-                aws_access_key_id=s3_cfg["access_key_id"],
-                aws_secret_access_key=s3_cfg["secret_access_key"],
-                region_name=s3_cfg["region_name"],
+                bucket_name=s3_policy.bucket,
+                endpoint_url=s3_policy.endpoint_url,
+                aws_access_key_id=s3_policy.access_key_id,
+                aws_secret_access_key=s3_policy.secret_access_key,
+                region_name=s3_policy.region_name,
+                aws_session_token=s3_policy.session_token,
+                addressing_style=s3_policy.addressing_style,
+                max_pool_connections=(
+                    s3_policy.max_pool_connections
+                    or AdmissionControlPolicy.from_config(config).max_connections
+                ),
             )
         case _:
             raise ValueError(

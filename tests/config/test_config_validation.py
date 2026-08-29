@@ -15,6 +15,7 @@ from include.config.validation import (
     DocumentUploadPolicy,
     IdentityPermissionRetentionPolicy,
     RequestRateControlPolicy,
+    S3StoragePolicy,
     get_config_warnings,
     get_enabled_extensions,
     get_trusted_proxy_networks,
@@ -694,3 +695,128 @@ def test_global_config_implements_read_only_mapping_contract():
 def test_invalid_toml_is_reported_as_configuration_error():
     with pytest.raises(ConfigValidationError, match="Invalid TOML configuration"):
         parse_config_document("[server")
+
+
+def _valid_s3_config() -> dict:
+    config = _valid_config()
+    config["provider"] = {"storage": "s3"}
+    config["s3"] = {
+        "bucket": "test-bucket",
+        "endpoint_url": "",
+        "access_key_id": "",
+        "secret_access_key": "",
+        "session_token": "",
+        "region_name": "",
+        "addressing_style": "auto",
+        "max_pool_connections": 64,
+    }
+    return config
+
+
+def test_s3_configuration_accepts_sdk_default_resolution():
+    config = _valid_s3_config()
+
+    validate_config(config)
+
+    policy = S3StoragePolicy.from_config(config)
+    assert policy.bucket == "test-bucket"
+    assert policy.addressing_style == "auto"
+    assert policy.max_pool_connections == 64
+
+
+def test_s3_configuration_allows_omitting_connection_pool():
+    config = _valid_s3_config()
+    del config["s3"]["max_pool_connections"]
+    config["server"]["admission_control"] = {
+        "max_connections": 20,
+        "max_connections_per_ip": 10,
+    }
+
+    validate_config(config)
+
+    policy = S3StoragePolicy.from_config(config)
+    assert policy.max_pool_connections is None
+
+
+def test_s3_policy_hides_explicit_credentials_from_its_representation():
+    config = _valid_s3_config()
+    config["s3"].update(
+        {
+            "access_key_id": "access",
+            "secret_access_key": "secret-value",
+            "session_token": "token-value",
+        }
+    )
+
+    policy = S3StoragePolicy.from_config(config)
+
+    assert policy.access_key_id == "access"
+    assert policy.secret_access_key == "secret-value"
+    assert policy.session_token == "token-value"
+    assert "secret-value" not in repr(policy)
+    assert "token-value" not in repr(policy)
+
+
+@pytest.mark.parametrize("addressing_style", ["auto", "virtual", "path"])
+def test_s3_configuration_accepts_supported_addressing_styles(addressing_style):
+    config = _valid_s3_config()
+    config["s3"]["addressing_style"] = addressing_style
+
+    validate_config(config)
+
+
+@pytest.mark.parametrize("max_pool_connections", [0, -1, True, "64"])
+def test_s3_configuration_rejects_invalid_connection_pool(max_pool_connections):
+    config = _valid_s3_config()
+    config["s3"]["max_pool_connections"] = max_pool_connections
+
+    with pytest.raises(ConfigValidationError, match="max_pool_connections"):
+        validate_config(config)
+
+
+def test_s3_configuration_rejects_invalid_addressing_style():
+    config = _valid_s3_config()
+    config["s3"]["addressing_style"] = "custom"
+
+    with pytest.raises(ConfigValidationError, match="addressing_style"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("access_key_id", "secret_access_key", "session_token", "message"),
+    [
+        ("access", "", "", "configured together"),
+        ("", "secret", "", "configured together"),
+        ("", "", "token", "session_token"),
+    ],
+)
+def test_s3_configuration_rejects_incomplete_explicit_credentials(
+    access_key_id, secret_access_key, session_token, message
+):
+    config = _valid_s3_config()
+    config["s3"].update(
+        {
+            "access_key_id": access_key_id,
+            "secret_access_key": secret_access_key,
+            "session_token": session_token,
+        }
+    )
+
+    with pytest.raises(ConfigValidationError, match=message):
+        validate_config(config)
+
+
+def test_s3_configuration_requires_non_empty_bucket():
+    config = _valid_s3_config()
+    config["s3"]["bucket"] = ""
+
+    with pytest.raises(ConfigValidationError, match="s3.bucket"):
+        validate_config(config)
+
+
+def test_storage_provider_rejects_unknown_backend():
+    config = _valid_config()
+    config["provider"] = {"storage": "unknown"}
+
+    with pytest.raises(ConfigValidationError, match="provider.storage"):
+        validate_config(config)

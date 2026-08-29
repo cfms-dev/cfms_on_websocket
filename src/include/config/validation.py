@@ -1,6 +1,7 @@
 import ipaddress
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import field
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -23,7 +24,7 @@ from include.config._policy import (
 )
 from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 from include.extensions.identifiers import validate_extension_identifier
-from include.types import PositiveInt, UnitRatio
+from include.types import NonEmptyString, PositiveInt, UnitRatio
 
 __all__ = [
     "AdmissionControlPolicy",
@@ -35,6 +36,7 @@ __all__ = [
     "DocumentUploadPolicy",
     "IdentityPermissionRetentionPolicy",
     "RequestRateControlPolicy",
+    "S3StoragePolicy",
     "get_config_warnings",
     "get_enabled_extensions",
     "get_trusted_proxy_networks",
@@ -460,6 +462,31 @@ class DocumentDownloadRiskPolicy(_ConfigPolicy):
     state_retention_seconds: PositiveInt = 86400
 
 
+@dataclass(frozen=True)
+class S3StoragePolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("s3", required=True),))
+
+    bucket: NonEmptyString
+    endpoint_url: str = ""
+    access_key_id: str = ""
+    secret_access_key: str = field(default="", repr=False)
+    session_token: str = field(default="", repr=False)
+    region_name: str = ""
+    addressing_style: Literal["auto", "virtual", "path"] = "auto"
+    max_pool_connections: PositiveInt | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if bool(self.access_key_id) != bool(self.secret_access_key):
+            raise ConfigValidationError(
+                "s3.access_key_id and s3.secret_access_key must be configured together"
+            )
+        if self.session_token and not self.access_key_id:
+            raise ConfigValidationError(
+                "s3.session_token requires explicit access key credentials"
+            )
+
+
 def _validate_client_certificate_config(config: _ConfigSource) -> None:
     security = _section(config, "security")
     require_client_cert = security.get("require_client_cert", False)
@@ -488,6 +515,16 @@ def _validate_file_chunk_size_config(config: _ConfigSource) -> None:
         raise ConfigValidationError("server.file_chunk_size must be a positive integer")
 
 
+def _validate_storage_provider_config(
+    config: _ConfigSource, provider: Mapping[str, Any]
+) -> None:
+    storage = provider.get("storage", "local")
+    if storage not in {"local", "s3"}:
+        raise ConfigValidationError("provider.storage must be either 'local' or 's3'")
+    if storage == "s3":
+        S3StoragePolicy.from_config(config)
+
+
 def validate_config(config: _ConfigSource) -> None:
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
@@ -508,6 +545,7 @@ def validate_config(config: _ConfigSource) -> None:
         provider = {}
     if not isinstance(provider, Mapping):
         raise ConfigValidationError("Configuration section 'provider' must be a table")
+    _validate_storage_provider_config(config, provider)
     if provider.get("rate_limit", "memory") not in {"memory", "redis"}:
         raise ConfigValidationError(
             "provider.rate_limit must be either 'memory' or 'redis'"
