@@ -17,25 +17,22 @@ from fastapi.testclient import TestClient
 
 from include.domains.access.permissions import Permissions
 from include.extensions import manager as extension_manager
+from include.extensions.http_api import application, contracts, runtime, security
 
 
 @pytest.fixture
 def http_api_modules(monkeypatch, protected_test_config):
     monkeypatch.chdir(protected_test_config.src_dir)
     from include.extensions.http_api import (
-        _application,
-        _config,
-        _contracts,
-        _runtime,
-        _security,
+        config,
     )
 
     return SimpleNamespace(
-        application=_application,
-        config=_config,
-        contracts=_contracts,
-        runtime=_runtime,
-        security=_security,
+        application=application,
+        config=config,
+        contracts=contracts,
+        runtime=runtime,
+        security=security,
     )
 
 

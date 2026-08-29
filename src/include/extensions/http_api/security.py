@@ -26,7 +26,7 @@ from include.domains.identity.types import RequestUsername
 from include.domains.operations.commands.audit import log_audit
 from include.domains.security.guards.request_rate_control import check_request_rate
 
-from ._contracts import HttpPrincipal
+from .contracts import HttpPrincipal
 
 logger = log.bind(name="http_api")
 _bearer = HTTPBearer(auto_error=False)

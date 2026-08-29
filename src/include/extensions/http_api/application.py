@@ -10,9 +10,9 @@ from include.domains.security.guards.login import LoginGuard
 from include.extensions.manager import get_loaded_extension_metadata, pm
 from include.observability.exception_logging import log_exception_with_id
 
-from ._config import HttpApiPolicy
-from ._contracts import HttpRouterRegistration
-from ._security import get_http_client_address
+from .config import HttpApiPolicy
+from .contracts import HttpRouterRegistration
+from .security import get_http_client_address
 
 logger = log.bind(name="http_api")
 _API_PREFIX = "/api/v1"

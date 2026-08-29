@@ -11,7 +11,7 @@ from loguru import logger as log
 from include.config.settings import global_config
 from include.transport.tls import create_server_ssl_context
 
-from ._config import HttpApiPolicy
+from .config import HttpApiPolicy
 
 logger = log.bind(name="http_api")
 

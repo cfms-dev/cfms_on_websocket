@@ -16,16 +16,16 @@ from typing import Any
 from include.config.settings import global_config
 from include.extensions.manager import hookimpl, pm
 
-from ._application import build_http_application
-from ._config import HttpApiPolicy
-from ._contracts import (
+from .application import build_http_application
+from .config import HttpApiPolicy
+from .contracts import (
     HttpApiHookSpecs,
     HttpPrincipal,
     HttpRouterRegistration,
     http_hookimpl,
 )
-from ._runtime import HttpApiRuntime
-from ._security import (
+from .runtime import HttpApiRuntime
+from .security import (
     audit_http_request,
     get_http_client_address,
     get_optional_http_principal,
