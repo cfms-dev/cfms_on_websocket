@@ -18,10 +18,6 @@ logger = log.bind(name="http_api")
 _API_PREFIX = "/api/v1"
 
 
-class _RequestBodyTooLarge(Exception):
-    pass
-
-
 class _RequestBodyLimitMiddleware:
     def __init__(self, app, max_bytes: int):
         self.app = app
@@ -34,40 +30,62 @@ class _RequestBodyLimitMiddleware:
 
         headers = dict(scope["headers"])
         content_length = headers.get(b"content-length")
-        if content_length is not None:
-            try:
-                declared_length = int(content_length)
-            except ValueError:
-                response = JSONResponse(
-                    {"detail": "Invalid Content-Length"}, status_code=400
-                )
-                await response(scope, receive, send)
-                return
-            if declared_length > self.max_bytes:
+        if content_length is not None and not content_length.isdigit():
+            response = JSONResponse(
+                {"detail": "Invalid Content-Length"}, status_code=400
+            )
+            await response(scope, receive, send)
+            return
+        if content_length is not None and int(content_length) > self.max_bytes:
+            response = JSONResponse(
+                {"detail": "Request body too large"}, status_code=413
+            )
+            await response(scope, receive, send)
+            return
+
+        body = bytearray()
+        disconnected = False
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                disconnected = True
+                break
+
+            chunk = message.get("body", b"")
+            remaining = self.max_bytes - len(body)
+            if len(chunk) > remaining:
+                body.extend(chunk[: remaining + 1])
                 response = JSONResponse(
                     {"detail": "Request body too large"}, status_code=413
                 )
                 await response(scope, receive, send)
                 return
+            body.extend(chunk)
+            if not message.get("more_body", False):
+                break
 
-        received = 0
+        replayed = False
 
-        async def limited_receive():
-            nonlocal received
-            message = await receive()
-            if message["type"] == "http.request":
-                received += len(message.get("body", b""))
-                if received > self.max_bytes:
-                    raise _RequestBodyTooLarge
-            return message
+        async def replay_receive():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                if disconnected:
+                    return {
+                        "type": "http.request",
+                        "body": bytes(body),
+                        "more_body": True,
+                    }
+                return {
+                    "type": "http.request",
+                    "body": bytes(body),
+                    "more_body": False,
+                }
+            if disconnected:
+                return {"type": "http.disconnect"}
+            return await receive()
 
-        try:
-            await self.app(scope, limited_receive, send)
-        except _RequestBodyTooLarge:
-            response = JSONResponse(
-                {"detail": "Request body too large"}, status_code=413
-            )
-            await response(scope, receive, send)
+        await self.app(scope, replay_receive, send)
 
 
 class _SecurityBoundaryMiddleware:
@@ -81,7 +99,10 @@ class _SecurityBoundaryMiddleware:
 
         request = Request(scope)
         client_address = get_http_client_address(request)
-        if not LoginGuard.evaluate_subnet_access(client_address).allowed:
+        if (
+            not client_address
+            or not LoginGuard.evaluate_subnet_access(client_address).allowed
+        ):
             response = JSONResponse({"detail": "Forbidden"}, status_code=403)
             await response(scope, receive, send)
             return
@@ -196,6 +217,11 @@ def build_http_application(policy: HttpApiPolicy) -> FastAPI:
     for registration in registrations:
         app.include_router(registration.router, prefix=_API_PREFIX)
 
+    app.add_middleware(
+        _RequestBodyLimitMiddleware,
+        max_bytes=policy.max_request_body_bytes,
+    )
+    app.add_middleware(_SecurityBoundaryMiddleware)
     if policy.cors_allowed_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -204,9 +230,4 @@ def build_http_application(policy: HttpApiPolicy) -> FastAPI:
             allow_methods=["*"],
             allow_headers=["Authorization", "Content-Type"],
         )
-    app.add_middleware(
-        _RequestBodyLimitMiddleware,
-        max_bytes=policy.max_request_body_bytes,
-    )
-    app.add_middleware(_SecurityBoundaryMiddleware)
     return app

@@ -7,7 +7,6 @@ __all__ = [
     "require_http_principal",
 ]
 
-import ipaddress
 from collections.abc import Callable
 from typing import Annotated, Any
 
@@ -25,6 +24,7 @@ from include.domains.access.permissions import Permissions
 from include.domains.identity.types import RequestUsername
 from include.domains.operations.commands.audit import log_audit
 from include.domains.security.guards.request_rate_control import check_request_rate
+from include.transport.client_address import resolve_client_ip
 
 from .contracts import HttpPrincipal
 
@@ -33,45 +33,19 @@ _bearer = HTTPBearer(auto_error=False)
 _username_adapter = TypeAdapter(RequestUsername)
 
 
-def _parse_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
-    address = ipaddress.ip_address(value.strip())
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        return address.ipv4_mapped
-    return address
-
-
 def get_http_client_address(request: Request) -> str:
     if request.client is None:
         return ""
     try:
-        peer_address = _parse_ip(request.client.host)
+        return resolve_client_ip(
+            request.client.host,
+            request.headers.get("X-Forwarded-For"),
+            request.headers.get("X-Real-IP"),
+            get_trusted_proxy_networks(global_config),
+        )
     except ValueError:
         logger.warning("HTTP request has an invalid peer address")
-        return request.client.host
-
-    trusted_networks = get_trusted_proxy_networks(global_config)
-    if not any(peer_address in network for network in trusted_networks):
-        return str(peer_address)
-
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        try:
-            forwarded_chain = [_parse_ip(value) for value in forwarded_for.split(",")]
-        except ValueError:
-            logger.warning("Ignoring invalid HTTP X-Forwarded-For header")
-            return str(peer_address)
-        for address in reversed([*forwarded_chain, peer_address]):
-            if not any(address in network for network in trusted_networks):
-                return str(address)
-        return str(forwarded_chain[0]) if forwarded_chain else str(peer_address)
-
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        try:
-            return str(_parse_ip(real_ip))
-        except ValueError:
-            logger.warning("Ignoring invalid HTTP X-Real-IP header")
-    return str(peer_address)
+        return ""
 
 
 def _authentication_error() -> HTTPException:

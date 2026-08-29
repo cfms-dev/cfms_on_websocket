@@ -1,8 +1,8 @@
 __all__ = ["HttpApiRuntime"]
 
 import threading
-import time
 from dataclasses import dataclass
+from math import ceil
 
 import uvicorn
 from fastapi import FastAPI
@@ -14,6 +14,7 @@ from include.transport.tls import create_server_ssl_context
 from .config import HttpApiPolicy
 
 logger = log.bind(name="http_api")
+_SERVER_STOP_MARGIN_SECONDS = 1.0
 
 
 class _SignallingServer(uvicorn.Server):
@@ -69,8 +70,10 @@ class HttpApiRuntime:
                 workers=1,
                 access_log=False,
                 proxy_headers=False,
-                limit_concurrency=policy.max_concurrency,
-                timeout_graceful_shutdown=int(policy.shutdown_timeout_seconds),
+                # Uvicorn 0.52 counts the connection being admitted before applying
+                # this limit, so N + 1 is required to admit exactly N connections.
+                limit_concurrency=policy.max_concurrency + 1,
+                timeout_graceful_shutdown=ceil(policy.shutdown_timeout_seconds),
                 ssl_context_factory=lambda _config, _factory: self._create_ssl_context(
                     policy
                 ),
@@ -89,18 +92,14 @@ class HttpApiRuntime:
             active.thread.start()
 
         if not startup_event.wait(policy.startup_timeout_seconds):
-            server.should_exit = True
-            active.thread.join(policy.shutdown_timeout_seconds)
-            if active.thread.is_alive():
-                server.force_exit = True
+            if not self._stop(active, policy.shutdown_timeout_seconds):
+                stop_budget = ceil(policy.shutdown_timeout_seconds) + (
+                    2 * _SERVER_STOP_MARGIN_SECONDS
+                )
                 logger.error(
                     "HTTP API startup timed out and its server thread did not stop "
-                    f"within {policy.shutdown_timeout_seconds} seconds"
+                    f"within {stop_budget} seconds"
                 )
-            else:
-                with self._lock:
-                    if self._active is active:
-                        self._active = None
             raise RuntimeError("Timed out while starting the HTTP API server")
 
         if active.failure is not None:
@@ -122,8 +121,27 @@ class HttpApiRuntime:
             active.server.run()
         except BaseException as exc:  # noqa: BLE001
             active.failure = exc
+            if active.server.started:
+                logger.opt(exception=exc).error(
+                    "HTTP API server stopped unexpectedly after startup"
+                )
         finally:
             active.startup_event.set()
+            with self._lock:
+                if self._active is active:
+                    self._active = None
+
+    @staticmethod
+    def _stop(active: _ActiveServer, timeout_seconds: float) -> bool:
+        active.server.should_exit = True
+        graceful_timeout = ceil(timeout_seconds)
+        active.thread.join(graceful_timeout + _SERVER_STOP_MARGIN_SECONDS)
+        if not active.thread.is_alive():
+            return True
+
+        active.server.force_exit = True
+        active.thread.join(_SERVER_STOP_MARGIN_SECONDS)
+        return not active.thread.is_alive()
 
     def shutdown(self, timeout_seconds: float) -> None:
         with self._lock:
@@ -131,16 +149,9 @@ class HttpApiRuntime:
         if active is None:
             return
 
-        active.server.should_exit = True
-        deadline = time.monotonic() + timeout_seconds
-        active.thread.join(max(0.0, deadline - time.monotonic()))
-        if active.thread.is_alive():
-            active.server.force_exit = True
+        if not self._stop(active, timeout_seconds):
+            stop_budget = ceil(timeout_seconds) + (2 * _SERVER_STOP_MARGIN_SECONDS)
             logger.error(
-                f"HTTP API server did not stop within {timeout_seconds} seconds"
+                f"HTTP API server did not stop within {stop_budget} seconds, "
+                "including its force-exit margin"
             )
-            return
-
-        with self._lock:
-            if self._active is active:
-                self._active = None

@@ -217,8 +217,11 @@ the core client-certificate CA and requirement are inherited. Trusted proxies
 come from `server.trusted_proxy_networks`. CORS and the OpenAPI UI are disabled
 by default. When enabled, the schema and UI are available at
 `/api/v1/openapi.json` and `/api/v1/docs`. `/healthz` is always available and
-does not disclose versions or enabled extensions. Listener changes require a
-restart.
+does not disclose versions or enabled extensions. `max_concurrency` is the exact
+number of simultaneous HTTP connections admitted before overload responses begin.
+`max_request_body_bytes` applies to the raw body for fixed-length and streamed
+requests, even when an endpoint does not consume the body. Every
+`extensions.http_api` setting requires a server restart to take effect.
 
 Consumers use a version 3 manifest dependency and register HTTP-only routers:
 

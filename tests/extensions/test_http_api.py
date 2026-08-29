@@ -17,14 +17,17 @@ from fastapi.testclient import TestClient
 
 from include.domains.access.permissions import Permissions
 from include.extensions import manager as extension_manager
-from include.extensions.http_api import application, contracts, runtime, security
 
 
 @pytest.fixture
 def http_api_modules(monkeypatch, protected_test_config):
     monkeypatch.chdir(protected_test_config.src_dir)
     from include.extensions.http_api import (
+        application,
         config,
+        contracts,
+        runtime,
+        security,
     )
 
     return SimpleNamespace(
@@ -119,7 +122,7 @@ def test_registered_router_is_http_only_and_docs_are_disabled(
     _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app) as client:
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
         assert client.get("/api/v1/example/value").json() == {"value": 42}
         assert client.get("/healthz").json() == {"status": "ok"}
         assert client.get("/api/v1/openapi.json").status_code == 404
@@ -138,7 +141,7 @@ def test_docs_use_fixed_api_paths_when_enabled(monkeypatch, http_api_modules):
     policy = modules.config.HttpApiPolicy(docs_enabled=True)
     app = modules.application.build_http_application(policy)
 
-    with TestClient(app) as client:
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
         assert client.get("/api/v1/openapi.json").status_code == 200
         assert client.get("/api/v1/docs").status_code == 200
 
@@ -211,24 +214,90 @@ def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
 
     registration = modules.contracts.HttpRouterRegistration("consumer", router)
     _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
-    policy = modules.config.HttpApiPolicy(max_request_body_bytes=4)
+    policy = modules.config.HttpApiPolicy(
+        max_request_body_bytes=4,
+        cors_allowed_origins=("https://ui.example",),
+    )
     app = modules.application.build_http_application(policy)
 
-    with TestClient(app, raise_server_exceptions=False) as client:
-        oversized = client.post("/api/v1/example/echo", content=b"12345")
+    headers = {"Origin": "https://ui.example"}
+    with TestClient(
+        app,
+        raise_server_exceptions=False,
+        client=("127.0.0.1", 5000),
+    ) as client:
+        oversized = client.post(
+            "/api/v1/example/echo", content=b"12345", headers=headers
+        )
         assert oversized.status_code == 413
 
         failure = client.post(
             "/api/v1/example/echo",
             content=b"key",
-            headers={"Authorization": "Bearer highly-sensitive-token"},
+            headers={
+                **headers,
+                "Authorization": "Bearer highly-sensitive-token",
+            },
         )
 
+    assert oversized.headers["Access-Control-Allow-Origin"] == "https://ui.example"
     assert failure.status_code == 500
+    assert failure.headers["Access-Control-Allow-Origin"] == "https://ui.example"
     payload = failure.json()
     assert set(payload) == {"detail", "log_id"}
     assert "highly-sensitive-token" not in failure.text
     assert "key" not in failure.text
+
+
+def test_body_limit_counts_chunked_body_before_endpoint_runs(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    router = APIRouter(prefix="/example")
+    calls = 0
+
+    @router.post("/ignore")
+    def ignore_body():
+        nonlocal calls
+        calls += 1
+        return {"ok": True}
+
+    registration = modules.contracts.HttpRouterRegistration("consumer", router)
+    _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
+    app = modules.application.build_http_application(
+        modules.config.HttpApiPolicy(max_request_body_bytes=4)
+    )
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        accepted = client.post(
+            "/api/v1/example/ignore",
+            content=(chunk for chunk in (b"12", b"34")),
+        )
+        rejected = client.post(
+            "/api/v1/example/ignore",
+            content=(chunk for chunk in (b"123", b"45")),
+        )
+
+    assert accepted.status_code == 200
+    assert rejected.status_code == 413
+    assert calls == 1
+
+
+@pytest.mark.parametrize("content_length", ["-1", "not-a-number"])
+def test_invalid_content_length_is_rejected(
+    monkeypatch, http_api_modules, content_length
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    _install_http_plugins(monkeypatch, modules, [])
+    app = modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        response = client.get("/healthz", headers={"Content-Length": content_length})
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid Content-Length"}
 
 
 def test_banned_client_is_rejected(monkeypatch, http_api_modules):
@@ -238,6 +307,22 @@ def test_banned_client_is_rejected(monkeypatch, http_api_modules):
         "evaluate_subnet_access",
         classmethod(lambda _cls, _address: SimpleNamespace(allowed=False)),
     )
+    _install_http_plugins(monkeypatch, modules, [])
+    app = modules.application.build_http_application(
+        modules.config.HttpApiPolicy(
+            cors_allowed_origins=("https://ui.example",),
+        )
+    )
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        response = client.get("/healthz", headers={"Origin": "https://ui.example"})
+
+    assert response.status_code == 403
+    assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+
+
+def test_invalid_peer_address_is_rejected(monkeypatch, http_api_modules):
+    modules = http_api_modules
     _install_http_plugins(monkeypatch, modules, [])
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
@@ -457,6 +542,7 @@ def test_real_tls_listener_becomes_ready_and_releases_port(
         port=port,
         ssl_certfile=str(cert_path),
         ssl_keyfile=str(key_path),
+        max_concurrency=1,
         startup_timeout_seconds=5.0,
         shutdown_timeout_seconds=5.0,
     )
@@ -475,6 +561,20 @@ def test_real_tls_listener_becomes_ready_and_releases_port(
         with httpx.Client(verify=False, trust_env=False, timeout=5.0) as client:
             response = client.get(f"https://127.0.0.1:{port}/healthz")
         assert response.json() == {"status": "ok"}
+
+        client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        client_context.check_hostname = False
+        client_context.verify_mode = ssl.CERT_NONE
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5.0) as connection,
+            client_context.wrap_socket(
+                connection, server_hostname="localhost"
+            ) as held_connection,
+            httpx.Client(verify=False, trust_env=False, timeout=5.0) as client,
+        ):
+            assert held_connection.version() == "TLSv1.3"
+            rejected = client.get(f"https://127.0.0.1:{port}/healthz")
+        assert rejected.status_code == 503
     finally:
         runtime.shutdown(5.0)
         runtime.shutdown(5.0)
@@ -516,6 +616,137 @@ def test_listener_bind_failure_is_propagated(monkeypatch, http_api_modules, tmp_
 
     assert runtime._active is None
     runtime.shutdown(5.0)
+
+
+def test_runtime_uses_exact_concurrency_and_rounded_shutdown_limits(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    instances = []
+
+    class FakeServer:
+        def __init__(self, config, startup_event):
+            self.config = config
+            self.started = False
+            self.force_exit = False
+            self._startup_event = startup_event
+            self._exit_event = threading.Event()
+            instances.append(self)
+
+        @property
+        def should_exit(self):
+            return self._exit_event.is_set()
+
+        @should_exit.setter
+        def should_exit(self, value):
+            if value:
+                self._exit_event.set()
+
+        def run(self):
+            self.started = True
+            self._startup_event.set()
+            self._exit_event.wait(2.0)
+
+    monkeypatch.setattr(modules.runtime, "_SignallingServer", FakeServer)
+    policy = modules.config.HttpApiPolicy(
+        max_concurrency=1,
+        startup_timeout_seconds=1.0,
+        shutdown_timeout_seconds=0.1,
+    )
+    runtime = modules.runtime.HttpApiRuntime()
+
+    runtime.start(FastAPI(), policy)
+    server = instances[0]
+    assert server.config.limit_concurrency == 2
+    assert server.config.timeout_graceful_shutdown == 1
+    runtime.shutdown(policy.shutdown_timeout_seconds)
+
+    assert runtime._active is None
+
+
+def test_post_start_failure_is_reported_and_clears_active(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    crash_event = threading.Event()
+    errors = []
+
+    class FakeLogger:
+        def info(self, _message):
+            return None
+
+        def opt(self, **_kwargs):
+            return self
+
+        def error(self, message):
+            errors.append(message)
+
+    class FakeServer:
+        def __init__(self, _config, startup_event):
+            self.started = False
+            self.should_exit = False
+            self.force_exit = False
+            self._startup_event = startup_event
+
+        def run(self):
+            self.started = True
+            self._startup_event.set()
+            crash_event.wait(2.0)
+            raise RuntimeError("post-start crash")
+
+    monkeypatch.setattr(modules.runtime, "_SignallingServer", FakeServer)
+    monkeypatch.setattr(modules.runtime, "logger", FakeLogger())
+    runtime = modules.runtime.HttpApiRuntime()
+    runtime.start(FastAPI(), modules.config.HttpApiPolicy())
+    active = runtime._active
+    assert active is not None
+
+    crash_event.set()
+    active.thread.join(2.0)
+
+    assert not active.thread.is_alive()
+    assert isinstance(active.failure, RuntimeError)
+    assert runtime._active is None
+    assert errors == ["HTTP API server stopped unexpectedly after startup"]
+
+
+def test_shutdown_force_exit_gets_a_second_join(monkeypatch, http_api_modules):
+    modules = http_api_modules
+    instances = []
+
+    class FakeServer:
+        def __init__(self, _config, startup_event):
+            self.started = False
+            self.should_exit = False
+            self._force_exit = False
+            self._startup_event = startup_event
+            self._exit_event = threading.Event()
+            instances.append(self)
+
+        @property
+        def force_exit(self):
+            return self._force_exit
+
+        @force_exit.setter
+        def force_exit(self, value):
+            self._force_exit = value
+            if value:
+                self._exit_event.set()
+
+        def run(self):
+            self.started = True
+            self._startup_event.set()
+            self._exit_event.wait(5.0)
+
+    monkeypatch.setattr(modules.runtime, "_SignallingServer", FakeServer)
+    monkeypatch.setattr(modules.runtime, "_SERVER_STOP_MARGIN_SECONDS", 0.01)
+    runtime = modules.runtime.HttpApiRuntime()
+    runtime.start(FastAPI(), modules.config.HttpApiPolicy())
+
+    runtime.shutdown(0.01)
+
+    assert instances[0].force_exit is True
+    assert runtime._active is None
 
 
 def test_startup_timeout_requests_shutdown_and_cleans_thread(
