@@ -81,6 +81,7 @@ from include.domains.documents.types import RevisionID
 from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
+from include.providers.manager import ProviderManager
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
@@ -177,6 +178,7 @@ def create_file_task(
     transfer_mode: TransferMode = TransferMode.DOWNLOAD,
     *,
     issued_by_username: str | None = None,
+    supports_resume: bool = True,
 ) -> dict[str, Any]:
     """Creates a new file processing task for the specified file.
 
@@ -213,7 +215,7 @@ def create_file_task(
     session.add(task)
     session.flush()
 
-    return serialize_file_task(task)
+    return serialize_file_task(task, supports_resume=supports_resume)
 
 
 def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
@@ -450,12 +452,10 @@ class RequestCreateDocumentHandler(RequestHandler):
         maybe_reclaim_abandoned_uploads()
         try_reclaim_abandoned_uploads(folder_id=folder_id, title=title)
 
-        conflict_response: tuple[dict, str] | None = None
         with Session() as session:
+            user = User.get_existing(session, handler.username)
             try:
                 with risk_control_transaction(session):
-                    user = User.get_existing(session, handler.username)
-
                     if Permissions.CREATE_DOCUMENT not in user.all_permissions:
                         response_code = result_code = 403
                         response_data = {}
@@ -543,6 +543,7 @@ class RequestCreateDocumentHandler(RequestHandler):
                                             session,
                                             new_file,
                                             transfer_mode=TransferMode.UPLOAD,
+                                            supports_resume=ProviderManager().storage.supports_resumable_uploads,
                                         )
                                         response_code = 200
                                         result_code = 0
@@ -553,24 +554,21 @@ class RequestCreateDocumentHandler(RequestHandler):
                                         result_data = {"title": title}
                                         message = "Task successfully created"
             except NodeNameConflictError:
-                conflict_response = describe_node_name_conflict(
+                payload, message = describe_node_name_conflict(
                     session, user, folder_id, title
+                )
+                return respond_to_node_name_conflict(
+                    handler,
+                    payload,
+                    message,
+                    target=folder_id,
+                    result_data={"title": title},
                 )
             except (ValueError, jsonschema.ValidationError) as exc:
                 response_code = result_code = 400
                 response_data = {}
                 result_data = {"title": title}
                 message = f"Set access rules failed: {exc!s}"
-
-        if conflict_response is not None:
-            payload, message = conflict_response
-            return respond_to_node_name_conflict(
-                handler,
-                payload,
-                message,
-                target=folder_id,
-                result_data={"title": title},
-            )
 
         handler.conclude_request(response_code, response_data, message)
         return Result(
@@ -647,7 +645,10 @@ class RequestUploadDocumentHandler(RequestHandler):
                             code=409, target=document_id, username=handler.username
                         )
 
-                    task_data = serialize_file_task(existing_task)
+                    task_data = serialize_file_task(
+                        existing_task,
+                        supports_resume=ProviderManager().storage.supports_resumable_uploads,
+                    )
                     handler.conclude_request(
                         200,
                         {"task_data": task_data},
@@ -703,7 +704,12 @@ class RequestUploadDocumentHandler(RequestHandler):
                 mark_document_modified(document, this_user.username)
 
                 document.current_revision = new_revision
-                task_data = create_file_task(session, new_file, TransferMode.UPLOAD)
+                task_data = create_file_task(
+                    session,
+                    new_file,
+                    TransferMode.UPLOAD,
+                    supports_resume=ProviderManager().storage.supports_resumable_uploads,
+                )
                 session.commit()
 
             else:

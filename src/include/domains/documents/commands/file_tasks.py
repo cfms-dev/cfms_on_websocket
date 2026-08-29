@@ -87,18 +87,20 @@ def plan_upload_file_task(
     proposed_chunk_size: int,
     client_max_chunk_size: int,
     restart: bool,
+    supports_resumable_uploads: bool,
 ) -> UploadPreparation:
     chunk_size = claimed.chunk_size or proposed_chunk_size
     if chunk_size > client_max_chunk_size:
         raise FileTaskChunkSizeConflict(chunk_size)
 
-    resumable = sha256 is not None and file_size > 0
+    resumable = supports_resumable_uploads and sha256 is not None and file_size > 0
     stored_metadata = claimed.upload_file_size is not None
     metadata_matches = (
         claimed.upload_file_size == file_size and claimed.upload_sha256 == sha256
     )
     if (
-        stored_metadata
+        supports_resumable_uploads
+        and stored_metadata
         and claimed.upload_sha256 is not None
         and not metadata_matches
         and not restart
@@ -188,13 +190,13 @@ def clear_upload_progress(session: Session, task_id: str) -> bool:
     return True
 
 
-def serialize_file_task(task: FileTask) -> dict[str, Any]:
+def serialize_file_task(task: FileTask, *, supports_resume: bool) -> dict[str, Any]:
     return {
         "task_id": task.id,
         "provider": "native",  # reserved for future use
         "start_time": task.start_time,
         "end_time": task.end_time,
-        "supports_resume": True,
+        "supports_resume": supports_resume,
     }
 
 

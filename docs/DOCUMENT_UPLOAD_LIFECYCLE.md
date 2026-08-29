@@ -274,15 +274,27 @@ optional boolean. The upload maximum must be at least 512 bytes. The server
 returns a `transfer_file` process frame containing `file_size`, `chunk_size`,
 the authoritative resume `offset`, and whether this upload is resumable. Clients
 seek to that offset and start sending chunks without another ready exchange.
+Upload-task responses advertise whether the configured storage provider supports
+resumable uploads; the transfer response gives the authoritative result for the
+specific upload.
 
 The negotiated size is stored in the common `FileTask.chunk_size` field and
 never changes for that task. A client maximum smaller than the stored size
-produces `409` with `data.chunk_size`. Non-empty uploads with a valid SHA-256
-retain progress after disconnects and idle timeouts. File size and digest must
-match the stored upload metadata; a mismatch returns `409` without changing the
-checkpoint. Retrying with `restart = true` explicitly discards the checkpoint
-and replaces the metadata while retaining the negotiated chunk size. Uploads
-without a digest remain supported but restart at offset zero after interruption.
+produces `409` with `data.chunk_size`. When the storage provider supports
+resumable uploads, non-empty uploads with a valid SHA-256 retain progress after
+disconnects and idle timeouts. File size and digest must match the stored upload
+metadata; a mismatch returns `409` without changing the checkpoint. Retrying
+with `restart = true` explicitly discards the checkpoint and replaces the
+metadata while retaining the negotiated chunk size. Uploads without a digest
+remain supported but restart at offset zero after interruption.
+
+A storage provider may leave resumable-upload support disabled. The server then
+uses the provider's ordinary `fopen(path, "wb")` path, always reports offset zero
+and `supports_resume = false`, and never calls the resumable session operations.
+Disconnects, idle timeouts, invalid chunks, and transfer failures remove partial
+objects and clear upload progress before the task is released. A retry therefore
+starts from zero even when a digest is present; `restart` remains accepted but
+has the same fresh-upload behavior. The negotiated task chunk size remains fixed.
 
 Local storage resumes at the last complete protocol chunk. S3 storage persists
 multipart upload IDs together with the authoritative part numbers and ETags

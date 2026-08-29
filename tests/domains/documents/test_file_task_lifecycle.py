@@ -87,6 +87,8 @@ class _FakeLogger:
 
 
 class _FakeStorage:
+    supports_resumable_uploads = True
+
     def __init__(self, root):
         self.root = root
 
@@ -354,6 +356,25 @@ def test_create_file_task_participates_in_caller_transaction(
     with file_task_context.session() as session:
         assert session.get(file_task_context.File, "atomic-file") is None
         assert session.get(file_task_context.FileTask, task_data["task_id"]) is None
+
+
+def test_upload_task_reports_storage_resume_capability(file_task_context) -> None:
+    from include.database.models.files import TransferMode
+    from include.domains.documents.handlers.documents import create_file_task
+
+    with file_task_context.session.begin() as session:
+        file = file_task_context.File(
+            id="non-resumable-upload-file", path="uploads/non-resumable.bin"
+        )
+        session.add(file)
+        task_data = create_file_task(
+            session,
+            file,
+            TransferMode.UPLOAD,
+            supports_resume=False,
+        )
+
+    assert task_data["supports_resume"] is False
 
 
 def test_create_file_task_is_persisted_by_caller_commit(file_task_context) -> None:

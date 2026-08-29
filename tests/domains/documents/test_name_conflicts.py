@@ -240,3 +240,82 @@ def test_conflict_response_hides_entity_and_propagates_visible_winner(
         **({"duplicate_id": duplicate_id} if duplicate_id is not None else {}),
     }
     assert result_data == {"title": "Report"}
+
+
+def test_create_document_handler_returns_name_conflict_response(monkeypatch) -> None:
+    from include.domains.documents.commands.name_conflicts import NodeNameConflictError
+    from include.domains.documents.handlers import documents
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+        def add(self, _instance) -> None:
+            pass
+
+    class ConflictContext:
+        def __enter__(self) -> None:
+            raise NodeNameConflictError("/", "Report")
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+    user = SimpleNamespace(
+        username="requester",
+        created_time=0.0,
+        all_permissions={documents.Permissions.CREATE_DOCUMENT},
+    )
+    responses = []
+    handler = SimpleNamespace(
+        data={"title": "Report"},
+        username=user.username,
+        remote_address="127.0.0.1",
+        conclude_request=lambda *args: responses.append(args),
+    )
+
+    monkeypatch.setattr(documents, "Session", FakeSession)
+    monkeypatch.setattr(documents.User, "get_existing", lambda *_args: user)
+    monkeypatch.setattr(documents, "maybe_reclaim_abandoned_uploads", lambda: None)
+    monkeypatch.setattr(
+        documents, "try_reclaim_abandoned_uploads", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        documents, "risk_control_transaction", lambda _session: FakeSession()
+    )
+    monkeypatch.setattr(
+        documents,
+        "get_target_folder_and_check_write",
+        lambda *_args: (object(), 0, ""),
+    )
+    monkeypatch.setattr(
+        documents,
+        "check_document_creation_limits",
+        lambda *_args, **_kwargs: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        documents, "node_name_mutation", lambda *_args: ConflictContext()
+    )
+    monkeypatch.setattr(
+        documents,
+        "describe_node_name_conflict",
+        lambda *_args: (
+            {"type": "document", "id": "existing", "duplicate_id": "existing"},
+            "Name conflict",
+        ),
+    )
+
+    result = documents.RequestCreateDocumentHandler().handle(handler)
+
+    assert responses == [
+        (
+            409,
+            {"type": "document", "id": "existing", "duplicate_id": "existing"},
+            "Name conflict",
+        )
+    ]
+    assert result.code == 409
+    assert result.target == "/"
+    assert result.data == {"title": "Report", "duplicate_id": "existing"}

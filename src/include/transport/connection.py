@@ -55,7 +55,7 @@ from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.extensions.manager import pm
 from include.messages import Messages as smsg
 from include.observability.exception_logging import log_exception_with_id
-from include.providers.base import ResumableUpload, ResumableUploadSizeError
+from include.providers.base import FileObject, ResumableUpload, ResumableUploadSizeError
 from include.providers.manager import ProviderManager
 from include.transport.client_address import get_client_ip
 from include.transport.multiplexing import FrameType, Stream
@@ -698,9 +698,22 @@ class ConnectionHandler:
     @staticmethod
     def _discard_upload_progress(claimed: ClaimedFileTask) -> None:
         storage = ProviderManager().storage
-        if claimed.upload_session_id is not None:
+        if storage.supports_resumable_uploads and claimed.upload_session_id is not None:
             storage.abort_resumable_upload(claimed.file_path, claimed.upload_session_id)
         storage.remove(claimed.file_path)
+
+    @staticmethod
+    def _discard_open_upload(
+        claimed: ClaimedFileTask, upload: ResumableUpload | FileObject
+    ) -> None:
+        if isinstance(upload, ResumableUpload):
+            upload.abort()
+        else:
+            upload.close()
+        storage = ProviderManager().storage
+        storage.remove(claimed.file_path)
+        with Session() as session, session.begin():
+            clear_upload_progress(session, claimed.task_id)
 
     @staticmethod
     def _storage_sha256(path: str) -> str:
@@ -731,7 +744,6 @@ class ConnectionHandler:
 
         preparation, upload = prepared
         task_id = claimed.task_id
-        storage = ProviderManager().storage
         try:
             actual_size = self._receive_upload_contents(
                 claimed,
@@ -750,10 +762,7 @@ class ConnectionHandler:
                 sha256,
             )
         except FileTaskEnded:
-            upload.abort()
-            storage.remove(claimed.file_path)
-            with Session() as session, session.begin():
-                clear_upload_progress(session, task_id)
+            self._discard_open_upload(claimed, upload)
             status = self._get_file_task_status(task_id)
             self.conclude_request(
                 410,
@@ -762,32 +771,26 @@ class ConnectionHandler:
             )
         except ConnectionError:
             self.logger.info("File reception aborted: Connection closed")
-            upload.close()
-            if not preparation.resumable:
-                upload.abort()
-                storage.remove(claimed.file_path)
-                with Session() as session, session.begin():
-                    clear_upload_progress(session, task_id)
+            if preparation.resumable:
+                upload.close()
+            else:
+                self._discard_open_upload(claimed, upload)
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
         except TimeoutError:
             self.logger.info("File reception aborted: idle timeout")
-            upload.close()
-            if not preparation.resumable:
-                upload.abort()
-                storage.remove(claimed.file_path)
-                with Session() as session, session.begin():
-                    clear_upload_progress(session, task_id)
+            if preparation.resumable:
+                upload.close()
+            else:
+                self._discard_open_upload(claimed, upload)
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.conclude_request(408, {}, "File upload timed out")
         except Exception as error:  # noqa: BLE001 - report transfer failures.
-            upload.close()
-            if not preparation.resumable:
-                upload.abort()
-                storage.remove(claimed.file_path)
-                with Session() as session, session.begin():
-                    clear_upload_progress(session, task_id)
+            if preparation.resumable:
+                upload.close()
+            else:
+                self._discard_open_upload(claimed, upload)
             with Session() as session, session.begin():
                 release_file_task(session, task_id)
             self.report_error(error, context=f"Error receiving file for task {task_id}")
@@ -799,7 +802,7 @@ class ConnectionHandler:
         sha256: str | None,
         max_chunk_size: int,
         restart: bool,
-    ) -> tuple[UploadPreparation, ResumableUpload] | None:
+    ) -> tuple[UploadPreparation, ResumableUpload | FileObject] | None:
         task_id = claimed.task_id
         file_path = claimed.file_path
         storage = ProviderManager().storage
@@ -816,6 +819,7 @@ class ConnectionHandler:
                 proposed_chunk_size=proposed_chunk_size,
                 client_max_chunk_size=max_chunk_size,
                 restart=restart,
+                supports_resumable_uploads=storage.supports_resumable_uploads,
             )
         except FileTaskChunkSizeConflict as exc:
             self.conclude_request(
@@ -857,6 +861,9 @@ class ConnectionHandler:
                 raise FileTaskEnded(preparation_status)
 
         storage.makedirs(os.path.dirname(file_path), exist_ok=True)
+        if not storage.supports_resumable_uploads:
+            return preparation, storage.fopen(file_path, "wb")
+
         prior_session_id = preparation.prior_session_id
 
         def persist_checkpoint(checkpoint_data: str) -> None:
@@ -915,7 +922,7 @@ class ConnectionHandler:
         self,
         claimed: ClaimedFileTask,
         preparation: UploadPreparation,
-        upload: ResumableUpload,
+        upload: ResumableUpload | FileObject,
         file_size: int,
         sha256: str | None,
         cancelled: threading.Event,
@@ -924,7 +931,7 @@ class ConnectionHandler:
         file_path = claimed.file_path
         storage = ProviderManager().storage
         policy = DocumentUploadPolicy.from_config()
-        initial_offset = upload.offset
+        initial_offset = upload.offset if isinstance(upload, ResumableUpload) else 0
         hasher = hashlib.sha256()
         received_size = initial_offset
         self.stream.send(
@@ -949,15 +956,17 @@ class ConnectionHandler:
             if len(data) != expected_size:
                 self.conclude_request(
                     400,
-                    {"offset": upload.offset},
+                    {
+                        "offset": (
+                            upload.offset if isinstance(upload, ResumableUpload) else 0
+                        )
+                    },
                     "Invalid upload chunk size",
                 )
-                upload.close()
-                if not preparation.resumable:
-                    upload.abort()
-                    storage.remove(file_path)
-                    with Session() as session, session.begin():
-                        clear_upload_progress(session, task_id)
+                if preparation.resumable:
+                    upload.close()
+                else:
+                    self._discard_open_upload(claimed, upload)
                 with Session() as session, session.begin():
                     release_file_task(session, task_id)
                 return None
@@ -966,7 +975,10 @@ class ConnectionHandler:
                 hasher.update(data)
             received_size += len(data)
 
-        upload.finish()
+        if isinstance(upload, ResumableUpload):
+            upload.finish()
+        else:
+            upload.close()
         actual_size = storage.getsize(file_path)
         if actual_size != file_size:
             raise ValueError(

@@ -2,7 +2,7 @@ import os
 from array import array
 from collections.abc import Buffer
 from importlib import import_module
-from io import BytesIO
+from io import BytesIO, UnsupportedOperation
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,7 @@ def _as_bytes(data: Buffer) -> bytes:
         return byte_view.tobytes()
 
 
-def test_storage_provider_requires_resumable_upload_operations():
+def test_storage_provider_defaults_to_non_resumable_uploads():
     class IncompleteStorageProvider(StorageProvider):
         def fopen(self, path, mode="rb"):
             raise NotImplementedError
@@ -37,8 +37,17 @@ def test_storage_provider_requires_resumable_upload_operations():
         def getsize(self, filename, /):
             raise NotImplementedError
 
-    with pytest.raises(TypeError, match="abstract"):
-        IncompleteStorageProvider()
+    provider = IncompleteStorageProvider()
+
+    assert provider.supports_resumable_uploads is False
+    with pytest.raises(UnsupportedOperation, match="cannot resume uploads"):
+        provider.open_resumable_upload("file", file_size=1, chunk_size=1)
+    with pytest.raises(UnsupportedOperation, match="cannot abort upload sessions"):
+        provider.abort_resumable_upload("file", "session")
+
+
+def test_local_storage_provider_supports_resumable_uploads():
+    assert LocalStorageProvider.supports_resumable_uploads is True
 
 
 @pytest.mark.parametrize(
@@ -59,6 +68,8 @@ def test_local_file_object_writes_buffers(tmp_path, data: Buffer):
 def test_s3_file_object_writes_buffers():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
+
+    assert s3_module.S3StorageProvider.supports_resumable_uploads is True
 
     class FakeClient:
         def put_object(self, **kwargs):

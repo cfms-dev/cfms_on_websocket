@@ -16,6 +16,13 @@ from tests.domains.documents.test_file_task_lifecycle import (
 )
 
 
+class _NonResumableStorage(_FakeStorage):
+    supports_resumable_uploads = False
+
+    def open_resumable_upload(self, *args, **kwargs):
+        raise AssertionError("resumable upload API must not be used")
+
+
 @pytest.mark.parametrize(
     ("client_max_chunk_size", "configured_chunk_size", "expected_chunk_size"),
     [
@@ -387,6 +394,241 @@ def test_upload_without_digest_discards_disconnected_progress(
     assert not (
         file_task_context.connection.ProviderManager().storage.root / relative_path
     ).exists()
+
+
+def test_non_resumable_storage_completes_upload_from_zero(
+    file_task_context, tmp_path, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    payload = b"n" * (chunk_size + 1)
+    relative_path = "uploads/non-resumable-provider.bin"
+    task_id, file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    storage = _NonResumableStorage(tmp_path)
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "ProviderManager",
+        lambda: _FakeProviderManager(storage),
+    )
+    stream = _FakeUploadStream([payload[:chunk_size], payload[chunk_size:]])
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
+    )
+
+    ready = _sent_json_messages(stream)[0]
+    assert ready["data"]["offset"] == 0
+    assert ready["data"]["supports_resume"] is False
+    assert (tmp_path / relative_path).read_bytes() == payload
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        file = session.get(file_task_context.File, file_id)
+        assert task.status == FileTaskStatus.COMPLETED
+        assert task.upload_session_id is None
+        assert task.upload_checkpoint_data is None
+        assert file.active is True
+
+
+def test_non_resumable_storage_discards_disconnect_and_retries_from_zero(
+    file_task_context, tmp_path, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    payload = b"r" * (chunk_size * 2)
+    relative_path = "uploads/non-resumable-retry.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    storage = _NonResumableStorage(tmp_path)
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "ProviderManager",
+        lambda: _FakeProviderManager(storage),
+    )
+
+    first_handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler,
+        _DisconnectingUploadStream([payload[:chunk_size]]),
+    )
+    first_handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
+    )
+
+    assert not (tmp_path / relative_path).exists()
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.PENDING
+        assert task.upload_file_size is None
+        assert task.upload_sha256 is None
+        assert task.upload_session_id is None
+        assert task.upload_checkpoint_size is None
+        assert task.upload_checkpoint_data is None
+
+    retry_stream = _FakeUploadStream([payload[:chunk_size], payload[chunk_size:]])
+    retry_handler = _new_transfer_handler(
+        file_task_context.ConnectionHandler, retry_stream
+    )
+    retry_handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
+    )
+
+    assert _sent_json_messages(retry_stream)[0]["data"]["offset"] == 0
+    assert (tmp_path / relative_path).read_bytes() == payload
+
+
+def test_non_resumable_storage_discards_stale_resumable_metadata(
+    file_task_context, tmp_path, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    stale_payload = b"s" * chunk_size
+    replacement = b"f" * chunk_size
+    relative_path = "uploads/non-resumable-stale-progress.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    storage = _NonResumableStorage(tmp_path)
+    storage.makedirs("uploads", exist_ok=True)
+    (tmp_path / relative_path).write_bytes(stale_payload)
+    with file_task_context.session.begin() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        task.chunk_size = chunk_size
+        task.upload_file_size = chunk_size * 2
+        task.upload_sha256 = hashlib.sha256(stale_payload * 2).hexdigest()
+        task.upload_session_id = "stale-session"
+        task.upload_checkpoint_size = chunk_size
+        task.upload_checkpoint_data = "stale-checkpoint"
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "ProviderManager",
+        lambda: _FakeProviderManager(storage),
+    )
+    stream = _FakeUploadStream([replacement])
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.receive_file(
+        task_id,
+        len(replacement),
+        hashlib.sha256(replacement).hexdigest(),
+        chunk_size,
+        False,
+    )
+
+    ready = _sent_json_messages(stream)[0]
+    assert ready["action"] == "transfer_file"
+    assert ready["data"]["offset"] == 0
+    assert ready["data"]["supports_resume"] is False
+    assert (tmp_path / relative_path).read_bytes() == replacement
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.COMPLETED
+        assert task.upload_session_id is None
+        assert task.upload_checkpoint_size is None
+        assert task.upload_checkpoint_data is None
+
+
+def test_non_resumable_storage_rejects_invalid_chunk_without_retaining_progress(
+    file_task_context, tmp_path, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    relative_path = "uploads/non-resumable-invalid-chunk.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    storage = _NonResumableStorage(tmp_path)
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "ProviderManager",
+        lambda: _FakeProviderManager(storage),
+    )
+    stream = _FakeUploadStream([b"short"])
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+
+    handler.receive_file(
+        task_id,
+        chunk_size * 2,
+        hashlib.sha256(b"x" * (chunk_size * 2)).hexdigest(),
+        chunk_size,
+        False,
+    )
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 400
+    assert response["data"] == {"offset": 0}
+    assert not (tmp_path / relative_path).exists()
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.PENDING
+        assert task.upload_file_size is None
+        assert task.upload_sha256 is None
+
+
+def test_non_resumable_storage_discards_progress_on_timeout(
+    file_task_context, tmp_path, monkeypatch
+) -> None:
+    from include.database.models.files import FileTaskStatus, TransferMode
+
+    chunk_size = file_task_context.UPLOAD_TRANSFER_MIN_CHUNK_SIZE
+    payload = b"t" * (chunk_size * 2)
+    relative_path = "uploads/non-resumable-timeout.bin"
+    task_id, _file_id = _create_file_task(
+        file_task_context, relative_path, mode=TransferMode.UPLOAD
+    )
+    storage = _NonResumableStorage(tmp_path)
+    monkeypatch.setattr(
+        file_task_context.connection,
+        "ProviderManager",
+        lambda: _FakeProviderManager(storage),
+    )
+    stream = _FakeUploadStream([payload[:chunk_size]])
+    handler = _new_transfer_handler(file_task_context.ConnectionHandler, stream)
+    receive_count = 0
+
+    def receive_frame(*_args):
+        nonlocal receive_count
+        receive_count += 1
+        if receive_count == 1:
+            return stream.recv()
+        raise TimeoutError("upload timed out")
+
+    monkeypatch.setattr(handler, "_recv_file_task_frame", receive_frame)
+
+    handler.receive_file(
+        task_id,
+        len(payload),
+        hashlib.sha256(payload).hexdigest(),
+        chunk_size,
+        False,
+    )
+
+    response = _sent_json_messages(stream)[-1]
+    assert response["code"] == 408
+    assert not (tmp_path / relative_path).exists()
+    with file_task_context.session() as session:
+        task = session.get(file_task_context.FileTask, task_id)
+        assert task.status == FileTaskStatus.PENDING
+        assert task.upload_file_size is None
+        assert task.upload_sha256 is None
 
 
 def test_upload_closes_resources_when_negotiation_send_fails(

@@ -96,6 +96,8 @@ class LocalFileObject(FileObject):
 
 
 class LocalStorageProvider(StorageProvider):
+    supports_resumable_uploads = True
+
     def fopen(self, path: str, mode: str = "rb") -> LocalFileObject:
         return LocalFileObject(open(path, mode))
 
