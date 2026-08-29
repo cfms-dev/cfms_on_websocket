@@ -166,7 +166,7 @@ def _validate_routes(
                     "unsupported non-HTTP route"
                 )
             final_path = f"{_API_PREFIX}{route.path}"
-            for method in route.methods:
+            for method in route.methods or set():
                 key = (method.upper(), final_path)
                 previous_owner = route_keys.get(key)
                 if previous_owner is not None:

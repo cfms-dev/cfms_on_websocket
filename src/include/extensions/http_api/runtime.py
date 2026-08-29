@@ -70,7 +70,7 @@ class HttpApiRuntime:
                 access_log=False,
                 proxy_headers=False,
                 limit_concurrency=policy.max_concurrency,
-                timeout_graceful_shutdown=policy.shutdown_timeout_seconds,
+                timeout_graceful_shutdown=int(policy.shutdown_timeout_seconds),
                 ssl_context_factory=lambda _config, _factory: self._create_ssl_context(
                     policy
                 ),
@@ -120,7 +120,7 @@ class HttpApiRuntime:
     def _run(self, active: _ActiveServer) -> None:
         try:
             active.server.run()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001
             active.failure = exc
         finally:
             active.startup_event.set()
