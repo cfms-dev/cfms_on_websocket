@@ -1,7 +1,9 @@
 # Server Extensions
 
-Each extension lives in its own directory under `src/include/extensions` and must
-contain both an `_extension.py` entrypoint and a `manifest.toml` file. The
+Packaged extensions live under the active release's `src/include/extensions`;
+operator-installed extensions live under the deployment's `shared/extensions`.
+Each extension directory must contain both an `_extension.py` entrypoint and a
+`manifest.toml` file. The
 manifest lets the server validate and describe extensions without importing their
 Python code.
 
@@ -84,10 +86,11 @@ installed and explicitly enabled; they are not enabled transitively.
 
 ## Maintenance commands
 
-Run extension maintenance commands from the deployment root or elsewhere inside
-its directory tree. The tool locates the nearest directory containing the server
-runtime, whether that runtime is stored directly in the deployment root or in the
-current `src` layout. Commands inspect manifests without importing extension code:
+Run extension maintenance commands through `python main.py maintain ...` for a
+versioned deployment, or from the legacy server tree. Packaged and operator roots
+form one catalog; duplicate identifiers across them are rejected. Packaged
+extensions can only be changed by upgrading the server release. Commands inspect
+manifests without importing extension code:
 
 ```bash
 maintain extension list

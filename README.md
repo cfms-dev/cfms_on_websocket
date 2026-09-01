@@ -58,30 +58,45 @@ uv sync --extra cluster --extra mysql
 
 Release tags publish source deployment bundles in both ZIP and tar.gz formats.
 The deployment host must provide Python 3.14 or newer and
-[uv](https://docs.astral.sh/uv/). Verify the downloaded files against
-`SHA256SUMS.txt`, then extract the format appropriate for the host:
+[uv](https://docs.astral.sh/uv/). Each archive contains an internal file manifest;
+the deployment command also requires `SHA256SUMS.txt` or an expected SHA-256.
+
+Extract a release once to bootstrap its maintenance CLI, then create a stable
+versioned deployment. Repeat `--extra` for required optional features:
 
 ```bash
 sha256sum --check SHA256SUMS.txt
-tar -xzf cfms-on-websocket-0.6.0.tar.gz
-cd cfms-on-websocket-0.6.0
+tar -xzf cfms-on-websocket-X.Y.Z.tar.gz
+uv run --project cfms-on-websocket-X.Y.Z --locked --no-dev maintain \
+  deployment install cfms-on-websocket-X.Y.Z.tar.gz \
+  --deployment-root /srv/cfms --checksums SHA256SUMS.txt \
+  --extra cluster --yes
 ```
 
-Install only the locked production dependencies. Add `--extra cluster`,
-`--extra mysql`, or `--extra ext_oidc_sso` when those features are required:
+The deployment keeps application versions under `releases/` and mutable state
+under `shared/`. The stable `main.py` sets `CFMS_SERVER_ROOT` to that shared
+directory before starting the active release or maintenance CLI:
 
 ```bash
-uv sync --locked --no-dev
-cd src
-cp config.toml.sample config.toml  # first installation only
-uv run --no-dev alembic upgrade head
-uv run --no-dev python main.py  # DO NOT use `-O`!
+python /srv/cfms/main.py  # DO NOT use `-O`!
 ```
 
-For an upgrade, back up the deployment first and retain the existing
-`config.toml`, database, `content` directory, certificates, and credentials.
-The release bundle intentionally contains none of that mutable or sensitive
-state; do not replace it with sample or empty content from a new bundle.
+Stop CFMS before upgrading. SQLite upgrades create a consistent backup
+automatically; MySQL requires a native backup and
+`--mysql-backup-confirmed`:
+
+```bash
+python /srv/cfms/main.py maintain deployment upgrade \
+  cfms-on-websocket-X.Y.Z.tar.gz --checksums SHA256SUMS.txt --yes
+```
+
+`deployment status` reports the active and previous versions.
+`deployment rollback --yes` restores the previous code pointer and saved
+configuration; it never downgrades the database. An official v0.7.0 flat release
+can be migrated once with `deployment adopt --legacy-root ... --server-stopped`.
+Adoption rejects modified official files. Third-party extensions require an
+operator-maintained, hash-locked `requirements.lock` so every release environment
+can reproduce their Python dependencies.
 
 ## Extensions
 
@@ -135,39 +150,31 @@ filtering, archive-safety, and recovery details.
 
 ## Run
 ```bash
+maintain database upgrade --yes  # required once for a new or legacy database
 python main.py # DO NOT use `-O`!
 ```
 
 ## Database Migrations
-The structure of the database varies between different server versions. In order 
-to allow server operators to upgrade to latest versions easily, here, we use 
-Alembic to handle database migrations.
+Apply schema changes while the server is stopped. The maintenance command reads
+the configured SQLite or MySQL connection instead of the placeholder URL in
+`alembic.ini`:
 
-**Note:** 
-1. Remember to backup your databases in advance to avoid data losses.
+```bash
+maintain database upgrade --yes
+```
 
-2. Configs and generated revisions in `/src/include/alembic/versions/` of 
-Alembic is designed for sqlite databases, and we don't guarantee that other types 
-of databases can be successfully upgraded via these revisions.
+An empty database is created at the current model shape and stamped at the sole
+Alembic head. An unversioned v0.7.0 database is adopted only when its tables,
+columns, primary keys, critical unique constraints, and critical indexes match
+the supported fingerprint. Unknown, partial, multi-head, or newer schemas are
+rejected rather than guessed. Normal startup only verifies that an initialized
+database is already at the expected head.
 
-3. Document and directory names share one namespace within each directory.
+Document and directory names share one namespace within each directory.
 Active names must be unique; soft-deleted items release their names. The database
 migration stops before making schema changes if it finds historical duplicate
 names or invalid parent links, so resolve the reported records and retry. The old
 `document.allow_name_duplicate` option is ignored.
-
-If you have not used Alembic yet, please run the command below **before** you 
-checkout new changes:
-
-```bash
-alembic stamp head
-```
-
-Then checkout the server version you wanted and run:
-
-```bash
-alembic upgrade head 
-``` 
 
 ### Migrating Between SQLite and MySQL
 
