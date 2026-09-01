@@ -1,11 +1,10 @@
 """
 Main entry module.
 
-Performs initialization checks when starting the CFMS WebSocket application:
-if the system has not been initialized, it creates the database tables, the
-default sysop permission group, and the administrator account, then writes the
-initialization marker; if it has already been initialized, it connects to the
-database directly and loads user information for later processing.
+Performs startup checks for the CFMS WebSocket application. The maintenance CLI
+must prepare the database schema first. If application data has not been seeded,
+the server creates the default sysop group and administrator account before
+writing the initialization marker.
 """
 
 import os
@@ -26,6 +25,7 @@ from include.config.constants import (
     ROOT_ABSPATH,
     ROOT_DIRECTORY_ID,
 )
+from include.config.paths import APPLICATION_ROOT, SERVER_ROOT
 from include.config.settings import global_config
 from include.config.validation import get_config_warnings, get_enabled_extensions
 from include.database.models.documents import (
@@ -35,7 +35,8 @@ from include.database.models.documents import (
     Folder,
 )
 from include.database.models.files import File
-from include.database.session import Base, Session, engine
+from include.database.schema import verify_database_schema
+from include.database.session import Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.upload_cleanup import (
@@ -49,11 +50,12 @@ from include.domains.security.guards.request_rate_control import (
 )
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
 from include.extensions.manager import (
-    load_extensions_from_directory,
+    load_extensions_from_directories,
     pm,
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
+from include.runtime_lock import RuntimeLockError, server_runtime_lock
 from include.transport.client_address import get_bind_options
 from include.transport.request_entrypoint import global_process_request
 from include.transport.request_handler import validate_request_handler_models
@@ -114,15 +116,6 @@ def server_init():
     import secrets
 
     from include.domains.identity.commands.groups import create_group
-
-    if (
-        os.path.exists(ROOT_ABSPATH / "app.db")
-        and global_config["database"]["type"] == "sqlite"
-    ):
-        os.remove(ROOT_ABSPATH / "app.db")
-
-    # Create database tables before inserting data
-    Base.metadata.create_all(engine)
 
     # Ensure the root folder exists before seeding any objects that reference it.
     ensure_root_folder()
@@ -205,7 +198,7 @@ def server_init():
 
     # Read from sample document source and write back to storage.
     # This is necessary because the storage provider cannot be determined in advance.
-    sample_source_path = "content/hello"
+    sample_source_path = APPLICATION_ROOT / "content" / "hello"
 
     today = datetime.datetime.now(datetime.UTC).date()
     real_filename = secrets.token_hex(32)
@@ -414,9 +407,10 @@ def prepare_logger():
     )
 
 
-def main():
+def _run_server():
     prepare_logger()
 
+    verify_database_schema(engine)
     if not os.path.exists(ROOT_ABSPATH / "init"):
         logger.info("Database not initialized, initializing now...")
         server_init()
@@ -454,9 +448,6 @@ def main():
             "OpenSSL 3.5 or later to resolve this issue."
         )
 
-    # Always create tables that do not exist
-    Base.metadata.create_all(engine)
-
     # Ensure the root folder record exists (handles upgrades from older versions)
     ensure_root_folder()
 
@@ -472,9 +463,11 @@ def main():
     ProviderManager().event_bus.subscribe(FILE_TASK_EVENT_CHANNEL, on_file_task_event)
 
     # Register extensions after database initialization
-    extension_root = ROOT_ABSPATH / "include" / "extensions"
-    load_extensions_from_directory(
-        extension_root,
+    load_extensions_from_directories(
+        (
+            APPLICATION_ROOT / "include" / "extensions",
+            SERVER_ROOT / "extensions",
+        ),
         get_enabled_extensions(global_config),
         config=global_config,
     )
@@ -521,6 +514,15 @@ def main():
                 pm.hook.ext_on_shutdown()
     finally:
         global_config.stop()
+
+
+def main():
+    try:
+        with server_runtime_lock(SERVER_ROOT):
+            _run_server()
+    except RuntimeLockError as exc:
+        logger.error(str(exc))
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

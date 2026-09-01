@@ -3,6 +3,7 @@ import datetime as dt
 import gzip
 import hashlib
 import io
+import json
 import re
 import tarfile
 import tomllib
@@ -22,6 +23,7 @@ RUNTIME_FILES = (
     "src/alembic.ini",
     "src/config.toml.sample",
     "src/content/hello",
+    "src/deployment_launcher.py",
     "src/main.py",
 )
 RUNTIME_TREES = (
@@ -49,6 +51,9 @@ FORBIDDEN_NAMES = {
     "init",
 }
 CA_CERTIFICATE_PATTERN = re.compile(r"[0-9a-fA-F]{8}\.[0-9]+").fullmatch
+REVISION_PATTERN = re.compile(r'(?m)^revision:\s*str\s*=\s*"([^"]+)"')
+DOWN_REVISION_PATTERN = re.compile(r'(?m)^down_revision:.*?=\s*(?:"([^"]+)"|None)')
+RELEASE_MANIFEST_PATH = PurePosixPath("release-manifest.json")
 
 
 def _validate_version(project_root: Path, version: str) -> None:
@@ -74,7 +79,7 @@ def _is_ignored_tree_file(relative_path: PurePosixPath) -> bool:
 
 def _collect_release_files(
     project_root: Path,
-) -> tuple[tuple[PurePosixPath, Path], ...]:
+) -> tuple[tuple[PurePosixPath, bytes], ...]:
     files: dict[PurePosixPath, Path] = {}
 
     for relative_name in (*ROOT_FILES, *RUNTIME_FILES):
@@ -127,7 +132,65 @@ def _collect_release_files(
                 f"Mutable or sensitive path selected for release: {relative_path}"
             )
 
-    return tuple(sorted(files.items(), key=lambda item: item[0].as_posix()))
+    return tuple(
+        (relative_path, source_path.read_bytes())
+        for relative_path, source_path in sorted(
+            files.items(), key=lambda item: item[0].as_posix()
+        )
+    )
+
+
+def _release_manifest(
+    project_root: Path,
+    version: str,
+    files: tuple[tuple[PurePosixPath, bytes], ...],
+) -> bytes:
+    revision_parents = {}
+    for migration_path in sorted((project_root / "src/alembic/versions").glob("*.py")):
+        source = migration_path.read_text(encoding="utf-8")
+        revision_match = REVISION_PATTERN.search(source)
+        down_match = DOWN_REVISION_PATTERN.search(source)
+        if revision_match is None or down_match is None:
+            raise ValueError(
+                f"Unable to parse Alembic revision metadata: {migration_path}"
+            )
+        revision_parents[revision_match.group(1)] = down_match.group(1)
+    heads = sorted(set(revision_parents) - {p for p in revision_parents.values() if p})
+    if len(heads) != 1:
+        raise ValueError("A release must contain exactly one Alembic head")
+
+    extension_identifiers = []
+    extension_root = project_root / "src/include/extensions"
+    for manifest_path in sorted(extension_root.glob("*/manifest.toml")):
+        with manifest_path.open("rb") as manifest_file:
+            extension_identifiers.append(
+                tomllib.load(manifest_file)["extension"]["identifier"]
+            )
+
+    with (project_root / "pyproject.toml").open("rb") as pyproject_file:
+        requires_python = tomllib.load(pyproject_file)["project"]["requires-python"]
+    manifest = {
+        "alembic_head": heads[0],
+        "files": {
+            path.as_posix(): hashlib.sha256(contents).hexdigest()
+            for path, contents in files
+        },
+        "format_version": 1,
+        "managed_extensions": sorted(extension_identifiers),
+        "minimum_upgrade_version": "0.7.0",
+        "product": "cfms-on-websocket",
+        "requires_python": requires_python,
+        "version": version,
+    }
+    return (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def _zip_timestamp(source_date_epoch: int) -> tuple[int, int, int, int, int, int]:
@@ -147,7 +210,7 @@ def _zip_timestamp(source_date_epoch: int) -> tuple[int, int, int, int, int, int
 def _write_zip(
     output_path: Path,
     top_level: str,
-    files: tuple[tuple[PurePosixPath, Path], ...],
+    files: tuple[tuple[PurePosixPath, bytes], ...],
     source_date_epoch: int,
 ) -> None:
     timestamp = _zip_timestamp(source_date_epoch)
@@ -157,19 +220,19 @@ def _write_zip(
         compression=zipfile.ZIP_DEFLATED,
         compresslevel=9,
     ) as archive:
-        for relative_path, source_path in files:
+        for relative_path, contents in files:
             archive_path = PurePosixPath(top_level, relative_path).as_posix()
             info = zipfile.ZipInfo(archive_path, date_time=timestamp)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, source_path.read_bytes(), compresslevel=9)
+            archive.writestr(info, contents, compresslevel=9)
 
 
 def _write_tar_gz(
     output_path: Path,
     top_level: str,
-    files: tuple[tuple[PurePosixPath, Path], ...],
+    files: tuple[tuple[PurePosixPath, bytes], ...],
     source_date_epoch: int,
 ) -> None:
     with (
@@ -187,8 +250,7 @@ def _write_tar_gz(
             format=tarfile.PAX_FORMAT,
         ) as archive,
     ):
-        for relative_path, source_path in files:
-            contents = source_path.read_bytes()
+        for relative_path, contents in files:
             archive_path = PurePosixPath(top_level, relative_path).as_posix()
             info = tarfile.TarInfo(archive_path)
             info.size = len(contents)
@@ -222,6 +284,10 @@ def build_release(
 
     _validate_version(project_root, version)
     files = _collect_release_files(project_root)
+    files = (
+        *files,
+        (RELEASE_MANIFEST_PATH, _release_manifest(project_root, version, files)),
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     archive_stem = f"cfms-on-websocket-{version}"

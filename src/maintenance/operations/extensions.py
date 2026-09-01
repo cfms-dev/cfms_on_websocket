@@ -26,7 +26,7 @@ from include.extensions.manager import (
     ExtensionLoadError,
     ExtensionManifest,
     ExtensionManifestError,
-    discover_extensions,
+    discover_extensions_from_directories,
     parse_extension_manifest,
     resolve_extension_selection,
 )
@@ -80,16 +80,33 @@ class ExtensionChangeResult:
     changed: bool
 
 
-def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
+def _extension_roots(*, mutating: bool) -> tuple[Path, Path, tuple[Path, ...]]:
     workdir = enter_server_root()
-    root = workdir / "include" / "extensions"
-    if not root.is_dir():
-        raise MaintenanceOperationError(f"Extension directory not found: {root}")
+    legacy_root = workdir / "include" / "extensions"
+    if legacy_root.is_dir():
+        managed_root = legacy_root
+        roots = (legacy_root,)
+    else:
+        from include.config.paths import APPLICATION_ROOT
+
+        packaged_root = APPLICATION_ROOT / "include" / "extensions"
+        if not packaged_root.is_dir():
+            raise MaintenanceOperationError(
+                f"Packaged extension directory not found: {packaged_root}"
+            )
+        managed_root = workdir / "extensions"
+        if mutating:
+            managed_root.mkdir(parents=True, exist_ok=True)
+        roots = (packaged_root, managed_root)
     if mutating:
-        artifacts = sorted(
-            path
-            for path in root.iterdir()
-            if path.name.startswith(_TRANSACTION_PREFIXES)
+        artifacts = (
+            sorted(
+                path
+                for path in managed_root.iterdir()
+                if path.name.startswith(_TRANSACTION_PREFIXES)
+            )
+            if managed_root.is_dir()
+            else []
         )
         if artifacts:
             rendered = ", ".join(str(path) for path in artifacts)
@@ -97,12 +114,12 @@ def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
                 "Unfinished extension transaction artifacts require manual review: "
                 f"{rendered}"
             )
-    return workdir, root
+    return workdir, managed_root, roots
 
 
-def _discover(root: Path) -> dict[str, DiscoveredExtension]:
+def _discover(roots: tuple[Path, ...]) -> dict[str, DiscoveredExtension]:
     try:
-        return discover_extensions(root)
+        return discover_extensions_from_directories(roots)
     except (ExtensionDiscoveryError, ExtensionManifestError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
 
@@ -184,8 +201,8 @@ def _record(
 
 
 def inspect_extensions() -> ExtensionCatalogInspection:
-    workdir, root = _extension_root(mutating=False)
-    discovered = _discover(root)
+    workdir, _, roots = _extension_roots(mutating=False)
+    discovered = _discover(roots)
     _, _, _, enabled = _read_config(workdir)
     activation_error = None
     try:
@@ -468,10 +485,10 @@ def install_extension(
     expected_sha256: str | None = None,
     write: bool = False,
 ) -> ExtensionChangeResult:
-    _, root = _extension_root(mutating=True)
+    _, root, roots = _extension_roots(mutating=True)
     package, staged, stage = _extract_package(package_path, expected_sha256, root)
     try:
-        discovered = _discover(root)
+        discovered = _discover(roots)
         identifier = staged.manifest.extension.identifier
         if identifier in discovered:
             raise MaintenanceOperationError(
@@ -546,11 +563,11 @@ def upgrade_extension(
     expected_sha256: str | None = None,
     write: bool = False,
 ) -> ExtensionChangeResult:
-    workdir, root = _extension_root(mutating=True)
+    workdir, root, roots = _extension_roots(mutating=True)
     package, staged, stage = _extract_package(package_path, expected_sha256, root)
     preserve_stage = False
     try:
-        discovered = _discover(root)
+        discovered = _discover(roots)
         identifier = staged.manifest.extension.identifier
         installed = discovered.get(identifier)
         if installed is None:
@@ -559,6 +576,10 @@ def upgrade_extension(
             )
         if identifier == "builtin":
             raise MaintenanceOperationError("The built-in extension cannot be upgraded")
+        if installed.directory.parent.resolve() != root.resolve():
+            raise MaintenanceOperationError(
+                f"Packaged extension {identifier!r} must be upgraded with the server"
+            )
         _compare_upgrade_versions(installed, staged)
 
         config_path, current_source, document, enabled = _read_config(workdir)
@@ -663,8 +684,8 @@ def _selection_change(
     enable: bool,
     write: bool,
 ) -> ExtensionChangeResult:
-    workdir, root = _extension_root(mutating=True)
-    discovered = _discover(root)
+    workdir, _, roots = _extension_roots(mutating=True)
+    discovered = _discover(roots)
     extension = discovered.get(identifier)
     if extension is None:
         raise MaintenanceOperationError(f"Extension {identifier!r} is not installed")
@@ -718,13 +739,17 @@ def disable_extension(identifier: str, *, write: bool = False) -> ExtensionChang
 def uninstall_extension(
     identifier: str, *, write: bool = False
 ) -> ExtensionChangeResult:
-    workdir, root = _extension_root(mutating=True)
-    discovered = _discover(root)
+    workdir, root, roots = _extension_roots(mutating=True)
+    discovered = _discover(roots)
     extension = discovered.get(identifier)
     if extension is None:
         raise MaintenanceOperationError(f"Extension {identifier!r} is not installed")
     if identifier == "builtin":
         raise MaintenanceOperationError("The built-in extension cannot be uninstalled")
+    if extension.directory.parent.resolve() != root.resolve():
+        raise MaintenanceOperationError(
+            f"Packaged extension {identifier!r} cannot be uninstalled"
+        )
     config_path, current_source, document, enabled = _read_config(workdir)
     disabled = _dependent_disable_set(identifier, discovered, enabled)
     removed = tuple(current for current in enabled if current in disabled)

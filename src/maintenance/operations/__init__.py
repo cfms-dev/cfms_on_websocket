@@ -26,6 +26,15 @@ from maintenance.operations.config import (
 from maintenance.operations.database import (
     DatabaseMigrationResult,
     migrate_database,
+    upgrade_database,
+)
+from maintenance.operations.deployment import (
+    DeploymentResult,
+    adopt_deployment,
+    inspect_deployment,
+    install_deployment,
+    rollback_deployment,
+    upgrade_deployment,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.extensions import (
@@ -63,6 +72,7 @@ __all__ = [
     "ConfigSyncResult",
     "ConfigTemplateInspection",
     "DatabaseMigrationResult",
+    "DeploymentResult",
     "ExtensionCatalogInspection",
     "ExtensionChangeResult",
     "ExtensionRecord",
@@ -71,6 +81,7 @@ __all__ = [
     "PepperFillResult",
     "PermissionPurgeResult",
     "TotpClearResult",
+    "adopt_deployment",
     "build_random_password",
     "clear_totp",
     "create_audit_selection",
@@ -82,16 +93,21 @@ __all__ = [
     "import_backup",
     "inspect_audit_entries",
     "inspect_config_template",
+    "inspect_deployment",
     "inspect_expired_permissions",
     "inspect_extension",
     "inspect_extensions",
     "install_extension",
+    "install_deployment",
     "migrate_database",
+    "upgrade_database",
     "purge_audit_entries",
     "purge_expired_permissions",
     "read_backup_info",
     "reset_password",
+    "rollback_deployment",
     "sync_config_template",
     "uninstall_extension",
     "upgrade_extension",
+    "upgrade_deployment",
 ]
