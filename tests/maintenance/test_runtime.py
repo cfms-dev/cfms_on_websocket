@@ -97,3 +97,17 @@ def test_enter_server_root_reports_unrelated_directory(
         enter_server_root()
 
     assert Path.cwd() == start.resolve()
+
+
+def test_enter_server_root_honors_cfms_server_root_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server_root = _make_server_root(tmp_path / "shared")
+    unrelated = tmp_path / "elsewhere"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    monkeypatch.setenv("CFMS_SERVER_ROOT", str(server_root))
+
+    assert enter_server_root() == server_root
+    assert Path.cwd() == server_root

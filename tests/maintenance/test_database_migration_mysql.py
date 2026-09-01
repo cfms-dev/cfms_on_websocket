@@ -5,6 +5,7 @@ from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, insert, inspect, text
 
 from include.database.engine import create_database_engine
+from include.database.schema import upgrade_database_schema
 from maintenance.database_migration import migrate_database
 from tests.maintenance.test_backup_format_compatibility import _seed_source
 from tests.maintenance.test_database_migration import (
@@ -16,6 +17,21 @@ pytestmark = pytest.mark.skipif(
     "CFMS_TEST_MYSQL_URL" not in os.environ,
     reason="CFMS_TEST_MYSQL_URL is required for MySQL migration integration tests",
 )
+
+
+def test_unversioned_v070_mysql_schema_is_adopted(backup_context) -> None:
+    mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    _clear_mysql_database(mysql_engine)
+    try:
+        backup_context.Base.metadata.create_all(mysql_engine)
+
+        result = upgrade_database_schema(mysql_engine, backup_context.Base.metadata)
+
+        assert result.adopted_legacy is True
+        assert result.current_revision == "7bddfba0d8aa"
+    finally:
+        _clear_mysql_database(mysql_engine)
+        mysql_engine.dispose()
 
 
 @pytest.mark.parametrize("direction", ["sqlite-to-mysql", "mysql-to-sqlite"])

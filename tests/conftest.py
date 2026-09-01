@@ -6,6 +6,7 @@ import asyncio
 import os
 import secrets
 import subprocess
+import sys
 from collections.abc import AsyncGenerator, Callable, Generator
 from pathlib import Path
 
@@ -49,6 +50,18 @@ def protected_test_config() -> Generator[ServerTestSettings]:
 
         (src_dir / "content" / "ssl").mkdir(parents=True, exist_ok=True)
         (src_dir / "content" / "logs").mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "maintenance.cli",
+                "database",
+                "upgrade",
+                "--yes",
+            ],
+            cwd=src_dir,
+            check=True,
+        )
 
         yield settings
     finally:
