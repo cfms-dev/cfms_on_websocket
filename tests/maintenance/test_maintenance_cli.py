@@ -1,7 +1,9 @@
 import datetime as dt
 import json
 import re
+import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -412,6 +414,10 @@ def test_incomplete_commands_show_contextual_hints(tmp_path):
         (
             ["backup"],
             ["Maintain backups.", "export", "import"],
+        ),
+        (
+            ["extension"],
+            ["Manage server extensions.", "install", "upgrade", "enable"],
         ),
         (
             ["user", "reset-password"],
@@ -967,6 +973,57 @@ def test_backup_import_abort_uses_typer_abort_before_operation(tmp_path):
     assert result.returncode == 1
     assert "Aborted." in result.stderr
     assert not (src_dir / "init").exists()
+
+
+def test_extension_cli_lists_installs_and_enables(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    shutil.copytree(
+        _SRC_PATH / "include" / "extensions",
+        src_dir / "include" / "extensions",
+    )
+    package = src_dir / "cli_extension.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr(
+            "manifest.toml",
+            """manifest_version = 2
+
+[extension]
+identifier = "cli_extension"
+name = "CLI Extension"
+version = "1.0.0"
+authors = ["Test Author"]
+license = "Apache-2.0"
+""",
+        )
+        archive.writestr("_extension.py", "raise RuntimeError('must not import')\n")
+
+    listed = _run_maintain(src_dir, ["extension", "list"])
+    aborted = _run_maintain(
+        src_dir,
+        ["extension", "install", str(package)],
+        check=False,
+        input_text="n\n",
+    )
+    assert aborted.returncode == 1
+    assert "Aborted" in aborted.stderr
+    assert not (src_dir / "include" / "extensions" / "cli_extension").exists()
+
+    installed = _run_maintain(
+        src_dir,
+        ["extension", "install", str(package), "--yes"],
+    )
+    enabled = _run_maintain(
+        src_dir,
+        ["extension", "enable", "cli_extension", "--yes"],
+    )
+    info = _run_maintain(src_dir, ["extension", "info", "cli_extension"])
+
+    assert "builtin" in listed.stdout
+    assert "remains disabled" in _normalize_cli_output(installed.stdout)
+    assert "Restart any running server" in _normalize_cli_output(enabled.stdout)
+    assert "CLI Extension" in _normalize_cli_output(info.stdout)
+    config = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
+    assert config["extensions"]["enabled"] == ["cli_extension"]
 
 
 def test_backup_export_interactive_rejects_other_arguments(tmp_path):

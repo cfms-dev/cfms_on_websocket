@@ -82,6 +82,50 @@ server validates every installed extension manifest at startup, but imports only
 the built-in extension and identifiers listed in `enabled`. Dependencies must be
 installed and explicitly enabled; they are not enabled transitively.
 
+## Maintenance commands
+
+Run extension maintenance commands from the server's `src` directory. They inspect
+manifests without importing extension code:
+
+```bash
+maintain extension list
+maintain extension info example_extension
+maintain extension install example_extension.zip --sha256 <digest>
+maintain extension upgrade example_extension.zip --sha256 <digest>
+maintain extension enable example_extension
+maintain extension disable example_extension
+maintain extension uninstall example_extension
+```
+
+Install leaves a new extension disabled so that its configuration and Python
+dependencies can be prepared first. Enable adds installed transitive dependencies
+after showing the complete change; disable and uninstall likewise show the enabled
+dependents that must be disabled. Mutating commands require confirmation unless
+`--yes` is supplied. They never install Python packages, detect the server process,
+or restart it. Restart a running server after activation, upgrade, disable, or
+uninstall changes.
+
+Uninstall removes extension code and its entry from `extensions.enabled`, while
+preserving `extensions.<identifier>` configuration and persistent system state.
+The `builtin` extension cannot be installed, upgraded, disabled, or uninstalled.
+
+### Extension package format
+
+An extension package is a local ZIP whose root directly contains `manifest.toml`
+and `_extension.py`. Other regular files and directories retain their relative
+paths. Packages may use stored or deflated members and are limited to 64 MiB
+compressed, 256 MiB uncompressed, and 4096 archive members. Encrypted members,
+links and special files, unsafe or ambiguous paths, and case-insensitive duplicate
+paths are rejected.
+
+`--sha256` compares the package with an expected 64-digit hexadecimal SHA-256
+digest before extraction. A digest detects changed bytes but does not authenticate
+the publisher. Extensions execute trusted Python code with the server's privileges;
+obtain packages and digests through a trusted channel. The maintenance command does
+not execute `_extension.py`, so successful installation cannot prove that optional
+Python dependencies are installed or that extension-specific runtime configuration
+will pass when the server starts.
+
 Before importing any extension code, the server checks the complete set of
 extensions selected for this load. It rejects missing or disabled dependencies,
 insufficient versions, self-dependencies, and dependency cycles. It then performs

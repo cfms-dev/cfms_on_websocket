@@ -13,6 +13,7 @@ __all__ = [
     "load_extensions_from_directory",
     "parse_extension_manifest",
     "pm",
+    "resolve_extension_selection",
     "validate_extension_config",
 ]
 
@@ -458,7 +459,7 @@ def _find_dependency_cycle(
 
 
 def _resolve_extension_load_order(
-    discovered: dict[str, DiscoveredExtension],
+    discovered: Mapping[str, DiscoveredExtension],
     selected: tuple[str, ...],
 ) -> tuple[DiscoveredExtension, ...]:
     selected_set = set(selected)
@@ -536,18 +537,17 @@ def validate_extension_config(config: Any) -> None:
     pm.hook.ext_validate_config(config=config)
 
 
-def load_extensions_from_directory(
-    extension_dir: str | Path,
+def resolve_extension_selection(
+    discovered: Mapping[str, DiscoveredExtension],
     enabled_identifiers: tuple[str, ...] | list[str],
     *,
-    config: Any,
-) -> None:
-    """Load the built-in extension and configured extensions in order."""
-    discovered = discover_extensions(extension_dir)
+    core_version: Version | None = None,
+) -> tuple[DiscoveredExtension, ...]:
+    """Validate and order an extension selection without importing its code."""
     builtin_ext = discovered.get("builtin")
     if builtin_ext is None:
         raise ExtensionDiscoveryError(
-            f"Required built-in extension was not found in {extension_dir}"
+            "Required built-in extension was not found in the extension catalog"
         )
 
     enabled = tuple(enabled_identifiers)
@@ -566,14 +566,28 @@ def load_extensions_from_directory(
     selected_identifiers = ("builtin", *enabled)
     ordered_extensions = _resolve_extension_load_order(discovered, selected_identifiers)
 
+    current_core_version = core_version if core_version is not None else CORE_VERSION
     for extension in ordered_extensions:
         minimum_version = extension.manifest.compatibility.minimum_server_version
-        if minimum_version is not None and CORE_VERSION < minimum_version:
+        if minimum_version is not None and current_core_version < minimum_version:
             identifier = extension.manifest.extension.identifier
             raise ExtensionLoadError(
                 f"Extension {identifier!r} requires server version "
-                f"{minimum_version} or newer; current server version is {CORE_VERSION}"
+                f"{minimum_version} or newer; current server version is "
+                f"{current_core_version}"
             )
+    return ordered_extensions
+
+
+def load_extensions_from_directory(
+    extension_dir: str | Path,
+    enabled_identifiers: tuple[str, ...] | list[str],
+    *,
+    config: Any,
+) -> None:
+    """Load the built-in extension and configured extensions in order."""
+    discovered = discover_extensions(extension_dir)
+    ordered_extensions = resolve_extension_selection(discovered, enabled_identifiers)
 
     extensions_to_load = [
         extension

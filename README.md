@@ -87,7 +87,11 @@ state; do not replace it with sample or empty content from a new bundle.
 
 Extensions are discovered through versioned `manifest.toml` files and are
 enabled by identifier in `config.toml`. See the [extension guide](docs/EXTENSIONS.md)
-for the manifest schema, activation rules, and migration instructions.
+for the manifest schema, activation rules, package format, and migration
+instructions. From the server's `src` directory, `maintain extension` can list,
+inspect, install, upgrade, enable, disable, and uninstall local extension ZIP
+packages. These commands do not execute extension code or install its Python
+dependencies, and activation changes require a server restart.
 
 ## Configuration Maintenance
 
