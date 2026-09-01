@@ -217,7 +217,10 @@ def _print_audit_export_result(result: operations.AuditExportResult) -> None:
 def export_audit_logs(
     output_path: Annotated[
         Path,
-        typer.Argument(help="Where the readable JSONL export should be written."),
+        typer.Argument(
+            help="Where the readable JSONL export should be written.",
+            resolve_path=True,
+        ),
     ],
     before: Annotated[
         str | None,
@@ -276,6 +279,7 @@ def purge_audit_logs(
         typer.Option(
             "--archive",
             help="JSONL path that must be written successfully before deletion.",
+            resolve_path=True,
         ),
     ] = None,
     before: Annotated[
@@ -479,6 +483,7 @@ def migrate_database(
         typer.Option(
             "--target-config",
             help="TOML file containing the target database settings.",
+            resolve_path=True,
         ),
     ],
     activate: Annotated[
@@ -669,7 +674,10 @@ def extension_info(
 
 @extension_app.command("install")
 def install_extension(
-    package: Annotated[Path, typer.Argument(help="Local extension ZIP package.")],
+    package: Annotated[
+        Path,
+        typer.Argument(help="Local extension ZIP package.", resolve_path=True),
+    ],
     sha256: Annotated[
         str | None,
         typer.Option("--sha256", help="Expected package SHA-256 digest."),
@@ -708,7 +716,10 @@ def install_extension(
 
 @extension_app.command("upgrade")
 def upgrade_extension(
-    package: Annotated[Path, typer.Argument(help="Local extension ZIP package.")],
+    package: Annotated[
+        Path,
+        typer.Argument(help="Local extension ZIP package.", resolve_path=True),
+    ],
     sha256: Annotated[
         str | None,
         typer.Option("--sha256", help="Expected package SHA-256 digest."),
@@ -959,12 +970,14 @@ def _print_config_sync_result(result: operations.ConfigSyncResult) -> None:
 )
 def sync_config_template(
     template_path: Annotated[
-        Path,
+        Path | None,
         typer.Option(
             "--template",
             help="Configuration template to merge into config.toml.",
+            resolve_path=True,
+            show_default="config.toml.sample",
         ),
-    ] = Path("config.toml.sample"),
+    ] = None,
     check: Annotated[
         bool,
         typer.Option(
@@ -1001,6 +1014,8 @@ def sync_config_template(
         raise typer.BadParameter("--prune cannot be combined with --remove.")
     if check and yes:
         raise typer.BadParameter("--check cannot be combined with --yes.")
+    if template_path is None:
+        template_path = Path("config.toml.sample")
 
     inspection = _run(
         lambda: operations.inspect_config_template(template_path),
@@ -1063,11 +1078,18 @@ def sync_config_template(
 def export_backup(
     output_path: Annotated[
         Path | None,
-        typer.Argument(help="Where the encrypted backup should be written."),
+        typer.Argument(
+            help="Where the encrypted backup should be written.",
+            resolve_path=True,
+        ),
     ] = None,
     key_output_path: Annotated[
         Path | None,
-        typer.Option("--key-out", help="File to receive the generated key."),
+        typer.Option(
+            "--key-out",
+            help="File to receive the generated key.",
+            resolve_path=True,
+        ),
     ] = None,
     interactive: Annotated[
         bool,
@@ -1146,7 +1168,7 @@ def _run_interactive_backup_export() -> None:
             default="backup.confbak",
             console=console,
         )
-    )
+    ).resolve()
     key_mode = Prompt.ask(
         "Key output",
         choices=["terminal", "file", "both"],
@@ -1162,7 +1184,7 @@ def _run_interactive_backup_export() -> None:
                 default=default_key_path,
                 console=console,
             )
-        )
+        ).resolve()
 
     _print_interactive_backup_summary(
         components,
@@ -1272,7 +1294,10 @@ def _print_backup_warnings(warnings: tuple[str, ...]) -> None:
     epilog="Example: maintain backup info backup.confbak",
 )
 def backup_info(
-    backup_path: Annotated[Path, typer.Argument(help="Backup file to inspect.")],
+    backup_path: Annotated[
+        Path,
+        typer.Argument(help="Backup file to inspect.", resolve_path=True),
+    ],
     verbose: VerboseOption = False,
 ) -> None:
     """Show unencrypted backup header information."""
@@ -1304,14 +1329,21 @@ def backup_info(
     ),
 )
 def import_backup(
-    backup_path: Annotated[Path, typer.Argument(help="Backup file to import.")],
+    backup_path: Annotated[
+        Path,
+        typer.Argument(help="Backup file to import.", resolve_path=True),
+    ],
     key: Annotated[
         str | None,
         typer.Option("--key", help="Base64url decryption key."),
     ] = None,
     key_file_path: Annotated[
         Path | None,
-        typer.Option("--key-file", help="File containing the decryption key."),
+        typer.Option(
+            "--key-file",
+            help="File containing the decryption key.",
+            resolve_path=True,
+        ),
     ] = None,
     yes: Annotated[
         bool,

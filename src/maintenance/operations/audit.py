@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
 
 from maintenance.operations.exceptions import MaintenanceOperationError
-from maintenance.runtime import ensure_src_workdir, load_database_models
+from maintenance.runtime import enter_server_root, load_database_models
 
 _SECONDS_PER_DAY = 24 * 60 * 60
 _AUDIT_COLUMNS = (
@@ -73,7 +73,7 @@ def create_audit_selection(
     remote_addresses: Iterable[str] = (),
     now: float | None = None,
 ) -> AuditSelection:
-    ensure_src_workdir()
+    enter_server_root()
 
     from include.config.validation import AuditRetentionPolicy
 
@@ -105,7 +105,7 @@ def create_audit_selection(
 
 
 def inspect_audit_entries(selection: AuditSelection) -> AuditInspectionResult:
-    ensure_src_workdir()
+    enter_server_root()
     load_database_models()
 
     from include.database.models.operations import AuditEntry
@@ -153,7 +153,7 @@ def export_audit_entries(
     output_path: str | Path,
     selection: AuditSelection,
 ) -> AuditExportResult:
-    ensure_src_workdir()
+    enter_server_root()
     load_database_models()
 
     from include.config.validation import AuditRetentionPolicy

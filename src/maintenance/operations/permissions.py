@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass
 
-from maintenance.runtime import ensure_src_workdir, load_database_models
+from maintenance.runtime import enter_server_root, load_database_models
 
 _SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -18,7 +18,7 @@ class PermissionPurgeResult:
 
 
 def inspect_expired_permissions(now: float | None = None) -> PermissionPurgeResult:
-    ensure_src_workdir()
+    enter_server_root()
     load_database_models()
 
     from include.config.validation import IdentityPermissionRetentionPolicy
@@ -43,7 +43,7 @@ def inspect_expired_permissions(now: float | None = None) -> PermissionPurgeResu
 def purge_expired_permissions(
     cutoff: float | None = None,
 ) -> PermissionPurgeResult:
-    ensure_src_workdir()
+    enter_server_root()
     load_database_models()
 
     from include.config.validation import IdentityPermissionRetentionPolicy

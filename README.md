@@ -88,16 +88,25 @@ state; do not replace it with sample or empty content from a new bundle.
 Extensions are discovered through versioned `manifest.toml` files and are
 enabled by identifier in `config.toml`. See the [extension guide](docs/EXTENSIONS.md)
 for the manifest schema, activation rules, package format, and migration
-instructions. From the server's `src` directory, `maintain extension` can list,
-inspect, install, upgrade, enable, disable, and uninstall local extension ZIP
-packages. These commands do not execute extension code or install its Python
-dependencies, and activation changes require a server restart.
+instructions. `maintain extension` can list, inspect, install, upgrade, enable,
+disable, and uninstall local extension ZIP packages. The tool locates the nearest
+server runtime from the current directory, so it can be run from the deployment
+root or elsewhere inside its directory tree. These commands do not execute
+extension code or install its Python dependencies, and activation changes require
+a server restart.
+
+Relative paths explicitly supplied to `maintain`—such as backup outputs,
+extension packages, audit archives, key files, and target configurations—are
+resolved from the directory where the command was invoked. Server-owned paths
+such as `config.toml`, `alembic.ini`, and `content` are resolved from the located
+runtime root.
 
 ## Configuration Maintenance
 
-After updating CFMS, run the template synchronization command from `src` to add
-new settings, migrate known legacy settings, and review settings that no longer
-appear in `config.toml.sample`:
+After updating CFMS, run the template synchronization command from the deployment
+root or elsewhere inside its directory tree to add new settings, migrate known
+legacy settings, and review settings that no longer appear in
+`config.toml.sample`:
 
 ```bash
 maintain config sync-template
@@ -192,7 +201,8 @@ MySQL 9.7 uses `caching_sha2_password` by default and no longer provides
 `mysql_native_password`. Ensure the configured database account uses
 `caching_sha2_password`; Connector/Python in the locked environment supports it.
 
-Stop CFMS, retain a source backup, and run the migration from `src`:
+Stop CFMS, retain a source backup, and run the migration from the deployment root
+or elsewhere inside its directory tree:
 
 ```bash
 maintain database migrate --target-config config.mysql.toml

@@ -15,7 +15,7 @@ from tomlkit.exceptions import TOMLKitError
 
 from include.config.validation import ConfigValidationError, parse_config_document
 from maintenance.operations.exceptions import MaintenanceOperationError
-from maintenance.runtime import ensure_src_workdir
+from maintenance.runtime import enter_server_root
 
 _MISSING = object()
 _LEGACY_PATHS = frozenset(
@@ -59,7 +59,7 @@ class ConfigSyncResult:
 
 
 def fill_pepper(config_path: str | Path = "config.toml") -> PepperFillResult:
-    ensure_src_workdir()
+    enter_server_root()
     path = Path(config_path)
     if not path.exists():
         raise MaintenanceOperationError(f"Configuration file not found: {path}")
@@ -173,7 +173,7 @@ def sync_config_template(
 def _load_documents(
     template_path: str | Path,
 ) -> tuple[Path, Path, tomlkit.TOMLDocument, tomlkit.TOMLDocument, str]:
-    workdir = ensure_src_workdir()
+    workdir = enter_server_root()
     config_path = workdir / "config.toml"
     candidate_template_path = Path(template_path)
     if not candidate_template_path.is_absolute():

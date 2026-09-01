@@ -32,7 +32,7 @@ from include.extensions.manager import (
 )
 from maintenance.operations.config import write_config_atomically
 from maintenance.operations.exceptions import MaintenanceOperationError
-from maintenance.runtime import ensure_src_workdir
+from maintenance.runtime import enter_server_root
 
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
@@ -81,7 +81,7 @@ class ExtensionChangeResult:
 
 
 def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
-    workdir = ensure_src_workdir()
+    workdir = enter_server_root()
     root = workdir / "include" / "extensions"
     if not root.is_dir():
         raise MaintenanceOperationError(f"Extension directory not found: {root}")

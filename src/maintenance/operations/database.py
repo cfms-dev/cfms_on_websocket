@@ -20,7 +20,7 @@ from maintenance.database_migration import (
 )
 from maintenance.operations.config import write_config_atomically
 from maintenance.operations.exceptions import MaintenanceOperationError
-from maintenance.runtime import ensure_src_workdir, load_database_models
+from maintenance.runtime import enter_server_root, load_database_models
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -43,7 +43,7 @@ def migrate_database(
     activate: bool = False,
     progress: Progress | None = None,
 ) -> DatabaseMigrationResult:
-    workdir = ensure_src_workdir()
+    workdir = enter_server_root()
     resolved_target_path, target_document, target_database = (
         _load_target_database_config(workdir, target_config_path)
     )

@@ -84,8 +84,10 @@ installed and explicitly enabled; they are not enabled transitively.
 
 ## Maintenance commands
 
-Run extension maintenance commands from the server's `src` directory. They inspect
-manifests without importing extension code:
+Run extension maintenance commands from the deployment root or elsewhere inside
+its directory tree. The tool locates the nearest directory containing the server
+runtime, whether that runtime is stored directly in the deployment root or in the
+current `src` layout. Commands inspect manifests without importing extension code:
 
 ```bash
 maintain extension list
@@ -96,6 +98,9 @@ maintain extension enable example_extension
 maintain extension disable example_extension
 maintain extension uninstall example_extension
 ```
+
+Relative extension package paths are resolved from the directory where
+`maintain` was invoked, not from the located runtime root.
 
 Install leaves a new extension disabled so that its configuration and Python
 dependencies can be prepared first. Enable adds installed transitive dependencies

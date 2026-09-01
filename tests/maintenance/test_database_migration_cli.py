@@ -9,7 +9,8 @@ def test_database_migration_cli_reports_verified_result(monkeypatch, tmp_path) -
     target_config.write_text("[database]\ntype='mysql'\n", encoding="utf-8")
     backup_path = tmp_path / "config.toml.backup"
 
-    def migrate_database(_path, *, activate, progress):
+    def migrate_database(path, *, activate, progress):
+        assert path == target_config.resolve()
         assert activate is True
         assert progress is not None
         return DatabaseMigrationResult(
@@ -26,13 +27,14 @@ def test_database_migration_cli_reports_verified_result(monkeypatch, tmp_path) -
         "maintenance.cli.operations.migrate_database",
         migrate_database,
     )
+    monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(
         app,
         [
             "database",
             "migrate",
             "--target-config",
-            str(target_config),
+            target_config.name,
             "--activate",
             "--yes",
         ],

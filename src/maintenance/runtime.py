@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -5,14 +6,42 @@ class MaintenanceRuntimeError(RuntimeError):
     pass
 
 
-def ensure_src_workdir(cwd: Path | None = None) -> Path:
-    workdir = (cwd or Path.cwd()).resolve()
-    if not (workdir / "config.toml").is_file() or not (workdir / "main.py").is_file():
-        raise MaintenanceRuntimeError(
-            "Maintenance commands must be run from the CFMS src directory. "
-            "Run `cd src` first, then retry the command."
+def enter_server_root(start: Path | None = None) -> Path:
+    start_path = (start or Path.cwd()).resolve()
+    search_path = (start_path, *start_path.parents)
+
+    server_root = next(
+        (
+            candidate
+            for candidate in search_path
+            if (candidate / "main.py").is_file()
+            and (candidate / "config.toml").is_file()
+        ),
+        None,
+    )
+    if server_root is None:
+        server_root = next(
+            (
+                candidate / "src"
+                for candidate in search_path
+                if (candidate / "src" / "main.py").is_file()
+                and (candidate / "src" / "config.toml").is_file()
+            ),
+            None,
         )
-    return workdir
+    if server_root is None:
+        raise MaintenanceRuntimeError(
+            f"Unable to locate a CFMS server root from {start_path}. "
+            "A server root must contain main.py and config.toml."
+        )
+
+    try:
+        os.chdir(server_root)
+    except OSError as exc:
+        raise MaintenanceRuntimeError(
+            f"Unable to enter the CFMS server root {server_root}: {exc}"
+        ) from exc
+    return server_root
 
 
 def load_database_models() -> None:

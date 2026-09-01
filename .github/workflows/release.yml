@@ -173,6 +173,10 @@ jobs:
           cp "${bundle_root}/src/config.toml.sample" "${bundle_root}/src/config.toml"
           uv run --project "${bundle_root}" --no-dev python -m compileall -q "${bundle_root}/src"
           (
+            cd "${bundle_root}"
+            uv run --project "${bundle_root}" --no-dev maintain extension list >/dev/null
+          )
+          (
             cd "${bundle_root}/src"
             uv run --project "${bundle_root}" --no-dev alembic --version
             uv run --project "${bundle_root}" --no-dev python -c "import main; import maintenance.cli"

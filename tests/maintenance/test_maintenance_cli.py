@@ -386,11 +386,36 @@ def test_backup_progress_shares_verbose_log_console():
     assert description_column.overflow == "ellipsis"
 
 
-def test_command_rejects_non_src_workdir(tmp_path):
-    result = _run_maintain(tmp_path, ["config", "fill-pepper"], check=False)
+def test_command_finds_server_root_from_deployment_root(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+
+    result = _run_maintain(tmp_path, ["config", "fill-pepper"])
+    config = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert len(config["security"]["pepper"]) == 64
+
+
+def test_command_supports_flat_bundle_and_nested_workdir(tmp_path):
+    server_root = _make_src_dir(tmp_path, "release-bundle")
+    nested_workdir = server_root / "content" / "operations"
+    nested_workdir.mkdir()
+
+    result = _run_maintain(nested_workdir, ["config", "fill-pepper"])
+    config = tomlkit.parse((server_root / "config.toml").read_text(encoding="utf-8"))
+
+    assert result.returncode == 0
+    assert len(config["security"]["pepper"]) == 64
+
+
+def test_command_rejects_unrelated_workdir(tmp_path):
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+
+    result = _run_maintain(unrelated, ["config", "fill-pepper"], check=False)
 
     assert result.returncode == 1
-    assert "CFMS src directory" in result.stdout + result.stderr
+    assert "Unable to locate a CFMS server root" in result.stdout + result.stderr
 
 
 def test_incomplete_commands_show_contextual_hints(tmp_path):
@@ -492,6 +517,40 @@ def test_fill_pepper_updates_config_and_is_idempotent(tmp_path):
     result = _run_maintain(src_dir, ["config", "fill-pepper"])
 
     assert "already set" in result.stdout
+
+
+def test_explicit_template_path_is_relative_to_invocation_directory(tmp_path):
+    _make_src_dir(tmp_path)
+    template_path = tmp_path / "operator-template.toml"
+    template_path.write_text(
+        (_SRC_PATH / "config.toml.sample").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    result = _run_maintain(
+        tmp_path,
+        [
+            "config",
+            "sync-template",
+            "--template",
+            template_path.name,
+            "--check",
+        ],
+    )
+
+    assert result.returncode == 0
+
+
+def test_default_template_path_comes_from_server_root(tmp_path):
+    _make_src_dir(tmp_path)
+    (tmp_path / "config.toml.sample").write_text("invalid = true\n", encoding="utf-8")
+
+    result = _run_maintain(
+        tmp_path,
+        ["config", "sync-template", "--check"],
+    )
+
+    assert result.returncode == 0
 
 
 def test_sync_template_check_then_apply_preserves_unknown_settings(tmp_path):
@@ -682,14 +741,14 @@ def test_permission_purge_dry_run_confirmation_and_idempotency(tmp_path):
 def test_audit_export_filters_orders_and_refuses_overwrite(tmp_path):
     src_dir = _make_src_dir(tmp_path)
     _seed_audit_entries(src_dir)
-    output_path = src_dir / "important.jsonl"
+    output_path = tmp_path / "important.jsonl"
 
     result = _run_maintain(
-        src_dir,
+        tmp_path,
         [
             "audit",
             "export",
-            str(output_path),
+            output_path.name,
             "--before",
             _AUDIT_CUTOFF,
             "--action",
@@ -722,8 +781,8 @@ def test_audit_export_filters_orders_and_refuses_overwrite(tmp_path):
     }
 
     repeated = _run_maintain(
-        src_dir,
-        ["audit", "export", str(output_path), "--before", _AUDIT_CUTOFF],
+        tmp_path,
+        ["audit", "export", output_path.name, "--before", _AUDIT_CUTOFF],
         check=False,
     )
 
@@ -981,7 +1040,7 @@ def test_extension_cli_lists_installs_and_enables(tmp_path):
         _SRC_PATH / "include" / "extensions",
         src_dir / "include" / "extensions",
     )
-    package = src_dir / "cli_extension.zip"
+    package = tmp_path / "cli_extension.zip"
     with zipfile.ZipFile(package, "w") as archive:
         archive.writestr(
             "manifest.toml",
@@ -997,10 +1056,10 @@ license = "Apache-2.0"
         )
         archive.writestr("_extension.py", "raise RuntimeError('must not import')\n")
 
-    listed = _run_maintain(src_dir, ["extension", "list"])
+    listed = _run_maintain(tmp_path, ["extension", "list"])
     aborted = _run_maintain(
-        src_dir,
-        ["extension", "install", str(package)],
+        tmp_path,
+        ["extension", "install", package.name],
         check=False,
         input_text="n\n",
     )
@@ -1009,14 +1068,14 @@ license = "Apache-2.0"
     assert not (src_dir / "include" / "extensions" / "cli_extension").exists()
 
     installed = _run_maintain(
-        src_dir,
-        ["extension", "install", str(package), "--yes"],
+        tmp_path,
+        ["extension", "install", package.name, "--yes"],
     )
     enabled = _run_maintain(
-        src_dir,
+        tmp_path,
         ["extension", "enable", "cli_extension", "--yes"],
     )
-    info = _run_maintain(src_dir, ["extension", "info", "cli_extension"])
+    info = _run_maintain(tmp_path, ["extension", "info", "cli_extension"])
 
     assert "builtin" in listed.stdout
     assert "remains disabled" in _normalize_cli_output(installed.stdout)
@@ -1082,10 +1141,14 @@ def test_backup_export_interactive_wizard_and_import(tmp_path):
 def test_backup_export_info_and_import(tmp_path):
     source_src = _make_src_dir(tmp_path, "source-src")
     target_src = _make_src_dir(tmp_path, "target-src")
+    source_workdir = source_src / "operator"
+    target_workdir = target_src / "operator"
+    source_workdir.mkdir()
+    target_workdir.mkdir()
     _create_empty_database(source_src)
 
     export_result = _run_maintain(
-        source_src,
+        source_workdir,
         [
             "backup",
             "export",
@@ -1100,11 +1163,12 @@ def test_backup_export_info_and_import(tmp_path):
     assert "Backup export completed" in export_result.stderr
     assert "Starting backup export" in export_result.stderr
     assert "Adding archive member" in export_result.stderr
-    assert (source_src / "backup.confbak").is_file()
-    assert (source_src / "backup.key").is_file()
+    assert (source_workdir / "backup.confbak").is_file()
+    assert (source_workdir / "backup.key").is_file()
+    assert not (source_src / "backup.confbak").exists()
 
     info_result = _run_maintain(
-        source_src,
+        source_workdir,
         ["backup", "info", "backup.confbak", "--verbose"],
     )
 
@@ -1113,13 +1177,13 @@ def test_backup_export_info_and_import(tmp_path):
     assert "Reading backup info" in info_result.stderr
 
     import_result = _run_maintain(
-        target_src,
+        target_workdir,
         [
             "backup",
             "import",
-            str(source_src / "backup.confbak"),
+            str(Path("..", "..", "source-src", "operator", "backup.confbak")),
             "--key-file",
-            str(source_src / "backup.key"),
+            str(Path("..", "..", "source-src", "operator", "backup.key")),
             "--yes",
             "--verbose",
         ],
