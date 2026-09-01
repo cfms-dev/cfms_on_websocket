@@ -23,6 +23,95 @@ def _release(tmp_path: Path) -> tuple[Path, str]:
     return package, hashlib.sha256(package.read_bytes()).hexdigest()
 
 
+def _write_extension(
+    release_root: Path,
+    directory_name: str,
+    identifier: str,
+    *,
+    marker: str,
+) -> Path:
+    extension = release_root / "src" / "include" / "extensions" / directory_name
+    extension.mkdir(parents=True)
+    (extension / "manifest.toml").write_text(
+        "\n".join(
+            (
+                "manifest_version = 2",
+                "",
+                "[extension]",
+                f'identifier = "{identifier}"',
+                f'name = "{identifier}"',
+                'version = "1.0.0"',
+                'authors = ["Test"]',
+                'license = "MIT"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    (extension / "_extension.py").write_text(marker, encoding="utf-8")
+    return extension
+
+
+def _prepare_mock_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path, Path]:
+    root = tmp_path / "deployment"
+    shared = root / "shared"
+    (shared / "run").mkdir(parents=True)
+    (shared / "backups").mkdir()
+    (shared / "config.toml").write_text("config\n", encoding="utf-8")
+    (shared / "requirements.lock").write_text("", encoding="utf-8")
+    (root / "deployment.json").write_text(
+        json.dumps(
+            {
+                "active_version": "0.7.0",
+                "extras": [],
+                "format_version": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    current = root / "releases" / "0.7.0"
+    current.mkdir(parents=True)
+    stage = root / "releases" / ".stage"
+    stage.mkdir()
+    target = root / "releases" / "0.8.0"
+
+    monkeypatch.setattr(
+        deployment,
+        "_stage_release",
+        lambda *args, **kwargs: (
+            stage,
+            {
+                "managed_extensions": [],
+                "minimum_upgrade_version": "0.7.0",
+                "version": "0.8.0",
+            },
+            "a" * 64,
+        ),
+    )
+
+    def install_release(*args, **kwargs):
+        launcher = target / "src" / "deployment_launcher.py"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("launcher\n", encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(deployment, "_install_staged_release", install_release)
+    monkeypatch.setattr(
+        deployment, "_release_managed_extensions", lambda *args: frozenset()
+    )
+    monkeypatch.setattr(deployment, "_copy_third_party_extensions", lambda *args: ())
+    monkeypatch.setattr(deployment, "_sync_packaged_ca", lambda *args: None)
+    monkeypatch.setattr(deployment, "_preflight_certificates", lambda *args: None)
+    monkeypatch.setattr(deployment, "_run_maintenance", lambda *args: None)
+    monkeypatch.setattr(
+        deployment, "_sqlite_backup", lambda *args: tmp_path / "backup.db"
+    )
+    return root, current, target
+
+
 def test_install_creates_versioned_state_without_activating_early(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -40,11 +129,16 @@ def test_install_creates_versioned_state_without_activating_early(
 
     state = json.loads((root / "deployment.json").read_text(encoding="utf-8"))
     assert result.active_version == "0.7.0"
-    assert state["active_version"] == "0.7.0"
-    assert state["previous_version"] is None
+    assert state == {
+        "active_version": "0.7.0",
+        "extras": [],
+        "format_version": 1,
+    }
     release_root = root / "releases" / "0.7.0"
     assert (release_root / "release-manifest.json").is_file()
+    assert (release_root / "src" / "include" / "extensions").is_dir()
     assert (root / "shared" / "config.toml").is_file()
+    assert not (root / "shared" / "extensions").exists()
     assert (root / "main.py").read_bytes() == (
         release_root / "src" / "deployment_launcher.py"
     ).read_bytes()
@@ -127,47 +221,145 @@ def test_release_validation_requires_separate_launcher(tmp_path: Path) -> None:
         deployment._validate_release(target, "cfms-on-websocket-0.7.0")
 
 
-def test_rollback_restores_pointer_and_configuration(tmp_path: Path) -> None:
+def test_copy_third_party_extensions_keeps_new_packaged_versions(
+    tmp_path: Path,
+) -> None:
+    current = tmp_path / "current"
+    target = tmp_path / "target"
+    _write_extension(current, "official", "official", marker="old official\n")
+    custom = _write_extension(current, "custom-dir", "custom", marker="custom\n")
+    packaged = _write_extension(target, "official", "official", marker="new official\n")
+
+    copied = deployment._copy_third_party_extensions(
+        current,
+        target,
+        frozenset({"official"}),
+        frozenset({"official"}),
+    )
+
+    assert copied == ("custom",)
+    assert (packaged / "_extension.py").read_text(encoding="utf-8") == "new official\n"
+    assert (
+        target / "src" / "include" / "extensions" / custom.name / "_extension.py"
+    ).read_text(encoding="utf-8") == "custom\n"
+
+
+def test_copy_third_party_extensions_rejects_new_packaged_identifier(
+    tmp_path: Path,
+) -> None:
+    current = tmp_path / "current"
+    target = tmp_path / "target"
+    _write_extension(current, "custom-dir", "claimed", marker="custom\n")
+    _write_extension(target, "official", "claimed", marker="official\n")
+
+    with pytest.raises(
+        MaintenanceOperationError, match="conflicts with the new release"
+    ):
+        deployment._copy_third_party_extensions(
+            current,
+            target,
+            frozenset(),
+            frozenset({"claimed"}),
+        )
+
+
+def test_pending_cleanup_removes_inactive_release(tmp_path: Path) -> None:
     root = tmp_path / "deployment"
     shared = root / "shared"
-    (shared / "run").mkdir(parents=True)
-    (shared / "config.toml").write_text("new\n", encoding="utf-8")
-    snapshot = shared / "backups" / "old.toml"
-    snapshot.parent.mkdir()
-    snapshot.write_text("old\n", encoding="utf-8")
-    previous = root / "releases" / "0.7.0" / ".venv"
-    interpreter = (
-        previous / "Scripts" / "python.exe"
-        if deployment.os.name == "nt"
-        else previous / "bin" / "python"
-    )
-    interpreter.parent.mkdir(parents=True)
-    interpreter.write_bytes(b"")
-    launcher = previous.parent / "src" / "deployment_launcher.py"
-    launcher.parent.mkdir()
-    launcher.write_text("old launcher\n", encoding="utf-8")
-    (root / "main.py").write_text("new launcher\n", encoding="utf-8")
-    (root / "deployment.json").write_text(
+    transaction_path = shared / "run" / "upgrade-transaction.json"
+    transaction_path.parent.mkdir(parents=True)
+    retired = root / "releases" / "0.7.0"
+    retired.mkdir(parents=True)
+    transaction_path.write_text(
         json.dumps(
             {
-                "active_version": "0.8.0",
-                "extras": [],
-                "format_version": 1,
-                "previous_version": "0.7.0",
-                "rollback_config": "shared/backups/old.toml",
+                "action": "upgrade",
+                "from_version": "0.7.0",
+                "phase": "cleanup-required",
+                "to_version": "0.8.0",
             }
         ),
         encoding="utf-8",
     )
 
-    result = deployment.rollback_deployment(root)
+    deployment._complete_pending_cleanup(
+        root,
+        shared,
+        deployment.DeploymentState(1, "0.8.0", ()),
+    )
 
-    assert result.active_version == "0.7.0"
-    assert (shared / "config.toml").read_text(encoding="utf-8") == "old\n"
-    assert (root / "main.py").read_text(encoding="utf-8") == "old launcher\n"
+    assert not retired.exists()
+    assert not transaction_path.exists()
+
+
+def test_upgrade_activates_new_release_and_commits_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, current, target = _prepare_mock_upgrade(tmp_path, monkeypatch)
+
+    result = deployment.upgrade_deployment(
+        tmp_path / "release.zip",
+        root,
+        expected_sha256="a" * 64,
+    )
+
+    assert result.active_version == "0.8.0"
+    assert target.is_dir()
+    transaction_path = root / "shared" / "run" / "upgrade-transaction.json"
+    if deployment.os.name == "nt":
+        assert current.is_dir()
+        transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
+        assert transaction["phase"] == "cleanup-required"
+    else:
+        assert not current.exists()
+        assert not transaction_path.exists()
+    assert json.loads((root / "deployment.json").read_text(encoding="utf-8")) == {
+        "active_version": "0.8.0",
+        "extras": [],
+        "format_version": 1,
+    }
+
+
+def test_cleanup_failure_keeps_new_release_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, current, target = _prepare_mock_upgrade(tmp_path, monkeypatch)
+    real_rmtree = deployment.shutil.rmtree
+    target.mkdir(parents=True)
+    state = deployment.DeploymentState(1, "0.8.0", ())
+    deployment._write_state(root, state)
+    deployment._write_transaction(
+        root / "shared",
+        {
+            "action": "upgrade",
+            "from_version": "0.7.0",
+            "phase": "cleanup-required",
+            "to_version": "0.8.0",
+        },
+    )
+
+    def fail_old_release_cleanup(path, *args, **kwargs):
+        if Path(path) == current:
+            raise OSError("simulated cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(deployment.shutil, "rmtree", fail_old_release_cleanup)
+
+    with pytest.raises(MaintenanceOperationError, match="Unable to remove"):
+        deployment._complete_pending_cleanup(root, root / "shared", state)
+
     state = json.loads((root / "deployment.json").read_text(encoding="utf-8"))
-    assert state["active_version"] == "0.7.0"
-    assert state["previous_version"] == "0.8.0"
+    transaction = json.loads(
+        (root / "shared" / "run" / "upgrade-transaction.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert state["active_version"] == "0.8.0"
+    assert transaction["phase"] == "cleanup-required"
+    assert target.is_dir()
+    assert current.is_dir()
 
 
 def test_upgrade_migration_failure_restores_config_and_keeps_old_pointer(
@@ -186,8 +378,6 @@ def test_upgrade_migration_failure_restores_config_and_keeps_old_pointer(
                 "active_version": "0.7.0",
                 "extras": [],
                 "format_version": 1,
-                "previous_version": None,
-                "rollback_config": None,
             }
         ),
         encoding="utf-8",
@@ -201,7 +391,11 @@ def test_upgrade_migration_failure_restores_config_and_keeps_old_pointer(
         "_stage_release",
         lambda *args, **kwargs: (
             stage,
-            {"minimum_upgrade_version": "0.7.0", "version": "0.8.0"},
+            {
+                "managed_extensions": [],
+                "minimum_upgrade_version": "0.7.0",
+                "version": "0.8.0",
+            },
             "a" * 64,
         ),
     )
@@ -211,6 +405,10 @@ def test_upgrade_migration_failure_restores_config_and_keeps_old_pointer(
         return release
 
     monkeypatch.setattr(deployment, "_install_staged_release", install_release)
+    monkeypatch.setattr(
+        deployment, "_release_managed_extensions", lambda *args: frozenset()
+    )
+    monkeypatch.setattr(deployment, "_copy_third_party_extensions", lambda *args: ())
     monkeypatch.setattr(deployment, "_sync_packaged_ca", lambda *args: None)
     monkeypatch.setattr(deployment, "_preflight_certificates", lambda *args: None)
     monkeypatch.setattr(

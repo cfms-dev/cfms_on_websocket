@@ -1,5 +1,4 @@
 __all__ = [
-    "APPLICATION_ROOT",
     "AVAILABLE_ACCESS_TYPES",
     "AVAILABLE_BLOCK_TYPES",
     "CORE_VERSION",
@@ -19,22 +18,17 @@ __all__ = [
     "PROTOCOL_VERSION",
     "QUERY_CHUNK_SIZE",
     "REPLAY_PROTECTION_TIME_WINDOW_SECONDS",
-    "ROOT_ABSPATH",
     "ROOT_DIRECTORY_ID",
-    "SERVER_ROOT",
     "UPLOAD_TRANSFER_MAX_CHUNK_SIZE",
     "UPLOAD_TRANSFER_MIN_CHUNK_SIZE",
     "USERNAME_DATABASE_MAX_LENGTH",
     "USERNAME_MAX_LENGTH",
 ]
 
-from include.config.paths import APPLICATION_ROOT, SERVER_ROOT
 from include.config.version import Version
 
 CORE_VERSION = Version("0.7.0")
 PROTOCOL_VERSION = 25
-
-ROOT_ABSPATH = SERVER_ROOT
 
 # Event bus channels
 GLOBAL_BROADCAST_EVENT_CHANNEL = "system:broadcast"

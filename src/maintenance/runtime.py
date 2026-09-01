@@ -14,11 +14,9 @@ def _activate_server_root(server_root: Path) -> Path:
             f"Unable to enter the CFMS server root {server_root}: {exc}"
         ) from exc
 
-    from include.config import constants, paths
+    from include.config import paths
 
-    paths.SERVER_ROOT = server_root
-    constants.SERVER_ROOT = server_root
-    constants.ROOT_ABSPATH = server_root
+    paths.SHARED_ROOT_ABSPATH = server_root
     return server_root
 
 

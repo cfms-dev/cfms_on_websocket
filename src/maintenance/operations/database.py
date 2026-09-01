@@ -10,7 +10,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy.exc import SQLAlchemyError
 from tomlkit.exceptions import TOMLKitError
 
-from include.config.paths import APPLICATION_ROOT
+from include.config.paths import APPLICATION_ABSPATH
 from include.config.validation import ConfigValidationError, parse_config_document
 from include.database.engine import create_database_engine, database_url
 from include.database.schema import DatabaseSchemaError, SchemaUpgradeResult
@@ -72,7 +72,7 @@ def migrate_database(
     target_engine = None
     try:
         target_engine = create_database_engine(target_database)
-        alembic_config = Config(APPLICATION_ROOT / "alembic.ini")
+        alembic_config = Config(APPLICATION_ABSPATH / "alembic.ini")
         script_directory = ScriptDirectory.from_config(alembic_config)
         result = execute_database_migration(
             source_engine,

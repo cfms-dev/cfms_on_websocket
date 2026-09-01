@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from include.extensions.manager import ExtensionDiscoveryError, discover_extensions
 from include.runtime_lock import RuntimeLockError, server_runtime_lock
 from maintenance.operations.exceptions import MaintenanceOperationError
 
@@ -54,9 +55,7 @@ _LEGACY_SINGLE_FILES = (
 class DeploymentState:
     format_version: int
     active_version: str
-    previous_version: str | None
     extras: tuple[str, ...]
-    rollback_config: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +63,6 @@ class DeploymentResult:
     action: str
     deployment_root: Path
     active_version: str
-    previous_version: str | None
     package_sha256: str | None = None
     backup_path: Path | None = None
 
@@ -477,19 +475,16 @@ def _load_state(deployment_root: Path) -> DeploymentState:
         state = DeploymentState(
             format_version=data["format_version"],
             active_version=data["active_version"],
-            previous_version=data.get("previous_version"),
             extras=tuple(data.get("extras", ())),
-            rollback_config=data.get("rollback_config"),
         )
     except (KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
         raise MaintenanceOperationError(
             f"Unable to read deployment state {state_path}: {exc}"
         ) from exc
-    versions = (state.active_version, state.previous_version)
-    if state.format_version != 1 or any(
-        version is not None
-        and (not isinstance(version, str) or _VERSION_PATTERN(version) is None)
-        for version in versions
+    if (
+        state.format_version != 1
+        or not isinstance(state.active_version, str)
+        or _VERSION_PATTERN(state.active_version) is None
     ):
         raise MaintenanceOperationError("Deployment state is invalid")
     if any(not isinstance(extra, str) for extra in state.extras):
@@ -559,7 +554,6 @@ def _prepare_shared_root(
         "content/files",
         "content/logs",
         "content/ssl",
-        "extensions",
         "backups",
         "run",
     ):
@@ -634,6 +628,107 @@ def _write_transaction(shared_root: Path, data: dict[str, Any]) -> Path:
     return path
 
 
+def _release_managed_extensions(release_root: Path) -> frozenset[str]:
+    manifest_path = release_root / "release-manifest.json"
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        identifiers = data["managed_extensions"]
+    except (KeyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise MaintenanceOperationError(
+            f"Unable to read managed extensions from {manifest_path}: {exc}"
+        ) from exc
+    if not isinstance(identifiers, list) or any(
+        not isinstance(identifier, str)
+        or _EXTENSION_IDENTIFIER_PATTERN(identifier) is None
+        for identifier in identifiers
+    ):
+        raise MaintenanceOperationError(
+            f"Release manifest has invalid managed_extensions: {manifest_path}"
+        )
+    return frozenset(identifiers)
+
+
+def _copy_third_party_extensions(
+    source_release: Path,
+    target_release: Path,
+    source_managed: frozenset[str],
+    target_managed: frozenset[str],
+) -> tuple[str, ...]:
+    source_root = source_release / "src" / "include" / "extensions"
+    target_root = target_release / "src" / "include" / "extensions"
+    try:
+        source_catalog = discover_extensions(source_root)
+        target_catalog = discover_extensions(target_root)
+    except ExtensionDiscoveryError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+
+    copied = []
+    for identifier, extension in source_catalog.items():
+        if identifier in source_managed:
+            continue
+        if identifier in target_managed or identifier in target_catalog:
+            raise MaintenanceOperationError(
+                f"Third-party extension {identifier!r} conflicts with the new release"
+            )
+        target = target_root / extension.directory.name
+        if target.exists():
+            raise MaintenanceOperationError(
+                f"Third-party extension directory conflicts with the new release: "
+                f"{target}"
+            )
+        try:
+            shutil.copytree(extension.directory, target)
+        except OSError as exc:
+            raise MaintenanceOperationError(
+                f"Unable to copy third-party extension {identifier!r}: {exc}"
+            ) from exc
+        copied.append(identifier)
+
+    try:
+        discover_extensions(target_root)
+    except ExtensionDiscoveryError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+    return tuple(copied)
+
+
+def _complete_pending_cleanup(
+    deployment_root: Path,
+    shared_root: Path,
+    state: DeploymentState,
+) -> None:
+    transaction_path = shared_root / "run" / "upgrade-transaction.json"
+    if not transaction_path.exists():
+        return
+    try:
+        transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
+        phase = transaction["phase"]
+        from_version = transaction["from_version"]
+        to_version = transaction["to_version"]
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
+        raise MaintenanceOperationError(
+            f"Unfinished deployment transaction requires review: {transaction_path}"
+        ) from exc
+    if (
+        phase not in {"activation", "cleanup-required"}
+        or to_version != state.active_version
+        or not isinstance(from_version, str)
+        or _VERSION_PATTERN(from_version) is None
+        or from_version == state.active_version
+    ):
+        raise MaintenanceOperationError(
+            f"Unfinished deployment transaction requires review: {transaction_path}"
+        )
+    retired_release = deployment_root / "releases" / from_version
+    try:
+        if retired_release.exists():
+            shutil.rmtree(retired_release)
+        transaction_path.unlink()
+    except OSError as exc:
+        raise MaintenanceOperationError(
+            f"Unable to remove inactive release {retired_release}: {exc}"
+        ) from exc
+
+
 def install_deployment(
     package: str | Path,
     deployment_root: str | Path,
@@ -661,14 +756,12 @@ def install_deployment(
         _run_maintenance(release_root, shared_root, ["database", "upgrade", "--yes"])
         _run_maintenance(release_root, shared_root, ["extension", "list"])
         _copy_launcher(release_root, root)
-        state = DeploymentState(
-            1, manifest["version"], None, tuple(sorted(set(extras)))
-        )
+        state = DeploymentState(1, manifest["version"], tuple(sorted(set(extras))))
         _write_state(root, state)
     except Exception:
         shutil.rmtree(release_root, ignore_errors=True)
         raise
-    return DeploymentResult("install", root, state.active_version, None, digest)
+    return DeploymentResult("install", root, state.active_version, digest)
 
 
 def _legacy_managed_paths(legacy_root: Path) -> tuple[Path, ...]:
@@ -763,12 +856,6 @@ def _move_legacy_state(
         for child in content_root.iterdir():
             if child.name != "hello":
                 candidates.append((child, shared_root / "content" / child.name))
-    extension_root = runtime_root / "include" / "extensions"
-    if extension_root.is_dir():
-        for child in extension_root.iterdir():
-            if child.is_dir() and child.name not in _LEGACY_MANAGED_EXTENSIONS:
-                candidates.append((child, shared_root / "extensions" / child.name))
-
     for source, target in candidates:
         if not source.exists():
             continue
@@ -824,7 +911,7 @@ def adopt_deployment(
     normalized_extras = tuple(sorted(set(extras)))
     release_root = _install_staged_release(stage, manifest, root, normalized_extras)
     shared_root = root / "shared"
-    for relative in ("content", "extensions", "backups", "run"):
+    for relative in ("content", "backups", "run"):
         (shared_root / relative).mkdir(parents=True, exist_ok=True)
     moved: list[tuple[Path, Path]] = []
     config_snapshot: Path | None = None
@@ -833,10 +920,21 @@ def adopt_deployment(
     try:
         moved = _move_legacy_state(legacy, shared_root)
         _prepare_shared_root(root, release_root, requirements_lock)
-        custom_extensions = tuple((shared_root / "extensions").iterdir())
+        custom_extensions = _copy_third_party_extensions(
+            legacy,
+            release_root,
+            frozenset(_LEGACY_MANAGED_EXTENSIONS),
+            frozenset(manifest["managed_extensions"]),
+        )
         if custom_extensions and not (shared_root / "requirements.lock").stat().st_size:
             raise MaintenanceOperationError(
                 "Adopting third-party extensions requires a non-empty requirements.lock"
+            )
+        if custom_extensions:
+            _sync_environment(
+                release_root,
+                normalized_extras,
+                shared_root / "requirements.lock",
             )
         _preflight_certificates(shared_root)
         backup_path = _sqlite_backup(shared_root, _LEGACY_VERSION)
@@ -878,7 +976,7 @@ def adopt_deployment(
         _run_maintenance(release_root, shared_root, ["database", "upgrade", "--yes"])
         _run_maintenance(release_root, shared_root, ["extension", "list"])
         _copy_launcher(release_root, root)
-        state = DeploymentState(1, manifest["version"], None, normalized_extras)
+        state = DeploymentState(1, manifest["version"], normalized_extras)
         _write_state(root, state)
         transaction_path.unlink()
     except Exception:
@@ -904,7 +1002,6 @@ def adopt_deployment(
         "adopt",
         root,
         state.active_version,
-        None,
         digest,
         backup_path,
     )
@@ -922,10 +1019,6 @@ def upgrade_deployment(
     state = _load_state(root)
     shared_root = root / "shared"
     transaction_path = shared_root / "run" / "upgrade-transaction.json"
-    if transaction_path.exists():
-        raise MaintenanceOperationError(
-            f"Unfinished deployment transaction requires review: {transaction_path}"
-        )
     try:
         lock = server_runtime_lock(shared_root).acquire()
     except RuntimeLockError as exc:
@@ -934,7 +1027,12 @@ def upgrade_deployment(
     config_backup = None
     migration_started = False
     backup_path = None
+    activated = False
+    transaction_started = False
     try:
+        _complete_pending_cleanup(root, shared_root, state)
+        current_release = root / "releases" / state.active_version
+        current_managed = _release_managed_extensions(current_release)
         stage, manifest, digest = _stage_release(
             package,
             root,
@@ -966,7 +1064,18 @@ def upgrade_deployment(
                 "to_version": version,
             },
         )
+        transaction_started = True
         release_root = _install_staged_release(stage, manifest, root, state.extras)
+        custom_extensions = _copy_third_party_extensions(
+            current_release,
+            release_root,
+            current_managed,
+            frozenset(manifest["managed_extensions"]),
+        )
+        if custom_extensions and not (shared_root / "requirements.lock").stat().st_size:
+            raise MaintenanceOperationError(
+                "Upgrading third-party extensions requires a non-empty requirements.lock"
+            )
         _sync_packaged_ca(release_root, shared_root)
         _preflight_certificates(shared_root)
         _run_maintenance(release_root, shared_root, ["extension", "list"])
@@ -1005,26 +1114,47 @@ def upgrade_deployment(
         migration_started = True
         _run_maintenance(release_root, shared_root, ["database", "upgrade", "--yes"])
         _run_maintenance(release_root, shared_root, ["extension", "list"])
-        _copy_launcher(release_root, root)
-        rollback_relative = config_backup.relative_to(root).as_posix()
-        next_state = DeploymentState(
-            1,
-            version,
-            state.active_version,
-            state.extras,
-            rollback_relative,
+        _write_transaction(
+            shared_root,
+            {
+                "action": "upgrade",
+                "from_version": state.active_version,
+                "phase": "activation",
+                "to_version": version,
+            },
         )
+        _copy_launcher(release_root, root)
+        next_state = DeploymentState(1, version, state.extras)
         _write_state(root, next_state)
-        transaction_path.unlink()
+        activated = True
+        _write_transaction(
+            shared_root,
+            {
+                "action": "upgrade",
+                "from_version": state.active_version,
+                "phase": "cleanup-required",
+                "to_version": version,
+            },
+        )
+        if os.name != "nt":
+            try:
+                shutil.rmtree(current_release)
+                transaction_path.unlink()
+            except OSError as exc:
+                raise MaintenanceOperationError(
+                    f"Release {version} is active, but inactive release "
+                    f"{current_release} could not be removed: {exc}"
+                ) from exc
         return DeploymentResult(
             "upgrade",
             root,
             version,
-            state.active_version,
             digest,
             backup_path,
         )
     except Exception:
+        if activated:
+            raise
         if config_backup is not None and config_backup.exists():
             _atomic_write(shared_root / "config.toml", config_backup.read_bytes())
         if migration_started:
@@ -1038,7 +1168,7 @@ def upgrade_deployment(
                 },
             )
         else:
-            if transaction_path.exists():
+            if transaction_started and transaction_path.exists():
                 transaction_path.unlink()
             if release_root is not None:
                 shutil.rmtree(release_root, ignore_errors=True)
@@ -1050,57 +1180,4 @@ def upgrade_deployment(
 def inspect_deployment(deployment_root: str | Path) -> DeploymentResult:
     root = Path(deployment_root).expanduser().resolve()
     state = _load_state(root)
-    return DeploymentResult(
-        "status",
-        root,
-        state.active_version,
-        state.previous_version,
-    )
-
-
-def rollback_deployment(deployment_root: str | Path) -> DeploymentResult:
-    root = Path(deployment_root).expanduser().resolve()
-    state = _load_state(root)
-    if state.previous_version is None:
-        raise MaintenanceOperationError("Deployment has no rollback release")
-    shared_root = root / "shared"
-    try:
-        lock = server_runtime_lock(shared_root).acquire()
-    except RuntimeLockError as exc:
-        raise MaintenanceOperationError(str(exc)) from exc
-    try:
-        previous_root = root / "releases" / state.previous_version
-        if (
-            not _release_python(previous_root).is_file()
-            or not (previous_root / "src" / "deployment_launcher.py").is_file()
-        ):
-            raise MaintenanceOperationError(
-                f"Rollback release is incomplete: {previous_root}"
-            )
-        if state.rollback_config is None:
-            raise MaintenanceOperationError(
-                "Deployment has no configuration snapshot for rollback"
-            )
-        config_snapshot = (root / state.rollback_config).resolve()
-        if not config_snapshot.is_relative_to(root) or not config_snapshot.is_file():
-            raise MaintenanceOperationError(
-                "Deployment rollback configuration snapshot is invalid"
-            )
-        _atomic_write(shared_root / "config.toml", config_snapshot.read_bytes())
-        next_state = DeploymentState(
-            1,
-            state.previous_version,
-            state.active_version,
-            state.extras,
-            None,
-        )
-        _copy_launcher(previous_root, root)
-        _write_state(root, next_state)
-        return DeploymentResult(
-            "rollback",
-            root,
-            next_state.active_version,
-            next_state.previous_version,
-        )
-    finally:
-        lock.release()
+    return DeploymentResult("status", root, state.active_version)

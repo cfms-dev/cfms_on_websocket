@@ -33,7 +33,6 @@ from maintenance.operations.deployment import (
     adopt_deployment,
     inspect_deployment,
     install_deployment,
-    rollback_deployment,
     upgrade_deployment,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
@@ -105,7 +104,6 @@ __all__ = [
     "purge_expired_permissions",
     "read_backup_info",
     "reset_password",
-    "rollback_deployment",
     "sync_config_template",
     "uninstall_extension",
     "upgrade_extension",

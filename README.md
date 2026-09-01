@@ -73,8 +73,8 @@ uv run --project cfms-on-websocket-X.Y.Z --locked --no-dev maintain \
   --extra cluster --yes
 ```
 
-The deployment keeps application versions under `releases/` and mutable state
-under `shared/`. The stable `main.py` sets `CFMS_SERVER_ROOT` to that shared
+The deployment keeps the active application under `releases/` and mutable runtime
+state under `shared/`. The stable `main.py` sets `CFMS_SERVER_ROOT` to that shared
 directory before starting the active release or maintenance CLI:
 
 ```bash
@@ -90,13 +90,14 @@ python /srv/cfms/main.py maintain deployment upgrade \
   cfms-on-websocket-X.Y.Z.tar.gz --checksums SHA256SUMS.txt --yes
 ```
 
-`deployment status` reports the active and previous versions.
-`deployment rollback --yes` restores the previous code pointer and saved
-configuration; it never downgrades the database. An official v0.7.0 flat release
-can be migrated once with `deployment adopt --legacy-root ... --server-stopped`.
-Adoption rejects modified official files. Third-party extensions require an
-operator-maintained, hash-locked `requirements.lock` so every release environment
-can reproduce their Python dependencies.
+`deployment status` reports the active version. A successful upgrade atomically
+activates the new release and removes the old release; configuration and database
+backups remain available, but there is no code rollback command. An official
+v0.7.0 flat release can be migrated once with
+`deployment adopt --legacy-root ... --server-stopped`. Adoption rejects modified
+official files. Third-party extensions are copied into the new active release and
+require an operator-maintained, hash-locked `requirements.lock` so every release
+environment can reproduce their Python dependencies.
 
 ## Extensions
 

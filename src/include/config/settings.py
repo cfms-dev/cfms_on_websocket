@@ -25,7 +25,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
-from include.config.paths import SERVER_ROOT
+from include.config.paths import SHARED_ROOT_ABSPATH
 from include.config.validation import ConfigValidationError, parse_config_document
 
 __all__ = ["global_config"]
@@ -210,4 +210,4 @@ class GlobalConfig(Mapping[str, Any]):
 
 
 # Module-level singleton – imported everywhere as `global_config`.
-global_config: Final = GlobalConfig(str(SERVER_ROOT / "config.toml"))
+global_config: Final = GlobalConfig(str(SHARED_ROOT_ABSPATH / "config.toml"))

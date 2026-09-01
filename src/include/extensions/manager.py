@@ -9,10 +9,8 @@ __all__ = [
     "ExtensionMetadata",
     "collect_extension_flags",
     "discover_extensions",
-    "discover_extensions_from_directories",
     "get_loaded_extension_metadata",
     "load_extensions_from_directory",
-    "load_extensions_from_directories",
     "parse_extension_manifest",
     "pm",
     "resolve_extension_selection",
@@ -249,26 +247,6 @@ def discover_extensions(extension_dir: str | Path) -> dict[str, DiscoveredExtens
             entrypoint=entrypoint,
         )
 
-    return discovered
-
-
-def discover_extensions_from_directories(
-    extension_dirs: tuple[str | Path, ...] | list[str | Path],
-) -> dict[str, DiscoveredExtension]:
-    """Discover one catalog across ordered application and runtime roots."""
-    discovered: dict[str, DiscoveredExtension] = {}
-    for extension_dir in extension_dirs:
-        root = Path(extension_dir)
-        if not root.exists():
-            continue
-        for identifier, extension in discover_extensions(root).items():
-            previous = discovered.get(identifier)
-            if previous is not None:
-                raise ExtensionDiscoveryError(
-                    f"Duplicate extension identifier {identifier!r} in "
-                    f"{previous.directory} and {extension.directory}"
-                )
-            discovered[identifier] = extension
     return discovered
 
 
@@ -609,25 +587,6 @@ def load_extensions_from_directory(
 ) -> None:
     """Load the built-in extension and configured extensions in order."""
     discovered = discover_extensions(extension_dir)
-    _load_discovered_extensions(discovered, enabled_identifiers, config=config)
-
-
-def load_extensions_from_directories(
-    extension_dirs: tuple[str | Path, ...] | list[str | Path],
-    enabled_identifiers: tuple[str, ...] | list[str],
-    *,
-    config: Any,
-) -> None:
-    discovered = discover_extensions_from_directories(extension_dirs)
-    _load_discovered_extensions(discovered, enabled_identifiers, config=config)
-
-
-def _load_discovered_extensions(
-    discovered: Mapping[str, DiscoveredExtension],
-    enabled_identifiers: tuple[str, ...] | list[str],
-    *,
-    config: Any,
-) -> None:
     ordered_extensions = resolve_extension_selection(discovered, enabled_identifiers)
 
     extensions_to_load = [

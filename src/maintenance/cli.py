@@ -482,7 +482,6 @@ def _print_deployment_result(result: operations.DeploymentResult) -> None:
     table.add_row("Action", result.action)
     table.add_row("Root", str(result.deployment_root))
     table.add_row("Active version", result.active_version)
-    table.add_row("Previous version", result.previous_version or "-")
     if result.package_sha256 is not None:
         table.add_row("Package SHA-256", result.package_sha256)
     if result.backup_path is not None:
@@ -661,33 +660,12 @@ def deployment_status(
         typer.Option("--deployment-root", help="Stable deployment directory."),
     ] = None,
 ) -> None:
-    """Show active and rollback versions without changing the deployment."""
+    """Show the active version without changing the deployment."""
     _print_deployment_result(
         _run(
             lambda: operations.inspect_deployment(
                 _resolve_deployment_root(deployment_root)
             )
-        )
-    )
-
-
-@deployment_app.command("rollback")
-def rollback_deployment(
-    deployment_root: Annotated[
-        Path | None,
-        typer.Option("--deployment-root", help="Stable deployment directory."),
-    ] = None,
-    yes: Annotated[bool, typer.Option("--yes")] = False,
-    verbose: VerboseOption = False,
-) -> None:
-    """Restore the previous code pointer and configuration snapshot."""
-    _configure_logging(verbose)
-    resolved_root = _resolve_deployment_root(deployment_root)
-    _confirm_or_abort("Roll back the stopped CFMS deployment?", yes)
-    _print_deployment_result(
-        _run(
-            lambda: operations.rollback_deployment(resolved_root),
-            status="Rolling back CFMS deployment...",
         )
     )
 

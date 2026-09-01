@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from include.config import paths
 from maintenance.runtime import MaintenanceRuntimeError, enter_server_root
 
 
@@ -18,6 +19,7 @@ def test_enter_server_root_supports_flat_layout(
     monkeypatch: pytest.MonkeyPatch,
     relative_start: Path,
 ) -> None:
+    application_abspath = paths.APPLICATION_ABSPATH
     server_root = _make_server_root(tmp_path / "release-bundle")
     start = server_root / relative_start
     start.mkdir(parents=True, exist_ok=True)
@@ -27,6 +29,8 @@ def test_enter_server_root_supports_flat_layout(
 
     assert located == server_root
     assert Path.cwd() == server_root
+    assert paths.SHARED_ROOT_ABSPATH == server_root
+    assert paths.APPLICATION_ABSPATH == application_abspath
 
 
 def test_enter_server_root_finds_compatible_src_layout(

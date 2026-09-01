@@ -9,7 +9,7 @@ from sqlalchemy import Engine, MetaData, inspect
 from sqlalchemy.exc import SAWarning
 
 from alembic import command
-from include.config.paths import APPLICATION_ROOT
+from include.config.paths import APPLICATION_ABSPATH
 
 LEGACY_V0_7_REVISION = "7bddfba0d8aa"
 LEGACY_V0_7_COLUMNS = {
@@ -268,7 +268,7 @@ class SchemaUpgradeResult:
 
 
 def _alembic_config(connection) -> tuple[Config, ScriptDirectory]:
-    config_path = APPLICATION_ROOT / "alembic.ini"
+    config_path = APPLICATION_ABSPATH / "alembic.ini"
     config = Config(config_path)
     config.attributes["connection"] = connection
     return config, ScriptDirectory.from_config(config)

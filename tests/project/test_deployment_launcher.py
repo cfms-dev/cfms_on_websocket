@@ -148,3 +148,77 @@ def test_launcher_rejects_unknown_action(
 
     with pytest.raises(SystemExit, match="Usage: python main.py"):
         launcher.main()
+
+
+def test_launcher_completes_pending_cleanup_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher, _, _ = _prepare_deployment(tmp_path)
+    deployment_root = tmp_path / "deployment"
+    retired = deployment_root / "releases" / "1.2.2"
+    retired.mkdir()
+    transaction_path = deployment_root / "shared" / "run" / "upgrade-transaction.json"
+    transaction_path.parent.mkdir()
+    transaction_path.write_text(
+        json.dumps(
+            {
+                "action": "upgrade",
+                "from_version": "1.2.2",
+                "phase": "cleanup-required",
+                "to_version": "1.2.3",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(launcher.sys, "argv", ["main.py", "unknown"])
+
+    with pytest.raises(SystemExit, match="Usage: python main.py"):
+        launcher.main()
+
+    assert not retired.exists()
+    assert not transaction_path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher owns post-exit cleanup")
+def test_windows_launcher_cleans_release_after_upgrade_process_exits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher, retired, _ = _prepare_deployment(tmp_path)
+    deployment_root = tmp_path / "deployment"
+    transaction_path = deployment_root / "shared" / "run" / "upgrade-transaction.json"
+
+    def run(command, *, env, check):
+        (deployment_root / "deployment.json").write_text(
+            json.dumps({"active_version": "1.2.4"}),
+            encoding="utf-8",
+        )
+        transaction_path.parent.mkdir(exist_ok=True)
+        transaction_path.write_text(
+            json.dumps(
+                {
+                    "action": "upgrade",
+                    "from_version": "1.2.3",
+                    "phase": "cleanup-required",
+                    "to_version": "1.2.4",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        launcher.sys,
+        "argv",
+        ["main.py", "maintain", "deployment", "upgrade", "release.zip"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        launcher.main()
+
+    assert exc_info.value.code == 0
+    assert not retired.exists()
+    assert not transaction_path.exists()

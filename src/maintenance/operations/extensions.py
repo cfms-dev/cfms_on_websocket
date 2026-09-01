@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -15,6 +16,7 @@ from packaging.version import Version as PackageVersion
 from tomlkit.exceptions import TOMLKitError
 
 from include.config.constants import CORE_VERSION
+from include.config.paths import APPLICATION_ABSPATH, EXTENSION_ROOT
 from include.config.validation import (
     ConfigValidationError,
     get_enabled_extensions,
@@ -26,7 +28,7 @@ from include.extensions.manager import (
     ExtensionLoadError,
     ExtensionManifest,
     ExtensionManifestError,
-    discover_extensions_from_directories,
+    discover_extensions,
     parse_extension_manifest,
     resolve_extension_selection,
 )
@@ -80,33 +82,17 @@ class ExtensionChangeResult:
     changed: bool
 
 
-def _extension_roots(*, mutating: bool) -> tuple[Path, Path, tuple[Path, ...]]:
+def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
     workdir = enter_server_root()
-    legacy_root = workdir / "include" / "extensions"
-    if legacy_root.is_dir():
-        managed_root = legacy_root
-        roots = (legacy_root,)
-    else:
-        from include.config.paths import APPLICATION_ROOT
-
-        packaged_root = APPLICATION_ROOT / "include" / "extensions"
-        if not packaged_root.is_dir():
-            raise MaintenanceOperationError(
-                f"Packaged extension directory not found: {packaged_root}"
-            )
-        managed_root = workdir / "extensions"
-        if mutating:
-            managed_root.mkdir(parents=True, exist_ok=True)
-        roots = (packaged_root, managed_root)
+    if not EXTENSION_ROOT.is_dir():
+        raise MaintenanceOperationError(
+            f"Extension directory not found: {EXTENSION_ROOT}"
+        )
     if mutating:
-        artifacts = (
-            sorted(
-                path
-                for path in managed_root.iterdir()
-                if path.name.startswith(_TRANSACTION_PREFIXES)
-            )
-            if managed_root.is_dir()
-            else []
+        artifacts = sorted(
+            path
+            for path in EXTENSION_ROOT.iterdir()
+            if path.name.startswith(_TRANSACTION_PREFIXES)
         )
         if artifacts:
             rendered = ", ".join(str(path) for path in artifacts)
@@ -114,14 +100,34 @@ def _extension_roots(*, mutating: bool) -> tuple[Path, Path, tuple[Path, ...]]:
                 "Unfinished extension transaction artifacts require manual review: "
                 f"{rendered}"
             )
-    return workdir, managed_root, roots
+    return workdir, EXTENSION_ROOT
 
 
-def _discover(roots: tuple[Path, ...]) -> dict[str, DiscoveredExtension]:
+def _discover(root: Path) -> dict[str, DiscoveredExtension]:
     try:
-        return discover_extensions_from_directories(roots)
+        return discover_extensions(root)
     except (ExtensionDiscoveryError, ExtensionManifestError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
+
+
+def _managed_extension_identifiers() -> frozenset[str]:
+    manifest_path = APPLICATION_ABSPATH.parent / "release-manifest.json"
+    if not manifest_path.is_file():
+        return frozenset({"builtin"})
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        identifiers = data["managed_extensions"]
+    except (KeyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise MaintenanceOperationError(
+            f"Unable to read managed extensions from {manifest_path}: {exc}"
+        ) from exc
+    if not isinstance(identifiers, list) or any(
+        not isinstance(identifier, str) for identifier in identifiers
+    ):
+        raise MaintenanceOperationError(
+            f"Release manifest has invalid managed_extensions: {manifest_path}"
+        )
+    return frozenset(identifiers) | {"builtin"}
 
 
 def _read_config(
@@ -201,8 +207,8 @@ def _record(
 
 
 def inspect_extensions() -> ExtensionCatalogInspection:
-    workdir, _, roots = _extension_roots(mutating=False)
-    discovered = _discover(roots)
+    workdir, root = _extension_root(mutating=False)
+    discovered = _discover(root)
     _, _, _, enabled = _read_config(workdir)
     activation_error = None
     try:
@@ -485,10 +491,10 @@ def install_extension(
     expected_sha256: str | None = None,
     write: bool = False,
 ) -> ExtensionChangeResult:
-    _, root, roots = _extension_roots(mutating=True)
+    _, root = _extension_root(mutating=True)
     package, staged, stage = _extract_package(package_path, expected_sha256, root)
     try:
-        discovered = _discover(roots)
+        discovered = _discover(root)
         identifier = staged.manifest.extension.identifier
         if identifier in discovered:
             raise MaintenanceOperationError(
@@ -563,20 +569,18 @@ def upgrade_extension(
     expected_sha256: str | None = None,
     write: bool = False,
 ) -> ExtensionChangeResult:
-    workdir, root, roots = _extension_roots(mutating=True)
+    workdir, root = _extension_root(mutating=True)
     package, staged, stage = _extract_package(package_path, expected_sha256, root)
     preserve_stage = False
     try:
-        discovered = _discover(roots)
+        discovered = _discover(root)
         identifier = staged.manifest.extension.identifier
         installed = discovered.get(identifier)
         if installed is None:
             raise MaintenanceOperationError(
                 f"Extension {identifier!r} is not installed; use install instead"
             )
-        if identifier == "builtin":
-            raise MaintenanceOperationError("The built-in extension cannot be upgraded")
-        if installed.directory.parent.resolve() != root.resolve():
+        if identifier in _managed_extension_identifiers():
             raise MaintenanceOperationError(
                 f"Packaged extension {identifier!r} must be upgraded with the server"
             )
@@ -684,8 +688,8 @@ def _selection_change(
     enable: bool,
     write: bool,
 ) -> ExtensionChangeResult:
-    workdir, _, roots = _extension_roots(mutating=True)
-    discovered = _discover(roots)
+    workdir, root = _extension_root(mutating=True)
+    discovered = _discover(root)
     extension = discovered.get(identifier)
     if extension is None:
         raise MaintenanceOperationError(f"Extension {identifier!r} is not installed")
@@ -739,14 +743,12 @@ def disable_extension(identifier: str, *, write: bool = False) -> ExtensionChang
 def uninstall_extension(
     identifier: str, *, write: bool = False
 ) -> ExtensionChangeResult:
-    workdir, root, roots = _extension_roots(mutating=True)
-    discovered = _discover(roots)
+    workdir, root = _extension_root(mutating=True)
+    discovered = _discover(root)
     extension = discovered.get(identifier)
     if extension is None:
         raise MaintenanceOperationError(f"Extension {identifier!r} is not installed")
-    if identifier == "builtin":
-        raise MaintenanceOperationError("The built-in extension cannot be uninstalled")
-    if extension.directory.parent.resolve() != root.resolve():
+    if identifier in _managed_extension_identifiers():
         raise MaintenanceOperationError(
             f"Packaged extension {identifier!r} cannot be uninstalled"
         )
