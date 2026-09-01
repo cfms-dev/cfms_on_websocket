@@ -85,11 +85,10 @@ installed and explicitly enabled; they are not enabled transitively.
 
 ## Maintenance commands
 
-Run extension maintenance commands through `python main.py maintain ...` for a
-versioned deployment, or from the legacy server tree. The server and maintenance
-commands use the same active-release extension directory. Packaged extensions can
-only be changed by upgrading the server release. Commands inspect manifests
-without importing extension code:
+Run extension maintenance commands from the flat deployment tree. The server and
+maintenance commands use the same active `src/include/extensions` directory.
+Packaged extensions can only be changed by switching the server release. Commands
+inspect manifests without importing extension code:
 
 ```bash
 maintain extension list
@@ -116,8 +115,10 @@ Uninstall removes extension code and its entry from `extensions.enabled`, while
 preserving `extensions.<identifier>` configuration and persistent system state.
 The `builtin` extension cannot be installed, upgraded, disabled, or uninstalled.
 During a server upgrade, operator-installed extensions are copied into the new
-release before activation. New packaged extensions always take ownership of their
-identifiers; an ownership or directory collision stops the upgrade.
+release before activation. A downgrade instead restores the selected release's
+stored extension snapshot and never copies extensions backward from the current
+release. New packaged extensions always take ownership of their identifiers; an
+ownership or directory collision stops the switch.
 
 ### Extension package format
 

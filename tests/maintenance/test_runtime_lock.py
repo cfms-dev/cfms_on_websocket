@@ -2,7 +2,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from include.runtime_lock import RuntimeLock
+import pytest
+
+from include.runtime_lock import RuntimeLock, RuntimeLockError, server_runtime_lock
 
 
 def test_runtime_lock_rejects_a_second_process(tmp_path: Path) -> None:
@@ -24,3 +26,14 @@ def test_runtime_lock_rejects_a_second_process(tmp_path: Path) -> None:
         )
 
     assert result.returncode == 23
+
+
+def test_server_runtime_lock_rejects_unfinished_deployment(tmp_path: Path) -> None:
+    transaction_path = tmp_path / ".maintenance" / "transaction.json"
+    transaction_path.parent.mkdir()
+    transaction_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeLockError, match="must be recovered before startup"):
+        server_runtime_lock(tmp_path)
+
+    assert not (tmp_path / ".maintenance" / "server.lock").exists()

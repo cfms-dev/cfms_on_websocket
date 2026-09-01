@@ -1,6 +1,5 @@
 import datetime as dt
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -91,7 +90,7 @@ database_app = typer.Typer(
     no_args_is_help=True,
 )
 deployment_app = typer.Typer(
-    help="Install and upgrade versioned CFMS deployments.",
+    help="Upgrade, downgrade, and inspect packaged CFMS deployments.",
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
@@ -482,11 +481,22 @@ def _print_deployment_result(result: operations.DeploymentResult) -> None:
     table.add_row("Action", result.action)
     table.add_row("Root", str(result.deployment_root))
     table.add_row("Active version", result.active_version)
+    table.add_row("Active release ID", result.active_release_id)
     if result.package_sha256 is not None:
         table.add_row("Package SHA-256", result.package_sha256)
-    if result.backup_path is not None:
-        table.add_row("Database backup", str(result.backup_path))
     console.print(table)
+    if result.versions:
+        versions = Table(title="Stored Releases")
+        versions.add_column("Version", style="cyan")
+        versions.add_column("Release ID", style="green")
+        versions.add_column("Active")
+        for release in result.versions:
+            versions.add_row(
+                release.version,
+                release.release_id,
+                "Yes" if release.active else "No",
+            )
+        console.print(versions)
 
 
 def _deployment_digest_options(
@@ -501,119 +511,18 @@ def _deployment_digest_options(
 def _resolve_deployment_root(deployment_root: Path | None) -> Path:
     if deployment_root is not None:
         return deployment_root
-    configured_server_root = os.environ.get("CFMS_SERVER_ROOT")
-    if configured_server_root:
-        shared_root = Path(configured_server_root).expanduser().resolve()
-        candidate = shared_root.parent
-        if shared_root.name == "shared" and (candidate / "deployment.json").is_file():
+    current = Path.cwd().resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / "src" / "main.py").is_file() or (
+            candidate / "src" / ".maintenance" / "transaction.json"
+        ).is_file():
             return candidate
-    raise typer.BadParameter(
-        "--deployment-root is required outside the stable main.py launcher"
-    )
-
-
-@deployment_app.command("install")
-def install_deployment(
-    package: Annotated[
-        Path,
-        typer.Argument(help="Official CFMS ZIP or tar.gz release package."),
-    ],
-    deployment_root: Annotated[
-        Path,
-        typer.Option("--deployment-root", help="Stable deployment directory."),
-    ],
-    sha256: Annotated[
-        str | None,
-        typer.Option("--sha256", help="Expected package SHA-256 digest."),
-    ] = None,
-    checksums: Annotated[
-        Path | None,
-        typer.Option("--checksums", help="Official SHA256SUMS.txt file."),
-    ] = None,
-    extra: Annotated[
-        list[str] | None,
-        typer.Option("--extra", help="Core optional dependency; may be repeated."),
-    ] = None,
-    requirements_lock: Annotated[
-        Path | None,
-        typer.Option(
-            "--requirements-lock",
-            help="Hash-locked requirements for third-party extensions.",
-        ),
-    ] = None,
-    yes: Annotated[
-        bool,
-        typer.Option("--yes", help="Install without interactive confirmation."),
-    ] = False,
-    verbose: VerboseOption = False,
-) -> None:
-    """Create a new versioned CFMS deployment from a local release package."""
-    _configure_logging(verbose)
-    digest, checksum_file = _deployment_digest_options(sha256, checksums)
-    _confirm_or_abort(f"Create a deployment at {deployment_root}?", yes)
-    result = _run(
-        lambda: operations.install_deployment(
-            package,
-            deployment_root,
-            expected_sha256=digest,
-            checksums_path=checksum_file,
-            extras=tuple(extra or ()),
-            requirements_lock=requirements_lock,
-        ),
-        status="Installing CFMS deployment...",
-    )
-    _print_deployment_result(result)
-
-
-@deployment_app.command("adopt")
-def adopt_deployment(
-    package: Annotated[Path, typer.Argument(help="New CFMS release package.")],
-    deployment_root: Annotated[
-        Path,
-        typer.Option("--deployment-root", help="Stable deployment directory."),
-    ],
-    legacy_root: Annotated[
-        Path,
-        typer.Option("--legacy-root", help="Official v0.7.0 release root."),
-    ],
-    sha256: Annotated[str | None, typer.Option("--sha256")] = None,
-    checksums: Annotated[Path | None, typer.Option("--checksums")] = None,
-    extra: Annotated[list[str] | None, typer.Option("--extra")] = None,
-    requirements_lock: Annotated[
-        Path | None,
-        typer.Option("--requirements-lock"),
-    ] = None,
-    server_stopped: Annotated[
-        bool,
-        typer.Option(
-            "--server-stopped",
-            help="Confirm that the legacy server process is stopped.",
-        ),
-    ] = False,
-    yes: Annotated[bool, typer.Option("--yes")] = False,
-    verbose: VerboseOption = False,
-) -> None:
-    """Adopt an official v0.7.0 flat deployment into the versioned layout."""
-    _configure_logging(verbose)
-    digest, checksum_file = _deployment_digest_options(sha256, checksums)
-    _confirm_or_abort(
-        "Move v0.7.0 runtime state into the new shared deployment root?",
-        yes,
-    )
-    result = _run(
-        lambda: operations.adopt_deployment(
-            package,
-            deployment_root,
-            legacy_root,
-            server_stopped=server_stopped,
-            expected_sha256=digest,
-            checksums_path=checksum_file,
-            extras=tuple(extra or ()),
-            requirements_lock=requirements_lock,
-        ),
-        status="Adopting legacy deployment...",
-    )
-    _print_deployment_result(result)
+        if (
+            (candidate / "main.py").is_file()
+            or (candidate / ".maintenance" / "transaction.json").is_file()
+        ) and (candidate.parent / "pyproject.toml").is_file():
+            return candidate.parent
+    raise typer.BadParameter("Unable to locate a flat CFMS deployment root")
 
 
 @deployment_app.command("upgrade")
@@ -625,13 +534,24 @@ def upgrade_deployment(
     ] = None,
     sha256: Annotated[str | None, typer.Option("--sha256")] = None,
     checksums: Annotated[Path | None, typer.Option("--checksums")] = None,
-    mysql_backup_confirmed: Annotated[
+    backup_confirmed: Annotated[
         bool,
         typer.Option(
-            "--mysql-backup-confirmed",
-            help="Confirm a restorable native MySQL backup already exists.",
+            "--backup-confirmed",
+            help="Confirm that an external restorable database checkpoint exists.",
         ),
     ] = False,
+    extra: Annotated[
+        list[str] | None,
+        typer.Option("--extra", help="Core optional dependency; may be repeated."),
+    ] = None,
+    requirements_lock: Annotated[
+        Path | None,
+        typer.Option(
+            "--requirements-lock",
+            help="Hash-locked requirements for third-party extensions.",
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     verbose: VerboseOption = False,
 ) -> None:
@@ -639,14 +559,20 @@ def upgrade_deployment(
     _configure_logging(verbose)
     digest, checksum_file = _deployment_digest_options(sha256, checksums)
     resolved_root = _resolve_deployment_root(deployment_root)
-    _confirm_or_abort("Upgrade the stopped CFMS deployment?", yes)
+    _confirm_or_abort(
+        "The server must be stopped and an external database checkpoint must exist. "
+        "Upgrade this deployment?",
+        yes,
+    )
     result = _run(
         lambda: operations.upgrade_deployment(
             package,
             resolved_root,
             expected_sha256=digest,
             checksums_path=checksum_file,
-            mysql_backup_confirmed=mysql_backup_confirmed,
+            backup_confirmed=backup_confirmed,
+            extras=tuple(extra) if extra is not None else None,
+            requirements_lock=requirements_lock,
         ),
         status="Upgrading CFMS deployment...",
     )
@@ -660,12 +586,78 @@ def deployment_status(
         typer.Option("--deployment-root", help="Stable deployment directory."),
     ] = None,
 ) -> None:
-    """Show the active version without changing the deployment."""
+    """Show the active and stored releases without changing the deployment."""
     _print_deployment_result(
         _run(
             lambda: operations.inspect_deployment(
                 _resolve_deployment_root(deployment_root)
             )
+        )
+    )
+
+
+@deployment_app.command("downgrade")
+def downgrade_deployment(
+    release_id: Annotated[
+        str,
+        typer.Argument(help="Stored release ID or an unambiguous prefix."),
+    ],
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Flat release project directory."),
+    ] = None,
+    backup_confirmed: Annotated[
+        bool,
+        typer.Option(
+            "--backup-confirmed",
+            help="Confirm that an external restorable database checkpoint exists.",
+        ),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Downgrade the database and restore a stored release."""
+    _configure_logging(verbose)
+    _confirm_or_abort(
+        "The server must be stopped and an external database checkpoint must exist. "
+        "Downgrade this deployment?",
+        yes,
+    )
+    result = _run(
+        lambda: operations.downgrade_deployment(
+            release_id,
+            _resolve_deployment_root(deployment_root),
+            backup_confirmed=backup_confirmed,
+        ),
+        status="Downgrading CFMS deployment...",
+    )
+    _print_deployment_result(result)
+
+
+@deployment_app.command("resume")
+def resume_deployment(
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Flat release project directory."),
+    ] = None,
+    database_restored: Annotated[
+        bool,
+        typer.Option(
+            "--database-restored",
+            help="Confirm that the external database checkpoint was restored.",
+        ),
+    ] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Finish or roll back an interrupted deployment transaction."""
+    _configure_logging(verbose)
+    _print_deployment_result(
+        _run(
+            lambda: operations.resume_deployment(
+                _resolve_deployment_root(deployment_root),
+                database_restored=database_restored,
+            ),
+            status="Recovering CFMS deployment...",
         )
     )
 

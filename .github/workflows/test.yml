@@ -136,16 +136,14 @@ jobs:
       with:
         version: "0.11.16"
 
-    - name: Build and install a versioned deployment
+    - name: Build and inspect a flat release deployment
       shell: pwsh
       run: |
         $version = uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
         uv run --locked python tools/build_release.py --version $version --source-date-epoch 1788000000 --output-dir dist
         $archive = (Resolve-Path "dist/cfms-on-websocket-$version.zip").Path
-        $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
         Expand-Archive -LiteralPath $archive -DestinationPath smoke
         $bundle = (Resolve-Path "smoke/cfms-on-websocket-$version").Path
-        $deployment = Join-Path $PWD "smoke/deployment"
         uv sync --project $bundle --locked --no-dev
-        uv run --project $bundle --no-dev maintain deployment install $archive --deployment-root $deployment --sha256 $digest --yes
-        python (Join-Path $deployment "main.py") maintain deployment status
+        Copy-Item -LiteralPath (Join-Path $bundle "src/config.toml.sample") -Destination (Join-Path $bundle "src/config.toml")
+        uv run --project $bundle --no-dev maintain deployment status --deployment-root $bundle

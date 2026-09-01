@@ -61,43 +61,69 @@ The deployment host must provide Python 3.14 or newer and
 [uv](https://docs.astral.sh/uv/). Each archive contains an internal file manifest;
 the deployment command also requires `SHA256SUMS.txt` or an expected SHA-256.
 
-Extract a release once to bootstrap its maintenance CLI, then create a stable
-versioned deployment. Repeat `--extra` for required optional features:
+Extract the first release directly into the final deployment directory. Keep the
+original flat project layout (`pyproject.toml`, `src/main.py`, `src/content`, and
+`src/include`), then initialize the environment and database:
 
 ```bash
 sha256sum --check SHA256SUMS.txt
-tar -xzf cfms-on-websocket-X.Y.Z.tar.gz
-uv run --project cfms-on-websocket-X.Y.Z --locked --no-dev maintain \
-  deployment install cfms-on-websocket-X.Y.Z.tar.gz \
-  --deployment-root /srv/cfms --checksums SHA256SUMS.txt \
-  --extra cluster --yes
+mkdir -p /srv/cfms
+tar -xzf cfms-on-websocket-X.Y.Z.tar.gz -C /srv/cfms --strip-components=1
+cp /srv/cfms/src/config.toml.sample /srv/cfms/src/config.toml
+uv sync --project /srv/cfms --locked --no-dev --extra cluster
+uv run --project /srv/cfms --no-dev maintain database upgrade --yes
 ```
 
-The deployment keeps the active application under `releases/` and mutable runtime
-state under `shared/`. The stable `main.py` sets `CFMS_SERVER_ROOT` to that shared
-directory before starting the active release or maintenance CLI:
+Start the active flat release through its environment:
 
 ```bash
-python /srv/cfms/main.py  # DO NOT use `-O`!
+uv run --project /srv/cfms --no-dev python /srv/cfms/src/main.py  # DO NOT use `-O`!
 ```
 
-Stop CFMS before upgrading. SQLite upgrades create a consistent backup
-automatically; MySQL requires a native backup and
-`--mysql-backup-confirmed`:
+Stop CFMS and create a tested, restorable database checkpoint before every
+version switch. The maintenance tool deliberately does not create this backup;
+`--backup-confirmed` records the operator's confirmation. Repeat `--extra` when
+the new release needs optional core dependencies:
 
 ```bash
-python /srv/cfms/main.py maintain deployment upgrade \
-  cfms-on-websocket-X.Y.Z.tar.gz --checksums SHA256SUMS.txt --yes
+uv run --project /srv/cfms --no-dev maintain deployment upgrade \
+  cfms-on-websocket-X.Y.Z.tar.gz --checksums SHA256SUMS.txt \
+  --backup-confirmed --extra cluster --yes
 ```
 
-`deployment status` reports the active version. A successful upgrade atomically
-activates the new release and removes the old release; configuration and database
-backups remain available, but there is no code rollback command. An official
-v0.7.0 flat release can be migrated once with
-`deployment adopt --legacy-root ... --server-stopped`. Adoption rejects modified
-official files. Third-party extensions are copied into the new active release and
-require an operator-maintained, hash-locked `requirements.lock` so every release
-environment can reproduce their Python dependencies.
+Each verified manifest has a release ID equal to the SHA-256 of its exact
+`release-manifest.json` bytes, so builds with the same semantic version can coexist.
+Historical code and version-specific configuration snapshots are stored under
+`src/.maintenance/versions/<release-id>/`; the active release remains in the
+original flat locations. All versions share one `.venv`, which is resynchronized
+from the selected release's lock file during a switch.
+
+On upgrade, only operator-installed extensions are copied forward; packaged
+extensions come from the new release. On downgrade, no extension is copied back
+from the current release: the selected release's stored extension and configuration
+snapshot is restored. `src/content/files/` and `src/content/logs/` are persistent
+production data and can never be owned or overwritten by a release package.
+
+The database revision is derived directly from each release's Alembic scripts.
+An unversioned database is stamped at the old release head before upgrading. A
+downgrade is allowed only when Alembic can reach the selected stored release:
+
+```bash
+uv run --project /srv/cfms --no-dev maintain deployment status
+uv run --project /srv/cfms --no-dev maintain deployment downgrade \
+  <release-id-or-prefix> --backup-confirmed --yes
+```
+
+If a migration fails, normal startup is blocked by the transaction marker. Restore
+the external database checkpoint, then finish recovery explicitly:
+
+```bash
+uv run --project /srv/cfms --no-dev maintain deployment resume \
+  --database-restored
+```
+
+Third-party Python dependencies may be supplied as an operator-maintained,
+hash-locked `requirements.lock` with `--requirements-lock` during upgrade.
 
 ## Extensions
 

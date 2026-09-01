@@ -23,7 +23,7 @@ def database_url(database_config: Mapping[str, Any]) -> URL:
     if db_type == "sqlite":
         database_path = Path(database_config["file"])
         if database_path != Path(":memory:") and not database_path.is_absolute():
-            database_path = paths.SHARED_ROOT_ABSPATH / database_path
+            database_path = paths.APPLICATION_ABSPATH / database_path
         return URL.create(drivername, database=str(database_path))
 
     query = {}

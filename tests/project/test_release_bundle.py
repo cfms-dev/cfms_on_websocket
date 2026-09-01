@@ -40,7 +40,6 @@ def _create_minimal_project(project_root: Path, version: str = "1.2.3") -> None:
         "src/alembic.ini": "[alembic]\n",
         "src/config.toml.sample": "debug = false\n",
         "src/content/hello": "hello\n",
-        "src/deployment_launcher.py": "pass\n",
         "src/main.py": "pass\n",
         "src/alembic/README": "migrations\n",
         "src/alembic/versions/base.py": (
@@ -90,7 +89,6 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
         "pyproject.toml",
         "release-manifest.json",
         "uv.lock",
-        "src/deployment_launcher.py",
         "src/main.py",
         "src/alembic.ini",
         "src/alembic/env.py",
@@ -108,7 +106,7 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
     with zipfile.ZipFile(zip_path) as archive:
         manifest = json.loads(archive.read(f"{top_level}/release-manifest.json"))
     assert manifest["version"] == version
-    assert manifest["alembic_head"] == "7bddfba0d8aa"
+    assert "alembic_head" not in manifest
     assert manifest["managed_extensions"] == [
         "brute_force_lockdown",
         "builtin",
@@ -116,6 +114,10 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
         "oidc_sso",
     ]
     assert "release-manifest.json" not in manifest["files"]
+    assert not any(
+        path.startswith(("src/content/files/", "src/content/logs/"))
+        for path in manifest["files"]
+    )
 
     forbidden_prefixes = (
         ".codex/",
@@ -193,7 +195,6 @@ def test_release_rejects_project_version_mismatch(tmp_path):
 @pytest.mark.parametrize(
     ("missing_path", "message"),
     [
-        ("src/deployment_launcher.py", "Required release file is missing"),
         ("src/main.py", "Required release file is missing"),
         (
             "src/content/ssl/client/8a5a09f0.0",

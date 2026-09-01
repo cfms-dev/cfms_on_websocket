@@ -1,12 +1,9 @@
-import datetime as dt
 import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
-import sqlite3
-import ssl
 import stat
 import subprocess
 import tarfile
@@ -16,8 +13,21 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from alembic.script.revision import RangeNotAncestorError, ResolutionError
+from alembic.util.exc import CommandError
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import Version
+from sqlalchemy.exc import SQLAlchemyError
+
+from alembic import command
+from include.config.validation import parse_config_document
+from include.database.engine import create_database_engine
 from include.extensions.manager import ExtensionDiscoveryError, discover_extensions
 from include.runtime_lock import RuntimeLockError, server_runtime_lock
+from maintenance.operations.config import sync_config_template
 from maintenance.operations.exceptions import MaintenanceOperationError
 
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
@@ -29,9 +39,17 @@ _VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+").fullmatch
 _EXTENSION_IDENTIFIER_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,254}").fullmatch
 _ALLOWED_ZIP_COMPRESSIONS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 _REQUIRED_RELEASE_FILES = {
-    "src/deployment_launcher.py",
+    "pyproject.toml",
+    "uv.lock",
+    "src/alembic.ini",
+    "src/config.toml.sample",
     "src/main.py",
 }
+_OPERATOR_OWNED_PREFIXES = (
+    "src/.maintenance/",
+    "src/content/files/",
+    "src/content/logs/",
+)
 _LEGACY_VERSION = "0.7.0"
 _LEGACY_MANAGED_DIGEST = (
     "ac520e5e6b86b93a37df1d3989203e6e794ec0ee0059a1c730cdc919a986ea88"
@@ -52,10 +70,16 @@ _LEGACY_SINGLE_FILES = (
 
 
 @dataclass(frozen=True, slots=True)
-class DeploymentState:
-    format_version: int
-    active_version: str
-    extras: tuple[str, ...]
+class DeploymentSettings:
+    format_version: int = 1
+    extras: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentVersion:
+    release_id: str
+    version: str
+    active: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +87,25 @@ class DeploymentResult:
     action: str
     deployment_root: Path
     active_version: str
+    active_release_id: str
+    versions: tuple[DeploymentVersion, ...] = ()
     package_sha256: str | None = None
-    backup_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Release:
+    root: Path
+    manifest: dict[str, Any]
+    manifest_bytes: bytes
+    release_id: str
+
+    @property
+    def version(self) -> str:
+        return self.manifest["version"]
+
+    @property
+    def managed_extensions(self) -> frozenset[str]:
+        return frozenset(self.manifest["managed_extensions"])
 
 
 def _hash_file(path: Path) -> str:
@@ -73,6 +114,80 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(_COPY_CHUNK_BYTES), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _atomic_write(path: Path, contents: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{secrets.token_hex(8)}")
+    try:
+        with temporary.open("xb") as output:
+            output.write(contents)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _project_root(value: str | Path) -> Path:
+    root = Path(value).expanduser().resolve()
+    if (root / "pyproject.toml").is_file() and (
+        (root / "src" / "main.py").is_file()
+        or (root / "src" / ".maintenance" / "transaction.json").is_file()
+    ):
+        project_root = root
+    elif (root.parent / "pyproject.toml").is_file() and (
+        (root / "main.py").is_file()
+        or (root / ".maintenance" / "transaction.json").is_file()
+    ):
+        project_root = root.parent
+    else:
+        raise MaintenanceOperationError(
+            f"Deployment root must contain pyproject.toml and src/main.py: {root}"
+        )
+    if (
+        (project_root / "deployment.json").exists()
+        or (project_root / "shared").exists()
+        or (project_root / "releases").exists()
+    ):
+        raise MaintenanceOperationError(
+            "The unreleased releases/shared deployment layout is not supported"
+        )
+    return project_root
+
+
+def _maintenance_root(project_root: Path) -> Path:
+    return project_root / "src" / ".maintenance"
+
+
+def _settings_path(project_root: Path) -> Path:
+    return _maintenance_root(project_root) / "settings.json"
+
+
+def _load_settings(project_root: Path) -> DeploymentSettings:
+    path = _settings_path(project_root)
+    if not path.exists():
+        return DeploymentSettings()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        settings = DeploymentSettings(
+            format_version=data["format_version"],
+            extras=tuple(data.get("extras", ())),
+        )
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
+        raise MaintenanceOperationError(f"Unable to read {path}: {exc}") from exc
+    if settings.format_version != 1 or any(
+        not isinstance(extra, str) or not extra for extra in settings.extras
+    ):
+        raise MaintenanceOperationError(f"Invalid deployment settings: {path}")
+    return settings
+
+
+def _write_settings(project_root: Path, settings: DeploymentSettings) -> None:
+    _atomic_write(
+        _settings_path(project_root),
+        (json.dumps(asdict(settings), indent=2, sort_keys=True) + "\n").encode(),
+    )
 
 
 def _expected_digest(
@@ -101,11 +216,8 @@ def _expected_digest(
     matches = []
     for line in lines:
         parts = line.split(maxsplit=1)
-        if len(parts) != 2:
-            continue
-        digest, filename = parts
-        if Path(filename.lstrip("* ")).name == package_path.name:
-            matches.append(digest)
+        if len(parts) == 2 and Path(parts[1].lstrip("* ")).name == package_path.name:
+            matches.append(parts[0])
     if len(matches) != 1 or _SHA256_PATTERN(matches[0]) is None:
         raise MaintenanceOperationError(
             f"Checksum file must contain exactly one valid entry for {package_path.name}"
@@ -118,8 +230,7 @@ def _archive_parts(name: str) -> tuple[str, ...]:
         raise MaintenanceOperationError(f"Unsafe release archive path: {name!r}")
     if PureWindowsPath(name).drive or PurePosixPath(name).is_absolute():
         raise MaintenanceOperationError(f"Unsafe release archive path: {name!r}")
-    normalized = name.removesuffix("/")
-    parts = normalized.split("/")
+    parts = name.removesuffix("/").split("/")
     if not parts or any(
         part in {"", ".", ".."} or ":" in part or part.endswith((" ", "."))
         for part in parts
@@ -183,9 +294,8 @@ def _extract_zip(package_path: Path, target: Path) -> str:
                     f"Unsupported release compression: {info.filename}"
                 )
             mode = (info.external_attr >> 16) & 0xFFFF
-            file_type = stat.S_IFMT(mode)
             expected_type = stat.S_IFDIR if info.is_dir() else stat.S_IFREG
-            if file_type not in {0, expected_type}:
+            if stat.S_IFMT(mode) not in {0, expected_type}:
                 raise MaintenanceOperationError(
                     f"Unsupported release member type: {info.filename}"
                 )
@@ -249,32 +359,27 @@ def _extract_tar(package_path: Path, target: Path) -> str:
         return top_level
 
 
-def _validate_release(target: Path, top_level: str) -> dict[str, Any]:
-    manifest_path = target / "release-manifest.json"
+def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[str, Any]:
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise MaintenanceOperationError(
-            "Release package is missing a valid release-manifest.json"
-        ) from exc
+        manifest = json.loads(contents)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise MaintenanceOperationError("Release manifest is invalid") from exc
     version = manifest.get("version")
+    managed_extensions = manifest.get("managed_extensions")
+    expected_files = manifest.get("files")
+    try:
+        SpecifierSet(manifest.get("requires_python", ""))
+    except (InvalidSpecifier, TypeError) as exc:
+        raise MaintenanceOperationError("Release manifest metadata is invalid") from exc
     if (
         manifest.get("format_version") != 1
         or manifest.get("product") != "cfms-on-websocket"
         or not isinstance(version, str)
         or _VERSION_PATTERN(version) is None
-        or top_level != f"cfms-on-websocket-{version}"
-    ):
-        raise MaintenanceOperationError("Release manifest identity is invalid")
-    minimum_version = manifest.get("minimum_upgrade_version")
-    managed_extensions = manifest.get("managed_extensions")
-    if (
-        not isinstance(minimum_version, str)
-        or _VERSION_PATTERN(minimum_version) is None
-        or not isinstance(manifest.get("requires_python"), str)
-        or not manifest["requires_python"]
-        or not isinstance(manifest.get("alembic_head"), str)
-        or not manifest["alembic_head"]
+        or (top_level is not None and top_level != f"cfms-on-websocket-{version}")
+        or not isinstance(manifest.get("minimum_upgrade_version"), str)
+        or _VERSION_PATTERN(manifest["minimum_upgrade_version"]) is None
+        or not isinstance(expected_files, dict)
         or not isinstance(managed_extensions, list)
         or any(
             not isinstance(identifier, str)
@@ -284,43 +389,66 @@ def _validate_release(target: Path, top_level: str) -> dict[str, Any]:
         or len(managed_extensions) != len(set(managed_extensions))
     ):
         raise MaintenanceOperationError("Release manifest metadata is invalid")
-    expected_files = manifest.get("files")
-    if not isinstance(expected_files, dict):
-        raise MaintenanceOperationError("Release manifest files table is invalid")
-    actual_paths = {
-        path.relative_to(target).as_posix()
-        for path in target.rglob("*")
-        if path.is_file() and path != manifest_path
-    }
-    missing_required = _REQUIRED_RELEASE_FILES - actual_paths
-    if missing_required:
-        raise MaintenanceOperationError(
-            "Release package is missing required files: "
-            + ", ".join(sorted(missing_required))
-        )
-    if actual_paths != set(expected_files):
-        raise MaintenanceOperationError(
-            "Release archive contents do not match its manifest"
-        )
-    for relative_path, expected in expected_files.items():
-        if not isinstance(expected, str) or _SHA256_PATTERN(expected) is None:
+    for relative_path, digest in expected_files.items():
+        if (
+            not isinstance(relative_path, str)
+            or not _archive_parts(relative_path)
+            or not isinstance(digest, str)
+            or _SHA256_PATTERN(digest) is None
+            or relative_path.startswith(_OPERATOR_OWNED_PREFIXES)
+        ):
             raise MaintenanceOperationError(
-                f"Release manifest contains an invalid digest for {relative_path}"
+                f"Release manifest contains an invalid path or digest: {relative_path!r}"
             )
-        if _hash_file(target / Path(relative_path)) != expected.lower():
+    missing = _REQUIRED_RELEASE_FILES - set(expected_files)
+    if missing:
+        raise MaintenanceOperationError(
+            "Release package is missing required files: " + ", ".join(sorted(missing))
+        )
+    return manifest
+
+
+def _release_from_tree(root: Path, *, exact: bool) -> _Release:
+    manifest_path = root / "release-manifest.json"
+    try:
+        contents = manifest_path.read_bytes()
+    except OSError as exc:
+        raise MaintenanceOperationError(
+            f"Release is missing release-manifest.json: {root}"
+        ) from exc
+    manifest = _parse_manifest(contents)
+    expected_files = manifest["files"]
+    for relative_path, expected in expected_files.items():
+        path = root / Path(relative_path)
+        if not path.is_file() or _hash_file(path) != expected.lower():
             raise MaintenanceOperationError(
                 f"Release file failed SHA-256 verification: {relative_path}"
             )
-    return manifest
+    if exact:
+        actual = {
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file() and path != manifest_path
+        }
+        if actual != set(expected_files):
+            raise MaintenanceOperationError(
+                "Release archive contents do not match its manifest"
+            )
+    return _Release(
+        root,
+        manifest,
+        contents,
+        hashlib.sha256(contents).hexdigest(),
+    )
 
 
 def _stage_release(
     package: str | Path,
-    deployment_root: Path,
+    project_root: Path,
     *,
     expected_sha256: str | None,
     checksums_path: str | Path | None,
-) -> tuple[Path, dict[str, Any], str]:
+) -> tuple[_Release, str, Path]:
     package_path = Path(package).expanduser().resolve()
     try:
         package_size = package_path.stat().st_size
@@ -337,9 +465,9 @@ def _stage_release(
             f"Release package SHA-256 mismatch: expected {expected}, got {actual}"
         )
 
-    releases_root = deployment_root / "releases"
-    releases_root.mkdir(parents=True, exist_ok=True)
-    stage = releases_root / f".cfms-release-stage-{secrets.token_hex(8)}"
+    staging_root = _maintenance_root(project_root) / "staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
+    stage = staging_root / secrets.token_hex(16)
     stage.mkdir()
     try:
         if zipfile.is_zipfile(package_path):
@@ -350,434 +478,31 @@ def _stage_release(
             raise MaintenanceOperationError(
                 "Release package must be an official ZIP or tar.gz archive"
             )
-        manifest = _validate_release(stage, top_level)
-        return stage, manifest, actual
-    except MaintenanceOperationError:
+        manifest = _parse_manifest(
+            (stage / "release-manifest.json").read_bytes(), top_level=top_level
+        )
+        release = _release_from_tree(stage, exact=True)
+        if release.manifest != manifest:
+            raise MaintenanceOperationError("Release manifest changed during staging")
+        return release, actual, stage
+    except Exception:
         shutil.rmtree(stage, ignore_errors=True)
         raise
-    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
-        shutil.rmtree(stage, ignore_errors=True)
-        raise MaintenanceOperationError(
-            f"Unable to extract release package {package_path}: {exc}"
-        ) from exc
 
 
-def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        output = "\n".join(
-            part.strip() for part in (result.stdout, result.stderr) if part.strip()
-        )
-        raise MaintenanceOperationError(
-            f"Command failed with exit code {result.returncode}: {' '.join(command)}"
-            + (f"\n{output}" if output else "")
-        )
-
-
-def _release_python(release_root: Path) -> Path:
-    if os.name == "nt":
-        return release_root / ".venv" / "Scripts" / "python.exe"
-    return release_root / ".venv" / "bin" / "python"
-
-
-def _sync_environment(
-    release_root: Path,
-    extras: tuple[str, ...],
-    requirements_lock: Path,
-) -> None:
-    uv = shutil.which("uv")
-    if uv is None:
-        raise MaintenanceOperationError("uv is required to install a release")
-    sync_command = [uv, "sync", "--project", str(release_root), "--locked", "--no-dev"]
-    for extra in extras:
-        sync_command.extend(("--extra", extra))
-    _run(sync_command, cwd=release_root)
-    python = _release_python(release_root)
-    if requirements_lock.is_file() and requirements_lock.stat().st_size:
-        _run(
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                str(python),
-                "--requirements",
-                str(requirements_lock),
-                "--require-hashes",
-                "--strict",
-            ],
-            cwd=release_root,
-        )
-        check_command = [
-            uv,
-            "sync",
-            "--project",
-            str(release_root),
-            "--locked",
-            "--no-dev",
-            "--inexact",
-            "--check",
-        ]
-        for extra in extras:
-            check_command.extend(("--extra", extra))
-        _run(check_command, cwd=release_root)
-
-
-def _runtime_environment(shared_root: Path) -> dict[str, str]:
-    environment = os.environ.copy()
-    environment["CFMS_SERVER_ROOT"] = str(shared_root)
-    return environment
-
-
-def _run_maintenance(
-    release_root: Path,
-    shared_root: Path,
-    arguments: list[str],
-) -> None:
-    _run(
-        [str(_release_python(release_root)), "-m", "maintenance.cli", *arguments],
-        cwd=shared_root,
-        env=_runtime_environment(shared_root),
-    )
-
-
-def _atomic_write(path: Path, contents: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.tmp-{secrets.token_hex(8)}")
-    try:
-        with temporary.open("xb") as output:
-            output.write(contents)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def _write_state(deployment_root: Path, state: DeploymentState) -> None:
-    contents = (json.dumps(asdict(state), indent=2, sort_keys=True) + "\n").encode(
-        "utf-8"
-    )
-    _atomic_write(deployment_root / "deployment.json", contents)
-
-
-def _load_state(deployment_root: Path) -> DeploymentState:
-    state_path = deployment_root / "deployment.json"
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-        state = DeploymentState(
-            format_version=data["format_version"],
-            active_version=data["active_version"],
-            extras=tuple(data.get("extras", ())),
-        )
-    except (KeyError, TypeError, OSError, json.JSONDecodeError) as exc:
-        raise MaintenanceOperationError(
-            f"Unable to read deployment state {state_path}: {exc}"
-        ) from exc
-    if (
-        state.format_version != 1
-        or not isinstance(state.active_version, str)
-        or _VERSION_PATTERN(state.active_version) is None
-    ):
-        raise MaintenanceOperationError("Deployment state is invalid")
-    if any(not isinstance(extra, str) for extra in state.extras):
-        raise MaintenanceOperationError("Deployment extras are invalid")
-    return state
-
-
-def _install_staged_release(
-    stage: Path,
-    manifest: dict[str, Any],
-    deployment_root: Path,
-    extras: tuple[str, ...],
-) -> Path:
-    version = manifest["version"]
-    destination = deployment_root / "releases" / version
-    if destination.exists():
-        raise MaintenanceOperationError(
-            f"Release version {version} is already installed"
-        )
-    os.replace(stage, destination)
-    try:
-        _sync_environment(
-            destination,
-            extras,
-            deployment_root / "shared" / "requirements.lock",
-        )
-    except Exception:
-        shutil.rmtree(destination, ignore_errors=True)
-        raise
-    return destination
-
-
-def _copy_launcher(release_root: Path, deployment_root: Path) -> None:
-    source = release_root / "src" / "deployment_launcher.py"
-    if not source.is_file():
-        raise MaintenanceOperationError(
-            "Release package is missing src/deployment_launcher.py"
-        )
-    _atomic_write(deployment_root / "main.py", source.read_bytes())
-
-
-def _sync_packaged_ca(release_root: Path, shared_root: Path) -> None:
-    source_root = release_root / "src" / "content" / "ssl" / "client"
-    target_root = shared_root / "content" / "ssl" / "client"
-    target_root.mkdir(parents=True, exist_ok=True)
-    if not source_root.is_dir():
-        return
-    for source in source_root.iterdir():
-        if not source.is_file():
-            continue
-        target = target_root / source.name
-        if target.exists() and target.read_bytes() != source.read_bytes():
-            raise MaintenanceOperationError(
-                f"Packaged client CA conflicts with an operator file: {target}"
-            )
-        if not target.exists():
-            shutil.copy2(source, target)
-
-
-def _prepare_shared_root(
-    deployment_root: Path,
-    release_root: Path,
-    requirements_lock: str | Path | None,
-) -> Path:
-    shared_root = deployment_root / "shared"
-    for relative in (
-        "content/files",
-        "content/logs",
-        "content/ssl",
-        "backups",
-        "run",
-    ):
-        (shared_root / relative).mkdir(parents=True, exist_ok=True)
-    config_path = shared_root / "config.toml"
-    if not config_path.exists():
-        shutil.copy2(release_root / "src" / "config.toml.sample", config_path)
-    lock_target = shared_root / "requirements.lock"
-    if requirements_lock is not None:
-        shutil.copy2(Path(requirements_lock).expanduser().resolve(), lock_target)
-    elif not lock_target.exists():
-        lock_target.write_text("", encoding="utf-8")
-    _sync_packaged_ca(release_root, shared_root)
-    return shared_root
-
-
-def _sqlite_backup(shared_root: Path, version: str) -> Path | None:
-    config_path = shared_root / "config.toml"
-    try:
-        with config_path.open("rb") as config_file:
-            database = tomllib.load(config_file)["database"]
-    except (KeyError, OSError, tomllib.TOMLDecodeError) as exc:
-        raise MaintenanceOperationError(
-            f"Unable to read database settings for backup: {exc}"
-        ) from exc
-    if database.get("type") != "sqlite":
-        return None
-    source = Path(database["file"])
-    if not source.is_absolute():
-        source = shared_root / source
-    if not source.is_file():
-        raise MaintenanceOperationError(f"SQLite database not found: {source}")
-    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = shared_root / "backups" / f"pre-upgrade-{version}-{timestamp}.db"
-    with (
-        sqlite3.connect(source) as source_connection,
-        sqlite3.connect(backup_path) as target_connection,
-    ):
-        source_connection.backup(target_connection)
-    return backup_path
-
-
-def _preflight_certificates(shared_root: Path) -> None:
-    try:
-        with (shared_root / "config.toml").open("rb") as config_file:
-            server_config = tomllib.load(config_file)["server"]
-        cert_path = Path(server_config["ssl_certfile"])
-        key_path = Path(server_config["ssl_keyfile"])
-    except (KeyError, OSError, TypeError, tomllib.TOMLDecodeError) as exc:
-        raise MaintenanceOperationError(
-            f"Unable to read TLS certificate settings: {exc}"
-        ) from exc
-    if not cert_path.is_absolute():
-        cert_path = shared_root / cert_path
-    if not key_path.is_absolute():
-        key_path = shared_root / key_path
-    try:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(certfile=cert_path, keyfile=key_path)
-    except (OSError, ssl.SSLError) as exc:
-        raise MaintenanceOperationError(
-            f"Unable to load configured TLS certificate and key: {exc}"
-        ) from exc
-
-
-def _write_transaction(shared_root: Path, data: dict[str, Any]) -> Path:
-    path = shared_root / "run" / "upgrade-transaction.json"
-    _atomic_write(
-        path,
-        (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
-    return path
-
-
-def _release_managed_extensions(release_root: Path) -> frozenset[str]:
-    manifest_path = release_root / "release-manifest.json"
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        identifiers = data["managed_extensions"]
-    except (KeyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise MaintenanceOperationError(
-            f"Unable to read managed extensions from {manifest_path}: {exc}"
-        ) from exc
-    if not isinstance(identifiers, list) or any(
-        not isinstance(identifier, str)
-        or _EXTENSION_IDENTIFIER_PATTERN(identifier) is None
-        for identifier in identifiers
-    ):
-        raise MaintenanceOperationError(
-            f"Release manifest has invalid managed_extensions: {manifest_path}"
-        )
-    return frozenset(identifiers)
-
-
-def _copy_third_party_extensions(
-    source_release: Path,
-    target_release: Path,
-    source_managed: frozenset[str],
-    target_managed: frozenset[str],
-) -> tuple[str, ...]:
-    source_root = source_release / "src" / "include" / "extensions"
-    target_root = target_release / "src" / "include" / "extensions"
-    try:
-        source_catalog = discover_extensions(source_root)
-        target_catalog = discover_extensions(target_root)
-    except ExtensionDiscoveryError as exc:
-        raise MaintenanceOperationError(str(exc)) from exc
-
-    copied = []
-    for identifier, extension in source_catalog.items():
-        if identifier in source_managed:
-            continue
-        if identifier in target_managed or identifier in target_catalog:
-            raise MaintenanceOperationError(
-                f"Third-party extension {identifier!r} conflicts with the new release"
-            )
-        target = target_root / extension.directory.name
-        if target.exists():
-            raise MaintenanceOperationError(
-                f"Third-party extension directory conflicts with the new release: "
-                f"{target}"
-            )
-        try:
-            shutil.copytree(extension.directory, target)
-        except OSError as exc:
-            raise MaintenanceOperationError(
-                f"Unable to copy third-party extension {identifier!r}: {exc}"
-            ) from exc
-        copied.append(identifier)
-
-    try:
-        discover_extensions(target_root)
-    except ExtensionDiscoveryError as exc:
-        raise MaintenanceOperationError(str(exc)) from exc
-    return tuple(copied)
-
-
-def _complete_pending_cleanup(
-    deployment_root: Path,
-    shared_root: Path,
-    state: DeploymentState,
-) -> None:
-    transaction_path = shared_root / "run" / "upgrade-transaction.json"
-    if not transaction_path.exists():
-        return
-    try:
-        transaction = json.loads(transaction_path.read_text(encoding="utf-8"))
-        phase = transaction["phase"]
-        from_version = transaction["from_version"]
-        to_version = transaction["to_version"]
-    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
-        raise MaintenanceOperationError(
-            f"Unfinished deployment transaction requires review: {transaction_path}"
-        ) from exc
-    if (
-        phase not in {"activation", "cleanup-required"}
-        or to_version != state.active_version
-        or not isinstance(from_version, str)
-        or _VERSION_PATTERN(from_version) is None
-        or from_version == state.active_version
-    ):
-        raise MaintenanceOperationError(
-            f"Unfinished deployment transaction requires review: {transaction_path}"
-        )
-    retired_release = deployment_root / "releases" / from_version
-    try:
-        if retired_release.exists():
-            shutil.rmtree(retired_release)
-        transaction_path.unlink()
-    except OSError as exc:
-        raise MaintenanceOperationError(
-            f"Unable to remove inactive release {retired_release}: {exc}"
-        ) from exc
-
-
-def install_deployment(
-    package: str | Path,
-    deployment_root: str | Path,
-    *,
-    expected_sha256: str | None = None,
-    checksums_path: str | Path | None = None,
-    extras: tuple[str, ...] = (),
-    requirements_lock: str | Path | None = None,
-) -> DeploymentResult:
-    root = Path(deployment_root).expanduser().resolve()
-    if (root / "deployment.json").exists():
-        raise MaintenanceOperationError(f"Deployment already exists at {root}")
-    root.mkdir(parents=True, exist_ok=True)
-    stage, manifest, digest = _stage_release(
-        package,
-        root,
-        expected_sha256=expected_sha256,
-        checksums_path=checksums_path,
-    )
-    release_root = _install_staged_release(
-        stage, manifest, root, tuple(sorted(set(extras)))
-    )
-    shared_root = _prepare_shared_root(root, release_root, requirements_lock)
-    try:
-        _run_maintenance(release_root, shared_root, ["database", "upgrade", "--yes"])
-        _run_maintenance(release_root, shared_root, ["extension", "list"])
-        _copy_launcher(release_root, root)
-        state = DeploymentState(1, manifest["version"], tuple(sorted(set(extras))))
-        _write_state(root, state)
-    except Exception:
-        shutil.rmtree(release_root, ignore_errors=True)
-        raise
-    return DeploymentResult("install", root, state.active_version, digest)
-
-
-def _legacy_managed_paths(legacy_root: Path) -> tuple[Path, ...]:
-    paths = [legacy_root / relative for relative in _LEGACY_SINGLE_FILES]
+def _legacy_managed_paths(project_root: Path) -> tuple[Path, ...]:
+    paths = [project_root / relative for relative in _LEGACY_SINGLE_FILES]
     for relative in ("src/alembic", "src/maintenance"):
         paths.extend(
-            path for path in (legacy_root / relative).rglob("*") if path.is_file()
+            path for path in (project_root / relative).rglob("*") if path.is_file()
         )
-    include_root = legacy_root / "src" / "include"
+    include_root = project_root / "src" / "include"
     for path in include_root.rglob("*"):
         if not path.is_file():
             continue
         relative = path.relative_to(include_root)
         if len(relative.parts) >= 3 and relative.parts[0] == "extensions":
-            candidate = relative.parts[1]
-            if candidate not in _LEGACY_MANAGED_EXTENSIONS:
+            if relative.parts[1] not in _LEGACY_MANAGED_EXTENSIONS:
                 continue
         paths.append(path)
     return tuple(
@@ -791,220 +516,450 @@ def _legacy_managed_paths(legacy_root: Path) -> tuple[Path, ...]:
                 and path.suffix not in {".pyc", ".pyo"}
                 and path.name != ".gitignore"
             },
-            key=lambda path: path.relative_to(legacy_root).as_posix(),
+            key=lambda path: path.relative_to(project_root).as_posix(),
         )
     )
 
 
-def _validate_legacy_release(legacy_root: Path) -> None:
+def _legacy_release(project_root: Path) -> _Release:
     try:
-        with (legacy_root / "pyproject.toml").open("rb") as pyproject_file:
-            version = tomllib.load(pyproject_file)["project"]["version"]
+        with (project_root / "pyproject.toml").open("rb") as pyproject_file:
+            pyproject = tomllib.load(pyproject_file)
+        version = pyproject["project"]["version"]
+        requires_python = pyproject["project"]["requires-python"]
     except (KeyError, OSError, tomllib.TOMLDecodeError) as exc:
         raise MaintenanceOperationError(
-            f"Unable to identify legacy deployment {legacy_root}: {exc}"
+            f"Unable to identify legacy deployment {project_root}: {exc}"
         ) from exc
     if version != _LEGACY_VERSION:
         raise MaintenanceOperationError(
-            f"Legacy adoption supports only v{_LEGACY_VERSION}; found {version!r}"
+            "The active flat release has no release-manifest.json and is not "
+            f"the supported v{_LEGACY_VERSION} release"
         )
+    paths = _legacy_managed_paths(project_root)
     digest = hashlib.sha256()
-    paths = _legacy_managed_paths(legacy_root)
     for path in paths:
-        relative = path.relative_to(legacy_root).as_posix()
-        digest.update(
-            relative.encode("utf-8") + b"\0" + bytes.fromhex(_hash_file(path))
-        )
+        relative = path.relative_to(project_root).as_posix()
+        digest.update(relative.encode() + b"\0" + bytes.fromhex(_hash_file(path)))
     if digest.hexdigest() != _LEGACY_MANAGED_DIGEST:
         raise MaintenanceOperationError(
             "Legacy v0.7.0 application files do not match the official release"
         )
-
-
-def _move_legacy_state(
-    legacy_root: Path,
-    shared_root: Path,
-) -> list[tuple[Path, Path]]:
-    runtime_root = legacy_root / "src"
-    moves: list[tuple[Path, Path]] = []
-    candidates = []
-    for name in ("config.toml", "init", "admin_password.txt"):
-        candidates.append((runtime_root / name, shared_root / name))
-    candidates.extend(
-        (path, shared_root / path.name)
-        for path in runtime_root.glob("config.toml.backup-*")
+    manifest = {
+        "files": {
+            path.relative_to(project_root).as_posix(): _hash_file(path)
+            for path in paths
+        },
+        "format_version": 1,
+        "managed_extensions": sorted(_LEGACY_MANAGED_EXTENSIONS),
+        "minimum_upgrade_version": "0.7.0",
+        "product": "cfms-on-websocket",
+        "requires_python": requires_python,
+        "version": version,
+    }
+    contents = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    return _Release(
+        project_root,
+        manifest,
+        contents,
+        hashlib.sha256(contents).hexdigest(),
     )
+
+
+def _active_release(project_root: Path) -> _Release:
+    if (project_root / "release-manifest.json").is_file():
+        return _release_from_tree(project_root, exact=False)
+    return _legacy_release(project_root)
+
+
+def _version_root(project_root: Path, release_id: str) -> Path:
+    return _maintenance_root(project_root) / "versions" / release_id
+
+
+def _snapshot_release(project_root: Path, release: _Release) -> Path:
+    version_root = _version_root(project_root, release.release_id)
+    snapshot = version_root / "release"
+    if snapshot.exists():
+        existing = _release_from_tree(snapshot, exact=True)
+        if existing.release_id != release.release_id:
+            raise MaintenanceOperationError(
+                f"Stored release does not match its directory: {version_root}"
+            )
+        return snapshot
+
+    temporary = version_root.with_name(
+        f".{release.release_id}.tmp-{secrets.token_hex(8)}"
+    )
+    temporary_release = temporary / "release"
+    temporary_release.mkdir(parents=True)
     try:
-        with (runtime_root / "config.toml").open("rb") as config_file:
-            database = tomllib.load(config_file)["database"]
-    except (KeyError, OSError, tomllib.TOMLDecodeError) as exc:
-        raise MaintenanceOperationError(
-            f"Unable to read legacy configuration: {exc}"
-        ) from exc
-    if database.get("type") == "sqlite":
-        database_path = Path(database["file"])
-        if not database_path.is_absolute():
-            source = runtime_root / database_path
-            target = shared_root / database_path
-            candidates.append((source, target))
-            for suffix in ("-wal", "-shm"):
-                candidates.append(
-                    (Path(f"{source}{suffix}"), Path(f"{target}{suffix}"))
+        for relative_path in release.manifest["files"]:
+            source = release.root / Path(relative_path)
+            target = temporary_release / Path(relative_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        (temporary_release / "release-manifest.json").write_bytes(
+            release.manifest_bytes
+        )
+        _release_from_tree(temporary_release, exact=True)
+        version_root.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(temporary, version_root)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return snapshot
+
+
+def _discover(root: Path) -> dict[str, Any]:
+    try:
+        return discover_extensions(root / "src" / "include" / "extensions")
+    except ExtensionDiscoveryError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+
+
+def _snapshot_state(project_root: Path, release: _Release) -> None:
+    version_root = _version_root(project_root, release.release_id)
+    state = version_root / "state"
+    temporary = version_root / f".state-{secrets.token_hex(8)}"
+    extensions = temporary / "extensions"
+    extensions.mkdir(parents=True)
+    try:
+        config_path = project_root / "src" / "config.toml"
+        shutil.copy2(config_path, temporary / "config.toml")
+        for identifier, extension in _discover(project_root).items():
+            if identifier not in release.managed_extensions:
+                shutil.copytree(
+                    extension.directory, extensions / extension.directory.name
                 )
-    content_root = runtime_root / "content"
-    if content_root.is_dir():
-        for child in content_root.iterdir():
-            if child.name != "hello":
-                candidates.append((child, shared_root / "content" / child.name))
-    for source, target in candidates:
-        if not source.exists():
-            continue
+        old = version_root / f".state-old-{secrets.token_hex(8)}"
+        if state.exists():
+            os.replace(state, old)
+        os.replace(temporary, state)
+        shutil.rmtree(old, ignore_errors=True)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
+def _remove_active_release(project_root: Path, release: _Release) -> None:
+    catalog = _discover(project_root)
+    for identifier, extension in catalog.items():
+        if identifier not in release.managed_extensions:
+            shutil.rmtree(extension.directory)
+    for relative_path in release.manifest["files"]:
+        path = project_root / Path(relative_path)
+        if path.is_file():
+            path.unlink()
+    (project_root / "release-manifest.json").unlink(missing_ok=True)
+    for path in sorted(project_root.rglob("*"), reverse=True):
+        if path.is_dir() and path != _maintenance_root(project_root):
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+
+
+def _copy_release_to_active(project_root: Path, release: _Release) -> None:
+    for relative_path in release.manifest["files"]:
+        source = release.root / Path(relative_path)
+        target = project_root / Path(relative_path)
         if target.exists():
             raise MaintenanceOperationError(
-                f"Legacy state destination already exists: {target}"
+                f"New release conflicts with an operator-owned path: {target}"
             )
         target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.replace(source, target)
-        except OSError as exc:
-            for moved_source, moved_target in reversed(moves):
-                os.replace(moved_target, moved_source)
-            raise MaintenanceOperationError(
-                "Legacy deployment and new shared root must be on the same "
-                f"filesystem: {exc}"
-            ) from exc
-        moves.append((source, target))
-    return moves
+        shutil.copy2(source, target)
+    shutil.copy2(release.root / "release-manifest.json", project_root)
 
 
-def adopt_deployment(
-    package: str | Path,
-    deployment_root: str | Path,
-    legacy_root: str | Path,
-    *,
-    server_stopped: bool,
-    expected_sha256: str | None = None,
-    checksums_path: str | Path | None = None,
-    extras: tuple[str, ...] = (),
-    requirements_lock: str | Path | None = None,
-) -> DeploymentResult:
-    if not server_stopped:
-        raise MaintenanceOperationError(
-            "Legacy adoption requires --server-stopped confirmation"
-        )
-    root = Path(deployment_root).expanduser().resolve()
-    legacy = Path(legacy_root).expanduser().resolve()
-    if root == legacy or root.is_relative_to(legacy):
-        raise MaintenanceOperationError(
-            "Deployment root must be outside the legacy release directory"
-        )
-    if (root / "deployment.json").exists():
-        raise MaintenanceOperationError(f"Deployment already exists at {root}")
-    _validate_legacy_release(legacy)
-    root.mkdir(parents=True, exist_ok=True)
-    stage, manifest, digest = _stage_release(
-        package,
-        root,
-        expected_sha256=expected_sha256,
-        checksums_path=checksums_path,
+def _copy_state_extensions(project_root: Path, release: _Release) -> None:
+    state_root = (
+        _version_root(project_root, release.release_id) / "state" / "extensions"
     )
-    normalized_extras = tuple(sorted(set(extras)))
-    release_root = _install_staged_release(stage, manifest, root, normalized_extras)
-    shared_root = root / "shared"
-    for relative in ("content", "backups", "run"):
-        (shared_root / relative).mkdir(parents=True, exist_ok=True)
-    moved: list[tuple[Path, Path]] = []
-    config_snapshot: Path | None = None
-    migration_started = False
-    transaction_path = None
+    target_root = project_root / "src" / "include" / "extensions"
+    target_root.mkdir(parents=True, exist_ok=True)
+    if not state_root.is_dir():
+        return
     try:
-        moved = _move_legacy_state(legacy, shared_root)
-        _prepare_shared_root(root, release_root, requirements_lock)
-        custom_extensions = _copy_third_party_extensions(
-            legacy,
-            release_root,
-            frozenset(_LEGACY_MANAGED_EXTENSIONS),
-            frozenset(manifest["managed_extensions"]),
-        )
-        if custom_extensions and not (shared_root / "requirements.lock").stat().st_size:
+        source_catalog = discover_extensions(state_root)
+    except ExtensionDiscoveryError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+    target_catalog = _discover(project_root)
+    for identifier, extension in source_catalog.items():
+        if identifier in release.managed_extensions or identifier in target_catalog:
             raise MaintenanceOperationError(
-                "Adopting third-party extensions requires a non-empty requirements.lock"
+                f"Third-party extension {identifier!r} conflicts with target release"
             )
-        if custom_extensions:
-            _sync_environment(
-                release_root,
-                normalized_extras,
-                shared_root / "requirements.lock",
+        target = target_root / extension.directory.name
+        if target.exists():
+            raise MaintenanceOperationError(
+                f"Third-party extension directory conflicts with target: {target}"
             )
-        _preflight_certificates(shared_root)
-        backup_path = _sqlite_backup(shared_root, _LEGACY_VERSION)
-        timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-        config_snapshot = (
-            shared_root
-            / "backups"
-            / f"config-{_LEGACY_VERSION}-before-adopt-{manifest['version']}-{timestamp}.toml"
-        )
-        shutil.copy2(shared_root / "config.toml", config_snapshot)
-        transaction = {
-            "action": "adopt",
-            "from_version": _LEGACY_VERSION,
-            "phase": "configuration",
-            "to_version": manifest["version"],
-        }
-        transaction_path = _write_transaction(shared_root, transaction)
-        _run_maintenance(
-            release_root,
-            shared_root,
-            [
-                "config",
-                "sync-template",
-                "--template",
-                str(release_root / "src" / "config.toml.sample"),
-                "--yes",
-            ],
-        )
-        _write_transaction(
-            shared_root,
-            {
-                "action": "adopt",
-                "from_version": _LEGACY_VERSION,
-                "phase": "database-migration",
-                "to_version": manifest["version"],
-            },
-        )
-        migration_started = True
-        _run_maintenance(release_root, shared_root, ["database", "upgrade", "--yes"])
-        _run_maintenance(release_root, shared_root, ["extension", "list"])
-        _copy_launcher(release_root, root)
-        state = DeploymentState(1, manifest["version"], normalized_extras)
-        _write_state(root, state)
-        transaction_path.unlink()
-    except Exception:
-        if config_snapshot is not None and config_snapshot.exists():
-            _atomic_write(shared_root / "config.toml", config_snapshot.read_bytes())
-        if migration_started:
-            if transaction_path is not None:
-                _write_transaction(
-                    shared_root,
-                    {
-                        "action": "adopt",
-                        "from_version": _LEGACY_VERSION,
-                        "phase": "recovery-required",
-                        "to_version": manifest["version"],
-                    },
-                )
-        else:
-            for source, target in reversed(moved):
-                os.replace(target, source)
-            shutil.rmtree(release_root, ignore_errors=True)
-        raise
-    return DeploymentResult(
-        "adopt",
-        root,
-        state.active_version,
-        digest,
-        backup_path,
+        shutil.copytree(extension.directory, target)
+    _discover(project_root)
+
+
+def _archive_active(project_root: Path, release: _Release) -> None:
+    _snapshot_release(project_root, release)
+    _snapshot_state(project_root, release)
+    _remove_active_release(project_root, release)
+
+
+def _stored_release(project_root: Path, release_id: str) -> _Release:
+    versions_root = _maintenance_root(project_root) / "versions"
+    matches = (
+        [
+            path
+            for path in versions_root.iterdir()
+            if path.is_dir() and path.name.startswith(release_id.lower())
+        ]
+        if versions_root.is_dir()
+        else []
     )
+    if not matches:
+        raise MaintenanceOperationError(f"Stored release not found: {release_id}")
+    if len(matches) != 1:
+        raise MaintenanceOperationError(f"Release ID prefix is ambiguous: {release_id}")
+    return _release_from_tree(matches[0] / "release", exact=True)
+
+
+def _run(command_line: list[str], *, cwd: Path) -> None:
+    result = subprocess.run(
+        command_line,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        output = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part.strip()
+        )
+        raise MaintenanceOperationError(
+            f"Command failed with exit code {result.returncode}: "
+            + " ".join(command_line)
+            + (f"\n{output}" if output else "")
+        )
+
+
+def _sync_environment(project_root: Path, settings: DeploymentSettings) -> None:
+    uv = shutil.which("uv")
+    if uv is None:
+        raise MaintenanceOperationError("uv is required to switch a release")
+    command_line = [
+        uv,
+        "sync",
+        "--project",
+        str(project_root),
+        "--locked",
+        "--no-dev",
+    ]
+    for extra in settings.extras:
+        command_line.extend(("--extra", extra))
+    _run(command_line, cwd=project_root)
+    requirements = _maintenance_root(project_root) / "requirements.lock"
+    if requirements.is_file() and requirements.stat().st_size:
+        python = (
+            project_root / ".venv" / "Scripts" / "python.exe"
+            if os.name == "nt"
+            else project_root / ".venv" / "bin" / "python"
+        )
+        _run(
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(python),
+                "--requirements",
+                str(requirements),
+                "--require-hashes",
+                "--strict",
+            ],
+            cwd=project_root,
+        )
+
+
+def _alembic(release: _Release, connection=None) -> tuple[Config, ScriptDirectory, str]:
+    config = Config(str(release.root / "src" / "alembic.ini"))
+    config.set_main_option("script_location", str(release.root / "src" / "alembic"))
+    if connection is not None:
+        config.attributes["connection"] = connection
+    scripts = ScriptDirectory.from_config(config)
+    heads = tuple(scripts.get_heads())
+    if len(heads) != 1:
+        raise MaintenanceOperationError(
+            "A release must contain exactly one Alembic head"
+        )
+    return config, scripts, heads[0]
+
+
+def _database_engine(project_root: Path):
+    config_path = project_root / "src" / "config.toml"
+    try:
+        document = parse_config_document(config_path.read_text(encoding="utf-8"))
+        database = dict(document["database"])
+        if database.get("type") == "sqlite":
+            database_path = Path(database["file"])
+            if database_path != Path(":memory:") and not database_path.is_absolute():
+                database["file"] = str(project_root / "src" / database_path)
+        return create_database_engine(database)
+    except Exception as exc:
+        raise MaintenanceOperationError(
+            f"Unable to open the configured database: {exc}"
+        ) from exc
+
+
+def _current_revision(connection) -> str | None:
+    heads = tuple(MigrationContext.configure(connection).get_current_heads())
+    if len(heads) > 1:
+        raise MaintenanceOperationError(
+            "Database has multiple Alembic heads: " + ", ".join(heads)
+        )
+    return heads[0] if heads else None
+
+
+def _is_ancestor(scripts: ScriptDirectory, lower: str, upper: str) -> bool:
+    if lower == upper:
+        return True
+    try:
+        revisions = tuple(scripts.iterate_revisions(upper, lower, inclusive=True))
+        identifiers = {revision.revision for revision in revisions}
+        return lower in identifiers and upper in identifiers
+    except RangeNotAncestorError, ResolutionError:
+        return False
+
+
+def _upgrade_database(project_root: Path, source: _Release, target: _Release) -> None:
+    engine = _database_engine(project_root)
+    try:
+        with engine.begin() as connection:
+            target_config, target_scripts, target_head = _alembic(target, connection)
+            _, _, source_head = _alembic(source)
+            if not _is_ancestor(target_scripts, source_head, target_head):
+                raise MaintenanceOperationError(
+                    f"Target Alembic head {target_head} does not descend from {source_head}"
+                )
+            current = _current_revision(connection)
+            if current is None:
+                command.stamp(target_config, source_head)
+                current = source_head
+            if current != source_head:
+                raise MaintenanceOperationError(
+                    f"Database revision is {current}; active release expects {source_head}"
+                )
+            if source_head != target_head:
+                command.upgrade(target_config, target_head)
+            if _current_revision(connection) != target_head:
+                raise MaintenanceOperationError(
+                    f"Database did not reach target revision {target_head}"
+                )
+    except (CommandError, OSError, SQLAlchemyError) as exc:
+        raise MaintenanceOperationError(f"Database upgrade failed: {exc}") from exc
+    finally:
+        engine.dispose()
+
+
+def _downgrade_database(project_root: Path, source: _Release, target: _Release) -> None:
+    engine = _database_engine(project_root)
+    try:
+        with engine.begin() as connection:
+            source_config, source_scripts, source_head = _alembic(source, connection)
+            _, _, target_head = _alembic(target)
+            if not _is_ancestor(source_scripts, target_head, source_head):
+                raise MaintenanceOperationError(
+                    f"Target Alembic head {target_head} is not reachable from {source_head}"
+                )
+            current = _current_revision(connection)
+            if current != source_head:
+                raise MaintenanceOperationError(
+                    f"Database revision is {current or 'unversioned'}; "
+                    f"active release expects {source_head}"
+                )
+            if source_head != target_head:
+                command.downgrade(source_config, target_head)
+            if _current_revision(connection) != target_head:
+                raise MaintenanceOperationError(
+                    f"Database did not reach target revision {target_head}"
+                )
+    except (CommandError, OSError, SQLAlchemyError) as exc:
+        raise MaintenanceOperationError(f"Database downgrade failed: {exc}") from exc
+    finally:
+        engine.dispose()
+
+
+def _transaction_path(project_root: Path) -> Path:
+    return _maintenance_root(project_root) / "transaction.json"
+
+
+def _write_transaction(project_root: Path, data: dict[str, Any]) -> None:
+    _atomic_write(
+        _transaction_path(project_root),
+        (json.dumps(data, indent=2, sort_keys=True) + "\n").encode(),
+    )
+
+
+def _load_transaction(project_root: Path) -> dict[str, Any]:
+    path = _transaction_path(project_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MaintenanceOperationError(f"Unable to read {path}: {exc}") from exc
+    if data.get("action") not in {"upgrade", "downgrade"}:
+        raise MaintenanceOperationError(f"Invalid deployment transaction: {path}")
+    return data
+
+
+def _restore_active(
+    project_root: Path,
+    source: _Release,
+    failed_release: _Release | None = None,
+) -> None:
+    try:
+        current = _active_release(project_root)
+    except MaintenanceOperationError:
+        current = None
+    if current is not None and current.release_id == source.release_id:
+        return
+    if current is not None and current.release_id != source.release_id:
+        _remove_active_release(project_root, current)
+    elif current is None and failed_release is not None:
+        for relative_path, expected_digest in failed_release.manifest["files"].items():
+            path = project_root / Path(relative_path)
+            if path.is_file() and _hash_file(path) == expected_digest:
+                path.unlink()
+        (project_root / "release-manifest.json").unlink(missing_ok=True)
+        for path in sorted(project_root.rglob("*"), reverse=True):
+            if path.is_dir() and path != _maintenance_root(project_root):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+    if not (project_root / "release-manifest.json").exists():
+        _copy_release_to_active(project_root, source)
+    state = _version_root(project_root, source.release_id) / "state"
+    _atomic_write(
+        project_root / "src" / "config.toml",
+        (state / "config.toml").read_bytes(),
+    )
+    _copy_state_extensions(project_root, source)
+
+
+def _activate_upgrade(
+    project_root: Path,
+    source: _Release,
+    target: _Release,
+    settings: DeploymentSettings,
+) -> None:
+    _archive_active(project_root, source)
+    _copy_release_to_active(project_root, target)
+    _copy_state_extensions(project_root, source)
+    sync_config_template(
+        project_root / "src" / "config.toml.sample",
+        write=True,
+    )
+    _snapshot_state(project_root, target)
+    _sync_environment(project_root, settings)
 
 
 def upgrade_deployment(
@@ -1013,171 +968,256 @@ def upgrade_deployment(
     *,
     expected_sha256: str | None = None,
     checksums_path: str | Path | None = None,
-    mysql_backup_confirmed: bool = False,
+    backup_confirmed: bool = False,
+    extras: tuple[str, ...] | None = None,
+    requirements_lock: str | Path | None = None,
 ) -> DeploymentResult:
-    root = Path(deployment_root).expanduser().resolve()
-    state = _load_state(root)
-    shared_root = root / "shared"
-    transaction_path = shared_root / "run" / "upgrade-transaction.json"
+    project_root = _project_root(deployment_root)
+    transaction_path = _transaction_path(project_root)
+    if transaction_path.exists():
+        raise MaintenanceOperationError(
+            f"Resume the unfinished deployment transaction first: {transaction_path}"
+        )
     try:
-        lock = server_runtime_lock(shared_root).acquire()
+        lock = server_runtime_lock(project_root / "src").acquire()
     except RuntimeLockError as exc:
         raise MaintenanceOperationError(str(exc)) from exc
-    release_root = None
-    config_backup = None
-    migration_started = False
-    backup_path = None
-    activated = False
-    transaction_started = False
+    stage = None
+    database_started = False
     try:
-        _complete_pending_cleanup(root, shared_root, state)
-        current_release = root / "releases" / state.active_version
-        current_managed = _release_managed_extensions(current_release)
-        stage, manifest, digest = _stage_release(
+        source = _active_release(project_root)
+        staged, package_digest, stage = _stage_release(
             package,
-            root,
+            project_root,
             expected_sha256=expected_sha256,
             checksums_path=checksums_path,
         )
-        version = manifest["version"]
-        current_parts = tuple(int(part) for part in state.active_version.split("."))
-        target_parts = tuple(int(part) for part in version.split("."))
-        if target_parts <= current_parts:
-            shutil.rmtree(stage, ignore_errors=True)
+        if staged.release_id == source.release_id:
+            raise MaintenanceOperationError("The supplied release is already active")
+        if Version(staged.version) < Version(source.version):
             raise MaintenanceOperationError(
-                f"Upgrade version {version} must be newer than {state.active_version}"
+                "Use deployment downgrade to activate an older stored release"
             )
-        minimum = manifest.get("minimum_upgrade_version")
-        if not isinstance(minimum, str) or current_parts < tuple(
-            int(part) for part in minimum.split(".")
+        if Version(source.version) < Version(
+            staged.manifest["minimum_upgrade_version"]
         ):
-            shutil.rmtree(stage, ignore_errors=True)
             raise MaintenanceOperationError(
-                f"Release {version} cannot upgrade {state.active_version} directly"
+                f"Release {staged.version} cannot upgrade {source.version} directly"
             )
+        if not backup_confirmed:
+            raise MaintenanceOperationError(
+                "Confirm an external database checkpoint with --backup-confirmed"
+            )
+
+        settings = _load_settings(project_root)
+        if extras is not None:
+            settings = DeploymentSettings(1, tuple(sorted(set(extras))))
+        maintenance_root = _maintenance_root(project_root)
+        maintenance_root.mkdir(parents=True, exist_ok=True)
+        if requirements_lock is not None:
+            shutil.copy2(
+                Path(requirements_lock).expanduser().resolve(),
+                maintenance_root / "requirements.lock",
+            )
+        elif not (maintenance_root / "requirements.lock").exists():
+            (maintenance_root / "requirements.lock").write_text("", encoding="utf-8")
+        _write_settings(project_root, settings)
+
+        snapshot = _snapshot_release(project_root, staged)
+        target = _release_from_tree(snapshot, exact=True)
+        _snapshot_release(project_root, source)
+        _snapshot_state(project_root, source)
         _write_transaction(
-            shared_root,
+            project_root,
             {
                 "action": "upgrade",
-                "from_version": state.active_version,
-                "phase": "staging",
-                "to_version": version,
-            },
-        )
-        transaction_started = True
-        release_root = _install_staged_release(stage, manifest, root, state.extras)
-        custom_extensions = _copy_third_party_extensions(
-            current_release,
-            release_root,
-            current_managed,
-            frozenset(manifest["managed_extensions"]),
-        )
-        if custom_extensions and not (shared_root / "requirements.lock").stat().st_size:
-            raise MaintenanceOperationError(
-                "Upgrading third-party extensions requires a non-empty requirements.lock"
-            )
-        _sync_packaged_ca(release_root, shared_root)
-        _preflight_certificates(shared_root)
-        _run_maintenance(release_root, shared_root, ["extension", "list"])
-        backup_path = _sqlite_backup(shared_root, state.active_version)
-        if backup_path is None and not mysql_backup_confirmed:
-            raise MaintenanceOperationError(
-                "MySQL upgrades require --mysql-backup-confirmed"
-            )
-        timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-        config_backup = (
-            shared_root
-            / "backups"
-            / f"config-{state.active_version}-before-{version}-{timestamp}.toml"
-        )
-        shutil.copy2(shared_root / "config.toml", config_backup)
-        _run_maintenance(
-            release_root,
-            shared_root,
-            [
-                "config",
-                "sync-template",
-                "--template",
-                str(release_root / "src" / "config.toml.sample"),
-                "--yes",
-            ],
-        )
-        _write_transaction(
-            shared_root,
-            {
-                "action": "upgrade",
-                "from_version": state.active_version,
-                "phase": "database-migration",
-                "to_version": version,
-            },
-        )
-        migration_started = True
-        _run_maintenance(release_root, shared_root, ["database", "upgrade", "--yes"])
-        _run_maintenance(release_root, shared_root, ["extension", "list"])
-        _write_transaction(
-            shared_root,
-            {
-                "action": "upgrade",
-                "from_version": state.active_version,
+                "from_release": source.release_id,
                 "phase": "activation",
-                "to_version": version,
+                "to_release": target.release_id,
             },
         )
-        _copy_launcher(release_root, root)
-        next_state = DeploymentState(1, version, state.extras)
-        _write_state(root, next_state)
-        activated = True
+        try:
+            _activate_upgrade(project_root, source, target, settings)
+        except Exception:
+            _restore_active(project_root, source, target)
+            _sync_environment(project_root, settings)
+            transaction_path.unlink(missing_ok=True)
+            raise
         _write_transaction(
-            shared_root,
+            project_root,
             {
                 "action": "upgrade",
-                "from_version": state.active_version,
-                "phase": "cleanup-required",
-                "to_version": version,
+                "from_release": source.release_id,
+                "phase": "database-migration",
+                "to_release": target.release_id,
             },
         )
-        if os.name != "nt":
-            try:
-                shutil.rmtree(current_release)
-                transaction_path.unlink()
-            except OSError as exc:
-                raise MaintenanceOperationError(
-                    f"Release {version} is active, but inactive release "
-                    f"{current_release} could not be removed: {exc}"
-                ) from exc
+        database_started = True
+        _upgrade_database(project_root, source, target)
+        _release_from_tree(project_root, exact=False)
+        _discover(project_root)
+        transaction_path.unlink()
+        shutil.rmtree(stage, ignore_errors=True)
         return DeploymentResult(
             "upgrade",
-            root,
-            version,
-            digest,
-            backup_path,
+            project_root,
+            target.version,
+            target.release_id,
+            package_sha256=package_digest,
         )
     except Exception:
-        if activated:
-            raise
-        if config_backup is not None and config_backup.exists():
-            _atomic_write(shared_root / "config.toml", config_backup.read_bytes())
-        if migration_started:
-            _write_transaction(
-                shared_root,
-                {
-                    "action": "upgrade",
-                    "from_version": state.active_version,
-                    "phase": "recovery-required",
-                    "to_version": release_root.name if release_root else None,
-                },
-            )
-        else:
-            if transaction_started and transaction_path.exists():
-                transaction_path.unlink()
-            if release_root is not None:
-                shutil.rmtree(release_root, ignore_errors=True)
+        if database_started and transaction_path.exists():
+            data = _load_transaction(project_root)
+            data["phase"] = "database-recovery-required"
+            _write_transaction(project_root, data)
+        elif stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
         raise
     finally:
         lock.release()
 
 
+def downgrade_deployment(
+    release_id: str,
+    deployment_root: str | Path,
+    *,
+    backup_confirmed: bool = False,
+) -> DeploymentResult:
+    project_root = _project_root(deployment_root)
+    if _transaction_path(project_root).exists():
+        raise MaintenanceOperationError("Resume the unfinished transaction first")
+    try:
+        lock = server_runtime_lock(project_root / "src").acquire()
+    except RuntimeLockError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+    database_started = False
+    try:
+        source = _active_release(project_root)
+        target = _stored_release(project_root, release_id)
+        if target.release_id == source.release_id:
+            raise MaintenanceOperationError("The selected release is already active")
+        if not backup_confirmed:
+            raise MaintenanceOperationError(
+                "Confirm an external database checkpoint with --backup-confirmed"
+            )
+        target_state = _version_root(project_root, target.release_id) / "state"
+        if not (target_state / "config.toml").is_file():
+            raise MaintenanceOperationError(
+                f"Stored release has no compatible configuration snapshot: {target.release_id}"
+            )
+        _snapshot_release(project_root, source)
+        _snapshot_state(project_root, source)
+        _write_transaction(
+            project_root,
+            {
+                "action": "downgrade",
+                "from_release": source.release_id,
+                "phase": "database-migration",
+                "to_release": target.release_id,
+            },
+        )
+        database_started = True
+        _downgrade_database(project_root, source, target)
+        _write_transaction(
+            project_root,
+            {
+                "action": "downgrade",
+                "from_release": source.release_id,
+                "phase": "activation",
+                "to_release": target.release_id,
+            },
+        )
+        _archive_active(project_root, source)
+        _copy_release_to_active(project_root, target)
+        _atomic_write(
+            project_root / "src" / "config.toml",
+            (target_state / "config.toml").read_bytes(),
+        )
+        _copy_state_extensions(project_root, target)
+        _sync_environment(project_root, _load_settings(project_root))
+        _release_from_tree(project_root, exact=False)
+        _discover(project_root)
+        _transaction_path(project_root).unlink()
+        return DeploymentResult(
+            "downgrade", project_root, target.version, target.release_id
+        )
+    except Exception:
+        if database_started and _transaction_path(project_root).exists():
+            data = _load_transaction(project_root)
+            data["phase"] = "database-recovery-required"
+            _write_transaction(project_root, data)
+        raise
+    finally:
+        lock.release()
+
+
+def resume_deployment(
+    deployment_root: str | Path,
+    *,
+    database_restored: bool = False,
+) -> DeploymentResult:
+    project_root = _project_root(deployment_root)
+    transaction = _load_transaction(project_root)
+    source = _stored_release(project_root, transaction["from_release"])
+    target = _stored_release(project_root, transaction["to_release"])
+    phase = transaction["phase"]
+    if phase in {"database-migration", "database-recovery-required"}:
+        if not database_restored:
+            raise MaintenanceOperationError(
+                "Restore the external database checkpoint, then pass --database-restored"
+            )
+    if phase in {"activation", "database-migration", "database-recovery-required"}:
+        engine = _database_engine(project_root)
+        try:
+            with engine.connect() as connection:
+                revision = _current_revision(connection)
+            _, _, source_head = _alembic(source)
+            _, _, target_head = _alembic(target)
+        finally:
+            engine.dispose()
+        if revision == source_head:
+            _restore_active(project_root, source, target)
+            active = source
+        elif revision == target_head:
+            _restore_active(project_root, target, source)
+            active = target
+        else:
+            raise MaintenanceOperationError(
+                f"Database revision {revision or 'unversioned'} matches "
+                "neither transaction endpoint"
+            )
+    else:
+        raise MaintenanceOperationError(
+            f"Unsupported deployment transaction phase: {phase!r}"
+        )
+    _sync_environment(project_root, _load_settings(project_root))
+    _transaction_path(project_root).unlink()
+    return DeploymentResult("resume", project_root, active.version, active.release_id)
+
+
 def inspect_deployment(deployment_root: str | Path) -> DeploymentResult:
-    root = Path(deployment_root).expanduser().resolve()
-    state = _load_state(root)
-    return DeploymentResult("status", root, state.active_version)
+    project_root = _project_root(deployment_root)
+    active = _active_release(project_root)
+    versions = []
+    versions_root = _maintenance_root(project_root) / "versions"
+    if versions_root.is_dir():
+        for path in sorted(versions_root.iterdir()):
+            if not path.is_dir() or _SHA256_PATTERN(path.name) is None:
+                continue
+            release = _release_from_tree(path / "release", exact=True)
+            versions.append(
+                DeploymentVersion(
+                    release.release_id,
+                    release.version,
+                    release.release_id == active.release_id,
+                )
+            )
+    if not any(version.active for version in versions):
+        versions.append(DeploymentVersion(active.release_id, active.version, True))
+    return DeploymentResult(
+        "status",
+        project_root,
+        active.version,
+        active.release_id,
+        tuple(versions),
+    )

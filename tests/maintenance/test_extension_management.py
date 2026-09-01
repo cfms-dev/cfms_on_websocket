@@ -91,8 +91,9 @@ def _prepare_src(
     config["extensions"]["enabled"] = list(enabled)
     (src / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
     _write_installed_extension(root, "builtin")
-    monkeypatch.setattr(extension_operations, "APPLICATION_ABSPATH", src)
-    monkeypatch.setattr(extension_operations, "EXTENSION_ROOT", root)
+    monkeypatch.setattr(extension_operations.paths, "APPLICATION_ABSPATH", src)
+    monkeypatch.setattr(extension_operations.paths, "PROJECT_ABSPATH", src.parent)
+    monkeypatch.setattr(extension_operations.paths, "EXTENSION_ROOT", root)
     monkeypatch.chdir(src)
     return src, root
 
@@ -526,20 +527,20 @@ def test_release_manifest_protects_packaged_extensions(tmp_path, monkeypatch):
         extension_operations.uninstall_extension("packaged_ext")
 
 
-def test_catalog_ignores_extensions_under_shared_server_root(tmp_path, monkeypatch):
+def test_catalog_uses_flat_application_extension_root(tmp_path, monkeypatch):
     _, root = _prepare_src(tmp_path, monkeypatch)
-    shared = tmp_path / "shared"
-    shared_extensions = shared / "extensions"
-    shared_extensions.mkdir(parents=True)
-    _write_installed_extension(shared_extensions, "shared_only")
+    unrelated = tmp_path / "unrelated"
+    unrelated_extensions = unrelated / "extensions"
+    unrelated_extensions.mkdir(parents=True)
+    _write_installed_extension(unrelated_extensions, "unrelated_only")
     config = tomlkit.parse(_SAMPLE_CONFIG)
-    config["extensions"]["enabled"] = ["shared_only"]
-    (shared / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
-    monkeypatch.setattr(extension_operations, "enter_server_root", lambda: shared)
+    config["extensions"]["enabled"] = ["unrelated_only"]
+    (unrelated / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(extension_operations, "enter_server_root", lambda: unrelated)
 
     inspection = extension_operations.inspect_extensions()
 
     assert {record.directory.parent for record in inspection.extensions} == {root}
     assert inspection.activation_error == (
-        "Configured extensions were not found: shared_only"
+        "Configured extensions were not found: unrelated_only"
     )

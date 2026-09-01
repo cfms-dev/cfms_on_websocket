@@ -15,8 +15,8 @@ from packaging.version import InvalidVersion
 from packaging.version import Version as PackageVersion
 from tomlkit.exceptions import TOMLKitError
 
+from include.config import paths
 from include.config.constants import CORE_VERSION
-from include.config.paths import APPLICATION_ABSPATH, EXTENSION_ROOT
 from include.config.validation import (
     ConfigValidationError,
     get_enabled_extensions,
@@ -84,14 +84,14 @@ class ExtensionChangeResult:
 
 def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
     workdir = enter_server_root()
-    if not EXTENSION_ROOT.is_dir():
+    if not paths.EXTENSION_ROOT.is_dir():
         raise MaintenanceOperationError(
-            f"Extension directory not found: {EXTENSION_ROOT}"
+            f"Extension directory not found: {paths.EXTENSION_ROOT}"
         )
     if mutating:
         artifacts = sorted(
             path
-            for path in EXTENSION_ROOT.iterdir()
+            for path in paths.EXTENSION_ROOT.iterdir()
             if path.name.startswith(_TRANSACTION_PREFIXES)
         )
         if artifacts:
@@ -100,7 +100,7 @@ def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
                 "Unfinished extension transaction artifacts require manual review: "
                 f"{rendered}"
             )
-    return workdir, EXTENSION_ROOT
+    return workdir, paths.EXTENSION_ROOT
 
 
 def _discover(root: Path) -> dict[str, DiscoveredExtension]:
@@ -111,7 +111,7 @@ def _discover(root: Path) -> dict[str, DiscoveredExtension]:
 
 
 def _managed_extension_identifiers() -> frozenset[str]:
-    manifest_path = APPLICATION_ABSPATH.parent / "release-manifest.json"
+    manifest_path = paths.PROJECT_ABSPATH / "release-manifest.json"
     if not manifest_path.is_file():
         return frozenset({"builtin"})
     try:

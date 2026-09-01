@@ -177,15 +177,8 @@ jobs:
             uv run --project "${bundle_root}" --no-dev maintain extension list >/dev/null
           )
 
-          archive="${GITHUB_WORKSPACE}/dist/cfms-on-websocket-${VERSION}.zip"
-          digest="$(sha256sum "${archive}" | cut -d' ' -f1)"
-          deployment="${GITHUB_WORKSPACE}/smoke/deployment"
-          uv run --project "${bundle_root}" --no-dev maintain deployment install \
-            "${archive}" \
-            --deployment-root "${deployment}" \
-            --sha256 "${digest}" \
-            --yes
-          python "${deployment}/main.py" maintain deployment status
+          uv run --project "${bundle_root}" --no-dev maintain deployment status \
+            --deployment-root "${bundle_root}"
           (
             cd "${bundle_root}/src"
             uv run --project "${bundle_root}" --no-dev alembic --version

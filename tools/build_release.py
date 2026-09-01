@@ -23,7 +23,6 @@ RUNTIME_FILES = (
     "src/alembic.ini",
     "src/config.toml.sample",
     "src/content/hello",
-    "src/deployment_launcher.py",
     "src/main.py",
 )
 RUNTIME_TREES = (
@@ -51,9 +50,12 @@ FORBIDDEN_NAMES = {
     "init",
 }
 CA_CERTIFICATE_PATTERN = re.compile(r"[0-9a-fA-F]{8}\.[0-9]+").fullmatch
-REVISION_PATTERN = re.compile(r'(?m)^revision:\s*str\s*=\s*"([^"]+)"')
-DOWN_REVISION_PATTERN = re.compile(r'(?m)^down_revision:.*?=\s*(?:"([^"]+)"|None)')
 RELEASE_MANIFEST_PATH = PurePosixPath("release-manifest.json")
+OPERATOR_OWNED_PREFIXES = (
+    "src/.maintenance/",
+    "src/content/files/",
+    "src/content/logs/",
+)
 
 
 def _validate_version(project_root: Path, version: str) -> None:
@@ -131,6 +133,10 @@ def _collect_release_files(
             raise ValueError(
                 f"Mutable or sensitive path selected for release: {relative_path}"
             )
+        if path_text.startswith(OPERATOR_OWNED_PREFIXES):
+            raise ValueError(
+                f"Operator-owned path selected for release: {relative_path}"
+            )
 
     return tuple(
         (relative_path, source_path.read_bytes())
@@ -145,20 +151,6 @@ def _release_manifest(
     version: str,
     files: tuple[tuple[PurePosixPath, bytes], ...],
 ) -> bytes:
-    revision_parents = {}
-    for migration_path in sorted((project_root / "src/alembic/versions").glob("*.py")):
-        source = migration_path.read_text(encoding="utf-8")
-        revision_match = REVISION_PATTERN.search(source)
-        down_match = DOWN_REVISION_PATTERN.search(source)
-        if revision_match is None or down_match is None:
-            raise ValueError(
-                f"Unable to parse Alembic revision metadata: {migration_path}"
-            )
-        revision_parents[revision_match.group(1)] = down_match.group(1)
-    heads = sorted(set(revision_parents) - {p for p in revision_parents.values() if p})
-    if len(heads) != 1:
-        raise ValueError("A release must contain exactly one Alembic head")
-
     extension_identifiers = []
     extension_root = project_root / "src/include/extensions"
     for manifest_path in sorted(extension_root.glob("*/manifest.toml")):
@@ -170,7 +162,6 @@ def _release_manifest(
     with (project_root / "pyproject.toml").open("rb") as pyproject_file:
         requires_python = tomllib.load(pyproject_file)["project"]["requires-python"]
     manifest = {
-        "alembic_head": heads[0],
         "files": {
             path.as_posix(): hashlib.sha256(contents).hexdigest()
             for path, contents in files
