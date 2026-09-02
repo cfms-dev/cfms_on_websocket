@@ -13,13 +13,15 @@ from tomlkit.exceptions import TOMLKitError
 from include.config import paths
 from include.config.validation import ConfigValidationError, parse_config_document
 from include.database.engine import create_database_engine, database_url
-from include.database.schema import DatabaseSchemaError, SchemaUpgradeResult
-from include.database.schema import upgrade_database_schema as execute_schema_upgrade
 from maintenance.database_migration import (
     DatabaseMigrationError,
 )
 from maintenance.database_migration import (
     migrate_database as execute_database_migration,
+)
+from maintenance.database_schema import DatabaseSchemaError, SchemaUpgradeResult
+from maintenance.database_schema import (
+    upgrade_database_schema as execute_schema_upgrade,
 )
 from maintenance.operations.config import write_config_atomically
 from maintenance.operations.exceptions import MaintenanceOperationError

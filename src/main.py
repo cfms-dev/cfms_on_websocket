@@ -1,10 +1,8 @@
 """
 Main entry module.
 
-Performs startup checks for the CFMS WebSocket application. The maintenance CLI
-must prepare the database schema first. If application data has not been seeded,
-the server creates the default sysop group and administrator account before
-writing the initialization marker.
+Initializes a fresh database and seeds application data on first startup. Schema
+upgrades for existing databases remain explicit maintenance operations.
 """
 
 import os
@@ -30,6 +28,7 @@ from include.config.paths import (
 )
 from include.config.settings import global_config
 from include.config.validation import get_config_warnings, get_enabled_extensions
+from include.database.initialization import initialize_database_schema
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -37,8 +36,7 @@ from include.database.models.documents import (
     Folder,
 )
 from include.database.models.files import File
-from include.database.schema import verify_database_schema
-from include.database.session import Session, engine
+from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.upload_cleanup import (
@@ -118,6 +116,8 @@ def server_init():
     import secrets
 
     from include.domains.identity.commands.groups import create_group
+
+    initialize_database_schema(engine, Base.metadata)
 
     # Ensure the root folder exists before seeding any objects that reference it.
     ensure_root_folder()
@@ -414,7 +414,6 @@ def prepare_logger():
 def _run_server():
     prepare_logger()
 
-    verify_database_schema(engine)
     if not os.path.exists(EXECUTEABLE_ABSPATH / "init"):
         logger.info("Database not initialized, initializing now...")
         server_init()

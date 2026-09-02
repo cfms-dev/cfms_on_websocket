@@ -5,8 +5,8 @@ from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, insert, inspect, text
 
 from include.database.engine import create_database_engine
-from include.database.schema import DatabaseSchemaError, upgrade_database_schema
 from maintenance.database_migration import migrate_database
+from maintenance.database_schema import DatabaseSchemaError, upgrade_database_schema
 from tests.maintenance.test_backup_format_compatibility import _seed_source
 from tests.maintenance.test_database_migration import (
     _script_directory,

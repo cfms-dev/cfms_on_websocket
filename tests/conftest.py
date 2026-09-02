@@ -70,19 +70,6 @@ def protected_test_config(
 
     (src_dir / "content" / "ssl").mkdir(parents=True, exist_ok=True)
     (src_dir / "content" / "logs").mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "maintenance.cli",
-            "database",
-            "upgrade",
-            "--yes",
-        ],
-        cwd=src_dir,
-        check=True,
-    )
-
     yield settings
 
 

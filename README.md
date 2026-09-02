@@ -81,7 +81,6 @@ mkdir -p /srv/cfms
 tar -xzf cfms-on-websocket-X.Y.Z.tar.gz -C /srv/cfms --strip-components=1
 cp /srv/cfms/src/config.toml.sample /srv/cfms/src/config.toml
 uv sync --project /srv/cfms --locked --no-dev --extra cluster
-uv run --project /srv/cfms --no-dev maintain database upgrade --yes
 ```
 
 Start the active flat release through its environment:
@@ -188,7 +187,6 @@ filtering, archive-safety, and recovery details.
 
 ## Run
 ```bash
-maintain database upgrade --yes  # initialize or upgrade a versioned database
 python main.py # DO NOT use `-O`!
 ```
 
@@ -201,11 +199,12 @@ the configured SQLite or MySQL connection instead of the placeholder URL in
 maintain database upgrade --yes
 ```
 
-An empty database is created at the current model shape and stamped at the sole
-Alembic head. A non-empty database must already carry an Alembic revision present
-in the release; unversioned, unknown, partial, multi-head, and newer schemas are
-rejected rather than guessed. Normal startup only verifies that an initialized
-database is already at the expected head.
+On first startup, an empty database is created at the current model shape and
+stamped at the sole Alembic head before application data is seeded. Existing
+database upgrades remain explicit maintenance operations: a non-empty database
+must already carry an Alembic revision present in the release; unversioned,
+unknown, partial, multi-head, and newer schemas are rejected rather than guessed.
+Normal startup does not check or modify the revision of an existing database.
 
 Document and directory names share one namespace within each directory.
 Active names must be unique; soft-deleted items release their names. The database

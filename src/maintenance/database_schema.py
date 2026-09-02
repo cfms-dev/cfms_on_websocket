@@ -102,21 +102,3 @@ def upgrade_database_schema(
         current_revision=target_revision,
         bootstrapped=bootstrapped,
     )
-
-
-def verify_database_schema(engine: Engine) -> str:
-    with engine.connect() as connection:
-        _, scripts = _alembic_config(connection)
-        target_heads = tuple(scripts.get_heads())
-        if len(target_heads) != 1:
-            raise DatabaseSchemaError(
-                "The release must contain exactly one Alembic head"
-            )
-        revision = _current_revision(connection)
-        if revision != target_heads[0]:
-            rendered = revision or "unversioned"
-            raise DatabaseSchemaError(
-                f"Database schema is {rendered}; expected {target_heads[0]}. "
-                "Stop the server and run 'maintain database upgrade'."
-            )
-        return revision
