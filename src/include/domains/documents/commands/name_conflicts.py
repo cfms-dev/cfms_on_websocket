@@ -151,19 +151,19 @@ def describe_subtree_restore_name_conflict(
 def _describe_node_name_conflict_winner(
     session: Session, winner: Node, user: User
 ) -> tuple[dict, str]:
+    if not isinstance(winner, Document | Folder):
+        raise TypeError(f"Unsupported conflicting node type: {winner.type!r}")
 
     readable = check_access_requirements(session, user, winner, "read")
     visible_id = winner.id if readable else None
     if isinstance(winner, Document):
         payload = {"type": "document", "id": visible_id}
         message = smsg.DOCUMENT_NAME_DUPLICATE
-    elif isinstance(winner, Folder):
+    else:
         payload = {"type": "directory", "id": visible_id}
         if readable:
             payload["entity"] = winner
         message = smsg.DIRECTORY_NAME_DUPLICATE
-    else:
-        raise TypeError(f"Unsupported conflicting node type: {winner.type!r}")
 
     if visible_id is not None:
         payload["duplicate_id"] = visible_id
