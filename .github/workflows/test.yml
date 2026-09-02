@@ -45,16 +45,18 @@ jobs:
       run: |
         uv run --locked towncrier check --compare-with "origin/${BASE_REF}"
     
-    - name: Prepare test environment
-      run: |
-        cp src/config.toml.sample config.toml
-        mkdir -p src/content/ssl
-        mkdir -p src/content/logs
-    
     - name: Run tests with pytest
       run: |
         uv run pytest tests/ -v --tb=short
       timeout-minutes: 10
+
+    - name: Verify test configuration cleanup
+      if: always()
+      run: |
+        if [ -e src/config.toml ]; then
+          echo "pytest left src/config.toml behind" >&2
+          exit 1
+        fi
     
     - name: Upload test results
       if: always()

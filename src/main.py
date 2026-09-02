@@ -25,7 +25,7 @@ from include.config.constants import (
     ROOT_DIRECTORY_ID,
 )
 from include.config.paths import (
-    APPLICATION_ABSPATH,
+    EXECUTEABLE_ABSPATH,
     EXTENSION_ROOT,
 )
 from include.config.settings import global_config
@@ -69,8 +69,8 @@ from include.transport.router import (
 from include.transport.tls import create_server_ssl_context
 
 # fix
-os.makedirs(APPLICATION_ABSPATH / "content" / "logs", exist_ok=True)
-os.makedirs(APPLICATION_ABSPATH / "content" / "ssl", exist_ok=True)
+os.makedirs(EXECUTEABLE_ABSPATH / "content" / "logs", exist_ok=True)
+os.makedirs(EXECUTEABLE_ABSPATH / "content" / "ssl", exist_ok=True)
 
 
 def ensure_root_folder():
@@ -200,7 +200,7 @@ def server_init():
 
     # Read from sample document source and write back to storage.
     # This is necessary because the storage provider cannot be determined in advance.
-    sample_source_path = APPLICATION_ABSPATH / "content" / "hello"
+    sample_source_path = EXECUTEABLE_ABSPATH / "content" / "hello"
 
     today = datetime.datetime.now(datetime.UTC).date()
     real_filename = secrets.token_hex(32)
@@ -267,14 +267,14 @@ def server_init():
 
     # Write the generated password to admin_password.txt in the project root.
     with open(
-        APPLICATION_ABSPATH / "admin_password.txt", "w", encoding="utf-8"
+        EXECUTEABLE_ABSPATH / "admin_password.txt", "w", encoding="utf-8"
     ) as pwd_file:
         pwd_file.write(f"{password}\n")
 
     # Logs, certificates, and private keys are all stored on the server's file system;
     # therefore, the `os` library is used for read/write operations instead of
     # `StorageProvider`.
-    os.makedirs(APPLICATION_ABSPATH / "content", exist_ok=True)
+    os.makedirs(EXECUTEABLE_ABSPATH / "content", exist_ok=True)
 
     import datetime
 
@@ -334,7 +334,7 @@ def server_init():
         with open(cert_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-    with open(APPLICATION_ABSPATH / "init", "w") as f:
+    with open(EXECUTEABLE_ABSPATH / "init", "w") as f:
         f.write("This file indicates that the database has been initialized.\n")
 
 
@@ -388,7 +388,7 @@ def prepare_logger():
     The log file is located at "./content/logs/server.log".
     """
 
-    log_file = APPLICATION_ABSPATH / "content" / "logs" / "server.log"
+    log_file = EXECUTEABLE_ABSPATH / "content" / "logs" / "server.log"
     fmt = "[<green>{time:YYYY-MM-DD HH:mm:ss,SSS}</green> <level>{level: <8}</level>] <level>{message}</level>"
 
     # reset default logger to avoid conflicts with loguru's configuration
@@ -415,7 +415,7 @@ def _run_server():
     prepare_logger()
 
     verify_database_schema(engine)
-    if not os.path.exists(APPLICATION_ABSPATH / "init"):
+    if not os.path.exists(EXECUTEABLE_ABSPATH / "init"):
         logger.info("Database not initialized, initializing now...")
         server_init()
 
@@ -519,7 +519,7 @@ def _run_server():
 
 def main():
     try:
-        with server_runtime_lock(APPLICATION_ABSPATH):
+        with server_runtime_lock(EXECUTEABLE_ABSPATH):
             _run_server()
     except RuntimeLockError as exc:
         logger.error(str(exc))

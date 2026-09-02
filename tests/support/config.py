@@ -1,9 +1,19 @@
 import os
 import socket
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from tomlkit import dumps, parse
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_ROOT = PROJECT_ROOT / "src"
+_TEST_ENVIRONMENT_NAMES = (
+    "CFMS_TEST_HOST",
+    "CFMS_TEST_PORT",
+    "CFMS_TEST_USE_SSL",
+)
 
 
 @dataclass(frozen=True)
@@ -84,3 +94,27 @@ def write_test_config(src_dir: Path, port: int) -> ServerTestSettings:
         src_dir=src_dir,
         config_path=config_path,
     )
+
+
+@contextmanager
+def managed_test_config(
+    src_dir: Path = SOURCE_ROOT,
+) -> Iterator[ServerTestSettings]:
+    config_backup = capture_config(src_dir / "config.toml")
+    old_environment = {name: os.environ.get(name) for name in _TEST_ENVIRONMENT_NAMES}
+
+    try:
+        settings = write_test_config(src_dir, reserve_local_port())
+        os.environ["CFMS_TEST_HOST"] = settings.host
+        os.environ["CFMS_TEST_PORT"] = str(settings.port)
+        os.environ["CFMS_TEST_USE_SSL"] = "1" if settings.use_ssl else "0"
+        yield settings
+    finally:
+        try:
+            restore_config(config_backup)
+        finally:
+            for name, value in old_environment.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value

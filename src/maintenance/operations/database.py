@@ -72,7 +72,7 @@ def migrate_database(
     target_engine = None
     try:
         target_engine = create_database_engine(target_database)
-        alembic_config = Config(paths.APPLICATION_ABSPATH / "alembic.ini")
+        alembic_config = Config(paths.EXECUTEABLE_ABSPATH / "alembic.ini")
         script_directory = ScriptDirectory.from_config(alembic_config)
         result = execute_database_migration(
             source_engine,

@@ -42,7 +42,7 @@ def enter_server_root(start: Path | None = None) -> Path:
         ) from exc
     from include.config import paths
 
-    paths.APPLICATION_ABSPATH = server_root
+    paths.EXECUTEABLE_ABSPATH = server_root
     paths.PROJECT_ABSPATH = server_root.parent
     paths.EXTENSION_ROOT = server_root / "include" / "extensions"
     return server_root

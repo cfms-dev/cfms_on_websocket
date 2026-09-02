@@ -8,7 +8,7 @@ from maintenance.runtime import MaintenanceRuntimeError, enter_server_root
 
 @pytest.fixture(autouse=True)
 def _restore_application_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(paths, "APPLICATION_ABSPATH", paths.APPLICATION_ABSPATH)
+    monkeypatch.setattr(paths, "APPLICATION_ABSPATH", paths.EXECUTEABLE_ABSPATH)
     monkeypatch.setattr(paths, "PROJECT_ABSPATH", paths.PROJECT_ABSPATH)
     monkeypatch.setattr(paths, "EXTENSION_ROOT", paths.EXTENSION_ROOT)
 
@@ -35,7 +35,7 @@ def test_enter_server_root_supports_flat_layout(
 
     assert located == server_root
     assert Path.cwd() == server_root
-    assert paths.APPLICATION_ABSPATH == server_root
+    assert paths.EXECUTEABLE_ABSPATH == server_root
     assert paths.PROJECT_ABSPATH == server_root.parent
     assert paths.EXTENSION_ROOT == server_root / "include" / "extensions"
 
