@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import orjson
 from loguru import logger
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 
 from include.config.validation import SchedulingPolicy
 from include.database.models.scheduling import (
@@ -204,6 +204,59 @@ def claim_execution(
         schedule = session.get(Schedule, execution.schedule_id)
         if schedule is None:
             return None
+    return ClaimedExecution(
+        id=execution.id,
+        schedule_id=schedule.id,
+        task_name=schedule.task_name,
+        task_contract_version=schedule.task_contract_version,
+        payload=schedule.payload,
+        scheduled_for=execution.scheduled_for,
+        attempt=execution.attempt,
+        lease_owner=lease_owner,
+    )
+
+
+def claim_execution_by_id(
+    execution_id: str,
+    generation: int,
+    lease_owner: str,
+    policy: SchedulingPolicy,
+    *,
+    now: float | None = None,
+) -> ClaimedExecution | None:
+    current_time = time.time() if now is None else now
+    with Session() as session, session.begin():
+        claimed = session.execute(
+            update(ScheduleExecution)
+            .where(
+                ScheduleExecution.id == execution_id,
+                ScheduleExecution.provider_generation == generation,
+                ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
+                or_(
+                    ScheduleExecution.retry_at.is_(None),
+                    ScheduleExecution.retry_at <= current_time,
+                ),
+                or_(
+                    ScheduleExecution.lease_expires_at.is_(None),
+                    ScheduleExecution.lease_expires_at <= current_time,
+                ),
+            )
+            .values(
+                state="running",
+                dispatch_state="sent",
+                attempt=ScheduleExecution.attempt + 1,
+                retry_at=None,
+                lease_owner=lease_owner,
+                lease_expires_at=current_time + policy.execution_lease_seconds,
+                started_at=current_time,
+            )
+        )
+        if claimed.rowcount != 1:
+            return None
+        execution = session.get(ScheduleExecution, execution_id)
+        schedule = session.get(Schedule, execution.schedule_id)
+        if schedule is None:
+            return None
         return ClaimedExecution(
             id=execution.id,
             schedule_id=schedule.id,
@@ -214,6 +267,94 @@ def claim_execution(
             attempt=execution.attempt,
             lease_owner=lease_owner,
         )
+
+
+def execution_delivery_state(
+    execution_id: str, generation: int, *, now: float | None = None
+) -> str:
+    current_time = time.time() if now is None else now
+    with Session() as session:
+        execution = session.get(ScheduleExecution, execution_id)
+        if execution is None or execution.provider_generation != generation:
+            return "stale"
+        if execution.state in {"succeeded", "failed"}:
+            return "terminal"
+        if execution.retry_at is not None and execution.retry_at > current_time:
+            return "busy"
+        if (
+            execution.lease_expires_at is not None
+            and execution.lease_expires_at > current_time
+        ):
+            return "busy"
+        return "ready"
+
+
+def pending_dispatches(
+    generation: int,
+    batch_size: int,
+    *,
+    now: float | None = None,
+) -> tuple[str, ...]:
+    current_time = time.time() if now is None else now
+    with Session() as session:
+        return tuple(
+            session.scalars(
+                select(ScheduleExecution.id)
+                .where(
+                    ScheduleExecution.provider_generation == generation,
+                    ScheduleExecution.state.in_(("pending", "retry_wait")),
+                    ScheduleExecution.dispatch_state == "pending",
+                    or_(
+                        ScheduleExecution.retry_at.is_(None),
+                        ScheduleExecution.retry_at <= current_time,
+                    ),
+                )
+                .order_by(ScheduleExecution.created_at, ScheduleExecution.id)
+                .limit(batch_size)
+            )
+        )
+
+
+def mark_dispatched(execution_id: str, generation: int) -> bool:
+    with Session() as session, session.begin():
+        marked = session.execute(
+            update(ScheduleExecution)
+            .where(
+                ScheduleExecution.id == execution_id,
+                ScheduleExecution.provider_generation == generation,
+                ScheduleExecution.dispatch_state == "pending",
+                ScheduleExecution.state.in_(("pending", "retry_wait")),
+            )
+            .values(dispatch_state="sent")
+        )
+        return marked.rowcount == 1
+
+
+def purge_execution_history(
+    policy: SchedulingPolicy,
+    *,
+    now: float | None = None,
+) -> int:
+    current_time = time.time() if now is None else now
+    cutoff = current_time - policy.history_retention_days * 86_400
+    with Session() as session, session.begin():
+        execution_ids = tuple(
+            session.scalars(
+                select(ScheduleExecution.id)
+                .where(
+                    ScheduleExecution.state.in_(("succeeded", "failed")),
+                    ScheduleExecution.completed_at < cutoff,
+                )
+                .order_by(ScheduleExecution.completed_at, ScheduleExecution.id)
+                .limit(policy.claim_batch_size)
+            )
+        )
+        if not execution_ids:
+            return 0
+        deleted = session.execute(
+            delete(ScheduleExecution).where(ScheduleExecution.id.in_(execution_ids))
+        )
+        return deleted.rowcount
 
 
 def refresh_execution_lease(

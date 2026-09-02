@@ -3,6 +3,7 @@ debug = false
 
 [extensions]
 # Extension identifiers to load, in registration order. Changes require a restart.
+# Add "scheduling" after installing ext-scheduling or ext-scheduling-cluster.
 enabled = []
 
 # Automatically enter lockdown after a service-wide burst of failed local

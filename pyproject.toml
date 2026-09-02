@@ -25,10 +25,12 @@ dependencies = [
     "rich>=15.0.0",
     "typer>=0.26.7",
     "pydantic>=2.13.4",
+    "portalocker[win32]>=4.3,<5",
 ]
 
 [project.scripts]
 maintain = "maintenance.cli:app"
+cfms-jobs = "include.scheduling.cli:app"
 
 [project.optional-dependencies]
 cluster = [

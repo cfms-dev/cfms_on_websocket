@@ -25,7 +25,7 @@ from alembic import command
 from include.config.validation import parse_config_document
 from include.database.engine import create_database_engine
 from include.extensions.manager import ExtensionDiscoveryError, discover_extensions
-from include.runtime_lock import RuntimeLockError, server_runtime_lock
+from include.runtime_lock import RuntimeLockError, deployment_runtime_lock
 from maintenance.operations.config import sync_config_template
 from maintenance.operations.exceptions import MaintenanceOperationError
 
@@ -897,7 +897,7 @@ def upgrade_deployment(
         )
     source = _active_release(project_root)
     try:
-        lock = server_runtime_lock(project_root / "src").acquire()
+        lock = deployment_runtime_lock(project_root / "src").acquire()
     except RuntimeLockError as exc:
         raise MaintenanceOperationError(str(exc)) from exc
     stage = None
@@ -999,7 +999,7 @@ def downgrade_deployment(
         raise MaintenanceOperationError("Resume the unfinished transaction first")
     source = _active_release(project_root)
     try:
-        lock = server_runtime_lock(project_root / "src").acquire()
+        lock = deployment_runtime_lock(project_root / "src").acquire()
     except RuntimeLockError as exc:
         raise MaintenanceOperationError(str(exc)) from exc
     database_started = False
@@ -1069,7 +1069,7 @@ def resume_deployment(
 ) -> DeploymentResult:
     project_root = _project_root(deployment_root)
     try:
-        lock = server_runtime_lock(
+        lock = deployment_runtime_lock(
             project_root / "src",
             allow_unfinished_deployment=True,
         ).acquire()

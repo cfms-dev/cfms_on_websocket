@@ -199,6 +199,13 @@ must reject an explicit JSON `null`; use `T | None` when `null` is valid. After
 validation, `ConnectionHandler.data` remains the original JSON dictionary, so
 existing handler and hook code may continue to use dictionary operations.
 
+Extensions that own trusted scheduled task types register them through
+`ext_register_scheduled_tasks()`. The scheduling extension must be enabled; task
+names, payload contracts, authorization, and at-least-once requirements are
+documented in [SCHEDULING.md](SCHEDULING.md). This hook registers executable task
+types only. Schedule definitions are created through the authenticated management
+API and no extension may persist an arbitrary import path.
+
 When request data fails validation, the server returns `400` with every safe
 Pydantic error under `data.errors`:
 

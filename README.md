@@ -54,6 +54,11 @@ the necessary dependencies for cluster functionality and MySQL support:
 uv sync --extra cluster --extra mysql
 ```
 
+Durable scheduled tasks are optional. Use `ext-scheduling` for the embedded local
+Provider, or `ext-scheduling-cluster` for Redis coordination and Dramatiq workers.
+See [docs/SCHEDULING.md](docs/SCHEDULING.md) for deployment and task-registration
+contracts.
+
 ## Deploy a Release Bundle
 
 Repository checkouts and release-bundle deployments use separate update workflows.

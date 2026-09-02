@@ -134,3 +134,71 @@ def test_provider_switch_requeues_unfinished_execution(monkeypatch):
         assert execution.provider_generation == 2
         assert execution.state == "pending"
         assert execution.dispatch_state == "pending"
+
+
+def test_cluster_dispatch_claims_the_requested_execution(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state("redis", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    pending = scheduling_engine.pending_dispatches(generation, 10, now=100.0)
+
+    assert len(pending) == 1
+    assert scheduling_engine.mark_dispatched(pending[0], generation) is True
+    claim = scheduling_engine.claim_execution_by_id(
+        pending[0], generation, "cluster-worker", policy, now=100.0
+    )
+
+    assert claim is not None
+    assert claim.id == pending[0]
+    assert (
+        scheduling_engine.execution_delivery_state(pending[0], generation, now=100.0)
+        == "busy"
+    )
+
+
+def test_completed_execution_history_is_purged_in_bounded_batches(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    with factory() as session, session.begin():
+        session.add_all(
+            [
+                ScheduleExecution(
+                    id="old-succeeded",
+                    schedule_id="schedule-1",
+                    provider_generation=1,
+                    scheduled_for=1.0,
+                    state="succeeded",
+                    completed_at=10.0,
+                ),
+                ScheduleExecution(
+                    id="recent-failed",
+                    schedule_id="schedule-1",
+                    provider_generation=1,
+                    scheduled_for=2.0,
+                    state="failed",
+                    completed_at=190.0,
+                ),
+                ScheduleExecution(
+                    id="old-pending",
+                    schedule_id="schedule-1",
+                    provider_generation=1,
+                    scheduled_for=3.0,
+                    state="pending",
+                    completed_at=None,
+                ),
+            ]
+        )
+
+    policy = SchedulingPolicy(history_retention_days=1, claim_batch_size=1)
+    deleted = scheduling_engine.purge_execution_history(
+        policy,
+        now=86_400 + 100.0,
+    )
+
+    assert deleted == 1
+    with factory() as session:
+        assert session.get(ScheduleExecution, "old-succeeded") is None
+        assert session.get(ScheduleExecution, "recent-failed") is not None
+        assert session.get(ScheduleExecution, "old-pending") is not None

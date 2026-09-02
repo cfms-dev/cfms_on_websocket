@@ -3,7 +3,6 @@ from include.config.validation import (
     AdmissionControlPolicy,
     S3StoragePolicy,
     SchedulingPolicy,
-    get_enabled_extensions,
 )
 from include.providers.manager import ProviderManager
 from include.providers.storage import LocalStorageProvider
@@ -109,7 +108,8 @@ def initialize_providers(config=global_config) -> None:
 
     ProviderManager().register(event_bus_provider)
 
-    if "scheduling" in get_enabled_extensions(config):
+    enabled_extensions = config.get("extensions", {}).get("enabled", ())
+    if "scheduling" in enabled_extensions:
         match config["provider"].get("scheduling", "local"):
             case "local":
                 from include.providers.scheduling import LocalSchedulingProvider

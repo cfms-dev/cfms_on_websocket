@@ -10,6 +10,7 @@ from include.scheduling.engine import (
     claim_execution,
     enqueue_due_schedules,
     ensure_runtime_state,
+    purge_execution_history,
     run_claimed_execution,
 )
 from include.scheduling.registry import ScheduledTaskRegistry
@@ -82,9 +83,13 @@ class LocalSchedulingProvider(SchedulingProvider):
             self._last_error = type(error).__name__
 
     def _scheduler_loop(self) -> None:
+        next_cleanup_at = 0.0
         while not self._stop.is_set():
             try:
                 enqueue_due_schedules(self._generation, self._policy)
+                if time.monotonic() >= next_cleanup_at:
+                    purge_execution_history(self._policy)
+                    next_cleanup_at = time.monotonic() + 3_600
                 with self._state_lock:
                     self._last_error = None
             except Exception as exc:  # noqa: BLE001 - provider remains degraded and retries.
