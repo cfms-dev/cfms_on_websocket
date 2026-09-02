@@ -689,7 +689,6 @@ def upgrade_database(
     table.add_row("Previous revision", result.previous_revision or "unversioned")
     table.add_row("Current revision", result.current_revision)
     table.add_row("Fresh bootstrap", "Yes" if result.bootstrapped else "No")
-    table.add_row("Adopted v0.7.0", "Yes" if result.adopted_legacy else "No")
     console.print(table)
 
 

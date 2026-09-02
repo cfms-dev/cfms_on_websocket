@@ -168,7 +168,6 @@ def _release_manifest(
         },
         "format_version": 1,
         "managed_extensions": sorted(extension_identifiers),
-        "minimum_upgrade_version": "0.7.0",
         "product": "cfms-on-websocket",
         "requires_python": requires_python,
         "version": version,

@@ -7,7 +7,6 @@ import shutil
 import stat
 import subprocess
 import tarfile
-import tomllib
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -49,23 +48,6 @@ _OPERATOR_OWNED_PREFIXES = (
     "src/.maintenance/",
     "src/content/files/",
     "src/content/logs/",
-)
-_LEGACY_VERSION = "0.7.0"
-_LEGACY_MANAGED_DIGEST = (
-    "ac520e5e6b86b93a37df1d3989203e6e794ec0ee0059a1c730cdc919a986ea88"
-)
-_LEGACY_MANAGED_EXTENSIONS = {"brute_force_lockdown", "builtin", "oidc_sso"}
-_LEGACY_SINGLE_FILES = (
-    "CHANGELOG.md",
-    "README.md",
-    "SECURITY.md",
-    "pyproject.toml",
-    "uv.lock",
-    "src/LICENSE",
-    "src/alembic.ini",
-    "src/config.toml.sample",
-    "src/content/hello",
-    "src/main.py",
 )
 
 
@@ -152,6 +134,12 @@ def _project_root(value: str | Path) -> Path:
     ):
         raise MaintenanceOperationError(
             "The unreleased releases/shared deployment layout is not supported"
+        )
+    if (project_root / ".git").exists():
+        raise MaintenanceOperationError(
+            "Versioned deployment commands do not support source repository "
+            "checkouts; update the repository with Git and run database "
+            "maintenance explicitly"
         )
     return project_root
 
@@ -377,8 +365,6 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
         or not isinstance(version, str)
         or _VERSION_PATTERN(version) is None
         or (top_level is not None and top_level != f"cfms-on-websocket-{version}")
-        or not isinstance(manifest.get("minimum_upgrade_version"), str)
-        or _VERSION_PATTERN(manifest["minimum_upgrade_version"]) is None
         or not isinstance(expected_files, dict)
         or not isinstance(managed_extensions, list)
         or any(
@@ -490,86 +476,13 @@ def _stage_release(
         raise
 
 
-def _legacy_managed_paths(project_root: Path) -> tuple[Path, ...]:
-    paths = [project_root / relative for relative in _LEGACY_SINGLE_FILES]
-    for relative in ("src/alembic", "src/maintenance"):
-        paths.extend(
-            path for path in (project_root / relative).rglob("*") if path.is_file()
-        )
-    include_root = project_root / "src" / "include"
-    for path in include_root.rglob("*"):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(include_root)
-        if len(relative.parts) >= 3 and relative.parts[0] == "extensions":
-            if relative.parts[1] not in _LEGACY_MANAGED_EXTENSIONS:
-                continue
-        paths.append(path)
-    return tuple(
-        sorted(
-            {
-                path
-                for path in paths
-                if path.is_file()
-                and ".git" not in path.parts
-                and "__pycache__" not in path.parts
-                and path.suffix not in {".pyc", ".pyo"}
-                and path.name != ".gitignore"
-            },
-            key=lambda path: path.relative_to(project_root).as_posix(),
-        )
-    )
-
-
-def _legacy_release(project_root: Path) -> _Release:
-    try:
-        with (project_root / "pyproject.toml").open("rb") as pyproject_file:
-            pyproject = tomllib.load(pyproject_file)
-        version = pyproject["project"]["version"]
-        requires_python = pyproject["project"]["requires-python"]
-    except (KeyError, OSError, tomllib.TOMLDecodeError) as exc:
-        raise MaintenanceOperationError(
-            f"Unable to identify legacy deployment {project_root}: {exc}"
-        ) from exc
-    if version != _LEGACY_VERSION:
-        raise MaintenanceOperationError(
-            "The active flat release has no release-manifest.json and is not "
-            f"the supported v{_LEGACY_VERSION} release"
-        )
-    paths = _legacy_managed_paths(project_root)
-    digest = hashlib.sha256()
-    for path in paths:
-        relative = path.relative_to(project_root).as_posix()
-        digest.update(relative.encode() + b"\0" + bytes.fromhex(_hash_file(path)))
-    if digest.hexdigest() != _LEGACY_MANAGED_DIGEST:
-        raise MaintenanceOperationError(
-            "Legacy v0.7.0 application files do not match the official release"
-        )
-    manifest = {
-        "files": {
-            path.relative_to(project_root).as_posix(): _hash_file(path)
-            for path in paths
-        },
-        "format_version": 1,
-        "managed_extensions": sorted(_LEGACY_MANAGED_EXTENSIONS),
-        "minimum_upgrade_version": "0.7.0",
-        "product": "cfms-on-websocket",
-        "requires_python": requires_python,
-        "version": version,
-    }
-    contents = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-    return _Release(
-        project_root,
-        manifest,
-        contents,
-        hashlib.sha256(contents).hexdigest(),
-    )
-
-
 def _active_release(project_root: Path) -> _Release:
-    if (project_root / "release-manifest.json").is_file():
-        return _release_from_tree(project_root, exact=False)
-    return _legacy_release(project_root)
+    if not (project_root / "release-manifest.json").is_file():
+        raise MaintenanceOperationError(
+            "Versioned deployment commands require an active "
+            "release-manifest.json; pre-manifest releases are not supported"
+        )
+    return _release_from_tree(project_root, exact=False)
 
 
 def _version_root(project_root: Path, release_id: str) -> Path:
@@ -842,8 +755,10 @@ def _upgrade_database(project_root: Path, source: _Release, target: _Release) ->
                 )
             current = _current_revision(connection)
             if current is None:
-                command.stamp(target_config, source_head)
-                current = source_head
+                raise MaintenanceOperationError(
+                    "Database has no Alembic revision; initialize it with "
+                    "maintain database upgrade before switching releases"
+                )
             if current != source_head:
                 raise MaintenanceOperationError(
                     f"Database revision is {current}; active release expects {source_head}"
@@ -978,6 +893,7 @@ def upgrade_deployment(
         raise MaintenanceOperationError(
             f"Resume the unfinished deployment transaction first: {transaction_path}"
         )
+    source = _active_release(project_root)
     try:
         lock = server_runtime_lock(project_root / "src").acquire()
     except RuntimeLockError as exc:
@@ -985,7 +901,6 @@ def upgrade_deployment(
     stage = None
     database_started = False
     try:
-        source = _active_release(project_root)
         staged, package_digest, stage = _stage_release(
             package,
             project_root,
@@ -997,12 +912,6 @@ def upgrade_deployment(
         if Version(staged.version) < Version(source.version):
             raise MaintenanceOperationError(
                 "Use deployment downgrade to activate an older stored release"
-            )
-        if Version(source.version) < Version(
-            staged.manifest["minimum_upgrade_version"]
-        ):
-            raise MaintenanceOperationError(
-                f"Release {staged.version} cannot upgrade {source.version} directly"
             )
         if not backup_confirmed:
             raise MaintenanceOperationError(
@@ -1086,13 +995,13 @@ def downgrade_deployment(
     project_root = _project_root(deployment_root)
     if _transaction_path(project_root).exists():
         raise MaintenanceOperationError("Resume the unfinished transaction first")
+    source = _active_release(project_root)
     try:
         lock = server_runtime_lock(project_root / "src").acquire()
     except RuntimeLockError as exc:
         raise MaintenanceOperationError(str(exc)) from exc
     database_started = False
     try:
-        source = _active_release(project_root)
         target = _stored_release(project_root, release_id)
         if target.release_id == source.release_id:
             raise MaintenanceOperationError("The selected release is already active")

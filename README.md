@@ -56,10 +56,20 @@ uv sync --extra cluster --extra mysql
 
 ## Deploy a Release Bundle
 
+Repository checkouts and release-bundle deployments use separate update workflows.
+The `maintain deployment` commands manage only verified release bundles and refuse
+to switch versions when the project root contains `.git`. For a repository checkout,
+update application files with Git and run database maintenance separately only when
+intended.
+
 Release tags publish source deployment bundles in both ZIP and tar.gz formats.
 The deployment host must provide Python 3.14 or newer and
 [uv](https://docs.astral.sh/uv/). Each archive contains an internal file manifest;
 the deployment command also requires `SHA256SUMS.txt` or an expected SHA-256.
+Versioned deployment begins with the first release that publishes this manifest.
+The commands reject older flat deployments without it; manifest format validation
+and Alembic revision ancestry, rather than a hard-coded semantic version, determine
+whether two releases can be switched.
 
 Extract the first release directly into the final deployment directory. Keep the
 original flat project layout (`pyproject.toml`, `src/main.py`, `src/content`, and
@@ -105,8 +115,9 @@ snapshot is restored. `src/content/files/` and `src/content/logs/` are persisten
 production data and can never be owned or overwritten by a release package.
 
 The database revision is derived directly from each release's Alembic scripts.
-An unversioned database is stamped at the old release head before upgrading. A
-downgrade is allowed only when Alembic can reach the selected stored release:
+Before a switch, the database must already carry the active release's Alembic head;
+unversioned databases are rejected. A downgrade is allowed only when Alembic can
+reach the selected stored release:
 
 ```bash
 uv run --project /srv/cfms --no-dev maintain deployment status
@@ -177,7 +188,7 @@ filtering, archive-safety, and recovery details.
 
 ## Run
 ```bash
-maintain database upgrade --yes  # required once for a new or legacy database
+maintain database upgrade --yes  # initialize or upgrade a versioned database
 python main.py # DO NOT use `-O`!
 ```
 
@@ -191,9 +202,8 @@ maintain database upgrade --yes
 ```
 
 An empty database is created at the current model shape and stamped at the sole
-Alembic head. An unversioned v0.7.0 database is adopted only when its tables,
-columns, primary keys, critical unique constraints, and critical indexes match
-the supported fingerprint. Unknown, partial, multi-head, or newer schemas are
+Alembic head. A non-empty database must already carry an Alembic revision present
+in the release; unversioned, unknown, partial, multi-head, and newer schemas are
 rejected rather than guessed. Normal startup only verifies that an initialized
 database is already at the expected head.
 

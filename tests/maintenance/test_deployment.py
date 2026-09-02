@@ -75,7 +75,6 @@ def _write_release(
         "files": release_files,
         "format_version": 1,
         "managed_extensions": list(managed_extensions),
-        "minimum_upgrade_version": "1.0.0",
         "product": "cfms-on-websocket",
         "requires_python": ">=3.14",
         "version": version,
@@ -97,6 +96,76 @@ def _prepare_deployment(root: Path) -> deployment._Release:
     (persistent / "files" / "production.dat").write_text("data\n", encoding="utf-8")
     (persistent / "logs" / "server.log").write_text("log\n", encoding="utf-8")
     return release
+
+
+@pytest.mark.parametrize("git_metadata_kind", ["directory", "file"])
+def test_repository_deployment_rejects_release_switching(
+    tmp_path: Path,
+    git_metadata_kind: str,
+) -> None:
+    root = tmp_path / "repository"
+    (root / "src").mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "cfms-on-websocket"\nversion = "0.7.0"\n',
+        encoding="utf-8",
+    )
+    (root / "src" / "main.py").write_text("# repository checkout\n", encoding="utf-8")
+    git_metadata = root / ".git"
+    if git_metadata_kind == "directory":
+        git_metadata.mkdir()
+    else:
+        git_metadata.write_text("gitdir: ../worktrees/repository\n", encoding="utf-8")
+
+    with pytest.raises(MaintenanceOperationError, match="source repository checkouts"):
+        deployment.upgrade_deployment(
+            tmp_path / "release.zip",
+            root / "src",
+            expected_sha256="a" * 64,
+            backup_confirmed=True,
+        )
+    with pytest.raises(MaintenanceOperationError, match="source repository checkouts"):
+        deployment.downgrade_deployment(
+            "stored-release",
+            root / "src",
+            backup_confirmed=True,
+        )
+
+    assert not (root / "src" / ".maintenance").exists()
+
+
+@pytest.mark.parametrize("command", ["status", "upgrade", "downgrade"])
+def test_manifestless_deployment_is_rejected_before_writes(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    root = tmp_path / "deployment"
+    (root / "src").mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "cfms-on-websocket"\nversion = "0.7.0"\n',
+        encoding="utf-8",
+    )
+    main = root / "src" / "main.py"
+    main.write_text("# pre-manifest release\n", encoding="utf-8")
+
+    with pytest.raises(MaintenanceOperationError, match="release-manifest.json"):
+        if command == "status":
+            deployment.inspect_deployment(root)
+        elif command == "upgrade":
+            deployment.upgrade_deployment(
+                tmp_path / "release.zip",
+                root,
+                expected_sha256="a" * 64,
+                backup_confirmed=True,
+            )
+        else:
+            deployment.downgrade_deployment(
+                "stored-release",
+                root,
+                backup_confirmed=True,
+            )
+
+    assert main.read_text(encoding="utf-8") == "# pre-manifest release\n"
+    assert not (root / "src" / ".maintenance").exists()
 
 
 def test_release_id_is_manifest_digest_and_distinguishes_same_version(
@@ -323,9 +392,9 @@ def test_failed_migration_requires_database_restore_before_resume(
     assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
 
 
-def test_database_upgrade_stamps_unversioned_database_and_can_downgrade(
+def _prepare_database_releases(
     tmp_path: Path,
-) -> None:
+) -> tuple[Path, deployment._Release, deployment._Release, str, str]:
     project_root = tmp_path / "deployment"
     source_root = tmp_path / "source"
     target_root = tmp_path / "target"
@@ -363,6 +432,38 @@ def test_database_upgrade_stamps_unversioned_database_and_can_downgrade(
     (project_root / "src").mkdir(parents=True)
     sample = (PROJECT_ROOT / "src" / "config.toml.sample").read_text(encoding="utf-8")
     (project_root / "src" / "config.toml").write_text(sample, encoding="utf-8")
+    return project_root, source, target, source_head, target_revision
+
+
+def test_database_upgrade_rejects_unversioned_database_without_stamping(
+    tmp_path: Path,
+) -> None:
+    project_root, source, target, _, _ = _prepare_database_releases(tmp_path)
+
+    with pytest.raises(MaintenanceOperationError, match="no Alembic revision"):
+        deployment._upgrade_database(project_root, source, target)
+
+    engine = deployment._database_engine(project_root)
+    try:
+        with engine.connect() as connection:
+            assert MigrationContext.configure(connection).get_current_revision() is None
+    finally:
+        engine.dispose()
+
+
+def test_database_upgrade_and_downgrade_require_versioned_database(
+    tmp_path: Path,
+) -> None:
+    project_root, source, target, source_head, target_revision = (
+        _prepare_database_releases(tmp_path)
+    )
+    source_scripts = ScriptDirectory(str(source.root / "src" / "alembic"))
+    engine = deployment._database_engine(project_root)
+    try:
+        with engine.begin() as connection:
+            MigrationContext.configure(connection).stamp(source_scripts, source_head)
+    finally:
+        engine.dispose()
 
     deployment._upgrade_database(project_root, source, target)
     engine = deployment._database_engine(project_root)

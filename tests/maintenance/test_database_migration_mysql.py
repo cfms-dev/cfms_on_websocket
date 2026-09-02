@@ -5,7 +5,7 @@ from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, insert, inspect, text
 
 from include.database.engine import create_database_engine
-from include.database.schema import upgrade_database_schema
+from include.database.schema import DatabaseSchemaError, upgrade_database_schema
 from maintenance.database_migration import migrate_database
 from tests.maintenance.test_backup_format_compatibility import _seed_source
 from tests.maintenance.test_database_migration import (
@@ -19,16 +19,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_unversioned_v070_mysql_schema_is_adopted(backup_context) -> None:
+def test_unversioned_mysql_schema_is_rejected_without_stamping(backup_context) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
     _clear_mysql_database(mysql_engine)
     try:
         backup_context.Base.metadata.create_all(mysql_engine)
 
-        result = upgrade_database_schema(mysql_engine, backup_context.Base.metadata)
+        with pytest.raises(DatabaseSchemaError, match="Non-empty unversioned"):
+            upgrade_database_schema(mysql_engine, backup_context.Base.metadata)
 
-        assert result.adopted_legacy is True
-        assert result.current_revision == "7bddfba0d8aa"
+        with mysql_engine.connect() as connection:
+            assert "users" in inspect(connection).get_table_names()
+            assert MigrationContext.configure(connection).get_current_revision() is None
     finally:
         _clear_mysql_database(mysql_engine)
         mysql_engine.dispose()

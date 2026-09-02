@@ -107,6 +107,7 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
         manifest = json.loads(archive.read(f"{top_level}/release-manifest.json"))
     assert manifest["version"] == version
     assert "alembic_head" not in manifest
+    assert "minimum_upgrade_version" not in manifest
     assert manifest["managed_extensions"] == [
         "brute_force_lockdown",
         "builtin",
