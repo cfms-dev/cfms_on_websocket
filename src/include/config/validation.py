@@ -37,6 +37,7 @@ __all__ = [
     "IdentityPermissionRetentionPolicy",
     "RequestRateControlPolicy",
     "S3StoragePolicy",
+    "SchedulingPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
     "get_trusted_proxy_networks",
@@ -487,6 +488,32 @@ class S3StoragePolicy(_ConfigPolicy):
             )
 
 
+@dataclass(frozen=True)
+class SchedulingPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("scheduling"),))
+
+    worker_threads: PositiveInt = 4
+    poll_interval_seconds: float = 1.0
+    execution_lease_seconds: PositiveInt = 60
+    lease_refresh_seconds: PositiveInt = 20
+    shutdown_grace_seconds: PositiveInt = 30
+    misfire_grace_seconds: PositiveInt = 300
+    history_retention_days: PositiveInt = 90
+    claim_batch_size: PositiveInt = 100
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.poll_interval_seconds <= 0:
+            raise ConfigValidationError(
+                "scheduling.poll_interval_seconds must be greater than zero"
+            )
+        if self.lease_refresh_seconds >= self.execution_lease_seconds:
+            raise ConfigValidationError(
+                "scheduling.lease_refresh_seconds must be less than "
+                "execution_lease_seconds"
+            )
+
+
 def _validate_client_certificate_config(config: _ConfigSource) -> None:
     security = _section(config, "security")
     require_client_cert = security.get("require_client_cert", False)
@@ -536,6 +563,7 @@ def validate_config(config: _ConfigSource) -> None:
     DocumentUploadPolicy.from_config(config)
     DocumentCreationRiskPolicy.from_config(config)
     DocumentDownloadRiskPolicy.from_config(config)
+    SchedulingPolicy.from_config(config)
     _validate_file_chunk_size_config(config)
     _validate_client_certificate_config(config)
 
@@ -549,6 +577,18 @@ def validate_config(config: _ConfigSource) -> None:
     if provider.get("rate_limit", "memory") not in {"memory", "redis"}:
         raise ConfigValidationError(
             "provider.rate_limit must be either 'memory' or 'redis'"
+        )
+    scheduling_provider = provider.get("scheduling", "local")
+    if scheduling_provider not in {"local", "redis"}:
+        raise ConfigValidationError(
+            "provider.scheduling must be either 'local' or 'redis'"
+        )
+    if (
+        scheduling_provider == "redis"
+        and _section(config, "database").get("type") == "sqlite"
+    ):
+        raise ConfigValidationError(
+            "provider.scheduling='redis' requires a shared non-SQLite database"
         )
 
     from include.extensions.manager import validate_extension_config

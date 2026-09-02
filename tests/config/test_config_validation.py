@@ -16,6 +16,7 @@ from include.config.validation import (
     IdentityPermissionRetentionPolicy,
     RequestRateControlPolicy,
     S3StoragePolicy,
+    SchedulingPolicy,
     get_config_warnings,
     get_enabled_extensions,
     get_trusted_proxy_networks,
@@ -320,6 +321,52 @@ def test_rate_limit_provider_selection_is_validated():
     config["provider"] = {"rate_limit": "database"}
 
     with pytest.raises(ConfigValidationError, match="provider.rate_limit"):
+        validate_config(config)
+
+
+def test_scheduling_policy_defaults_and_overrides():
+    config = _valid_config()
+
+    assert SchedulingPolicy.from_config(config).worker_threads == 4
+
+    config["scheduling"] = {
+        "worker_threads": 2,
+        "execution_lease_seconds": 30,
+        "lease_refresh_seconds": 10,
+    }
+    policy = SchedulingPolicy.from_config(config)
+
+    assert policy.worker_threads == 2
+    assert policy.execution_lease_seconds == 30
+    assert policy.lease_refresh_seconds == 10
+
+
+@pytest.mark.parametrize("provider", ["database", "dramatiq"])
+def test_scheduling_provider_selection_is_validated(provider):
+    config = _valid_config()
+    config["provider"] = {"scheduling": provider}
+
+    with pytest.raises(ConfigValidationError, match="provider.scheduling"):
+        validate_config(config)
+
+
+def test_redis_scheduling_requires_shared_database():
+    config = _valid_config()
+    config["provider"] = {"scheduling": "redis"}
+    config["database"] = {"type": "sqlite"}
+
+    with pytest.raises(ConfigValidationError, match="non-SQLite"):
+        validate_config(config)
+
+
+def test_scheduling_lease_refresh_must_precede_expiry():
+    config = _valid_config()
+    config["scheduling"] = {
+        "execution_lease_seconds": 20,
+        "lease_refresh_seconds": 20,
+    }
+
+    with pytest.raises(ConfigValidationError, match="must be less than"):
         validate_config(config)
 
 

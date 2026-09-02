@@ -158,6 +158,17 @@ retention_days = 365
 # Maximum archived audit entries deleted in each transaction.
 batch_size = 500
 
+[scheduling]
+# Runtime settings for the optional scheduling extension.
+worker_threads = 4
+poll_interval_seconds = 1.0
+execution_lease_seconds = 60
+lease_refresh_seconds = 20
+shutdown_grace_seconds = 30
+misfire_grace_seconds = 300
+history_retention_days = 90
+claim_batch_size = 100
+
 [access]
 # Enable recursive access checks.
 # When enabled, access rules will be checked for the requested object itself, 
@@ -256,6 +267,8 @@ storage = "local" # "local" or "s3"
 event_bus = "local" # "local" or "redis"
 # Request rate-limit state provider ("memory" or "redis")
 rate_limit = "memory" # "memory" or "redis"
+# Scheduled-task runtime ("local" or "redis")
+scheduling = "local"
 
 [redis]
 # Redis server host

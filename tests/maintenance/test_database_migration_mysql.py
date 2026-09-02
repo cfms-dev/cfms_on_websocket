@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, insert, inspect, text
 from include.database.engine import create_database_engine
 from maintenance.database_migration import migrate_database
 from maintenance.database_schema import DatabaseSchemaError, upgrade_database_schema
+from maintenance.database_tables import APPLICATION_TABLE_NAMES
 from tests.maintenance.test_backup_format_compatibility import _seed_source
 from tests.maintenance.test_database_migration import (
     _script_directory,
@@ -80,7 +81,7 @@ def test_database_migration_round_trip_with_supported_mysql_lts(
             else ("mysql", "sqlite")
         )
         assert (result.source_dialect, result.target_dialect) == expected_dialects
-        assert len(result.tables) == 32
+        assert tuple(table.name for table in result.tables) == APPLICATION_TABLE_NAMES
         with target_engine.begin() as connection:
             comments = base.metadata.tables["comments"]
             inserted = connection.execute(

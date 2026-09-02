@@ -46,6 +46,13 @@ ext_http_api = [
     "fastapi>=0.141.1",
     "uvicorn>=0.52.4",
 ]
+ext-scheduling = [
+    "apscheduler>=3.11.3,<4",
+]
+ext-scheduling-cluster = [
+    "apscheduler>=3.11.3,<4",
+    "dramatiq[redis]>=2.2,<3",
+]
 
 [dependency-groups]
 dev = [
