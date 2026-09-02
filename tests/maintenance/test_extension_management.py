@@ -91,7 +91,7 @@ def _prepare_src(
     config["extensions"]["enabled"] = list(enabled)
     (src / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
     _write_installed_extension(root, "builtin")
-    monkeypatch.setattr(extension_operations.paths, "EXECUTEABLE_ABSPATH", src)
+    monkeypatch.setattr(extension_operations.paths, "EXECUTABLE_ABSPATH", src)
     monkeypatch.setattr(extension_operations.paths, "PROJECT_ABSPATH", src.parent)
     monkeypatch.setattr(extension_operations.paths, "EXTENSION_ROOT", root)
     monkeypatch.chdir(src)

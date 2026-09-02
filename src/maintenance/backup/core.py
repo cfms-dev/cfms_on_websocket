@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import CORE_VERSION
-from include.config.paths import EXECUTEABLE_ABSPATH
+from include.config.paths import EXECUTABLE_ABSPATH
 from include.config.settings import global_config
 from include.database.models.access import (
     CompiledAccessRule,
@@ -497,7 +497,7 @@ def import_backup(
     db_engine: Engine = engine,
     storage_provider: StorageProvider | None = None,
     config_path: str | os.PathLike[str] = "config.toml",
-    init_path: str | os.PathLike[str] = EXECUTEABLE_ABSPATH / "init",
+    init_path: str | os.PathLike[str] = EXECUTABLE_ABSPATH / "init",
     progress: Progress | None = None,
     show_progress_details: bool = False,
 ) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from alembic.script.revision import ResolutionError
 from sqlalchemy import Engine, MetaData, inspect
 
 from alembic import command
-from include.config.paths import EXECUTEABLE_ABSPATH
+from include.config.paths import EXECUTABLE_ABSPATH
 
 
 class DatabaseSchemaError(RuntimeError):
@@ -22,7 +22,7 @@ class SchemaUpgradeResult:
 
 
 def _alembic_config(connection) -> tuple[Config, ScriptDirectory]:
-    config_path = EXECUTEABLE_ABSPATH / "alembic.ini"
+    config_path = EXECUTABLE_ABSPATH / "alembic.ini"
     config = Config(config_path)
     config.attributes["connection"] = connection
     return config, ScriptDirectory.from_config(config)

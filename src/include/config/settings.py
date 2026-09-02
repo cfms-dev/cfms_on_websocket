@@ -24,7 +24,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
-from include.config.paths import EXECUTEABLE_ABSPATH
+from include.config.paths import EXECUTABLE_ABSPATH
 from include.config.validation import ConfigValidationError, parse_config_document
 
 __all__ = ["global_config"]
@@ -209,4 +209,4 @@ class GlobalConfig(Mapping[str, Any]):
 
 
 # Module-level singleton – imported everywhere as `global_config`.
-global_config: Final = GlobalConfig(str(EXECUTEABLE_ABSPATH / "config.toml"))
+global_config: Final = GlobalConfig(str(EXECUTABLE_ABSPATH / "config.toml"))
