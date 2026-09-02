@@ -71,10 +71,14 @@ class RuntimeLock:
         self.release()
 
 
-def server_runtime_lock(server_root: str | Path) -> RuntimeLock:
+def server_runtime_lock(
+    server_root: str | Path,
+    *,
+    allow_unfinished_deployment: bool = False,
+) -> RuntimeLock:
     maintenance_root = Path(server_root) / ".maintenance"
     transaction_path = maintenance_root / "transaction.json"
-    if transaction_path.exists():
+    if transaction_path.exists() and not allow_unfinished_deployment:
         raise RuntimeLockError(
             "An unfinished deployment transaction must be recovered before startup: "
             f"{transaction_path}"

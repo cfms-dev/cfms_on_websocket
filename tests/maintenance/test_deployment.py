@@ -8,6 +8,7 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 
+from include.runtime_lock import RuntimeLock
 from maintenance.operations import deployment
 from maintenance.operations.exceptions import MaintenanceOperationError
 
@@ -390,6 +391,22 @@ def test_failed_migration_requires_database_restore_before_resume(
     assert resumed.active_release_id == source.release_id
     assert not transaction_path.exists()
     assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
+
+
+def test_resume_rejects_concurrent_runtime_owner(tmp_path: Path) -> None:
+    root = tmp_path / "deployment"
+    transaction_path = root / "src" / ".maintenance" / "transaction.json"
+    transaction_path.parent.mkdir(parents=True)
+    transaction_path.write_text("{}", encoding="utf-8")
+    (root / "pyproject.toml").write_text("", encoding="utf-8")
+
+    with (
+        RuntimeLock(transaction_path.with_name("server.lock")),
+        pytest.raises(MaintenanceOperationError, match="already using runtime root"),
+    ):
+        deployment.resume_deployment(root)
+
+    assert transaction_path.is_file()
 
 
 def _prepare_database_releases(

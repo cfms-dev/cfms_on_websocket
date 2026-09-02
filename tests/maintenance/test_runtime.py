@@ -8,7 +8,7 @@ from maintenance.runtime import MaintenanceRuntimeError, enter_server_root
 
 @pytest.fixture(autouse=True)
 def _restore_application_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(paths, "APPLICATION_ABSPATH", paths.EXECUTEABLE_ABSPATH)
+    monkeypatch.setattr(paths, "EXECUTEABLE_ABSPATH", paths.EXECUTEABLE_ABSPATH)
     monkeypatch.setattr(paths, "PROJECT_ABSPATH", paths.PROJECT_ABSPATH)
     monkeypatch.setattr(paths, "EXTENSION_ROOT", paths.EXTENSION_ROOT)
 

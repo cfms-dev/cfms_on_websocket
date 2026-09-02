@@ -12,7 +12,6 @@ rather than the file itself, so that atomic replacements (write-to-temp +
 rename, or symlink updates) are detected reliably.
 """
 
-import os
 import pathlib
 import secrets
 import threading
@@ -127,10 +126,10 @@ class GlobalConfig(Mapping[str, Any]):
         back to the config file.  Only runs when the ``init`` sentinel file
         does not exist yet.
         """
-        if os.path.exists("init"):
+        if (self._config_path.parent / "init").exists():
             return
 
-        if not os.path.exists(self._config_path):
+        if not self._config_path.exists():
             raise FileNotFoundError(
                 f"Configuration file {self._config_path!r} not found."
             )

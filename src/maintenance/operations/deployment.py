@@ -637,12 +637,14 @@ def _stored_release(project_root: Path, release_id: str) -> _Release:
 
 
 def _run(command_line: list[str], *, cwd: Path) -> None:
-    result = subprocess.run(
+    # Callers construct uv argv sequences; no argument is interpreted by a shell.
+    result = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         command_line,
         cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
+        shell=False,
     )
     if result.returncode:
         output = "\n".join(
@@ -1066,42 +1068,55 @@ def resume_deployment(
     database_restored: bool = False,
 ) -> DeploymentResult:
     project_root = _project_root(deployment_root)
-    transaction = _load_transaction(project_root)
-    source = _stored_release(project_root, transaction["from_release"])
-    target = _stored_release(project_root, transaction["to_release"])
-    phase = transaction["phase"]
-    if phase in {"database-migration", "database-recovery-required"}:
-        if not database_restored:
+    try:
+        lock = server_runtime_lock(
+            project_root / "src",
+            allow_unfinished_deployment=True,
+        ).acquire()
+    except RuntimeLockError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+    try:
+        transaction = _load_transaction(project_root)
+        source = _stored_release(project_root, transaction["from_release"])
+        target = _stored_release(project_root, transaction["to_release"])
+        phase = transaction["phase"]
+        if phase in {"database-migration", "database-recovery-required"} and (
+            not database_restored
+        ):
             raise MaintenanceOperationError(
                 "Restore the external database checkpoint, then pass --database-restored"
             )
-    if phase in {"activation", "database-migration", "database-recovery-required"}:
-        engine = _database_engine(project_root)
-        try:
-            with engine.connect() as connection:
-                revision = _current_revision(connection)
-            _, _, source_head = _alembic(source)
-            _, _, target_head = _alembic(target)
-        finally:
-            engine.dispose()
-        if revision == source_head:
-            _restore_active(project_root, source, target)
-            active = source
-        elif revision == target_head:
-            _restore_active(project_root, target, source)
-            active = target
+        if phase in {"activation", "database-migration", "database-recovery-required"}:
+            engine = _database_engine(project_root)
+            try:
+                with engine.connect() as connection:
+                    revision = _current_revision(connection)
+                _, _, source_head = _alembic(source)
+                _, _, target_head = _alembic(target)
+            finally:
+                engine.dispose()
+            if revision == source_head:
+                _restore_active(project_root, source, target)
+                active = source
+            elif revision == target_head:
+                _restore_active(project_root, target, source)
+                active = target
+            else:
+                raise MaintenanceOperationError(
+                    f"Database revision {revision or 'unversioned'} matches "
+                    "neither transaction endpoint"
+                )
         else:
             raise MaintenanceOperationError(
-                f"Database revision {revision or 'unversioned'} matches "
-                "neither transaction endpoint"
+                f"Unsupported deployment transaction phase: {phase!r}"
             )
-    else:
-        raise MaintenanceOperationError(
-            f"Unsupported deployment transaction phase: {phase!r}"
+        _sync_environment(project_root, _load_settings(project_root))
+        _transaction_path(project_root).unlink()
+        return DeploymentResult(
+            "resume", project_root, active.version, active.release_id
         )
-    _sync_environment(project_root, _load_settings(project_root))
-    _transaction_path(project_root).unlink()
-    return DeploymentResult("resume", project_root, active.version, active.release_id)
+    finally:
+        lock.release()
 
 
 def inspect_deployment(deployment_root: str | Path) -> DeploymentResult:

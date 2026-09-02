@@ -61,3 +61,6 @@ tests/*_old.py
 # Node.js
 package-lock.json
 package.json
+
+# Server runtime
+*.lock

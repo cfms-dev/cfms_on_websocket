@@ -37,3 +37,12 @@ def test_server_runtime_lock_rejects_unfinished_deployment(tmp_path: Path) -> No
         server_runtime_lock(tmp_path)
 
     assert not (tmp_path / ".maintenance" / "server.lock").exists()
+
+
+def test_server_runtime_lock_allows_deployment_recovery(tmp_path: Path) -> None:
+    transaction_path = tmp_path / ".maintenance" / "transaction.json"
+    transaction_path.parent.mkdir()
+    transaction_path.write_text("{}", encoding="utf-8")
+
+    with server_runtime_lock(tmp_path, allow_unfinished_deployment=True):
+        assert (tmp_path / ".maintenance" / "server.lock").is_file()
