@@ -10,6 +10,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy.exc import SQLAlchemyError
 from tomlkit.exceptions import TOMLKitError
 
+from include.config import paths
 from include.config.validation import ConfigValidationError, parse_config_document
 from include.database.engine import create_database_engine, database_url
 from maintenance.database_migration import (
@@ -17,6 +18,10 @@ from maintenance.database_migration import (
 )
 from maintenance.database_migration import (
     migrate_database as execute_database_migration,
+)
+from maintenance.database_schema import DatabaseSchemaError, SchemaUpgradeResult
+from maintenance.database_schema import (
+    upgrade_database_schema as execute_schema_upgrade,
 )
 from maintenance.operations.config import write_config_atomically
 from maintenance.operations.exceptions import MaintenanceOperationError
@@ -37,6 +42,20 @@ class DatabaseMigrationResult:
     config_backup_path: Path | None
 
 
+def upgrade_database() -> SchemaUpgradeResult:
+    enter_server_root()
+    load_database_models()
+
+    from include.database.session import Base, engine
+
+    try:
+        return execute_schema_upgrade(engine, Base.metadata)
+    except (DatabaseSchemaError, OSError, SQLAlchemyError) as exc:
+        raise MaintenanceOperationError(
+            f"Database schema upgrade failed: {exc}"
+        ) from exc
+
+
 def migrate_database(
     target_config_path: str | Path,
     *,
@@ -55,7 +74,7 @@ def migrate_database(
     target_engine = None
     try:
         target_engine = create_database_engine(target_database)
-        alembic_config = Config(workdir / "alembic.ini")
+        alembic_config = Config(paths.EXECUTABLE_ABSPATH / "alembic.ini")
         script_directory = ScriptDirectory.from_config(alembic_config)
         result = execute_database_migration(
             source_engine,

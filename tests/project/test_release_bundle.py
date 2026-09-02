@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 import tarfile
 import tomllib
@@ -41,7 +42,20 @@ def _create_minimal_project(project_root: Path, version: str = "1.2.3") -> None:
         "src/content/hello": "hello\n",
         "src/main.py": "pass\n",
         "src/alembic/README": "migrations\n",
+        "src/alembic/versions/base.py": (
+            'revision: str = "base"\ndown_revision: str | None = None\n'
+        ),
         "src/include/__init__.py": "",
+        "src/include/extensions/builtin/_extension.py": "",
+        "src/include/extensions/builtin/manifest.toml": (
+            "manifest_version = 2\n"
+            "[extension]\n"
+            'identifier = "builtin"\n'
+            'name = "Built-in"\n'
+            'version = "1.2.3"\n'
+            'authors = ["Test"]\n'
+            'license = "Apache-2.0"\n'
+        ),
         "src/maintenance/__init__.py": "",
         "src/content/ssl/client/8a5a09f0.0": "certificate\n",
         "src/content/ssl/client/.git": "gitdir: elsewhere\n",
@@ -73,6 +87,7 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
     }
     assert {
         "pyproject.toml",
+        "release-manifest.json",
         "uv.lock",
         "src/main.py",
         "src/alembic.ini",
@@ -86,6 +101,23 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
         member.startswith("src/content/ssl/client/")
         and re.fullmatch(r"[0-9a-fA-F]{8}\.[0-9]+", PurePosixPath(member).name)
         for member in relative_members
+    )
+
+    with zipfile.ZipFile(zip_path) as archive:
+        manifest = json.loads(archive.read(f"{top_level}/release-manifest.json"))
+    assert manifest["version"] == version
+    assert "alembic_head" not in manifest
+    assert "minimum_upgrade_version" not in manifest
+    assert manifest["managed_extensions"] == [
+        "brute_force_lockdown",
+        "builtin",
+        "http_api",
+        "oidc_sso",
+    ]
+    assert "release-manifest.json" not in manifest["files"]
+    assert not any(
+        path.startswith(("src/content/files/", "src/content/logs/"))
+        for path in manifest["files"]
     )
 
     forbidden_prefixes = (

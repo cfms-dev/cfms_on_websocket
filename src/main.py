@@ -1,11 +1,8 @@
 """
 Main entry module.
 
-Performs initialization checks when starting the CFMS WebSocket application:
-if the system has not been initialized, it creates the database tables, the
-default sysop permission group, and the administrator account, then writes the
-initialization marker; if it has already been initialized, it connects to the
-database directly and loads user information for later processing.
+Initializes a fresh database and seeds application data on first startup. Schema
+upgrades for existing databases remain explicit maintenance operations.
 """
 
 import os
@@ -23,11 +20,15 @@ from include.config.constants import (
     FILE_TASK_EVENT_CHANNEL,
     GLOBAL_BROADCAST_EVENT_CHANNEL,
     LOGIN_GUARD_EVENT_CHANNEL,
-    ROOT_ABSPATH,
     ROOT_DIRECTORY_ID,
+)
+from include.config.paths import (
+    EXECUTABLE_ABSPATH,
+    EXTENSION_ROOT,
 )
 from include.config.settings import global_config
 from include.config.validation import get_config_warnings, get_enabled_extensions
+from include.database.initialization import initialize_database_schema
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -54,6 +55,7 @@ from include.extensions.manager import (
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
+from include.runtime_lock import RuntimeLockError, server_runtime_lock
 from include.transport.client_address import get_bind_options
 from include.transport.request_entrypoint import global_process_request
 from include.transport.request_handler import validate_request_handler_models
@@ -65,8 +67,8 @@ from include.transport.router import (
 from include.transport.tls import create_server_ssl_context
 
 # fix
-os.makedirs(ROOT_ABSPATH / "content" / "logs", exist_ok=True)
-os.makedirs(ROOT_ABSPATH / "content" / "ssl", exist_ok=True)
+os.makedirs(EXECUTABLE_ABSPATH / "content" / "logs", exist_ok=True)
+os.makedirs(EXECUTABLE_ABSPATH / "content" / "ssl", exist_ok=True)
 
 
 def ensure_root_folder():
@@ -115,14 +117,7 @@ def server_init():
 
     from include.domains.identity.commands.groups import create_group
 
-    if (
-        os.path.exists(ROOT_ABSPATH / "app.db")
-        and global_config["database"]["type"] == "sqlite"
-    ):
-        os.remove(ROOT_ABSPATH / "app.db")
-
-    # Create database tables before inserting data
-    Base.metadata.create_all(engine)
+    initialize_database_schema(engine, Base.metadata)
 
     # Ensure the root folder exists before seeding any objects that reference it.
     ensure_root_folder()
@@ -205,7 +200,7 @@ def server_init():
 
     # Read from sample document source and write back to storage.
     # This is necessary because the storage provider cannot be determined in advance.
-    sample_source_path = "content/hello"
+    sample_source_path = EXECUTABLE_ABSPATH / "content" / "hello"
 
     today = datetime.datetime.now(datetime.UTC).date()
     real_filename = secrets.token_hex(32)
@@ -271,13 +266,15 @@ def server_init():
     )
 
     # Write the generated password to admin_password.txt in the project root.
-    with open(ROOT_ABSPATH / "admin_password.txt", "w", encoding="utf-8") as pwd_file:
+    with open(
+        EXECUTABLE_ABSPATH / "admin_password.txt", "w", encoding="utf-8"
+    ) as pwd_file:
         pwd_file.write(f"{password}\n")
 
     # Logs, certificates, and private keys are all stored on the server's file system;
     # therefore, the `os` library is used for read/write operations instead of
     # `StorageProvider`.
-    os.makedirs(ROOT_ABSPATH / "content", exist_ok=True)
+    os.makedirs(EXECUTABLE_ABSPATH / "content", exist_ok=True)
 
     import datetime
 
@@ -337,7 +334,7 @@ def server_init():
         with open(cert_path, "wb") as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
 
-    with open(ROOT_ABSPATH / "init", "w") as f:
+    with open(EXECUTABLE_ABSPATH / "init", "w") as f:
         f.write("This file indicates that the database has been initialized.\n")
 
 
@@ -391,7 +388,7 @@ def prepare_logger():
     The log file is located at "./content/logs/server.log".
     """
 
-    log_file = ROOT_ABSPATH / "content" / "logs" / "server.log"
+    log_file = EXECUTABLE_ABSPATH / "content" / "logs" / "server.log"
     fmt = "[<green>{time:YYYY-MM-DD HH:mm:ss,SSS}</green> <level>{level: <8}</level>] <level>{message}</level>"
 
     # reset default logger to avoid conflicts with loguru's configuration
@@ -414,10 +411,10 @@ def prepare_logger():
     )
 
 
-def main():
+def _run_server():
     prepare_logger()
 
-    if not os.path.exists(ROOT_ABSPATH / "init"):
+    if not os.path.exists(EXECUTABLE_ABSPATH / "init"):
         logger.info("Database not initialized, initializing now...")
         server_init()
 
@@ -454,9 +451,6 @@ def main():
             "OpenSSL 3.5 or later to resolve this issue."
         )
 
-    # Always create tables that do not exist
-    Base.metadata.create_all(engine)
-
     # Ensure the root folder record exists (handles upgrades from older versions)
     ensure_root_folder()
 
@@ -472,9 +466,8 @@ def main():
     ProviderManager().event_bus.subscribe(FILE_TASK_EVENT_CHANNEL, on_file_task_event)
 
     # Register extensions after database initialization
-    extension_root = ROOT_ABSPATH / "include" / "extensions"
     load_extensions_from_directory(
-        extension_root,
+        EXTENSION_ROOT,
         get_enabled_extensions(global_config),
         config=global_config,
     )
@@ -521,6 +514,15 @@ def main():
                 pm.hook.ext_on_shutdown()
     finally:
         global_config.stop()
+
+
+def main():
+    try:
+        with server_runtime_lock(EXECUTABLE_ABSPATH):
+            _run_server()
+    except RuntimeLockError as exc:
+        logger.error(str(exc))
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

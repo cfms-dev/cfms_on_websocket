@@ -45,16 +45,18 @@ jobs:
       run: |
         uv run --locked towncrier check --compare-with "origin/${BASE_REF}"
     
-    - name: Prepare test environment
-      run: |
-        cp src/config.toml.sample config.toml
-        mkdir -p src/content/ssl
-        mkdir -p src/content/logs
-    
     - name: Run tests with pytest
       run: |
         uv run pytest tests/ -v --tb=short
       timeout-minutes: 10
+
+    - name: Verify test configuration cleanup
+      if: always()
+      run: |
+        if [ -e src/config.toml ]; then
+          echo "pytest left src/config.toml behind" >&2
+          exit 1
+        fi
     
     - name: Upload test results
       if: always()
@@ -114,3 +116,36 @@ jobs:
         uv run --locked pytest tests/domains/documents/test_rate_limits_mysql.py -q
         uv run --locked pytest tests/maintenance/test_database_migration_mysql.py -q
       timeout-minutes: 10
+
+  release-bundle-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Set up Python 3.14
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.14"
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      with:
+        version: "0.11.16"
+
+    - name: Build and inspect a flat release deployment
+      shell: pwsh
+      run: |
+        $version = uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+        uv run --locked python tools/build_release.py --version $version --source-date-epoch 1788000000 --output-dir dist
+        $archive = (Resolve-Path "dist/cfms-on-websocket-$version.zip").Path
+        Expand-Archive -LiteralPath $archive -DestinationPath smoke
+        $bundle = (Resolve-Path "smoke/cfms-on-websocket-$version").Path
+        uv sync --project $bundle --locked --no-dev
+        Copy-Item -LiteralPath (Join-Path $bundle "src/config.toml.sample") -Destination (Join-Path $bundle "src/config.toml")
+        uv run --project $bundle --no-dev maintain deployment status --deployment-root $bundle

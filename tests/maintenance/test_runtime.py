@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
+from include.config import paths
 from maintenance.runtime import MaintenanceRuntimeError, enter_server_root
+
+
+@pytest.fixture(autouse=True)
+def _restore_application_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(paths, "EXECUTABLE_ABSPATH", paths.EXECUTABLE_ABSPATH)
+    monkeypatch.setattr(paths, "PROJECT_ABSPATH", paths.PROJECT_ABSPATH)
+    monkeypatch.setattr(paths, "EXTENSION_ROOT", paths.EXTENSION_ROOT)
 
 
 def _make_server_root(path: Path) -> Path:
@@ -27,6 +35,9 @@ def test_enter_server_root_supports_flat_layout(
 
     assert located == server_root
     assert Path.cwd() == server_root
+    assert paths.EXECUTABLE_ABSPATH == server_root
+    assert paths.PROJECT_ABSPATH == server_root.parent
+    assert paths.EXTENSION_ROOT == server_root / "include" / "extensions"
 
 
 def test_enter_server_root_finds_compatible_src_layout(
@@ -97,3 +108,19 @@ def test_enter_server_root_reports_unrelated_directory(
         enter_server_root()
 
     assert Path.cwd() == start.resolve()
+
+
+def test_enter_server_root_does_not_use_legacy_environment_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server_root = _make_server_root(tmp_path / "shared")
+    unrelated = tmp_path / "elsewhere"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    monkeypatch.setenv("CFMS_SERVER_ROOT", str(server_root))
+
+    with pytest.raises(MaintenanceRuntimeError, match="main.py and config.toml"):
+        enter_server_root()
+
+    assert Path.cwd() == unrelated.resolve()

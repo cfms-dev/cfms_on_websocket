@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -14,6 +15,7 @@ from packaging.version import InvalidVersion
 from packaging.version import Version as PackageVersion
 from tomlkit.exceptions import TOMLKitError
 
+from include.config import paths
 from include.config.constants import CORE_VERSION
 from include.config.validation import (
     ConfigValidationError,
@@ -82,13 +84,14 @@ class ExtensionChangeResult:
 
 def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
     workdir = enter_server_root()
-    root = workdir / "include" / "extensions"
-    if not root.is_dir():
-        raise MaintenanceOperationError(f"Extension directory not found: {root}")
+    if not paths.EXTENSION_ROOT.is_dir():
+        raise MaintenanceOperationError(
+            f"Extension directory not found: {paths.EXTENSION_ROOT}"
+        )
     if mutating:
         artifacts = sorted(
             path
-            for path in root.iterdir()
+            for path in paths.EXTENSION_ROOT.iterdir()
             if path.name.startswith(_TRANSACTION_PREFIXES)
         )
         if artifacts:
@@ -97,7 +100,7 @@ def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
                 "Unfinished extension transaction artifacts require manual review: "
                 f"{rendered}"
             )
-    return workdir, root
+    return workdir, paths.EXTENSION_ROOT
 
 
 def _discover(root: Path) -> dict[str, DiscoveredExtension]:
@@ -105,6 +108,26 @@ def _discover(root: Path) -> dict[str, DiscoveredExtension]:
         return discover_extensions(root)
     except (ExtensionDiscoveryError, ExtensionManifestError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
+
+
+def _managed_extension_identifiers() -> frozenset[str]:
+    manifest_path = paths.PROJECT_ABSPATH / "release-manifest.json"
+    if not manifest_path.is_file():
+        return frozenset({"builtin"})
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        identifiers = data["managed_extensions"]
+    except (KeyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise MaintenanceOperationError(
+            f"Unable to read managed extensions from {manifest_path}: {exc}"
+        ) from exc
+    if not isinstance(identifiers, list) or any(
+        not isinstance(identifier, str) for identifier in identifiers
+    ):
+        raise MaintenanceOperationError(
+            f"Release manifest has invalid managed_extensions: {manifest_path}"
+        )
+    return frozenset(identifiers) | {"builtin"}
 
 
 def _read_config(
@@ -557,8 +580,10 @@ def upgrade_extension(
             raise MaintenanceOperationError(
                 f"Extension {identifier!r} is not installed; use install instead"
             )
-        if identifier == "builtin":
-            raise MaintenanceOperationError("The built-in extension cannot be upgraded")
+        if identifier in _managed_extension_identifiers():
+            raise MaintenanceOperationError(
+                f"Packaged extension {identifier!r} must be upgraded with the server"
+            )
         _compare_upgrade_versions(installed, staged)
 
         config_path, current_source, document, enabled = _read_config(workdir)
@@ -723,8 +748,10 @@ def uninstall_extension(
     extension = discovered.get(identifier)
     if extension is None:
         raise MaintenanceOperationError(f"Extension {identifier!r} is not installed")
-    if identifier == "builtin":
-        raise MaintenanceOperationError("The built-in extension cannot be uninstalled")
+    if identifier in _managed_extension_identifiers():
+        raise MaintenanceOperationError(
+            f"Packaged extension {identifier!r} cannot be uninstalled"
+        )
     config_path, current_source, document, enabled = _read_config(workdir)
     disabled = _dependent_disable_set(identifier, discovered, enabled)
     removed = tuple(current for current in enabled if current in disabled)

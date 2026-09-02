@@ -34,17 +34,22 @@ def enter_server_root(start: Path | None = None) -> Path:
             f"Unable to locate a CFMS server root from {start_path}. "
             "A server root must contain main.py and config.toml."
         )
-
     try:
         os.chdir(server_root)
     except OSError as exc:
         raise MaintenanceRuntimeError(
             f"Unable to enter the CFMS server root {server_root}: {exc}"
         ) from exc
+    from include.config import paths
+
+    paths.EXECUTABLE_ABSPATH = server_root
+    paths.PROJECT_ABSPATH = server_root.parent
+    paths.EXTENSION_ROOT = server_root / "include" / "extensions"
     return server_root
 
 
 def load_database_models() -> None:
+    enter_server_root()
     import include.database.models  # noqa: F401
 
 

@@ -89,6 +89,11 @@ database_app = typer.Typer(
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
+deployment_app = typer.Typer(
+    help="Upgrade, downgrade, and inspect packaged CFMS deployments.",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
 extension_app = typer.Typer(
     help="Manage server extensions.",
     rich_markup_mode="rich",
@@ -101,6 +106,7 @@ app.add_typer(backup_app, name="backup")
 app.add_typer(audit_app, name="audit")
 app.add_typer(permission_app, name="permission")
 app.add_typer(database_app, name="database")
+app.add_typer(deployment_app, name="deployment")
 app.add_typer(extension_app, name="extension")
 
 
@@ -466,6 +472,224 @@ def _build_backup_progress() -> Progress:
         TimeElapsedColumn(),
         console=error_console,
     )
+
+
+def _print_deployment_result(result: operations.DeploymentResult) -> None:
+    table = Table(title="CFMS Deployment", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Action", result.action)
+    table.add_row("Root", str(result.deployment_root))
+    table.add_row("Active version", result.active_version)
+    table.add_row("Active release ID", result.active_release_id)
+    if result.package_sha256 is not None:
+        table.add_row("Package SHA-256", result.package_sha256)
+    console.print(table)
+    if result.versions:
+        versions = Table(title="Stored Releases")
+        versions.add_column("Version", style="cyan")
+        versions.add_column("Release ID", style="green")
+        versions.add_column("Active")
+        for release in result.versions:
+            versions.add_row(
+                release.version,
+                release.release_id,
+                "Yes" if release.active else "No",
+            )
+        console.print(versions)
+
+
+def _deployment_digest_options(
+    sha256: str | None,
+    checksums: Path | None,
+) -> tuple[str | None, Path | None]:
+    if (sha256 is None) == (checksums is None):
+        raise typer.BadParameter("Choose exactly one of --sha256 or --checksums.")
+    return sha256, checksums
+
+
+def _resolve_deployment_root(deployment_root: Path | None) -> Path:
+    if deployment_root is not None:
+        return deployment_root
+    current = Path.cwd().resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / "src" / "main.py").is_file() or (
+            candidate / "src" / ".maintenance" / "transaction.json"
+        ).is_file():
+            return candidate
+        if (
+            (candidate / "main.py").is_file()
+            or (candidate / ".maintenance" / "transaction.json").is_file()
+        ) and (candidate.parent / "pyproject.toml").is_file():
+            return candidate.parent
+    raise typer.BadParameter("Unable to locate a flat CFMS deployment root")
+
+
+@deployment_app.command("upgrade")
+def upgrade_deployment(
+    package: Annotated[Path, typer.Argument(help="New CFMS release package.")],
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Stable deployment directory."),
+    ] = None,
+    sha256: Annotated[str | None, typer.Option("--sha256")] = None,
+    checksums: Annotated[Path | None, typer.Option("--checksums")] = None,
+    backup_confirmed: Annotated[
+        bool,
+        typer.Option(
+            "--backup-confirmed",
+            help="Confirm that an external restorable database checkpoint exists.",
+        ),
+    ] = False,
+    extra: Annotated[
+        list[str] | None,
+        typer.Option("--extra", help="Core optional dependency; may be repeated."),
+    ] = None,
+    requirements_lock: Annotated[
+        Path | None,
+        typer.Option(
+            "--requirements-lock",
+            help="Hash-locked requirements for third-party extensions.",
+        ),
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Stage, migrate, and atomically activate a newer local release."""
+    _configure_logging(verbose)
+    digest, checksum_file = _deployment_digest_options(sha256, checksums)
+    resolved_root = _resolve_deployment_root(deployment_root)
+    _confirm_or_abort(
+        "The server must be stopped and an external database checkpoint must exist. "
+        "Upgrade this deployment?",
+        yes,
+    )
+    result = _run(
+        lambda: operations.upgrade_deployment(
+            package,
+            resolved_root,
+            expected_sha256=digest,
+            checksums_path=checksum_file,
+            backup_confirmed=backup_confirmed,
+            extras=tuple(extra) if extra is not None else None,
+            requirements_lock=requirements_lock,
+        ),
+        status="Upgrading CFMS deployment...",
+    )
+    _print_deployment_result(result)
+
+
+@deployment_app.command("status")
+def deployment_status(
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Stable deployment directory."),
+    ] = None,
+) -> None:
+    """Show the active and stored releases without changing the deployment."""
+    _print_deployment_result(
+        _run(
+            lambda: operations.inspect_deployment(
+                _resolve_deployment_root(deployment_root)
+            )
+        )
+    )
+
+
+@deployment_app.command("downgrade")
+def downgrade_deployment(
+    release_id: Annotated[
+        str,
+        typer.Argument(help="Stored release ID or an unambiguous prefix."),
+    ],
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Flat release project directory."),
+    ] = None,
+    backup_confirmed: Annotated[
+        bool,
+        typer.Option(
+            "--backup-confirmed",
+            help="Confirm that an external restorable database checkpoint exists.",
+        ),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Downgrade the database and restore a stored release."""
+    _configure_logging(verbose)
+    _confirm_or_abort(
+        "The server must be stopped and an external database checkpoint must exist. "
+        "Downgrade this deployment?",
+        yes,
+    )
+    result = _run(
+        lambda: operations.downgrade_deployment(
+            release_id,
+            _resolve_deployment_root(deployment_root),
+            backup_confirmed=backup_confirmed,
+        ),
+        status="Downgrading CFMS deployment...",
+    )
+    _print_deployment_result(result)
+
+
+@deployment_app.command("resume")
+def resume_deployment(
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Flat release project directory."),
+    ] = None,
+    database_restored: Annotated[
+        bool,
+        typer.Option(
+            "--database-restored",
+            help="Confirm that the external database checkpoint was restored.",
+        ),
+    ] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Finish or roll back an interrupted deployment transaction."""
+    _configure_logging(verbose)
+    _print_deployment_result(
+        _run(
+            lambda: operations.resume_deployment(
+                _resolve_deployment_root(deployment_root),
+                database_restored=database_restored,
+            ),
+            status="Recovering CFMS deployment...",
+        )
+    )
+
+
+@database_app.command(
+    "upgrade",
+)
+def upgrade_database(
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            help="Confirm that the CFMS server is stopped.",
+        ),
+    ] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Upgrade the configured database schema to this release's head."""
+
+    _configure_logging(verbose)
+    _confirm_or_abort("The CFMS server must be stopped. Continue?", yes)
+    result = _run(
+        operations.upgrade_database,
+        status="Upgrading database schema...",
+    )
+    table = Table(title="Database Schema Upgrade", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Previous revision", result.previous_revision or "unversioned")
+    table.add_row("Current revision", result.current_revision)
+    table.add_row("Fresh bootstrap", "Yes" if result.bootstrapped else "No")
+    console.print(table)
 
 
 @database_app.command(

@@ -1,8 +1,10 @@
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import URL, Engine, create_engine, event
 
+from include.config import paths
 from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
 
 SUPPORTED_DB_TYPES = {
@@ -19,7 +21,10 @@ def database_url(database_config: Mapping[str, Any]) -> URL:
         raise ValueError(f"Unsupported database type: {db_type}")
 
     if db_type == "sqlite":
-        return URL.create(drivername, database=database_config["file"])
+        database_path = Path(database_config["file"])
+        if database_path != Path(":memory:") and not database_path.is_absolute():
+            database_path = paths.EXECUTABLE_ABSPATH / database_path
+        return URL.create(drivername, database=str(database_path))
 
     query = {}
     if db_type == "mysql":

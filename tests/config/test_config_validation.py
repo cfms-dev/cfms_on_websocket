@@ -679,6 +679,29 @@ require_client_cert = false
     assert config._data is previous_data
 
 
+def test_secret_initialization_uses_config_directory_sentinel(tmp_path, monkeypatch):
+    config_root = tmp_path / "server"
+    config_root.mkdir()
+    config_path = config_root / "config.toml"
+    config_path.write_text(
+        '[server]\nsecret_key = "existing-secret"\n\n'
+        '[security]\npepper = "existing-pepper"\n',
+        encoding="utf-8",
+    )
+    (config_root / "init").touch()
+    unrelated_working_directory = tmp_path / "elsewhere"
+    unrelated_working_directory.mkdir()
+    monkeypatch.chdir(unrelated_working_directory)
+    config = object.__new__(GlobalConfig)
+    config._config_path = config_path
+
+    config._init_secrets()
+
+    document = parse(config_path.read_text(encoding="utf-8"))
+    assert document["server"]["secret_key"] == "existing-secret"
+    assert document["security"]["pepper"] == "existing-pepper"
+
+
 def test_global_config_implements_read_only_mapping_contract():
     config = object.__new__(GlobalConfig)
     config._data = parse("[server]\nport = 8765")

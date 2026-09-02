@@ -18,7 +18,6 @@ __all__ = [
     "PROTOCOL_VERSION",
     "QUERY_CHUNK_SIZE",
     "REPLAY_PROTECTION_TIME_WINDOW_SECONDS",
-    "ROOT_ABSPATH",
     "ROOT_DIRECTORY_ID",
     "UPLOAD_TRANSFER_MAX_CHUNK_SIZE",
     "UPLOAD_TRANSFER_MIN_CHUNK_SIZE",
@@ -26,14 +25,10 @@ __all__ = [
     "USERNAME_MAX_LENGTH",
 ]
 
-from pathlib import Path
-
 from include.config.version import Version
 
 CORE_VERSION = Version("0.7.0")
 PROTOCOL_VERSION = 25
-
-ROOT_ABSPATH = Path(__file__).resolve().parents[2]
 
 # Event bus channels
 GLOBAL_BROADCAST_EVENT_CHANNEL = "system:broadcast"
