@@ -8,6 +8,7 @@ __all__ = [
     "ExtensionManifestError",
     "ExtensionMetadata",
     "collect_extension_flags",
+    "collect_scheduled_tasks",
     "discover_extensions",
     "get_loaded_extension_metadata",
     "load_extensions_from_directory",
@@ -48,6 +49,7 @@ from include.types import TrimmedNonEmptyString
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session as OrmSession
 
+    from include.scheduling.contracts import ScheduledTaskRegistration
     from include.transport.connection import ConnectionHandler
     from include.transport.request_handler import RequestHandler, Result
 
@@ -299,6 +301,13 @@ class ServerHookSpecs(ABC):
 
         Should return a set of string flags that are currently enabled.
         """
+
+    @hookspec
+    @abstractmethod
+    def ext_register_scheduled_tasks(
+        self,
+    ) -> tuple["ScheduledTaskRegistration", ...]:
+        """Register trusted scheduled task types owned by this extension."""
 
     @hookspec
     @abstractmethod
@@ -635,6 +644,16 @@ def collect_extension_flags() -> list[str]:
 
 def get_loaded_extension_metadata() -> tuple[ExtensionMetadata, ...]:
     return tuple(_loaded_extension_metadata.values())
+
+
+def collect_scheduled_tasks():
+    from include.scheduling.registry import ScheduledTaskRegistry
+
+    registry = ScheduledTaskRegistry()
+    for registrations in pm.hook.ext_register_scheduled_tasks():
+        for registration in registrations:
+            registry.register(registration)
+    return registry
 
 
 pm = pluggy.PluginManager("cfms")

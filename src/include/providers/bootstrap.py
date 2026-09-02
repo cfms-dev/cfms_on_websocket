@@ -1,5 +1,10 @@
 from include.config.settings import global_config
-from include.config.validation import AdmissionControlPolicy, S3StoragePolicy
+from include.config.validation import (
+    AdmissionControlPolicy,
+    S3StoragePolicy,
+    SchedulingPolicy,
+    get_enabled_extensions,
+)
 from include.providers.manager import ProviderManager
 from include.providers.storage import LocalStorageProvider
 
@@ -103,3 +108,22 @@ def initialize_providers(config=global_config) -> None:
             )
 
     ProviderManager().register(event_bus_provider)
+
+    if "scheduling" in get_enabled_extensions(config):
+        match config["provider"].get("scheduling", "local"):
+            case "local":
+                from include.providers.scheduling import LocalSchedulingProvider
+
+                scheduling_provider = LocalSchedulingProvider(
+                    SchedulingPolicy.from_config(config)
+                )
+            case "redis":
+                from include.providers.scheduling.redis import RedisSchedulingProvider
+
+                scheduling_provider = RedisSchedulingProvider.from_config(config)
+            case _:
+                raise ValueError(
+                    "Unsupported scheduling provider type: "
+                    f"{config['provider']['scheduling']}"
+                )
+        ProviderManager().register(scheduling_provider)

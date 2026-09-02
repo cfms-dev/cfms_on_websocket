@@ -373,6 +373,7 @@ def test_bundled_extension_catalog_is_valid():
         "brute_force_lockdown",
         "http_api",
         "oidc_sso",
+        "scheduling",
     }
 
 
