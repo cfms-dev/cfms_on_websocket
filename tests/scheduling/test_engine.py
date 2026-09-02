@@ -62,6 +62,12 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
     _schedule(factory)
     policy = SchedulingPolicy(misfire_grace_seconds=300)
     calls = []
+    audits = []
+    monkeypatch.setattr(
+        scheduling_engine,
+        "log_audit",
+        lambda action, result, **values: audits.append((action, result, values)),
+    )
     registry = ScheduledTaskRegistry(
         [
             ScheduledTaskRegistration(
@@ -92,6 +98,8 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
         assert execution.result == {"recorded": 7}
         assert schedule.active_execution_id is None
         assert calls == [(execution.id, 7)]
+        assert audits[0][0:2] == ("scheduled_task_execute", 0)
+        assert audits[0][2]["data"]["execution_id"] == execution.id
 
 
 def test_due_occurrences_coalesce_while_execution_is_active(monkeypatch):

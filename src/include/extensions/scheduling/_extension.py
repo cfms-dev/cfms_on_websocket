@@ -4,10 +4,12 @@ from include.extensions.manager import (
 )
 from include.providers.manager import ProviderManager
 
+from .handlers import HANDLERS
+
 
 @hookimpl
 def ext_register_handlers():
-    return {}
+    return HANDLERS
 
 
 @hookimpl

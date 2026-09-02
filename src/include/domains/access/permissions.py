@@ -39,6 +39,8 @@ class Permissions(StrEnum):
     """
     DEBUGGING = "debugging"
     DIAGNOSTICS = "diagnostics"
+    VIEW_SCHEDULES = "view_schedules"
+    MANAGE_SCHEDULES = "manage_schedules"
 
     # User management
     CREATE_USER = "create_user"

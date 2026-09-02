@@ -14,6 +14,7 @@ from include.database.models.scheduling import (
     SchedulingRuntimeState,
 )
 from include.database.session import Session
+from include.domains.operations.commands.audit import log_audit
 from include.scheduling.contracts import ScheduledTaskContext
 from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import advance_trigger, build_trigger
@@ -238,6 +239,8 @@ def refresh_execution_lease(
 
 def _release_schedule_execution(session, schedule: Schedule, generation: int) -> None:
     schedule.active_execution_id = None
+    if schedule.status == "deleted":
+        return
     if schedule.pending_scheduled_for is not None:
         pending = schedule.pending_scheduled_for
         schedule.pending_scheduled_for = None
@@ -364,10 +367,30 @@ def run_claimed_execution(
         )
         result_data = {} if result is None else result.data
         result_data = orjson.loads(orjson.dumps(result_data))
-        complete_execution(claim, generation, result_data)
+        completed = complete_execution(claim, generation, result_data)
+        if completed:
+            try:
+                log_audit(
+                    "scheduled_task_execute",
+                    0,
+                    target=(
+                        claim.schedule_id
+                        if result is None or result.target is None
+                        else result.target
+                    ),
+                    data={
+                        "execution_id": claim.id,
+                        "task_name": claim.task_name,
+                        "scheduled_for": claim.scheduled_for,
+                        "attempt": claim.attempt,
+                        "result": result_data,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - audit cannot undo task effects.
+                logger.exception(f"Failed to audit scheduled execution {claim.id}")
     except Exception as exc:  # noqa: BLE001 - task boundary records and retries failures.
         logger.exception(f"Scheduled task execution {claim.id} failed")
-        fail_execution(
+        failed = fail_execution(
             claim,
             generation,
             registration.max_attempts,
@@ -375,6 +398,22 @@ def run_claimed_execution(
             registration.maximum_backoff_seconds,
             type(exc).__name__,
         )
+        if failed:
+            try:
+                log_audit(
+                    "scheduled_task_execute",
+                    500,
+                    target=claim.schedule_id,
+                    data={
+                        "execution_id": claim.id,
+                        "task_name": claim.task_name,
+                        "scheduled_for": claim.scheduled_for,
+                        "attempt": claim.attempt,
+                        "error": type(exc).__name__,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - preserve the task failure.
+                logger.exception(f"Failed to audit scheduled execution {claim.id}")
     finally:
         heartbeat_stop.set()
         heartbeat.join(timeout=policy.lease_refresh_seconds + 1)

@@ -75,6 +75,7 @@ class TestSystemManagement:
             "component_versions",
             "database",
             "providers",
+            "scheduling",
             "extensions",
             "extension_flags",
             "lockdown",
@@ -83,7 +84,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 25,
+            "protocol_version": 26,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {
@@ -116,7 +117,9 @@ class TestSystemManagement:
             "caching": "memory",
             "event_bus": "local",
             "rate_limit": "memory",
+            "scheduling": "local",
         }
+        assert diagnostics["scheduling"] == {"enabled": False}
         assert diagnostics["extensions"][0] == {
             "identifier": "builtin",
             "name": "CFMS Built-in Extension",

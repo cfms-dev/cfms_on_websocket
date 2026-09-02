@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from include.config.settings import global_config
+from include.config.validation import get_enabled_extensions
 from include.database.models.identity import User
 from include.database.session import Session, engine
 from include.domains.access.permissions import Permissions
@@ -22,6 +23,7 @@ from include.extensions.manager import (
     hookimpl,
 )
 from include.messages import Messages as smsg
+from include.providers.manager import ProviderManager
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     EmptyRequestDataModel,
@@ -59,6 +61,10 @@ def _component_versions() -> dict[str, str]:
         distributions["boto3"] = "boto3"
     if global_config["database"]["type"] == "mysql":
         distributions["mysql_connector_python"] = "mysql-connector-python"
+    if "scheduling" in get_enabled_extensions(global_config):
+        distributions["apscheduler"] = "APScheduler"
+        if provider_config.get("scheduling", "local") == "redis":
+            distributions["dramatiq"] = "dramatiq"
     return {
         component: distribution_version(distribution)
         for component, distribution in distributions.items()
@@ -105,6 +111,10 @@ class RequestDiagnosticsHandler(RequestHandler):
 
         lockdown_state = lockdown_state_manager.get_state()
         provider_config = global_config["provider"]
+        scheduling_enabled = "scheduling" in get_enabled_extensions(global_config)
+        scheduling_status = (
+            ProviderManager().scheduling.status() if scheduling_enabled else None
+        )
         diagnostics = {
             "schema_version": 1,
             "server": {
@@ -131,7 +141,18 @@ class RequestDiagnosticsHandler(RequestHandler):
                 "caching": provider_config["caching"],
                 "event_bus": provider_config["event_bus"],
                 "rate_limit": provider_config.get("rate_limit", "memory"),
+                "scheduling": provider_config.get("scheduling", "local"),
             },
+            "scheduling": (
+                {
+                    "enabled": True,
+                    "available": scheduling_status.available,
+                    "mode": scheduling_status.mode,
+                    "detail": scheduling_status.detail,
+                }
+                if scheduling_status is not None
+                else {"enabled": False}
+            ),
             "extensions": [
                 {
                     "identifier": metadata.identifier,
