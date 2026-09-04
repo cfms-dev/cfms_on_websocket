@@ -161,6 +161,7 @@ batch_size = 500
 
 [scheduling]
 # Runtime settings for the always-on scheduling core.
+# Worker threads started by each server instance for either scheduling Provider.
 worker_threads = 4
 poll_interval_seconds = 1.0
 execution_lease_seconds = 60

@@ -42,7 +42,7 @@ return 0
 
 
 class RedisSchedulingProvider(SchedulingProvider):
-    _broker: RedisBroker
+    _broker: RedisBroker | None
     _registry: ScheduledTaskRegistry
     _generation: int
 
@@ -54,15 +54,16 @@ class RedisSchedulingProvider(SchedulingProvider):
             "password": redis_config.get("password", "") or None,
             "db": redis_config.get("db", 0),
         }
-        self._client = redis.Redis(
-            **self._redis_config,
-            decode_responses=True,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-            health_check_interval=30,
-        )
+        self._client = self._create_client()
+        self._broker = None
         self._actor = None
-        self._last_error: str | None = None
+        self._worker: Worker | None = None
+        self._scheduler_thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._redis_error: str | None = None
+        self._runtime_error: str | None = None
+        self._started = False
+        self._closed = False
         self._state_lock = threading.Lock()
 
     @classmethod
@@ -70,39 +71,119 @@ class RedisSchedulingProvider(SchedulingProvider):
         return cls(config["redis"], SchedulingPolicy.from_config(config))
 
     def start(self, registry: ScheduledTaskRegistry) -> None:
-        self._registry = registry
-        self._generation = ensure_runtime_state("redis")
+        with self._state_lock:
+            if self._started:
+                return
+            if self._closed:
+                self._client = self._create_client()
+                self._closed = False
+
+            self._registry = registry
+            self._generation = ensure_runtime_state("redis")
+            self._stop.clear()
+            self._ensure_actor(registry)
+            assert self._broker is not None
+            worker = Worker(
+                self._broker,
+                queues={"cfms-scheduled-tasks"},
+                worker_threads=self._policy.worker_threads,
+            )
+            scheduler_thread = threading.Thread(
+                target=self._scheduler_loop,
+                args=(registry, self._generation),
+                name="schedule-redis-coordinator",
+                daemon=True,
+            )
+            self._worker = worker
+            self._scheduler_thread = scheduler_thread
+            try:
+                worker.start()
+                scheduler_thread.start()
+            except Exception:
+                self._stop.set()
+                self._worker = None
+                self._scheduler_thread = None
+                self._actor = None
+                broker = self._broker
+                self._broker = None
+                if worker.workers or worker.consumers:
+                    worker.stop(timeout=self._policy.shutdown_grace_seconds * 1000)
+                broker.close()
+                raise
+            self._started = True
+
         try:
             self._ping()
         except redis.RedisError:
             logger.warning("Starting with the Redis scheduling provider degraded")
 
     def shutdown(self) -> None:
-        if self._broker is not None:
-            self._broker.close()
-        self._client.close()
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._started = False
+            self._stop.set()
+            scheduler_thread = self._scheduler_thread
+            worker = self._worker
+            broker = self._broker
+            self._scheduler_thread = None
+            self._worker = None
+            self._broker = None
+            self._actor = None
+
+        deadline = time.monotonic() + self._policy.shutdown_grace_seconds
+        try:
+            if scheduler_thread is not None:
+                scheduler_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            if worker is not None:
+                worker.stop(timeout=max(0, int((deadline - time.monotonic()) * 1000)))
+        finally:
+            try:
+                if broker is not None:
+                    broker.close()
+            finally:
+                self._client.close()
 
     def notify_schedule_change(self) -> None:
         try:
             self._client.publish(_NOTIFY_CHANNEL, "1")
             with self._state_lock:
-                self._last_error = None
+                self._redis_error = None
         except redis.RedisError as exc:
             with self._state_lock:
-                self._last_error = type(exc).__name__
+                self._redis_error = type(exc).__name__
             logger.warning("Failed to notify Redis scheduler of a schedule change")
 
     def status(self) -> SchedulingProviderStatus:
+        with self._state_lock:
+            started = self._started
+            scheduler_thread = self._scheduler_thread
+        if not started or scheduler_thread is None or not scheduler_thread.is_alive():
+            return SchedulingProviderStatus(
+                available=False,
+                mode="redis",
+                detail="not_running",
+            )
         try:
             self._ping()
         except redis.RedisError:
             pass
         with self._state_lock:
-            detail = self._last_error
+            detail = self._runtime_error or self._redis_error
         return SchedulingProviderStatus(
             available=detail is None,
             mode="redis",
             detail=detail,
+        )
+
+    def _create_client(self):
+        return redis.Redis(
+            **self._redis_config,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            health_check_interval=30,
         )
 
     def _ping(self) -> None:
@@ -110,10 +191,10 @@ class RedisSchedulingProvider(SchedulingProvider):
             self._client.ping()
         except redis.RedisError as exc:
             with self._state_lock:
-                self._last_error = type(exc).__name__
+                self._redis_error = type(exc).__name__
             raise
         with self._state_lock:
-            self._last_error = None
+            self._redis_error = None
 
     def _ensure_actor(self, registry: ScheduledTaskRegistry):
         if self._actor is not None:
@@ -168,22 +249,22 @@ class RedisSchedulingProvider(SchedulingProvider):
             self._actor.send(execution_id, generation)
             mark_dispatched(execution_id, generation)
 
-    def run_scheduler(self, registry: ScheduledTaskRegistry) -> None:
-        """Run a Redis-elected scheduler candidate until interrupted.
+    def _scheduler_loop(self, registry: ScheduledTaskRegistry, generation: int) -> None:
+        """Run this Provider's Redis-elected scheduler candidate.
 
         Redis coordinates leadership and wake-ups, while the application database
         remains authoritative for schedules, executions, and dispatch state.
         """
-        generation = ensure_runtime_state("redis")
-        self._ensure_actor(registry)
         token = secrets.token_hex(32)
         lease_ttl_ms = max(10_000, int(self._policy.poll_interval_seconds * 5_000))
         leader = False
-        pubsub = self._client.pubsub(ignore_subscribe_messages=True)
-        pubsub.subscribe(_NOTIFY_CHANNEL)
+        pubsub = None
         try:
-            while True:
+            while not self._stop.is_set():
                 try:
+                    if pubsub is None:
+                        pubsub = self._client.pubsub(ignore_subscribe_messages=True)
+                        pubsub.subscribe(_NOTIFY_CHANNEL)
                     # The random token makes renewal conditional: a candidate whose
                     # lease expired cannot renew or release its successor's lease.
                     if leader:
@@ -210,41 +291,28 @@ class RedisSchedulingProvider(SchedulingProvider):
                         enqueue_due_schedules(generation, self._policy)
                         self._dispatch_pending(generation)
                     with self._state_lock:
-                        self._last_error = None
+                        self._redis_error = None
+                        self._runtime_error = None
                     pubsub.get_message(
                         timeout=min(self._policy.poll_interval_seconds, 1.0)
                     )
-                except redis.RedisError as exc:
+                except Exception as exc:  # noqa: BLE001 - provider degrades and retries.
                     leader = False
                     with self._state_lock:
-                        self._last_error = type(exc).__name__
-                    logger.exception("Redis scheduling coordinator is unavailable")
-                    time.sleep(self._policy.poll_interval_seconds)
-        except KeyboardInterrupt:
-            return
+                        if isinstance(exc, redis.RedisError):
+                            self._redis_error = type(exc).__name__
+                        else:
+                            self._runtime_error = type(exc).__name__
+                    logger.exception("Redis scheduling coordinator iteration failed")
+                    if pubsub is not None:
+                        pubsub.close()
+                        pubsub = None
+                    self._stop.wait(self._policy.poll_interval_seconds)
         finally:
             if leader:
                 try:
                     self._client.eval(_RELEASE_LEASE, 1, _LEADER_KEY, token)
                 except redis.RedisError:
                     logger.exception("Failed to release Redis scheduler leadership")
-            pubsub.close()
-
-    def run_worker(self, registry: ScheduledTaskRegistry) -> None:
-        """Run a Dramatiq worker for the scheduling queue until interrupted."""
-        self._generation = ensure_runtime_state("redis")
-        self._ensure_actor(registry)
-        worker = Worker(
-            self._broker,
-            queues={"cfms-scheduled-tasks"},
-            worker_threads=self._policy.worker_threads,
-        )
-        worker.start()
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            return
-        finally:
-            worker.stop(timeout=self._policy.shutdown_grace_seconds * 1000)
-            worker.join()
+            if pubsub is not None:
+                pubsub.close()

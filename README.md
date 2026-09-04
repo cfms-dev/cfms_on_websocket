@@ -57,7 +57,8 @@ uv sync --extra cluster --extra mysql
 Durable scheduling is always part of the server core, and the embedded local
 Provider needs no extra dependencies. Enable the `scheduling` extension only to
 expose its WebSocket management actions. Distributed Redis coordination and
-Dramatiq workers require `ext-scheduling-cluster`. See
+Dramatiq task execution requires `ext-scheduling-cluster`; every Redis-backed
+server instance embeds its own scheduler candidate and worker pool. See
 [docs/SCHEDULING.md](docs/SCHEDULING.md) for deployment and task-registration
 contracts.
 

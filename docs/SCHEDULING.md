@@ -33,9 +33,10 @@ leases, retries, and results are stored in the application database. A stopped
 server therefore does not lose schedules; eligible missed occurrences are
 coalesced when the server starts again.
 
-This is the complete single-instance deployment: start CFMS normally. Do not run
-`cfms-jobs`, and do not deploy Redis merely for scheduling. The server runtime
-lock still enforces one WebSocket process for the configured runtime root.
+This is the complete single-instance deployment: start CFMS normally. No auxiliary
+scheduler or worker service is required, and Redis should not be deployed merely
+for scheduling. The server runtime lock still enforces one WebSocket process for
+the configured runtime root.
 
 For a distributed deployment:
 
@@ -45,30 +46,27 @@ uv sync --extra ext-scheduling-cluster
 
 Set `provider.scheduling = "redis"`, configure `[redis]`, and use a shared MySQL
 or PostgreSQL application database. SQLite is intentionally rejected for this
-mode. Start the WebSocket server plus one or more candidates and workers:
+mode. Start CFMS normally on every application node; no separate scheduled-task
+processes are used.
 
-```bash
-uv run cfms-jobs scheduler --server-root /srv/cfms/src
-uv run cfms-jobs worker --server-root /srv/cfms/src
-```
-
-Every scheduler process is a candidate. A Redis lease with compare-and-renew and
-compare-and-delete semantics elects one active scheduler. Redis Pub/Sub reduces
-change latency, while periodic SQL reconciliation remains authoritative if a
-notification is lost. Dramatiq transports execution IDs; workers revalidate the
-database generation, task contract, payload, and execution lease before running.
+Every WebSocket server embeds one scheduler candidate and a Dramatiq worker pool
+containing `scheduling.worker_threads` threads. A Redis lease with
+compare-and-renew and compare-and-delete semantics elects one active scheduler
+across the cluster. Total worker capacity therefore grows with the number of CFMS
+server instances. Redis Pub/Sub reduces change latency, while periodic SQL
+reconciliation remains authoritative if a notification is lost. Dramatiq
+transports execution IDs; workers revalidate the database generation, task
+contract, payload, and execution lease before running.
 
 Redis outages leave the WebSocket server running in a degraded state. Scheduling
-management actions return 503 until Redis recovers. Scheduler and worker processes
-retry their infrastructure connections; the server never silently falls back to
-the local Provider.
+management actions return 503 until Redis recovers. The Provider retries its
+infrastructure connections; the server never silently falls back to the local
+Provider.
 
-Run one or more scheduler candidates and one or more workers under the platform's
-service manager. Windows paths are accepted by `--server-root` as well. All jobs
-processes hold a shared jobs runtime lock; release deployment, rollback, and
-recovery take an exclusive lock and therefore refuse to proceed until every jobs
-process has stopped. Stop the WebSocket server and all jobs services before those
-operations.
+The runtime lock prevents deployment, rollback, or recovery while the server using
+that runtime root is active. In a distributed deployment, stop every CFMS server
+that shares the application database before changing the scheduling Provider,
+running database migrations, or switching releases.
 
 ## Task registration
 

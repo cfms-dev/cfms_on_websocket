@@ -7,8 +7,6 @@ import pytest
 from include.runtime_lock import (
     RuntimeLock,
     RuntimeLockError,
-    deployment_runtime_lock,
-    jobs_runtime_lock,
     server_runtime_lock,
 )
 
@@ -54,21 +52,9 @@ def test_server_runtime_lock_allows_deployment_recovery(tmp_path: Path) -> None:
         assert (tmp_path / ".maintenance" / "server.lock").is_file()
 
 
-def test_jobs_runtime_locks_are_shared(tmp_path: Path) -> None:
-    with jobs_runtime_lock(tmp_path), jobs_runtime_lock(tmp_path):
-        assert (tmp_path / ".maintenance" / "jobs.lock").is_file()
-
-
-def test_server_and_jobs_runtime_locks_can_coexist(tmp_path: Path) -> None:
-    with server_runtime_lock(tmp_path), jobs_runtime_lock(tmp_path):
-        assert (tmp_path / ".maintenance" / "server.lock").is_file()
-        assert (tmp_path / ".maintenance" / "jobs.lock").is_file()
-
-
-def test_deployment_lock_rejects_running_jobs(tmp_path: Path) -> None:
-    with jobs_runtime_lock(tmp_path):
+def test_server_runtime_lock_blocks_maintenance_for_the_same_root(
+    tmp_path: Path,
+) -> None:
+    with server_runtime_lock(tmp_path):
         with pytest.raises(RuntimeLockError):
-            deployment_runtime_lock(tmp_path).acquire()
-
-    with deployment_runtime_lock(tmp_path):
-        assert (tmp_path / ".maintenance" / "jobs.lock").is_file()
+            server_runtime_lock(tmp_path).acquire()
