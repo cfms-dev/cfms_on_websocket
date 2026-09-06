@@ -110,7 +110,11 @@ def _task_permission_allowed(
     permissions: set[Permissions], task_name: str, registry
 ) -> bool:
     registration = registry.get(task_name)
-    return registration is not None and registration.required_permission in permissions
+    return (
+        registration is not None
+        and registration.user_schedulable
+        and registration.required_permission in permissions
+    )
 
 
 class RequestListScheduledTaskTypesHandler(RequestHandler):
@@ -133,7 +137,8 @@ class RequestListScheduledTaskTypesHandler(RequestHandler):
                 "max_attempts": registration.max_attempts,
             }
             for registration in registry.all()
-            if registration.required_permission in permissions
+            if registration.user_schedulable
+            and registration.required_permission in permissions
         ]
         handler.conclude_request(200, {"items": items}, "Scheduled task types listed")
         return Result(code=0, data={"count": len(items)}, username=handler.username)
@@ -195,7 +200,11 @@ class RequestGetScheduleHandler(RequestHandler):
         registry = collect_scheduled_tasks()
         with Session() as session:
             schedule = session.get(Schedule, handler.data["id"])
-            if schedule is None or schedule.status == "deleted":
+            if (
+                schedule is None
+                or schedule.status == "deleted"
+                or schedule.system_managed
+            ):
                 handler.conclude_request(404, {}, "Schedule not found")
                 return Result(code=404, username=handler.username)
             response = schedule_response(schedule, registry)
@@ -231,7 +240,7 @@ class RequestListSchedulesHandler(RequestHandler):
 
         registry = collect_scheduled_tasks()
         with Session() as session:
-            query = select(Schedule)
+            query = select(Schedule).where(Schedule.system_managed.is_(False))
             if not include_deleted:
                 query = query.where(Schedule.status != "deleted")
             if cursor is not None:
@@ -275,7 +284,7 @@ class RequestUpdateScheduleHandler(RequestHandler):
         registry = collect_scheduled_tasks()
         with Session() as session:
             current = session.get(Schedule, handler.data["id"])
-            if current is None or current.status == "deleted":
+            if current is None or current.status == "deleted" or current.system_managed:
                 handler.conclude_request(404, {}, "Schedule not found")
                 return Result(code=404, username=handler.username)
             task_name = handler.data.get("task_name", current.task_name)
@@ -335,6 +344,11 @@ class RequestDeleteScheduleHandler(RequestHandler):
             return error
         if Permissions.MANAGE_SCHEDULES not in _permissions(handler.username):
             return _deny(handler, handler.username)
+        with Session() as session:
+            schedule = session.get(Schedule, handler.data["id"])
+            if schedule is not None and schedule.system_managed:
+                handler.conclude_request(404, {}, "Schedule not found")
+                return Result(code=404, username=handler.username)
         try:
             with Session() as session, session.begin():
                 delete_schedule(

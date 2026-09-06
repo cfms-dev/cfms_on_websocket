@@ -99,6 +99,7 @@ class TestSystemManagement:
         expected_components = {
             component: distribution_version(distribution)
             for component, distribution in {
+                "apscheduler": "APScheduler",
                 "cryptography": "cryptography",
                 "orjson": "orjson",
                 "pluggy": "pluggy",
@@ -119,7 +120,11 @@ class TestSystemManagement:
             "rate_limit": "memory",
             "scheduling": "local",
         }
-        assert diagnostics["scheduling"] == {"enabled": False}
+        assert diagnostics["scheduling"] == {
+            "available": True,
+            "mode": "local",
+            "detail": None,
+        }
         assert diagnostics["extensions"][0] == {
             "identifier": "builtin",
             "name": "CFMS Built-in Extension",

@@ -254,6 +254,7 @@ version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "apscheduler" },
     { name = "argon2-cffi" },
     { name = "cryptography" },
     { name = "filetype" },
@@ -289,11 +290,7 @@ ext-oidc-sso = [
     { name = "authlib" },
     { name = "requests" },
 ]
-ext-scheduling = [
-    { name = "apscheduler" },
-]
 ext-scheduling-cluster = [
-    { name = "apscheduler" },
     { name = "dramatiq", extra = ["redis"] },
 ]
 mysql = [
@@ -314,8 +311,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.18.4" },
-    { name = "apscheduler", marker = "extra == 'ext-scheduling'", specifier = ">=3.11.3,<4" },
-    { name = "apscheduler", marker = "extra == 'ext-scheduling-cluster'", specifier = ">=3.11.3,<4" },
+    { name = "apscheduler", specifier = ">=3.11.3,<4" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "authlib", marker = "extra == 'ext-oidc-sso'", specifier = ">=1.7.2" },
     { name = "boto3", marker = "extra == 'cluster'", specifier = ">=1.43.9" },
@@ -345,7 +341,7 @@ requires-dist = [
     { name = "watchdog", specifier = ">=6.0.0" },
     { name = "websockets", specifier = ">=15.0.1" },
 ]
-provides-extras = ["cluster", "mysql", "ext-oidc-sso", "ext-http-api", "ext-scheduling", "ext-scheduling-cluster"]
+provides-extras = ["cluster", "mysql", "ext-oidc-sso", "ext-http-api", "ext-scheduling-cluster"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -2,6 +2,7 @@ from include.scheduling.contracts import (
     ScheduledTaskContext,
     ScheduledTaskRegistration,
     ScheduledTaskResult,
+    SystemScheduleDefinition,
 )
 from include.scheduling.registry import ScheduledTaskRegistry
 
@@ -10,4 +11,5 @@ __all__ = [
     "ScheduledTaskRegistration",
     "ScheduledTaskRegistry",
     "ScheduledTaskResult",
+    "SystemScheduleDefinition",
 ]

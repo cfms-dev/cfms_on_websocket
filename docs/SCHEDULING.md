@@ -1,20 +1,26 @@
 # Scheduled-task infrastructure
 
-The optional `scheduling` extension provides durable schedule management and
-execution. It does not register file, account, lockdown, or other business tasks;
-core code and trusted extensions register those task types explicitly when they
-are implemented.
+Durable scheduling is always-on core infrastructure. Core code and trusted
+extensions register task types, and the configured scheduling Provider starts
+whether or not the `scheduling` extension is enabled. The extension controls only
+the six WebSocket query and configuration actions and its extension flag; disabling
+it does not pause or delete system schedules or previously persisted user schedules.
+
+The core and built-in extensions register hidden system schedules for execution
+history, expired permissions, abandoned uploads, authentication throttle records,
+and document creation/download risk state. The scheduler creates and reconciles
+these schedules from current configuration. System schedules have no user owner,
+are not returned by the management API, and cannot be created, changed, or deleted
+through that API.
 
 ## Installation and configuration
 
-For a single server process without Redis:
-
-```powershell
-uv sync --extra ext-scheduling
-```
+For a single server process without Redis, the normal core installation is
+sufficient:
 
 ```toml
 [extensions]
+# Optional: expose the scheduling management API.
 enabled = ["scheduling"]
 
 [provider]
@@ -67,9 +73,24 @@ operations.
 ## Task registration
 
 Trusted extensions implement `ext_register_scheduled_tasks()` and return immutable
-`ScheduledTaskRegistration` values. Names use `<extension_id>.<task_name>` and
+`ScheduledTaskRegistration` values. Core registrations are installed first, then
+registrations from every loaded extension are merged; duplicate names fail startup.
+Names use `<owner>.<task>` (for example `core`, `builtin`, or an extension owner) and
 payloads use a strict Pydantic model. Arbitrary import paths are never persisted or
 executed.
+
+An internal task may set `user_schedulable=False` and provide a
+`system_schedule` factory returning `SystemScheduleDefinition`. The active
+scheduler treats that definition as desired state, preserves the interval anchor,
+and updates the persisted schedule when its configuration changes. Removing the
+registration disables its system schedule. Do not use this mechanism for
+event-driven queues such as file deduplication.
+
+User-configurable tasks must declare `required_permission`. Pure system tasks may
+omit it because they are never offered to users. A persisted user schedule remains
+active while the management extension is disabled; if its owning extension is not
+loaded or its contract version no longer matches, execution reports registration
+unavailable under the normal contract rules.
 
 ```python
 from pydantic import BaseModel
@@ -121,7 +142,7 @@ updated, or re-enabled.
 - Each attempt owns a renewable database lease. Crashed work is reclaimable after
   expiry and uses the same deterministic execution ID.
 - Completed execution history older than `history_retention_days` is removed in
-  bounded hourly batches by the active scheduler.
+  bounded hourly batches by the hidden `core.schedule_history_cleanup` task.
 - A one-time schedule becomes `completed` after success and `failed` after its final
   failed attempt. Failure of one recurring occurrence does not disable the schedule.
 
@@ -140,6 +161,11 @@ Protocol version 26 adds:
 - `list_schedules`
 - `update_schedule`
 - `delete_schedule`
+
+These actions are registered only when the `scheduling` extension is enabled. They
+expose only user-managed schedules and task types. System-managed
+maintenance remains observable through execution logs and audit records rather
+than through mutable schedule resources.
 
 Reading requires `view_schedules`. Mutations require `manage_schedules`; creation and
 updates also require the permission declared by the selected task type. Updates and

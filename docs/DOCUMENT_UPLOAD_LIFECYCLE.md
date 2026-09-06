@@ -44,11 +44,12 @@ Task deadlines are enforced whenever a task is claimed and while an active
 transfer is running. This makes the hard transfer deadline part of the task
 state machine instead of depending on a periodic background thread.
 
-Abandoned upload resources are reclaimed separately. The server performs one
-sweep at startup, targets the affected document or name before creating another
-upload reservation, and opportunistically processes a bounded batch at the
-configured cleanup interval when document upload requests arrive. A task that
-has already been marked `EXPIRED` remains eligible for this later reclamation.
+Abandoned upload resources are reclaimed separately. The hidden
+`builtin.upload_cleanup` system schedule immediately processes a bounded batch at
+startup and then at the configured cleanup interval. Request handling still targets
+the affected document or name before creating or claiming an upload because that
+check is part of request correctness. A task that has already been marked `EXPIRED`
+remains eligible for this later reclamation.
 For an abandoned later revision, cleanup removes only that inactive revision
 and repairs `current_revision`. If a document has never acquired an active
 revision, it permanently purges the empty document shell and releases the name.
@@ -412,8 +413,9 @@ Use shorter start deadlines and lower reservation caps when names are scarce or
 abuse is common. Increase the hard deadline for reliably authenticated users
 who upload large files over slow links. Keep the idle timeout long enough for
 normal network jitter. Cleanup of the document or name being accessed is not
-delayed; the interval controls bounded opportunistic sweeps of unrelated
-expired uploads and the minimum interval between stale risk-state cleanups.
+delayed; the interval controls the hidden abandoned-upload and creation-risk
+system schedules. Download risk state is cleaned every 60 seconds by its own
+system schedule.
 
 Keep `mode = "observe"` before enforcing a new policy in production. Observe
 mode maintains the same shadow buckets and denial history and logs

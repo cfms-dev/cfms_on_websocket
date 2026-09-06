@@ -9,9 +9,11 @@ import os
 import socket
 import ssl
 import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 
 from loguru import logger
-from websockets.sync.server import serve
+from websockets.sync.server import Server, serve
 
 import include.database.models  # noqa: F401
 from include.config.constants import (
@@ -39,9 +41,6 @@ from include.database.models.files import File
 from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
-from include.domains.documents.commands.upload_cleanup import (
-    try_reclaim_abandoned_uploads,
-)
 from include.domains.documents.file_task_signals import on_file_task_event
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
@@ -50,6 +49,7 @@ from include.domains.security.guards.request_rate_control import (
 )
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
 from include.extensions.manager import (
+    collect_scheduled_tasks,
     load_extensions_from_directory,
     pm,
 )
@@ -413,6 +413,19 @@ def prepare_logger():
     )
 
 
+@contextmanager
+def _server_lifecycle(server: Server) -> Generator[None]:
+    try:
+        pm.hook.ext_on_startup(server=server)
+        ProviderManager().scheduling.start(collect_scheduled_tasks())
+        yield
+    finally:
+        try:
+            ProviderManager().scheduling.shutdown()
+        finally:
+            pm.hook.ext_on_shutdown()
+
+
 def _run_server():
     prepare_logger()
 
@@ -486,8 +499,6 @@ def _run_server():
         host, global_config["server"]["dualstack_ipv6"]
     )
 
-    try_reclaim_abandoned_uploads()
-
     try:
         with serve(
             handle_connection,
@@ -505,15 +516,12 @@ def _run_server():
                 if server.socket.family == socket.AF_INET6
                 else bound_host
             )
-            try:
-                pm.hook.ext_on_startup(server=server)
+            with _server_lifecycle(server):
                 logger.info(
                     "CFMS WebSocket server started at "
                     f"wss://{display_host}:{bound_address[1]}"
                 )
                 server.serve_forever()
-            finally:
-                pm.hook.ext_on_shutdown()
     finally:
         global_config.stop()
 

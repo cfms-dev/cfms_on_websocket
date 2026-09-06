@@ -3,7 +3,7 @@ debug = false
 
 [extensions]
 # Extension identifiers to load, in registration order. Changes require a restart.
-# Add "scheduling" after installing ext-scheduling or ext-scheduling-cluster.
+# Add "scheduling" only to expose schedule query and configuration actions.
 enabled = []
 
 # Automatically enter lockdown after a service-wide burst of failed local
@@ -160,7 +160,7 @@ retention_days = 365
 batch_size = 500
 
 [scheduling]
-# Runtime settings for the optional scheduling extension.
+# Runtime settings for the always-on scheduling core.
 worker_threads = 4
 poll_interval_seconds = 1.0
 execution_lease_seconds = 60
@@ -185,7 +185,7 @@ start_timeout_seconds = 3600
 max_duration_seconds = 86400
 # Abort an upload when no frame arrives within this interval.
 idle_timeout_seconds = 300
-# Minimum interval between opportunistic abandoned-upload cleanup batches.
+# Interval for the hidden abandoned-upload and creation-risk cleanup schedules.
 cleanup_interval_seconds = 60
 # Maximum number of empty, not-yet-uploaded documents per creator.
 max_pending_documents_per_creator = 16

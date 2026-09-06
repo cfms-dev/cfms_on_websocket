@@ -108,22 +108,20 @@ def initialize_providers(config=global_config) -> None:
 
     ProviderManager().register(event_bus_provider)
 
-    enabled_extensions = config.get("extensions", {}).get("enabled", ())
-    if "scheduling" in enabled_extensions:
-        match config["provider"].get("scheduling", "local"):
-            case "local":
-                from include.providers.scheduling import LocalSchedulingProvider
+    match config["provider"].get("scheduling", "local"):
+        case "local":
+            from include.providers.scheduling import LocalSchedulingProvider
 
-                scheduling_provider = LocalSchedulingProvider(
-                    SchedulingPolicy.from_config(config)
-                )
-            case "redis":
-                from include.providers.scheduling.redis import RedisSchedulingProvider
+            scheduling_provider = LocalSchedulingProvider(
+                SchedulingPolicy.from_config(config)
+            )
+        case "redis":
+            from include.providers.scheduling.redis import RedisSchedulingProvider
 
-                scheduling_provider = RedisSchedulingProvider.from_config(config)
-            case _:
-                raise ValueError(
-                    "Unsupported scheduling provider type: "
-                    f"{config['provider']['scheduling']}"
-                )
-        ProviderManager().register(scheduling_provider)
+            scheduling_provider = RedisSchedulingProvider.from_config(config)
+        case _:
+            raise ValueError(
+                "Unsupported scheduling provider type: "
+                f"{config['provider']['scheduling']}"
+            )
+    ProviderManager().register(scheduling_provider)

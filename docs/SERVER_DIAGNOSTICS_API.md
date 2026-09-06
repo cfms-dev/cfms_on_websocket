@@ -42,6 +42,7 @@ response is returned before the diagnostics permission check.
     "architecture": "AMD64"
   },
   "component_versions": {
+    "apscheduler": "3.11.3",
     "cryptography": "50.0.0",
     "orjson": "3.11.9",
     "pluggy": "1.6.0",
@@ -54,8 +55,10 @@ response is returned before the diagnostics permission check.
     "storage": "local",
     "caching": "memory",
     "event_bus": "local",
-    "rate_limit": "memory"
+    "rate_limit": "memory",
+    "scheduling": "local"
   },
+  "scheduling": {"available": true, "mode": "local", "detail": null},
   "extensions": [
     {"identifier": "builtin", "name": "CFMS Built-in Extension", "version": "0.5.0"}
   ],
@@ -64,8 +67,11 @@ response is returned before the diagnostics permission check.
 }
 ```
 
-Component versions are limited to the core allowlist. Redis, Boto3, or the
-MySQL connector is added only when its corresponding backend is configured.
+Component versions are limited to the core allowlist. APScheduler is always
+included. Redis, Boto3, the MySQL connector, or Dramatiq is added only when its
+corresponding backend is configured; Dramatiq appears only for the Redis scheduling
+Provider. `scheduling` reports the core runtime state independently of whether the
+management extension is enabled.
 Extension entries describe modules that completed registration, in load order.
 
 The response never includes filesystem paths, hostnames, IP addresses, ports,

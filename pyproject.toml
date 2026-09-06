@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.18.4",
+    "apscheduler>=3.11.3,<4",
     "argon2-cffi>=25.1.0",
     "cryptography>=46.0.3",
     "filetype>=1.2.0",
@@ -48,11 +49,7 @@ ext_http_api = [
     "fastapi>=0.141.1",
     "uvicorn>=0.52.4",
 ]
-ext-scheduling = [
-    "apscheduler>=3.11.3,<4",
-]
 ext-scheduling-cluster = [
-    "apscheduler>=3.11.3,<4",
     "dramatiq[redis]>=2.2,<3",
 ]
 

@@ -84,9 +84,15 @@ def advance_trigger(
     now: float,
     misfire_grace_seconds: int,
 ) -> TriggerAdvance:
+    """Coalesce eligible due fire times and return the first future fire time.
+
+    Occurrences before the grace cutoff are skipped; multiple eligible occurrences
+    collapse to the latest one so a delayed scheduler does not create a backlog.
+    """
     cutoff = now - misfire_grace_seconds
     candidate = dt.datetime.fromtimestamp(current_run_at, dt.UTC)
     if current_run_at < cutoff:
+        # Jump to the grace window instead of iterating through an unbounded outage.
         candidate = trigger.get_next_fire_time(
             None, dt.datetime.fromtimestamp(cutoff, dt.UTC)
         )
@@ -101,6 +107,8 @@ def advance_trigger(
             latest_due = candidate
         candidate = trigger.get_next_fire_time(candidate, now_datetime)
         iterations += 1
+        # Protect against malformed/custom triggers that fail to make useful
+        # progress while still keeping legitimate dense schedules bounded.
         if iterations > 100_000:
             raise RuntimeError(
                 "Trigger produced too many occurrences in one grace window"

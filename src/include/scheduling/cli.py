@@ -25,8 +25,6 @@ def _load_runtime(server_root: Path | None):
     from include.providers.manager import ProviderManager
     from include.providers.scheduling.redis import RedisSchedulingProvider
 
-    if "scheduling" not in get_enabled_extensions(global_config):
-        raise typer.BadParameter("The scheduling extension is not enabled")
     if global_config["provider"].get("scheduling", "local") != "redis":
         raise typer.BadParameter(
             "cfms-jobs processes require provider.scheduling='redis'"

@@ -5,7 +5,7 @@ import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect, select
+from sqlalchemy import Boolean, String, column, create_engine, inspect, select, table
 
 from alembic import command
 from tests.support.config import reserve_local_port, write_test_config
@@ -91,6 +91,8 @@ def test_scheduling_permission_downgrade_preserves_preexisting_grants(
     tables = database_models.User.metadata.tables
     try:
         database_models.User.metadata.create_all(engine)
+        command.stamp(config, "head")
+        command.downgrade(config, "ab7efda19079")
         with engine.begin() as connection:
             connection.execute(
                 tables["user_groups"].insert(),
@@ -106,7 +108,6 @@ def test_scheduling_permission_downgrade_preserves_preexisting_grants(
                     "end_time": None,
                 },
             )
-        command.stamp(config, "ab7efda19079")
         command.upgrade(config, "head")
         command.downgrade(config, "ab7efda19079")
 
@@ -120,5 +121,96 @@ def test_scheduling_permission_downgrade_preserves_preexisting_grants(
             )
             assert "view_schedules" in permissions
             assert "manage_schedules" not in permissions
+    finally:
+        engine.dispose()
+
+
+def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src_dir = Path(__file__).resolve().parents[3] / "src"
+    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
+    write_test_config(tmp_path, reserve_local_port())
+    monkeypatch.chdir(tmp_path)
+
+    from include.database import models as database_models
+
+    config = Config(src_dir / "alembic.ini")
+    database_url = f"sqlite:///{(tmp_path / 'system-schedules.db').as_posix()}"
+    config.set_main_option("sqlalchemy.url", database_url)
+    engine = create_engine(database_url)
+    schedules = database_models.User.metadata.tables["schedules"]
+    schedule_rows = table(
+        "schedules",
+        column("id", String()),
+        column("system_managed", Boolean()),
+    )
+    try:
+        database_models.User.metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                schedules.insert(),
+                [
+                    {
+                        "id": "user-schedule",
+                        "task_name": "test.record",
+                        "task_contract_version": 1,
+                        "payload": {},
+                        "trigger_type": "interval",
+                        "trigger_data": {
+                            "seconds": 60,
+                            "start_at": "2026-01-01T00:00:00+00:00",
+                        },
+                        "timezone": "UTC",
+                        "system_managed": False,
+                        "enabled": True,
+                        "status": "active",
+                        "revision": 1,
+                        "created_by": "admin",
+                        "created_at": 1.0,
+                        "updated_by": "admin",
+                        "updated_at": 1.0,
+                    },
+                    {
+                        "id": "system-schedule",
+                        "task_name": "test.cleanup",
+                        "task_contract_version": 1,
+                        "payload": {},
+                        "trigger_type": "interval",
+                        "trigger_data": {
+                            "seconds": 60,
+                            "start_at": "2026-01-01T00:00:00+00:00",
+                        },
+                        "timezone": "UTC",
+                        "system_managed": True,
+                        "enabled": True,
+                        "status": "active",
+                        "revision": 1,
+                        "created_by": None,
+                        "created_at": 1.0,
+                        "updated_by": None,
+                        "updated_at": 1.0,
+                    },
+                ],
+            )
+        command.stamp(config, "head")
+
+        command.downgrade(config, "8c130010a943")
+        with engine.connect() as connection:
+            assert "system_managed" not in {
+                item["name"] for item in inspect(connection).get_columns("schedules")
+            }
+            assert set(connection.scalars(select(schedule_rows.c.id))) == {
+                "user-schedule"
+            }
+
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            assert "system_managed" in {
+                item["name"] for item in inspect(connection).get_columns("schedules")
+            }
+            assert connection.execute(
+                select(schedule_rows.c.id, schedule_rows.c.system_managed)
+            ).all() == [("user-schedule", False)]
     finally:
         engine.dispose()

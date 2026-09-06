@@ -1,11 +1,13 @@
+import datetime as dt
 import hashlib
 import threading
 import time
 from dataclasses import dataclass
+from typing import cast
 
 import orjson
 from loguru import logger
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import CursorResult, delete, or_, select, update
 
 from include.config.validation import SchedulingPolicy
 from include.database.models.scheduling import (
@@ -17,7 +19,7 @@ from include.database.session import Session
 from include.domains.operations.commands.audit import log_audit
 from include.scheduling.contracts import ScheduledTaskContext
 from include.scheduling.registry import ScheduledTaskRegistry
-from include.scheduling.triggers import advance_trigger, build_trigger
+from include.scheduling.triggers import advance_trigger, build_trigger, first_run_at
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,11 +35,17 @@ class ClaimedExecution:
 
 
 def execution_id(schedule_id: str, scheduled_for: float) -> str:
-    occurrence = int(round(scheduled_for * 1_000_000))
+    """Return the deterministic SHA-256 ID for one scheduled occurrence."""
+    occurrence = round(scheduled_for * 1_000_000)
     return hashlib.sha256(f"{schedule_id}:{occurrence}".encode()).hexdigest()
 
 
 def ensure_runtime_state(provider: str, now: float | None = None) -> int:
+    """Ensure the active scheduling provider state exists and return its generation.
+
+    If the provider changes, active execution leases prevent the switch; otherwise
+    pending work is reset and moved to the new provider generation.
+    """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
         state = session.get(SchedulingRuntimeState, 1)
@@ -79,6 +87,139 @@ def ensure_runtime_state(provider: str, now: float | None = None) -> int:
         return state.generation
 
 
+def synchronize_system_schedules(
+    registry: ScheduledTaskRegistry,
+    *,
+    now: float | None = None,
+) -> int:
+    """Reconcile registered system schedules with their persisted desired state.
+
+    Missing registrations retire their schedules, while new or changed definitions
+    are created or updated. The return value is the number of schedules changed.
+    """
+    current_time = time.time() if now is None else now
+    # Validate and materialize every definition before opening the transaction so a
+    # bad registration cannot leave the persisted desired state partly reconciled.
+    desired: dict[str, tuple] = {}
+    for registration in registry.all():
+        if registration.system_schedule is None:
+            continue
+        definition = registration.system_schedule()
+        if definition.id in desired:
+            raise ValueError(f"Duplicate system schedule ID {definition.id!r}")
+        payload = registry.validate_payload(
+            registration.name,
+            registration.contract_version,
+            definition.payload,
+        ).model_dump(mode="json")
+        desired[definition.id] = (
+            registration,
+            definition,
+            payload,
+            dict(definition.trigger_data),
+        )
+
+    changed = 0
+    with Session() as session, session.begin():
+        orphaned = session.scalars(
+            select(Schedule).where(
+                Schedule.system_managed.is_(True),
+                Schedule.id.not_in(desired),
+                or_(Schedule.enabled.is_(True), Schedule.status != "deleted"),
+            )
+        ).all()
+        for schedule in orphaned:
+            schedule.enabled = False
+            schedule.status = "deleted"
+            schedule.next_run_at = None
+            schedule.pending_scheduled_for = None
+            schedule.revision += 1
+            schedule.updated_at = current_time
+            schedule.deleted_at = current_time
+            changed += 1
+
+        for schedule_id, item in desired.items():
+            registration, definition, payload, trigger_data = item
+            schedule = session.get(Schedule, schedule_id)
+            if schedule is not None and not schedule.system_managed:
+                raise RuntimeError(
+                    f"System schedule ID {schedule_id!r} is already user managed"
+                )
+            if definition.trigger_type == "interval" and "start_at" not in trigger_data:
+                # Preserve the original interval anchor; deriving it from each poll
+                # would silently shift the cadence whenever definitions reconcile.
+                if (
+                    schedule is not None
+                    and schedule.trigger_type == "interval"
+                    and "start_at" in schedule.trigger_data
+                ):
+                    trigger_data["start_at"] = schedule.trigger_data["start_at"]
+                else:
+                    trigger_data["start_at"] = dt.datetime.fromtimestamp(
+                        current_time, dt.UTC
+                    ).isoformat()
+            trigger = build_trigger(
+                definition.trigger_type,
+                trigger_data,
+                definition.timezone,
+            )
+            values = {
+                "task_name": registration.name,
+                "task_contract_version": registration.contract_version,
+                "payload": payload,
+                "trigger_type": definition.trigger_type,
+                "trigger_data": trigger_data,
+                "timezone": definition.timezone,
+            }
+            if schedule is None:
+                session.add(
+                    Schedule(
+                        id=schedule_id,
+                        **values,
+                        system_managed=True,
+                        enabled=True,
+                        status="active",
+                        next_run_at=(
+                            current_time
+                            if definition.run_immediately
+                            else first_run_at(trigger, current_time)
+                        ),
+                        created_by=None,
+                        created_at=current_time,
+                        updated_by=None,
+                        updated_at=current_time,
+                    )
+                )
+                changed += 1
+                continue
+
+            current = {
+                "task_name": schedule.task_name,
+                "task_contract_version": schedule.task_contract_version,
+                "payload": schedule.payload,
+                "trigger_type": schedule.trigger_type,
+                "trigger_data": schedule.trigger_data,
+                "timezone": schedule.timezone,
+            }
+            if current == values and schedule.enabled and schedule.status == "active":
+                continue
+            for name, value in values.items():
+                setattr(schedule, name, value)
+            schedule.enabled = True
+            schedule.status = "active"
+            schedule.next_run_at = (
+                current_time
+                if definition.run_immediately
+                else first_run_at(trigger, current_time)
+            )
+            schedule.pending_scheduled_for = None
+            schedule.revision += 1
+            schedule.updated_at = current_time
+            schedule.deleted_at = None
+            changed += 1
+    return changed
+
+
 def _create_execution(
     session, schedule: Schedule, scheduled_for: float, generation: int
 ) -> ScheduleExecution:
@@ -99,7 +240,14 @@ def enqueue_due_schedules(
     *,
     now: float | None = None,
 ) -> int:
+    """Create durable executions for schedules that are due.
+
+    Eligible missed occurrences coalesce to the latest one. If a schedule already
+    has an active execution, that occurrence is retained as its next pending run.
+    """
     current_time = time.time() if now is None else now
+    # The shortlist is intentionally advisory. Each candidate is rechecked in its
+    # own transaction so concurrent schedule updates cannot enqueue stale work.
     with Session() as session:
         due_ids = session.scalars(
             select(Schedule.id)
@@ -141,6 +289,8 @@ def enqueue_due_schedules(
                     schedule.status = "completed"
                 continue
             if schedule.active_execution_id is not None:
+                # A schedule exposes only one execution slot; repeated polls replace
+                # the pending timestamp with the latest eligible occurrence.
                 schedule.pending_scheduled_for = advance.latest_due_at
                 continue
             _create_execution(session, schedule, advance.latest_due_at, generation)
@@ -155,6 +305,11 @@ def claim_execution(
     *,
     now: float | None = None,
 ) -> ClaimedExecution | None:
+    """Atomically lease the oldest runnable execution for a local worker.
+
+    Return an immutable task snapshot, or ``None`` when no execution is available
+    or another worker wins the claim.
+    """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
         candidate_id = session.scalar(
@@ -177,43 +332,51 @@ def claim_execution(
         if candidate_id is None:
             return None
 
-        claimed = session.execute(
-            update(ScheduleExecution)
-            .where(
-                ScheduleExecution.id == candidate_id,
-                ScheduleExecution.provider_generation == generation,
-                or_(
-                    ScheduleExecution.lease_expires_at.is_(None),
-                    ScheduleExecution.lease_expires_at <= current_time,
-                ),
-            )
-            .values(
-                state="running",
-                dispatch_state="sent",
-                attempt=ScheduleExecution.attempt + 1,
-                retry_at=None,
-                lease_owner=lease_owner,
-                lease_expires_at=current_time + policy.execution_lease_seconds,
-                started_at=current_time,
-            )
+        # The preceding SELECT only chooses a candidate. This conditional UPDATE is
+        # the claim boundary that prevents two workers from owning the same lease.
+        claimed = cast(
+            CursorResult,
+            session.execute(
+                update(ScheduleExecution)
+                .where(
+                    ScheduleExecution.id == candidate_id,
+                    ScheduleExecution.provider_generation == generation,
+                    or_(
+                        ScheduleExecution.lease_expires_at.is_(None),
+                        ScheduleExecution.lease_expires_at <= current_time,
+                    ),
+                )
+                .values(
+                    state="running",
+                    dispatch_state="sent",
+                    attempt=ScheduleExecution.attempt + 1,
+                    retry_at=None,
+                    lease_owner=lease_owner,
+                    lease_expires_at=current_time + policy.execution_lease_seconds,
+                    started_at=current_time,
+                )
+            ),
         )
         if claimed.rowcount != 1:
             return None
 
         execution = session.get(ScheduleExecution, candidate_id)
+        assert execution is not None
+
         schedule = session.get(Schedule, execution.schedule_id)
         if schedule is None:
             return None
-    return ClaimedExecution(
-        id=execution.id,
-        schedule_id=schedule.id,
-        task_name=schedule.task_name,
-        task_contract_version=schedule.task_contract_version,
-        payload=schedule.payload,
-        scheduled_for=execution.scheduled_for,
-        attempt=execution.attempt,
-        lease_owner=lease_owner,
-    )
+
+        return ClaimedExecution(
+            id=execution.id,
+            schedule_id=schedule.id,
+            task_name=schedule.task_name,
+            task_contract_version=schedule.task_contract_version,
+            payload=schedule.payload,
+            scheduled_for=execution.scheduled_for,
+            attempt=execution.attempt,
+            lease_owner=lease_owner,
+        )
 
 
 def claim_execution_by_id(
@@ -224,39 +387,51 @@ def claim_execution_by_id(
     *,
     now: float | None = None,
 ) -> ClaimedExecution | None:
+    """Atomically lease the execution named by a cluster delivery message.
+
+    Stale generations, retry delays, and live leases are rejected with ``None`` so
+    the provider can decide whether the message should be retried or discarded.
+    """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
-        claimed = session.execute(
-            update(ScheduleExecution)
-            .where(
-                ScheduleExecution.id == execution_id,
-                ScheduleExecution.provider_generation == generation,
-                ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
-                or_(
-                    ScheduleExecution.retry_at.is_(None),
-                    ScheduleExecution.retry_at <= current_time,
-                ),
-                or_(
-                    ScheduleExecution.lease_expires_at.is_(None),
-                    ScheduleExecution.lease_expires_at <= current_time,
-                ),
-            )
-            .values(
-                state="running",
-                dispatch_state="sent",
-                attempt=ScheduleExecution.attempt + 1,
-                retry_at=None,
-                lease_owner=lease_owner,
-                lease_expires_at=current_time + policy.execution_lease_seconds,
-                started_at=current_time,
-            )
+        claimed = cast(
+            CursorResult,
+            session.execute(
+                update(ScheduleExecution)
+                .where(
+                    ScheduleExecution.id == execution_id,
+                    ScheduleExecution.provider_generation == generation,
+                    ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
+                    or_(
+                        ScheduleExecution.retry_at.is_(None),
+                        ScheduleExecution.retry_at <= current_time,
+                    ),
+                    or_(
+                        ScheduleExecution.lease_expires_at.is_(None),
+                        ScheduleExecution.lease_expires_at <= current_time,
+                    ),
+                )
+                .values(
+                    state="running",
+                    dispatch_state="sent",
+                    attempt=ScheduleExecution.attempt + 1,
+                    retry_at=None,
+                    lease_owner=lease_owner,
+                    lease_expires_at=current_time + policy.execution_lease_seconds,
+                    started_at=current_time,
+                )
+            ),
         )
         if claimed.rowcount != 1:
             return None
+
         execution = session.get(ScheduleExecution, execution_id)
+        assert execution is not None
+
         schedule = session.get(Schedule, execution.schedule_id)
         if schedule is None:
             return None
+
         return ClaimedExecution(
             id=execution.id,
             schedule_id=schedule.id,
@@ -272,6 +447,7 @@ def claim_execution_by_id(
 def execution_delivery_state(
     execution_id: str, generation: int, *, now: float | None = None
 ) -> str:
+    """Classify delivery as ``stale``, ``terminal``, ``busy``, or ``ready``."""
     current_time = time.time() if now is None else now
     with Session() as session:
         execution = session.get(ScheduleExecution, execution_id)
@@ -317,15 +493,18 @@ def pending_dispatches(
 
 def mark_dispatched(execution_id: str, generation: int) -> bool:
     with Session() as session, session.begin():
-        marked = session.execute(
-            update(ScheduleExecution)
-            .where(
-                ScheduleExecution.id == execution_id,
-                ScheduleExecution.provider_generation == generation,
-                ScheduleExecution.dispatch_state == "pending",
-                ScheduleExecution.state.in_(("pending", "retry_wait")),
-            )
-            .values(dispatch_state="sent")
+        marked = cast(
+            CursorResult,
+            session.execute(
+                update(ScheduleExecution)
+                .where(
+                    ScheduleExecution.id == execution_id,
+                    ScheduleExecution.provider_generation == generation,
+                    ScheduleExecution.dispatch_state == "pending",
+                    ScheduleExecution.state.in_(("pending", "retry_wait")),
+                )
+                .values(dispatch_state="sent")
+            ),
         )
         return marked.rowcount == 1
 
@@ -335,6 +514,7 @@ def purge_execution_history(
     *,
     now: float | None = None,
 ) -> int:
+    """Delete one bounded batch of terminal executions past the retention cutoff."""
     current_time = time.time() if now is None else now
     cutoff = current_time - policy.history_retention_days * 86_400
     with Session() as session, session.begin():
@@ -351,8 +531,11 @@ def purge_execution_history(
         )
         if not execution_ids:
             return 0
-        deleted = session.execute(
-            delete(ScheduleExecution).where(ScheduleExecution.id.in_(execution_ids))
+        deleted = cast(
+            CursorResult,
+            session.execute(
+                delete(ScheduleExecution).where(ScheduleExecution.id.in_(execution_ids))
+            ),
         )
         return deleted.rowcount
 
@@ -366,19 +549,23 @@ def refresh_execution_lease(
 ) -> bool:
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
-        refreshed = session.execute(
-            update(ScheduleExecution)
-            .where(
-                ScheduleExecution.id == execution_id,
-                ScheduleExecution.state == "running",
-                ScheduleExecution.lease_owner == lease_owner,
-            )
-            .values(lease_expires_at=current_time + policy.execution_lease_seconds)
+        refreshed = cast(
+            CursorResult,
+            session.execute(
+                update(ScheduleExecution)
+                .where(
+                    ScheduleExecution.id == execution_id,
+                    ScheduleExecution.state == "running",
+                    ScheduleExecution.lease_owner == lease_owner,
+                )
+                .values(lease_expires_at=current_time + policy.execution_lease_seconds)
+            ),
         )
         return refreshed.rowcount == 1
 
 
 def _release_schedule_execution(session, schedule: Schedule, generation: int) -> None:
+    """Release a schedule's slot and promote its latest coalesced occurrence."""
     schedule.active_execution_id = None
     if schedule.status == "deleted":
         return
@@ -397,6 +584,11 @@ def complete_execution(
     *,
     now: float | None = None,
 ) -> bool:
+    """Persist success if the caller still owns the execution lease.
+
+    The schedule slot is released only for the execution currently attached to the
+    schedule. ``False`` means ownership was lost and no state was changed.
+    """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
         execution = session.get(ScheduleExecution, claim.id)
@@ -427,6 +619,11 @@ def fail_execution(
     *,
     now: float | None = None,
 ) -> bool:
+    """Persist a retry or terminal failure while the caller owns the lease.
+
+    Retry delays use capped exponential backoff. A terminal failure releases the
+    schedule slot so a coalesced recurring occurrence can proceed.
+    """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
         execution = session.get(ScheduleExecution, claim.id)
@@ -465,6 +662,7 @@ def run_claimed_execution(
     registry: ScheduledTaskRegistry,
     policy: SchedulingPolicy,
 ) -> None:
+    """Run a claimed task while renewing its lease and persist its outcome."""
     registration = registry.get(claim.task_name)
     if (
         registration is None
@@ -480,6 +678,8 @@ def run_claimed_execution(
         )
         return
 
+    # Arbitrary task code can outlive the initial lease, so keep ownership alive in
+    # a separate thread until success or failure has been persisted.
     heartbeat_stop = threading.Event()
 
     def refresh_lease() -> None:
@@ -507,6 +707,8 @@ def run_claimed_execution(
             payload,
         )
         result_data = {} if result is None else result.data
+        # Enforce the persistence contract at the task boundary and detach any
+        # mutable result objects before storing or auditing them.
         result_data = orjson.loads(orjson.dumps(result_data))
         completed = complete_execution(claim, generation, result_data)
         if completed:

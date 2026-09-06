@@ -108,3 +108,68 @@ def test_schedule_update_rejects_stale_revision():
                 {},
                 username="admin",
             )
+
+
+def test_system_managed_schedule_cannot_be_created_or_mutated_by_users():
+    factory = _factory()
+    registry = ScheduledTaskRegistry(
+        [
+            ScheduledTaskRegistration(
+                name="test.system_cleanup",
+                contract_version=1,
+                payload_model=_Payload,
+                execute=lambda _context, _payload: None,
+                required_permission=Permissions.MANAGE_SYSTEM,
+                user_schedulable=False,
+            )
+        ]
+    )
+    with factory() as session, session.begin():
+        with pytest.raises(LookupError, match="system managed"):
+            create_schedule(
+                session,
+                registry,
+                username="admin",
+                task_name="test.system_cleanup",
+                payload={"value": 1},
+                trigger_type="date",
+                trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
+                timezone="UTC",
+                enabled=True,
+            )
+        session.add(
+            Schedule(
+                id="test.system_cleanup",
+                task_name="test.system_cleanup",
+                task_contract_version=1,
+                payload={"value": 1},
+                trigger_type="interval",
+                trigger_data={
+                    "seconds": 60,
+                    "start_at": "2026-01-01T00:00:00+00:00",
+                },
+                timezone="UTC",
+                system_managed=True,
+                next_run_at=100.0,
+                created_by=None,
+                updated_by=None,
+            )
+        )
+
+    with factory() as session, session.begin():
+        with pytest.raises(ScheduleConflictError, match="cannot be updated"):
+            update_schedule(
+                session,
+                registry,
+                "test.system_cleanup",
+                1,
+                {},
+                username="admin",
+            )
+        with pytest.raises(ScheduleConflictError, match="cannot be deleted"):
+            delete_schedule(
+                session,
+                "test.system_cleanup",
+                1,
+                username="admin",
+            )

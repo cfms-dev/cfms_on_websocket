@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,6 +36,12 @@ class Schedule(Base):
             "status IN ('active', 'completed', 'failed', 'deleted')",
             name="ck_schedules_status",
         ),
+        CheckConstraint(
+            "(system_managed = true AND created_by IS NULL AND updated_by IS NULL) "
+            "OR (system_managed = false AND created_by IS NOT NULL "
+            "AND updated_by IS NOT NULL)",
+            name="ck_schedules_system_ownership",
+        ),
         Index("ix_schedules_due", "enabled", "status", "next_run_at"),
     )
 
@@ -47,18 +54,21 @@ class Schedule(Base):
     trigger_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
     trigger_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     timezone: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    system_managed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     status: Mapped[str] = mapped_column(VARCHAR(16), nullable=False, default="active")
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     next_run_at: Mapped[float | None] = mapped_column(Double, nullable=True)
     active_execution_id: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
     pending_scheduled_for: Mapped[float | None] = mapped_column(Double, nullable=True)
-    created_by: Mapped[str] = mapped_column(
-        ForeignKey("users.username"), nullable=False
+    created_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.username"), nullable=True
     )
     created_at: Mapped[float] = mapped_column(Double, nullable=False, default=time.time)
-    updated_by: Mapped[str] = mapped_column(
-        ForeignKey("users.username"), nullable=False
+    updated_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.username"), nullable=True
     )
     updated_at: Mapped[float] = mapped_column(Double, nullable=False, default=time.time)
     deleted_at: Mapped[float | None] = mapped_column(Double, nullable=True)
@@ -118,7 +128,7 @@ class SchedulingRuntimeState(Base):
         CheckConstraint("generation > 0", name="ck_scheduling_generation_positive"),
         CheckConstraint(
             "provider IN ('local', 'redis')", name="ck_scheduling_runtime_provider"
-        ),
+        ),  # TODO: if there is a new provider, update this constraint to include it
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)

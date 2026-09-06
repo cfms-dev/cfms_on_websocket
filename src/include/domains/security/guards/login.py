@@ -7,11 +7,11 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 from warnings import deprecated
 
 from loguru import logger as log
-from sqlalchemy import or_, select
+from sqlalchemy import CursorResult, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from include.config.validation import AuthThrottlePolicy
@@ -48,6 +48,39 @@ class ThrottleDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class AuthThrottleCleanupCounts:
+    account_records: int
+    login_records: int
+    traffic_records: int
+
+
+def purge_expired_auth_throttle_records(
+    policy: AuthThrottlePolicy,
+    *,
+    now: float | None = None,
+) -> AuthThrottleCleanupCounts:
+    current_time = time.time() if now is None else now
+    cutoff = current_time - policy.record_retention_days * 86_400
+    counts = []
+    with Session.begin() as session:
+        for model in (AccountThrottle, LoginThrottle, TrafficThrottle):
+            deleted = cast(
+                CursorResult[Any],
+                session.execute(
+                    delete(model).where(
+                        model.last_attempt < cutoff,
+                        or_(
+                            model.locked_until.is_(None),
+                            model.locked_until <= current_time,
+                        ),
+                    )
+                ),
+            )
+            counts.append(deleted.rowcount)
+    return AuthThrottleCleanupCounts(*counts)
+
+
+@dataclass(frozen=True, slots=True)
 class BannedSubnetRule:
     network: ipaddress.IPv4Network | ipaddress.IPv6Network
     starts_at: float
@@ -64,8 +97,6 @@ class LoginGuard:
     _networks_loaded = False
     _network_lock = threading.Lock()
     _write_lock = threading.RLock()
-    _cleanup_lock = threading.Lock()
-    _last_cleanup_monotonic = 0.0
 
     @classmethod
     def reload_networks(cls) -> None:
@@ -387,7 +418,6 @@ class LoginGuard:
                 )
             session.flush()
 
-        cls._maybe_cleanup(policy)
         if not locked:
             return ThrottleDecision(True)
 
@@ -433,24 +463,3 @@ class LoginGuard:
                     session.delete(pair_record)
                 cache_keys.append(LoginThrottle.make_cache_key(username, ip_address))
         cls.invalidate_cache_keys(cache_keys)
-
-    @classmethod
-    def _maybe_cleanup(cls, policy: AuthThrottlePolicy) -> None:
-        if time.monotonic() - cls._last_cleanup_monotonic < 3600:
-            return
-        if not cls._cleanup_lock.acquire(blocking=False):
-            return
-        try:
-            if time.monotonic() - cls._last_cleanup_monotonic < 3600:
-                return
-            now = time.time()
-            cutoff = now - policy.record_retention_days * 86400
-            with Session.begin() as session:
-                for model in (AccountThrottle, LoginThrottle, TrafficThrottle):
-                    session.query(model).filter(
-                        model.last_attempt < cutoff,
-                        or_(model.locked_until.is_(None), model.locked_until <= now),
-                    ).delete(synchronize_session=False)
-            cls._last_cleanup_monotonic = time.monotonic()
-        finally:
-            cls._cleanup_lock.release()

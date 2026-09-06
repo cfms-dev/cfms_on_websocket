@@ -20,8 +20,8 @@ from include.scheduling.engine import (
     execution_delivery_state,
     mark_dispatched,
     pending_dispatches,
-    purge_execution_history,
     run_claimed_execution,
+    synchronize_system_schedules,
 )
 from include.scheduling.registry import ScheduledTaskRegistry
 
@@ -42,6 +42,10 @@ return 0
 
 
 class RedisSchedulingProvider(SchedulingProvider):
+    _broker: RedisBroker
+    _registry: ScheduledTaskRegistry
+    _generation: int
+
     def __init__(self, redis_config: Mapping[str, Any], policy: SchedulingPolicy):
         self._policy = policy
         self._redis_config = {
@@ -57,10 +61,7 @@ class RedisSchedulingProvider(SchedulingProvider):
             socket_timeout=2,
             health_check_interval=30,
         )
-        self._broker: RedisBroker | None = None
         self._actor = None
-        self._registry: ScheduledTaskRegistry | None = None
-        self._generation: int | None = None
         self._last_error: str | None = None
         self._state_lock = threading.Lock()
 
@@ -123,17 +124,17 @@ class RedisSchedulingProvider(SchedulingProvider):
             namespace="cfms-scheduling",
         )
         self._actor = dramatiq.actor(
-            self._consume_execution,
             actor_name="cfms_scheduled_task",
             queue_name="cfms-scheduled-tasks",
             broker=self._broker,
             max_retries=100,
             min_backoff=1000,
             max_backoff=30000,
-        )
+        )(self._consume_execution)
         return self._actor
 
     def _consume_execution(self, execution_id: str, generation: int) -> None:
+        """Consume one delivery, retrying only work that may become claimable."""
         owner = secrets.token_hex(32)
         claim = claim_execution_by_id(
             execution_id,
@@ -157,25 +158,34 @@ class RedisSchedulingProvider(SchedulingProvider):
         )
 
     def _dispatch_pending(self, generation: int) -> None:
-        actor = self._actor
+        assert self._actor is not None
         for execution_id in pending_dispatches(
             generation, self._policy.claim_batch_size
         ):
-            actor.send(execution_id, generation)
+            # Send before marking so a broker failure leaves the execution visible.
+            # A crash between these calls can duplicate delivery, which the database
+            # lease and deterministic execution ID are designed to tolerate.
+            self._actor.send(execution_id, generation)
             mark_dispatched(execution_id, generation)
 
     def run_scheduler(self, registry: ScheduledTaskRegistry) -> None:
+        """Run a Redis-elected scheduler candidate until interrupted.
+
+        Redis coordinates leadership and wake-ups, while the application database
+        remains authoritative for schedules, executions, and dispatch state.
+        """
         generation = ensure_runtime_state("redis")
         self._ensure_actor(registry)
         token = secrets.token_hex(32)
         lease_ttl_ms = max(10_000, int(self._policy.poll_interval_seconds * 5_000))
         leader = False
-        next_cleanup_at = 0.0
         pubsub = self._client.pubsub(ignore_subscribe_messages=True)
         pubsub.subscribe(_NOTIFY_CHANNEL)
         try:
             while True:
                 try:
+                    # The random token makes renewal conditional: a candidate whose
+                    # lease expired cannot renew or release its successor's lease.
                     if leader:
                         leader = bool(
                             self._client.eval(
@@ -196,11 +206,9 @@ class RedisSchedulingProvider(SchedulingProvider):
                             )
                         )
                     if leader:
+                        synchronize_system_schedules(registry)
                         enqueue_due_schedules(generation, self._policy)
                         self._dispatch_pending(generation)
-                        if time.monotonic() >= next_cleanup_at:
-                            purge_execution_history(self._policy)
-                            next_cleanup_at = time.monotonic() + 3_600
                     with self._state_lock:
                         self._last_error = None
                     pubsub.get_message(
@@ -223,6 +231,7 @@ class RedisSchedulingProvider(SchedulingProvider):
             pubsub.close()
 
     def run_worker(self, registry: ScheduledTaskRegistry) -> None:
+        """Run a Dramatiq worker for the scheduling queue until interrupted."""
         self._generation = ensure_runtime_state("redis")
         self._ensure_actor(registry)
         worker = Worker(

@@ -306,7 +306,7 @@ class ServerHookSpecs(ABC):
     @abstractmethod
     def ext_register_scheduled_tasks(
         self,
-    ) -> tuple["ScheduledTaskRegistration", ...]:
+    ) -> tuple["ScheduledTaskRegistration[Any]", ...]:
         """Register trusted scheduled task types owned by this extension."""
 
     @hookspec
@@ -648,8 +648,9 @@ def get_loaded_extension_metadata() -> tuple[ExtensionMetadata, ...]:
 
 def collect_scheduled_tasks():
     from include.scheduling.registry import ScheduledTaskRegistry
+    from include.scheduling.tasks import CORE_SCHEDULED_TASKS
 
-    registry = ScheduledTaskRegistry()
+    registry = ScheduledTaskRegistry(CORE_SCHEDULED_TASKS)
     for registrations in pm.hook.ext_register_scheduled_tasks():
         for registration in registrations:
             registry.register(registration)

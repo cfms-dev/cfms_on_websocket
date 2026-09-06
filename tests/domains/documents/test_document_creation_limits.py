@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 @pytest.fixture
 def creation_limit_context(monkeypatch, tmp_path):
     copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    copyfile(PROJECT_ROOT / "src" / "init", tmp_path / "init")
+    (tmp_path / "init").touch()
     monkeypatch.chdir(tmp_path)
     src_path = str(PROJECT_ROOT / "src")
     if src_path not in sys.path:
@@ -68,7 +68,6 @@ def creation_limit_context(monkeypatch, tmp_path):
         "from_config",
         classmethod(lambda _cls: risk_policy),
     )
-    monkeypatch.setattr(creation_limits, "_last_cleanup_monotonic", 0.0)
     yield creation_limits, models, session_factory, upload_policy, risk_policy
     engine.dispose()
 
@@ -264,9 +263,8 @@ def test_rate_limit_bypass_preserves_pending_hard_limit(
         )
 
 
-def test_cleanup_removes_stale_risk_state(creation_limit_context, monkeypatch):
+def test_cleanup_removes_stale_risk_state(creation_limit_context):
     creation_limits, models, session_factory, _upload, _risk = creation_limit_context
-    monkeypatch.setattr(creation_limits.time, "monotonic", lambda: 1000.0)
 
     with session_factory.begin() as session:
         session.add_all(
@@ -289,7 +287,9 @@ def test_cleanup_removes_stale_risk_state(creation_limit_context, monkeypatch):
             ]
         )
     with session_factory.begin() as session:
-        assert _check(creation_limits, session).allowed
+        result = creation_limits.cleanup_document_creation_risk_state(
+            session, now=1000.0
+        )
     with session_factory() as session:
         assert (
             session.get(
@@ -305,6 +305,8 @@ def test_cleanup_removes_stale_risk_state(creation_limit_context, monkeypatch):
             )
             is None
         )
+    assert result.buckets == 1
+    assert result.ip_accounts == 1
 
 
 def test_reduced_capacity_caps_existing_balance(creation_limit_context, monkeypatch):

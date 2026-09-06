@@ -1,7 +1,7 @@
 import time
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import update
+from sqlalchemy import CursorResult, update
 from sqlalchemy.orm import Session as OrmSession
 
 from include.database.models.scheduling import Schedule
@@ -30,10 +30,13 @@ def create_schedule(
     enabled: bool,
     now: float | None = None,
 ) -> Schedule:
+    """Validate and add a user-managed schedule to the caller's transaction."""
     current_time = time.time() if now is None else now
     registration = registry.get(task_name)
     if registration is None:
         raise LookupError(f"Scheduled task type {task_name!r} is not registered")
+    if not registration.user_schedulable:
+        raise LookupError(f"Scheduled task type {task_name!r} is system managed")
     validated_payload = registry.validate_payload(
         task_name, registration.contract_version, payload
     ).model_dump(mode="json")
@@ -67,10 +70,17 @@ def update_schedule(
     username: str,
     now: float | None = None,
 ) -> Schedule:
+    """Apply validated changes to a quiescent schedule using optimistic concurrency.
+
+    The caller owns the transaction. A stale revision or an execution becoming
+    active during the update raises :class:`ScheduleConflictError`.
+    """
     current_time = time.time() if now is None else now
     schedule = session.get(Schedule, schedule_id)
     if schedule is None or schedule.status == "deleted":
         raise ScheduleNotFoundError(schedule_id)
+    if schedule.system_managed:
+        raise ScheduleConflictError("System-managed schedules cannot be updated")
     if schedule.revision != expected_revision:
         raise ScheduleConflictError("Schedule revision is stale")
     if schedule.active_execution_id is not None:
@@ -84,6 +94,8 @@ def update_schedule(
     registration = registry.get(task_name)
     if registration is None:
         raise LookupError(f"Scheduled task type {task_name!r} is not registered")
+    if not registration.user_schedulable:
+        raise LookupError(f"Scheduled task type {task_name!r} is system managed")
     validated_payload = registry.validate_payload(
         task_name, registration.contract_version, payload
     ).model_dump(mode="json")
@@ -103,19 +115,22 @@ def update_schedule(
         "updated_at": current_time,
         "revision": expected_revision + 1,
     }
-    changed = session.execute(
-        update(Schedule)
-        .where(
-            Schedule.id == schedule_id,
-            Schedule.revision == expected_revision,
-            Schedule.active_execution_id.is_(None),
-        )
-        .values(**values)
+    changed = cast(
+        CursorResult,
+        session.execute(
+            update(Schedule)
+            .where(
+                Schedule.id == schedule_id,
+                Schedule.revision == expected_revision,
+                Schedule.active_execution_id.is_(None),
+            )
+            .values(**values)
+        ),
     )
     if changed.rowcount != 1:
         raise ScheduleConflictError("Schedule changed concurrently")
     session.flush()
-    return session.get(Schedule, schedule_id)
+    return schedule
 
 
 def delete_schedule(
@@ -126,24 +141,37 @@ def delete_schedule(
     username: str,
     now: float | None = None,
 ) -> None:
+    """Logically delete a user schedule at the expected revision.
+
+    Future and coalesced occurrences are cancelled without interrupting an
+    execution that is already active. The caller owns the transaction.
+    """
     current_time = time.time() if now is None else now
-    deleted = session.execute(
-        update(Schedule)
-        .where(
-            Schedule.id == schedule_id,
-            Schedule.status != "deleted",
-            Schedule.revision == expected_revision,
-        )
-        .values(
-            enabled=False,
-            status="deleted",
-            next_run_at=None,
-            pending_scheduled_for=None,
-            revision=expected_revision + 1,
-            updated_by=username,
-            updated_at=current_time,
-            deleted_at=current_time,
-        )
+    schedule = session.get(Schedule, schedule_id)
+    if schedule is None or schedule.status == "deleted":
+        raise ScheduleNotFoundError(schedule_id)
+    if schedule.system_managed:
+        raise ScheduleConflictError("System-managed schedules cannot be deleted")
+    deleted = cast(
+        CursorResult,
+        session.execute(
+            update(Schedule)
+            .where(
+                Schedule.id == schedule_id,
+                Schedule.status != "deleted",
+                Schedule.revision == expected_revision,
+            )
+            .values(
+                enabled=False,
+                status="deleted",
+                next_run_at=None,
+                pending_scheduled_for=None,
+                revision=expected_revision + 1,
+                updated_by=username,
+                updated_at=current_time,
+                deleted_at=current_time,
+            )
+        ),
     )
     if deleted.rowcount == 1:
         return

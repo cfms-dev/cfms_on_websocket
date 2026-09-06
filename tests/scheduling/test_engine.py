@@ -14,12 +14,17 @@ from include.scheduling import (
     ScheduledTaskRegistration,
     ScheduledTaskRegistry,
     ScheduledTaskResult,
+    SystemScheduleDefinition,
 )
 from include.scheduling import engine as scheduling_engine
 
 
 class _Payload(BaseModel):
     value: int
+
+
+class _EmptyPayload(BaseModel):
+    pass
 
 
 def _session_factory(monkeypatch):
@@ -31,7 +36,7 @@ def _session_factory(monkeypatch):
     SchedulingRuntimeState.__table__.create(database)
     Schedule.__table__.create(database)
     ScheduleExecution.__table__.create(database)
-    factory = sessionmaker(bind=database, expire_on_commit=False)
+    factory = sessionmaker(bind=database)
     monkeypatch.setattr(scheduling_engine, "Session", factory)
     return factory
 
@@ -100,6 +105,65 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
         assert calls == [(execution.id, 7)]
         assert audits[0][0:2] == ("scheduled_task_execute", 0)
         assert audits[0][2]["data"]["execution_id"] == execution.id
+
+
+def test_system_schedule_is_created_updated_and_retired(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    interval_seconds = 60
+
+    def system_schedule():
+        return SystemScheduleDefinition(
+            id="test.system_cleanup",
+            payload={},
+            trigger_type="interval",
+            trigger_data={"seconds": interval_seconds},
+        )
+
+    registry = ScheduledTaskRegistry(
+        [
+            ScheduledTaskRegistration(
+                name="test.system_cleanup",
+                contract_version=1,
+                payload_model=_EmptyPayload,
+                execute=lambda _context, _payload: None,
+                required_permission=Permissions.MANAGE_SYSTEM,
+                user_schedulable=False,
+                system_schedule=system_schedule,
+            )
+        ]
+    )
+
+    assert scheduling_engine.synchronize_system_schedules(registry, now=100.0) == 1
+    with factory() as session:
+        schedule = session.get(Schedule, "test.system_cleanup")
+        first_anchor = schedule.trigger_data["start_at"]
+        assert schedule.system_managed is True
+        assert schedule.created_by is None
+        assert schedule.updated_by is None
+        assert schedule.next_run_at == 100.0
+
+    assert scheduling_engine.synchronize_system_schedules(registry, now=150.0) == 0
+    interval_seconds = 120
+    assert scheduling_engine.synchronize_system_schedules(registry, now=200.0) == 1
+    with factory() as session:
+        schedule = session.get(Schedule, "test.system_cleanup")
+        assert schedule.trigger_data == {
+            "seconds": 120,
+            "start_at": first_anchor,
+        }
+        assert schedule.next_run_at == 200.0
+        assert schedule.revision == 2
+
+    assert (
+        scheduling_engine.synchronize_system_schedules(
+            ScheduledTaskRegistry(), now=300.0
+        )
+        == 1
+    )
+    with factory() as session:
+        schedule = session.get(Schedule, "test.system_cleanup")
+        assert schedule.enabled is False
+        assert schedule.status == "deleted"
 
 
 def test_due_occurrences_coalesce_while_execution_is_active(monkeypatch):

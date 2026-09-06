@@ -15,6 +15,7 @@ from include.domains.documents.download_risk import (
 )
 from include.domains.security.guards.rate_limits import (
     BucketDecision,
+    RateLimitCleanupCounts,
     cleanup_rate_limit_state,
     consume_bucket,
     count_ip_accounts,
@@ -26,10 +27,6 @@ from include.domains.security.guards.rate_limits import (
 
 _ISSUE_NAMESPACE = "download_issue"
 _TRANSFER_NAMESPACE = "download_transfer"
-_last_cleanup_monotonic = {
-    _ISSUE_NAMESPACE: 0.0,
-    _TRANSFER_NAMESPACE: 0.0,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,22 +51,26 @@ def _risk_cost(
     return 1
 
 
-def _maybe_cleanup(
+def cleanup_document_download_risk_state(
     session: Session,
-    namespace: str,
-    now: float,
-    policy: DocumentDownloadRiskPolicy,
-) -> None:
-    monotonic_now = time.monotonic()
-    if monotonic_now - _last_cleanup_monotonic[namespace] < 60:
-        return
-    cleanup_rate_limit_state(
-        session,
-        namespace,
-        ip_account_cutoff=now - policy.ip_account_window_seconds,
-        bucket_cutoff=now - policy.state_retention_seconds,
+    *,
+    now: float | None = None,
+) -> RateLimitCleanupCounts:
+    current_time = time.time() if now is None else now
+    policy = DocumentDownloadRiskPolicy.from_config()
+    counts = [
+        cleanup_rate_limit_state(
+            session,
+            namespace,
+            ip_account_cutoff=current_time - policy.ip_account_window_seconds,
+            bucket_cutoff=current_time - policy.state_retention_seconds,
+        )
+        for namespace in (_ISSUE_NAMESPACE, _TRANSFER_NAMESPACE)
+    ]
+    return RateLimitCleanupCounts(
+        ip_accounts=sum(item.ip_accounts for item in counts),
+        buckets=sum(item.buckets for item in counts),
     )
-    _last_cleanup_monotonic[namespace] = monotonic_now
 
 
 def _active_download_count(session: Session, now: float) -> int:
@@ -105,7 +106,6 @@ def _check_download_limits(
     if bypass_rate_limit:
         return DownloadLimitDecision(True, active_downloads=active_downloads)
 
-    _maybe_cleanup(session, namespace, now, policy)
     buckets = []
     account_bucket = None
     if username is not None:

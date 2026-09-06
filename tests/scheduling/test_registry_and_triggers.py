@@ -1,10 +1,13 @@
 import datetime as dt
+from types import SimpleNamespace
+from typing import assert_type
 
 import pytest
 from pydantic import BaseModel
 
 from include.domains.access.permissions import Permissions
 from include.scheduling import (
+    ScheduledTaskContext,
     ScheduledTaskRegistration,
     ScheduledTaskRegistry,
 )
@@ -30,6 +33,23 @@ def _registration(name="test.record", version=1):
     )
 
 
+def test_registration_correlates_payload_model_and_callback():
+    def execute(_context: ScheduledTaskContext, _payload: _Payload) -> None:
+        pass
+
+    registration = ScheduledTaskRegistration(
+        name="test.record",
+        contract_version=1,
+        payload_model=_Payload,
+        execute=execute,
+        required_permission=Permissions.MANAGE_SYSTEM,
+    )
+
+    assert_type(registration, ScheduledTaskRegistration[_Payload])
+    assert registration.payload_model is _Payload
+    assert registration.execute is execute
+
+
 def test_registry_validates_task_contract_and_payload():
     registry = ScheduledTaskRegistry([_registration()])
 
@@ -43,6 +63,68 @@ def test_registry_validates_task_contract_and_payload():
 def test_registry_rejects_duplicate_task_types():
     with pytest.raises(ValueError, match="Duplicate"):
         ScheduledTaskRegistry([_registration(), _registration()])
+
+
+def test_system_tasks_do_not_require_user_permissions():
+    registration = ScheduledTaskRegistration(
+        name="core.cleanup",
+        contract_version=1,
+        payload_model=_Payload,
+        execute=lambda _context, _payload: None,
+        user_schedulable=False,
+    )
+
+    assert registration.required_permission is None
+
+
+def test_user_schedulable_tasks_require_a_permission():
+    with pytest.raises(ValueError, match="required permission"):
+        ScheduledTaskRegistration(
+            name="test.record",
+            contract_version=1,
+            payload_model=_Payload,
+            execute=lambda _context, _payload: None,
+        )
+
+
+def test_collected_registry_contains_core_and_loaded_extension_tasks(monkeypatch):
+    from include.extensions import manager
+
+    monkeypatch.setattr(
+        manager,
+        "pm",
+        SimpleNamespace(
+            hook=SimpleNamespace(
+                ext_register_scheduled_tasks=lambda: [
+                    (_registration("extension.record"),)
+                ]
+            )
+        ),
+    )
+
+    registry = manager.collect_scheduled_tasks()
+
+    assert registry.get("core.schedule_history_cleanup") is not None
+    assert registry.get("extension.record") is not None
+
+
+def test_extension_cannot_replace_a_core_task_registration(monkeypatch):
+    from include.extensions import manager
+
+    monkeypatch.setattr(
+        manager,
+        "pm",
+        SimpleNamespace(
+            hook=SimpleNamespace(
+                ext_register_scheduled_tasks=lambda: [
+                    (_registration("core.schedule_history_cleanup"),)
+                ]
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Duplicate scheduled task type"):
+        manager.collect_scheduled_tasks()
 
 
 def test_cron_trigger_coalesces_to_latest_occurrence_in_grace_window():
