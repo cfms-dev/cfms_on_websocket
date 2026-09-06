@@ -319,6 +319,33 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             },
         )
         connection.execute(
+            insert(tables["schedules"]),
+            {
+                "id": "schedule-1",
+                "task_name": "test.record",
+                "task_contract_version": 1,
+                "payload": {"value": 7},
+                "trigger_type": "interval",
+                "trigger_data": {
+                    "seconds": 3600,
+                    "start_at": "2023-11-14T22:13:20+00:00",
+                },
+                "timezone": "UTC",
+                "system_managed": False,
+                "enabled": True,
+                "status": "active",
+                "revision": 1,
+                "next_run_at": now + 3600,
+                "active_execution_id": None,
+                "pending_scheduled_for": None,
+                "created_by": "alice",
+                "created_at": now,
+                "updated_by": "alice",
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+        connection.execute(
             insert(tables["user_groups"]),
             {
                 "group_name": "sysop",
@@ -603,6 +630,8 @@ def _backup_table_names(base) -> set[str]:
         "login_throttles",
         "rate_limit_buckets",
         "risk_ip_accounts",
+        "schedule_executions",
+        "scheduling_runtime_state",
         "system_states",
         "traffic_throttles",
     }
@@ -672,4 +701,6 @@ def test_runtime_state_tables_are_excluded(backup_context):
 
     assert "rate_limit_buckets" in excluded
     assert "risk_ip_accounts" in excluded
+    assert "schedule_executions" in excluded
+    assert "scheduling_runtime_state" in excluded
     assert "system_states" in excluded
