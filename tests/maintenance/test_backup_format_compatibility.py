@@ -696,6 +696,34 @@ def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context)
     assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
 
 
+@pytest.mark.parametrize(
+    "layout",
+    ("current", "previous_compiled", "legacy_access_rules"),
+)
+def test_pre_scheduling_full_backup_manifest_is_accepted(
+    backup_context, layout
+) -> None:
+    core = backup_context.backup_core
+    current_tables = set(core.BACKUP_TABLE_NAMES)
+    layouts = {
+        "current": current_tables,
+        "previous_compiled": current_tables - {"compiled_access_rule_sets"},
+        "legacy_access_rules": (
+            current_tables - set(core.COMPILED_ACCESS_RULE_TABLE_NAMES)
+        )
+        | set(core.LEGACY_ACCESS_RULE_TABLE_NAMES),
+    }
+    historical_tables = layouts[layout] - {"schedules"}
+    manifest = {
+        "format_version": core.BACKUP_FORMAT_VERSION,
+        "tables": {table_name: {"rows": 0} for table_name in historical_tables},
+        "files": [],
+        "configuration": {},
+    }
+
+    assert core._validate_manifest(manifest) is None
+
+
 def test_runtime_state_tables_are_excluded(backup_context):
     excluded = backup_context.backup_core.EXCLUDED_TABLE_NAMES
 
