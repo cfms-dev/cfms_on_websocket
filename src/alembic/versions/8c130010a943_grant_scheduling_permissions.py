@@ -23,15 +23,18 @@ _PERMISSIONS = ("view_schedules", "manage_schedules")
 
 
 def _tables():
+    metadata = sa.MetaData()
     return (
         sa.table("user_groups", sa.column("group_name", sa.String())),
-        sa.table(
+        sa.Table(
             "group_permissions",
-            sa.column("group_name", sa.String()),
-            sa.column("permission", sa.String()),
-            sa.column("granted", sa.Boolean()),
-            sa.column("start_time", sa.Double()),
-            sa.column("end_time", sa.Double()),
+            metadata,
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column("group_name", sa.String()),
+            sa.Column("permission", sa.String()),
+            sa.Column("granted", sa.Boolean()),
+            sa.Column("start_time", sa.Double()),
+            sa.Column("end_time", sa.Double()),
         ),
         sa.table(
             "system_states",
@@ -66,7 +69,7 @@ def upgrade() -> None:
         ).first()
         if grant_exists:
             continue
-        connection.execute(
+        inserted_grant = connection.execute(
             group_permissions.insert().values(
                 group_name="sysop",
                 permission=permission,
@@ -79,9 +82,11 @@ def upgrade() -> None:
             system_states.insert().values(
                 owner=_MIGRATION_OWNER,
                 state_key=permission,
-                schema_version=1,
+                schema_version=2,
                 revision=1,
-                payload={},
+                payload={
+                    "group_permission_id": inserted_grant.inserted_primary_key[0]
+                },
                 updated_at=time.time(),
             )
         )
@@ -92,20 +97,20 @@ def downgrade() -> None:
     _user_groups, group_permissions, system_states = _tables()
     for permission in _PERMISSIONS:
         marker = connection.execute(
-            sa.select(system_states.c.state_key).where(
+            sa.select(system_states.c.payload).where(
                 system_states.c.owner == _MIGRATION_OWNER,
                 system_states.c.state_key == permission,
             )
         ).first()
         if marker is None:
             continue
-        connection.execute(
-            group_permissions.delete().where(
-                group_permissions.c.group_name == "sysop",
-                group_permissions.c.permission == permission,
-                group_permissions.c.granted == sa.true(),
+        group_permission_id = marker.payload.get("group_permission_id")
+        if group_permission_id is not None:
+            connection.execute(
+                group_permissions.delete().where(
+                    group_permissions.c.id == group_permission_id
+                )
             )
-        )
         connection.execute(
             system_states.delete().where(
                 system_states.c.owner == _MIGRATION_OWNER,

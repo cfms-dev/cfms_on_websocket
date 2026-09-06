@@ -80,7 +80,9 @@ executed.
 An internal task may set `user_schedulable=False` and provide a
 `system_schedule` factory returning `SystemScheduleDefinition`. The active
 scheduler treats that definition as desired state, preserves the interval anchor,
-and updates the persisted schedule when its configuration changes. Removing the
+and updates the persisted schedule when its configuration changes. An immediate
+execution requested by the definition is queued separately from the trigger's next
+run, so reconciliation does not shift the anchored cadence. Removing the
 registration disables its system schedule. Do not use this mechanism for
 event-driven queues such as file deduplication.
 
@@ -143,6 +145,10 @@ updated, or re-enabled.
   bounded hourly batches by the hidden `core.schedule_history_cleanup` task.
 - A one-time schedule becomes `completed` after success and `failed` after its final
   failed attempt. Failure of one recurring occurrence does not disable the schedule.
+- Updating a completed or failed schedule reactivates it with a newly calculated
+  next run; the `enabled` flag continues to control whether it is dispatched.
+- Retiring a schedule cancels pending and retrying work without interrupting an
+  execution that is already running.
 
 Provider changes require a full stop and restart. The database increments a Provider
 generation, makes unfinished executions deliverable by the new Provider, and rejects

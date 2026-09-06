@@ -36,12 +36,6 @@ class Schedule(Base):
             "status IN ('active', 'completed', 'failed', 'deleted')",
             name="ck_schedules_status",
         ),
-        CheckConstraint(
-            "(system_managed = true AND created_by IS NULL AND updated_by IS NULL) "
-            "OR (system_managed = false AND created_by IS NOT NULL "
-            "AND updated_by IS NOT NULL)",
-            name="ck_schedules_system_ownership",
-        ),
         Index("ix_schedules_due", "enabled", "status", "next_run_at"),
     )
 
@@ -64,11 +58,11 @@ class Schedule(Base):
     active_execution_id: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
     pending_scheduled_for: Mapped[float | None] = mapped_column(Double, nullable=True)
     created_by: Mapped[str | None] = mapped_column(
-        ForeignKey("users.username"), nullable=True
+        ForeignKey("users.username", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[float] = mapped_column(Double, nullable=False, default=time.time)
     updated_by: Mapped[str | None] = mapped_column(
-        ForeignKey("users.username"), nullable=True
+        ForeignKey("users.username", ondelete="SET NULL"), nullable=True
     )
     updated_at: Mapped[float] = mapped_column(Double, nullable=False, default=time.time)
     deleted_at: Mapped[float | None] = mapped_column(Double, nullable=True)
@@ -82,7 +76,8 @@ class ScheduleExecution(Base):
         ),
         CheckConstraint("attempt >= 0", name="ck_schedule_executions_attempt"),
         CheckConstraint(
-            "state IN ('pending', 'running', 'retry_wait', 'succeeded', 'failed')",
+            "state IN "
+            "('pending', 'running', 'retry_wait', 'succeeded', 'failed', 'cancelled')",
             name="ck_schedule_executions_state",
         ),
         CheckConstraint(

@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from pydantic import BaseModel
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from include.database.models.scheduling import Schedule
@@ -105,6 +105,35 @@ def test_create_schedule_persists_and_notifies_provider(monkeypatch):
     assert connection.response[0] == 200
     assert connection.response[1]["task_name"] == "test.record"
     assert notifications == [True]
+
+
+def test_create_schedule_rejects_unrepresentable_interval(monkeypatch):
+    notifications = _context(
+        monkeypatch,
+        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+    )
+    connection = _Connection(
+        {
+            "task_name": "test.record",
+            "payload": {"value": 1},
+            "trigger": {
+                "type": "interval",
+                "data": {
+                    "seconds": 10**100,
+                    "start_at": "2026-01-01T00:00:00+00:00",
+                },
+                "timezone": "UTC",
+            },
+        }
+    )
+
+    result = handlers.RequestCreateScheduleHandler().handle(connection)
+
+    assert result.code == 400
+    assert connection.response == (400, {}, "interval.seconds is too large")
+    assert notifications == []
+    with handlers.Session() as session:
+        assert session.scalar(select(Schedule.id)) is None
 
 
 def test_scheduling_api_returns_503_when_provider_is_degraded(monkeypatch):

@@ -7,7 +7,10 @@ from typing import cast
 
 import orjson
 from loguru import logger
-from sqlalchemy import CursorResult, delete, or_, select, update
+from sqlalchemy import CursorResult, and_, delete, or_, select, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from include.config.validation import SchedulingPolicy
 from include.database.models.scheduling import (
@@ -17,6 +20,7 @@ from include.database.models.scheduling import (
 )
 from include.database.session import Session
 from include.domains.operations.commands.audit import log_audit
+from include.scheduling.commands import cancel_unstarted_schedule_execution
 from include.scheduling.contracts import ScheduledTaskContext
 from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import advance_trigger, build_trigger, first_run_at
@@ -40,6 +44,39 @@ def execution_id(schedule_id: str, scheduled_for: float) -> str:
     return hashlib.sha256(f"{schedule_id}:{occurrence}".encode()).hexdigest()
 
 
+def _build_runtime_state_upsert(
+    dialect_name: str,
+    provider: str,
+    current_time: float,
+):
+    values = {
+        "id": 1,
+        "provider": provider,
+        "generation": 1,
+        "schema_version": 1,
+        "updated_at": current_time,
+    }
+    if dialect_name == "sqlite":
+        return (
+            sqlite_insert(SchedulingRuntimeState)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=[SchedulingRuntimeState.id])
+        )
+    if dialect_name == "postgresql":
+        return (
+            postgresql_insert(SchedulingRuntimeState)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=[SchedulingRuntimeState.id])
+        )
+    if dialect_name == "mysql":
+        return (
+            mysql_insert(SchedulingRuntimeState)
+            .values(**values)
+            .on_duplicate_key_update(id=SchedulingRuntimeState.id)
+        )
+    raise ValueError(f"Unsupported database dialect: {dialect_name}")
+
+
 def ensure_runtime_state(provider: str, now: float | None = None) -> int:
     """Ensure the active scheduling provider state exists and return its generation.
 
@@ -48,13 +85,15 @@ def ensure_runtime_state(provider: str, now: float | None = None) -> int:
     """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
-        state = session.get(SchedulingRuntimeState, 1)
-        if state is None:
-            state = SchedulingRuntimeState(
-                id=1, provider=provider, generation=1, updated_at=current_time
+        session.execute(
+            _build_runtime_state_upsert(
+                session.get_bind().dialect.name,
+                provider,
+                current_time,
             )
-            session.add(state)
-            return 1
+        )
+        state = session.get(SchedulingRuntimeState, 1)
+        assert state is not None
         if state.provider == provider:
             return state.generation
 
@@ -136,6 +175,12 @@ def synchronize_system_schedules(
             schedule.revision += 1
             schedule.updated_at = current_time
             schedule.deleted_at = current_time
+            cancel_unstarted_schedule_execution(
+                session,
+                schedule,
+                now=current_time,
+                reason="System schedule retired before execution started",
+            )
             changed += 1
 
         for schedule_id, item in desired.items():
@@ -163,6 +208,8 @@ def synchronize_system_schedules(
                 trigger_data,
                 definition.timezone,
             )
+            next_run_at = first_run_at(trigger, current_time)
+            pending_scheduled_for = current_time if definition.run_immediately else None
             values = {
                 "task_name": registration.name,
                 "task_contract_version": registration.contract_version,
@@ -170,6 +217,8 @@ def synchronize_system_schedules(
                 "trigger_type": definition.trigger_type,
                 "trigger_data": trigger_data,
                 "timezone": definition.timezone,
+                "created_by": None,
+                "updated_by": None,
             }
             if schedule is None:
                 session.add(
@@ -179,14 +228,9 @@ def synchronize_system_schedules(
                         system_managed=True,
                         enabled=True,
                         status="active",
-                        next_run_at=(
-                            current_time
-                            if definition.run_immediately
-                            else first_run_at(trigger, current_time)
-                        ),
-                        created_by=None,
+                        next_run_at=next_run_at,
+                        pending_scheduled_for=pending_scheduled_for,
                         created_at=current_time,
-                        updated_by=None,
                         updated_at=current_time,
                     )
                 )
@@ -200,6 +244,8 @@ def synchronize_system_schedules(
                 "trigger_type": schedule.trigger_type,
                 "trigger_data": schedule.trigger_data,
                 "timezone": schedule.timezone,
+                "created_by": schedule.created_by,
+                "updated_by": schedule.updated_by,
             }
             if current == values and schedule.enabled and schedule.status == "active":
                 continue
@@ -207,12 +253,8 @@ def synchronize_system_schedules(
                 setattr(schedule, name, value)
             schedule.enabled = True
             schedule.status = "active"
-            schedule.next_run_at = (
-                current_time
-                if definition.run_immediately
-                else first_run_at(trigger, current_time)
-            )
-            schedule.pending_scheduled_for = None
+            schedule.next_run_at = next_run_at
+            schedule.pending_scheduled_for = pending_scheduled_for
             schedule.revision += 1
             schedule.updated_at = current_time
             schedule.deleted_at = None
@@ -232,6 +274,31 @@ def _create_execution(
     session.add(item)
     schedule.active_execution_id = item.id
     return item
+
+
+def _advance_schedule_if_current(
+    session,
+    schedule: Schedule,
+    **values,
+) -> bool:
+    """Advance a schedule only if its observed aggregate state is unchanged."""
+    advanced = cast(
+        CursorResult,
+        session.execute(
+            update(Schedule)
+            .where(
+                Schedule.id == schedule.id,
+                Schedule.revision == schedule.revision,
+                Schedule.enabled.is_(True),
+                Schedule.status == "active",
+                Schedule.next_run_at == schedule.next_run_at,
+                Schedule.pending_scheduled_for == schedule.pending_scheduled_for,
+                Schedule.active_execution_id == schedule.active_execution_id,
+            )
+            .values(**values)
+        ),
+    )
+    return advanced.rowcount == 1
 
 
 def enqueue_due_schedules(
@@ -254,10 +321,19 @@ def enqueue_due_schedules(
             .where(
                 Schedule.enabled.is_(True),
                 Schedule.status == "active",
-                Schedule.next_run_at.is_not(None),
-                Schedule.next_run_at <= current_time,
+                or_(
+                    Schedule.next_run_at <= current_time,
+                    and_(
+                        Schedule.active_execution_id.is_(None),
+                        Schedule.pending_scheduled_for <= current_time,
+                    ),
+                ),
             )
-            .order_by(Schedule.next_run_at, Schedule.id)
+            .order_by(
+                Schedule.pending_scheduled_for,
+                Schedule.next_run_at,
+                Schedule.id,
+            )
             .limit(policy.claim_batch_size)
         ).all()
 
@@ -265,35 +341,67 @@ def enqueue_due_schedules(
     for schedule_id in due_ids:
         with Session() as session, session.begin():
             schedule = session.get(Schedule, schedule_id)
-            if (
-                schedule is None
-                or not schedule.enabled
-                or schedule.status != "active"
-                or schedule.next_run_at is None
-                or schedule.next_run_at > current_time
-            ):
+            if schedule is None or not schedule.enabled or schedule.status != "active":
                 continue
 
-            trigger = build_trigger(
-                schedule.trigger_type, schedule.trigger_data, schedule.timezone
+            next_run_due = (
+                schedule.next_run_at is not None
+                and schedule.next_run_at <= current_time
             )
-            advance = advance_trigger(
-                trigger,
-                schedule.next_run_at,
-                current_time,
-                policy.misfire_grace_seconds,
+            pending_due = (
+                schedule.pending_scheduled_for is not None
+                and schedule.pending_scheduled_for <= current_time
             )
-            schedule.next_run_at = advance.next_run_at
-            if advance.latest_due_at is None:
-                if advance.next_run_at is None and schedule.active_execution_id is None:
-                    schedule.status = "completed"
+            if not next_run_due and not pending_due:
+                continue
+
+            next_run_at = schedule.next_run_at
+            latest_due_at = schedule.pending_scheduled_for if pending_due else None
+            if next_run_due:
+                trigger = build_trigger(
+                    schedule.trigger_type, schedule.trigger_data, schedule.timezone
+                )
+                advance = advance_trigger(
+                    trigger,
+                    schedule.next_run_at,
+                    current_time,
+                    policy.misfire_grace_seconds,
+                )
+                next_run_at = advance.next_run_at
+                if advance.latest_due_at is not None and (
+                    latest_due_at is None or advance.latest_due_at > latest_due_at
+                ):
+                    latest_due_at = advance.latest_due_at
+
+            if latest_due_at is None:
+                values = {"next_run_at": next_run_at}
+                if next_run_at is None and schedule.active_execution_id is None:
+                    values["status"] = "completed"
+                if not _advance_schedule_if_current(session, schedule, **values):
+                    session.rollback()
                 continue
             if schedule.active_execution_id is not None:
                 # A schedule exposes only one execution slot; repeated polls replace
                 # the pending timestamp with the latest eligible occurrence.
-                schedule.pending_scheduled_for = advance.latest_due_at
+                if not _advance_schedule_if_current(
+                    session,
+                    schedule,
+                    next_run_at=next_run_at,
+                    pending_scheduled_for=latest_due_at,
+                ):
+                    session.rollback()
                 continue
-            _create_execution(session, schedule, advance.latest_due_at, generation)
+            reserved_execution_id = execution_id(schedule.id, latest_due_at)
+            if not _advance_schedule_if_current(
+                session,
+                schedule,
+                next_run_at=next_run_at,
+                pending_scheduled_for=None,
+                active_execution_id=reserved_execution_id,
+            ):
+                session.rollback()
+                continue
+            _create_execution(session, schedule, latest_due_at, generation)
             created += 1
     return created
 
@@ -317,6 +425,9 @@ def claim_execution(
             .where(
                 ScheduleExecution.provider_generation == generation,
                 ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
+                ScheduleExecution.schedule_id.in_(
+                    select(Schedule.id).where(Schedule.status != "deleted")
+                ),
                 or_(
                     ScheduleExecution.retry_at.is_(None),
                     ScheduleExecution.retry_at <= current_time,
@@ -341,6 +452,14 @@ def claim_execution(
                 .where(
                     ScheduleExecution.id == candidate_id,
                     ScheduleExecution.provider_generation == generation,
+                    ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
+                    ScheduleExecution.schedule_id.in_(
+                        select(Schedule.id).where(Schedule.status != "deleted")
+                    ),
+                    or_(
+                        ScheduleExecution.retry_at.is_(None),
+                        ScheduleExecution.retry_at <= current_time,
+                    ),
                     or_(
                         ScheduleExecution.lease_expires_at.is_(None),
                         ScheduleExecution.lease_expires_at <= current_time,
@@ -402,6 +521,9 @@ def claim_execution_by_id(
                     ScheduleExecution.id == execution_id,
                     ScheduleExecution.provider_generation == generation,
                     ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
+                    ScheduleExecution.schedule_id.in_(
+                        select(Schedule.id).where(Schedule.status != "deleted")
+                    ),
                     or_(
                         ScheduleExecution.retry_at.is_(None),
                         ScheduleExecution.retry_at <= current_time,
@@ -453,7 +575,7 @@ def execution_delivery_state(
         execution = session.get(ScheduleExecution, execution_id)
         if execution is None or execution.provider_generation != generation:
             return "stale"
-        if execution.state in {"succeeded", "failed"}:
+        if execution.state in {"succeeded", "failed", "cancelled"}:
             return "terminal"
         if execution.retry_at is not None and execution.retry_at > current_time:
             return "busy"
@@ -471,8 +593,27 @@ def pending_dispatches(
     *,
     now: float | None = None,
 ) -> tuple[str, ...]:
+    """Recover expired cluster leases and return executions awaiting delivery."""
     current_time = time.time() if now is None else now
-    with Session() as session:
+    with Session() as session, session.begin():
+        session.execute(
+            update(ScheduleExecution)
+            .where(
+                ScheduleExecution.provider_generation == generation,
+                ScheduleExecution.state == "running",
+                ScheduleExecution.lease_expires_at <= current_time,
+                ScheduleExecution.schedule_id.in_(
+                    select(Schedule.id).where(Schedule.status != "deleted")
+                ),
+            )
+            .values(
+                state="pending",
+                dispatch_state="pending",
+                retry_at=None,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+        )
         return tuple(
             session.scalars(
                 select(ScheduleExecution.id)
@@ -522,7 +663,7 @@ def purge_execution_history(
             session.scalars(
                 select(ScheduleExecution.id)
                 .where(
-                    ScheduleExecution.state.in_(("succeeded", "failed")),
+                    ScheduleExecution.state.in_(("succeeded", "failed", "cancelled")),
                     ScheduleExecution.completed_at < cutoff,
                 )
                 .order_by(ScheduleExecution.completed_at, ScheduleExecution.id)
@@ -636,7 +777,10 @@ def fail_execution(
         execution.error = error[:1024]
         execution.lease_owner = None
         execution.lease_expires_at = None
-        if execution.attempt < max_attempts:
+        schedule = session.get(Schedule, execution.schedule_id)
+        if execution.attempt < max_attempts and (
+            schedule is None or schedule.status != "deleted"
+        ):
             delay = min(
                 initial_backoff_seconds * 2 ** (execution.attempt - 1),
                 maximum_backoff_seconds,
@@ -648,10 +792,13 @@ def fail_execution(
 
         execution.state = "failed"
         execution.completed_at = current_time
-        schedule = session.get(Schedule, execution.schedule_id)
         if schedule is not None and schedule.active_execution_id == execution.id:
             _release_schedule_execution(session, schedule, generation)
-            if schedule.next_run_at is None and schedule.active_execution_id is None:
+            if (
+                schedule.status != "deleted"
+                and schedule.next_run_at is None
+                and schedule.active_execution_id is None
+            ):
                 schedule.status = "failed"
         return True
 

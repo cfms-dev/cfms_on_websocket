@@ -79,7 +79,7 @@ def upgrade() -> None:
     sa.Column('error', sa.VARCHAR(length=1024), nullable=True),
     sa.Column('created_at', sa.Double(), nullable=False),
     sa.CheckConstraint("dispatch_state IN ('pending', 'sent')", name='ck_schedule_executions_dispatch_state'),
-    sa.CheckConstraint("state IN ('pending', 'running', 'retry_wait', 'succeeded', 'failed')", name='ck_schedule_executions_state'),
+    sa.CheckConstraint("state IN ('pending', 'running', 'retry_wait', 'succeeded', 'failed', 'cancelled')", name='ck_schedule_executions_state'),
     sa.CheckConstraint('attempt >= 0', name='ck_schedule_executions_attempt'),
     sa.ForeignKeyConstraint(['schedule_id'], ['schedules.id'], name=op.f('fk_schedule_executions_schedule_id_schedules'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_schedule_executions')),

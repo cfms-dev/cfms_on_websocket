@@ -158,6 +158,15 @@ def test_interval_trigger_preserves_its_start_anchor():
     )
 
 
+def test_interval_trigger_rejects_unrepresentable_seconds():
+    with pytest.raises(TriggerValidationError, match="interval.seconds is too large"):
+        build_trigger(
+            "interval",
+            {"seconds": 10**100, "start_at": "2026-01-01T00:00:30+00:00"},
+            "UTC",
+        )
+
+
 def test_date_trigger_requires_an_absolute_time():
     with pytest.raises(TriggerValidationError, match="UTC offset"):
         build_trigger("date", {"run_at": "2026-01-01T12:00:00"}, "UTC")

@@ -63,9 +63,12 @@ def build_trigger(
             start_at = _aware_datetime(
                 trigger_data.get("start_at"), "interval.start_at"
             )
-            return IntervalTrigger(
-                seconds=seconds, start_date=start_at, timezone=timezone_info
-            )
+            try:
+                return IntervalTrigger(
+                    seconds=seconds, start_date=start_at, timezone=timezone_info
+                )
+            except OverflowError as exc:
+                raise TriggerValidationError("interval.seconds is too large") from exc
     except ValueError as exc:
         if isinstance(exc, TriggerValidationError):
             raise

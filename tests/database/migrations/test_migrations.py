@@ -74,7 +74,7 @@ def test_retained_revision_chain_round_trips_to_head(
         engine.dispose()
 
 
-def test_scheduling_permission_downgrade_preserves_preexisting_grants(
+def test_scheduling_permission_downgrade_preserves_other_grants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     src_dir = Path(__file__).resolve().parents[3] / "src"
@@ -109,18 +109,33 @@ def test_scheduling_permission_downgrade_preserves_preexisting_grants(
                 },
             )
         command.upgrade(config, "head")
+        with engine.begin() as connection:
+            connection.execute(
+                tables["group_permissions"].insert(),
+                {
+                    "group_name": "sysop",
+                    "permission": "manage_schedules",
+                    "granted": True,
+                    "start_time": 100.0,
+                    "end_time": 200.0,
+                },
+            )
         command.downgrade(config, "ab7efda19079")
 
         with engine.connect() as connection:
-            permissions = set(
-                connection.scalars(
-                    select(tables["group_permissions"].c.permission).where(
-                        tables["group_permissions"].c.group_name == "sysop"
-                    )
+            grants = set(
+                connection.execute(
+                    select(
+                        tables["group_permissions"].c.permission,
+                        tables["group_permissions"].c.start_time,
+                        tables["group_permissions"].c.end_time,
+                    ).where(tables["group_permissions"].c.group_name == "sysop")
                 )
             )
-            assert "view_schedules" in permissions
-            assert "manage_schedules" not in permissions
+            assert grants == {
+                ("view_schedules", 0.0, None),
+                ("manage_schedules", 100.0, 200.0),
+            }
     finally:
         engine.dispose()
 
@@ -191,6 +206,26 @@ def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
                         "updated_by": None,
                         "updated_at": 1.0,
                     },
+                    {
+                        "id": "orphaned-user-schedule",
+                        "task_name": "test.record",
+                        "task_contract_version": 1,
+                        "payload": {},
+                        "trigger_type": "interval",
+                        "trigger_data": {
+                            "seconds": 60,
+                            "start_at": "2026-01-01T00:00:00+00:00",
+                        },
+                        "timezone": "UTC",
+                        "system_managed": False,
+                        "enabled": True,
+                        "status": "active",
+                        "revision": 1,
+                        "created_by": None,
+                        "created_at": 1.0,
+                        "updated_by": None,
+                        "updated_at": 1.0,
+                    },
                 ],
             )
         command.stamp(config, "head")
@@ -212,5 +247,19 @@ def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
             assert connection.execute(
                 select(schedule_rows.c.id, schedule_rows.c.system_managed)
             ).all() == [("user-schedule", False)]
+            assert "ck_schedules_system_ownership" not in {
+                item["name"]
+                for item in inspect(connection).get_check_constraints("schedules")
+            }
+            schedule_foreign_keys = {
+                tuple(item["constrained_columns"]): item
+                for item in inspect(connection).get_foreign_keys("schedules")
+            }
+            assert schedule_foreign_keys[("created_by",)]["options"]["ondelete"] == (
+                "SET NULL"
+            )
+            assert schedule_foreign_keys[("updated_by",)]["options"]["ondelete"] == (
+                "SET NULL"
+            )
     finally:
         engine.dispose()

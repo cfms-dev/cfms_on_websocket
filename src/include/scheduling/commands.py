@@ -1,10 +1,10 @@
 import time
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.orm import Session as OrmSession
 
-from include.database.models.scheduling import Schedule
+from include.database.models.scheduling import Schedule, ScheduleExecution
 from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import build_trigger, first_run_at
 
@@ -109,6 +109,7 @@ def update_schedule(
         "trigger_data": trigger_data,
         "timezone": timezone,
         "enabled": enabled,
+        "status": "active",
         "next_run_at": first_run_at(trigger, current_time),
         "pending_scheduled_for": None,
         "updated_by": username,
@@ -131,6 +132,53 @@ def update_schedule(
         raise ScheduleConflictError("Schedule changed concurrently")
     session.flush()
     return schedule
+
+
+def cancel_unstarted_schedule_execution(
+    session: OrmSession,
+    schedule: Schedule,
+    *,
+    now: float,
+    reason: str,
+) -> None:
+    """Cancel queued work for a retired schedule in the caller's transaction."""
+    active_execution_id = schedule.active_execution_id
+    if active_execution_id is None:
+        return
+
+    cancelled = cast(
+        CursorResult,
+        session.execute(
+            update(ScheduleExecution)
+            .where(
+                ScheduleExecution.id == active_execution_id,
+                ScheduleExecution.state.in_(("pending", "retry_wait")),
+            )
+            .values(
+                state="cancelled",
+                retry_at=None,
+                lease_owner=None,
+                lease_expires_at=None,
+                completed_at=now,
+                error=reason,
+            )
+        ),
+    )
+    if cancelled.rowcount == 1:
+        schedule.active_execution_id = None
+        return
+
+    execution_state = session.scalar(
+        select(ScheduleExecution.state).where(
+            ScheduleExecution.id == active_execution_id
+        )
+    )
+    if execution_state is None or execution_state in {
+        "succeeded",
+        "failed",
+        "cancelled",
+    }:
+        schedule.active_execution_id = None
 
 
 def delete_schedule(
@@ -174,6 +222,12 @@ def delete_schedule(
         ),
     )
     if deleted.rowcount == 1:
+        cancel_unstarted_schedule_execution(
+            session,
+            schedule,
+            now=current_time,
+            reason="Schedule deleted before execution started",
+        )
         return
     schedule = session.get(Schedule, schedule_id)
     if schedule is None or schedule.status == "deleted":
