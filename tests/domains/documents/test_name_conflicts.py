@@ -129,6 +129,25 @@ def test_conflict_description_hides_unreadable_winner_id(monkeypatch, readable) 
     assert message == smsg.DIRECTORY_NAME_DUPLICATE
 
 
+def test_conflict_description_rejects_unsupported_node_before_access_check(
+    monkeypatch,
+) -> None:
+    from include.database.models.documents import Node
+    from include.domains.documents.commands import name_conflicts
+
+    monkeypatch.setattr(
+        name_conflicts,
+        "check_access_requirements",
+        lambda *_args: pytest.fail("access check received an unsupported node"),
+    )
+    winner = Node(id="winner", type="node", name="Report", parent_id="/")
+
+    with pytest.raises(TypeError, match="Unsupported conflicting node type"):
+        name_conflicts._describe_node_name_conflict_winner(
+            SimpleNamespace(), winner, SimpleNamespace()
+        )
+
+
 def test_successful_name_mutation_does_not_prequery_sibling_names() -> None:
     import include.database.models  # noqa: F401
     from include.database.models.documents import Folder
