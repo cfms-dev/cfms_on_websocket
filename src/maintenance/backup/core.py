@@ -136,6 +136,7 @@ BACKUP_TABLE_NAMES = (
     "userblock_entries",
     "userblock_sub_entries",
     "banned_subnets",
+    "schedules",
 )
 
 EXCLUDED_TABLE_NAMES = frozenset(
@@ -145,6 +146,8 @@ EXCLUDED_TABLE_NAMES = frozenset(
         "login_throttles",
         "rate_limit_buckets",
         "risk_ip_accounts",
+        "schedule_executions",
+        "scheduling_runtime_state",
         "system_states",
         "traffic_throttles",
     }
@@ -175,6 +178,7 @@ INSERT_ORDER = (
     "userblock_entries",
     "userblock_sub_entries",
     "banned_subnets",
+    "schedules",
 )
 
 
@@ -197,6 +201,7 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
         "keyrings",
         "userblock_entries",
         "userblock_sub_entries",
+        "schedules",
     ),
     BackupComponent.DOCUMENT_LIBRARY: (
         "nodes",
@@ -2020,6 +2025,9 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     legacy_expected = (
         expected - compiled_access_rule_tables
     ) | legacy_access_rule_tables
+    # Schedules were added without changing the backup format version, so full
+    # backups created before that table existed remain compatible.
+    compatible_table_names = table_names | {"schedules"}
     unknown_tables = table_names - expected - legacy_access_rule_tables
     if unknown_tables:
         raise BackupFormatError(
@@ -2027,9 +2035,9 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         )
     if (
         "components" not in manifest
-        and table_names != expected
-        and table_names != previous_compiled_expected
-        and table_names != legacy_expected
+        and compatible_table_names != expected
+        and compatible_table_names != previous_compiled_expected
+        and compatible_table_names != legacy_expected
     ):
         raise BackupFormatError(
             "Backup table set does not match this server version: "

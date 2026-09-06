@@ -42,6 +42,11 @@ from include.database.models.operations import (
     RiskIPAccount,
     SystemStateEntry,
 )
+from include.database.models.scheduling import (
+    Schedule,
+    ScheduleExecution,
+    SchedulingRuntimeState,
+)
 from include.database.models.security import (
     AccountThrottle,
     BannedSubnet,
@@ -76,6 +81,9 @@ __all__ = [
     "ObjectAccessEntry",
     "RateLimitBucket",
     "RiskIPAccount",
+    "Schedule",
+    "ScheduleExecution",
+    "SchedulingRuntimeState",
     "SystemStateEntry",
     "TrafficThrottle",
     "TransferMode",

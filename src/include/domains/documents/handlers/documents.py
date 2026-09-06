@@ -62,7 +62,6 @@ from include.domains.documents.commands.revision_deletion import (
     delete_all_document_revisions,
 )
 from include.domains.documents.commands.upload_cleanup import (
-    maybe_reclaim_abandoned_uploads,
     try_reclaim_abandoned_uploads,
 )
 from include.domains.documents.creation_limits import check_document_creation_limits
@@ -447,7 +446,6 @@ class RequestCreateDocumentHandler(RequestHandler):
             handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
             return
 
-        maybe_reclaim_abandoned_uploads()
         try_reclaim_abandoned_uploads(folder_id=folder_id, title=title)
 
         conflict_response: tuple[dict, str] | None = None
@@ -592,7 +590,6 @@ class RequestUploadDocumentHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         document_id = handler.data["document_id"]
 
-        maybe_reclaim_abandoned_uploads()
         try_reclaim_abandoned_uploads(document_id=document_id)
 
         with Session() as session:

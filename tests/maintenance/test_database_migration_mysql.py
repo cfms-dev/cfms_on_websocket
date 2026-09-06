@@ -1,12 +1,16 @@
 import os
+from pathlib import Path
 
 import pytest
+from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine, insert, inspect, text
+from sqlalchemy import create_engine, insert, inspect, select, text
 
+from alembic import command
 from include.database.engine import create_database_engine
 from maintenance.database_migration import migrate_database
 from maintenance.database_schema import DatabaseSchemaError, upgrade_database_schema
+from maintenance.database_tables import APPLICATION_TABLE_NAMES
 from tests.maintenance.test_backup_format_compatibility import _seed_source
 from tests.maintenance.test_database_migration import (
     _script_directory,
@@ -17,6 +21,8 @@ pytestmark = pytest.mark.skipif(
     "CFMS_TEST_MYSQL_URL" not in os.environ,
     reason="CFMS_TEST_MYSQL_URL is required for MySQL migration integration tests",
 )
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_unversioned_mysql_schema_is_rejected_without_stamping(backup_context) -> None:
@@ -31,6 +37,94 @@ def test_unversioned_mysql_schema_is_rejected_without_stamping(backup_context) -
         with mysql_engine.connect() as connection:
             assert "users" in inspect(connection).get_table_names()
             assert MigrationContext.configure(connection).get_current_revision() is None
+    finally:
+        _clear_mysql_database(mysql_engine)
+        mysql_engine.dispose()
+
+
+def test_system_schedule_revision_round_trips_on_mysql(backup_context) -> None:
+    mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    _clear_mysql_database(mysql_engine)
+    config = Config(_PROJECT_ROOT / "src" / "alembic.ini")
+    scripts = _script_directory()
+    head = scripts.get_current_head()
+    assert head is not None
+    try:
+        backup_context.Base.metadata.create_all(mysql_engine)
+        with mysql_engine.begin() as connection:
+            MigrationContext.configure(connection).stamp(scripts, head)
+
+        config.set_main_option("sqlalchemy.url", os.environ["CFMS_TEST_MYSQL_URL"])
+        command.downgrade(config, "8c130010a943")
+        with mysql_engine.connect() as connection:
+            assert "system_managed" not in {
+                item["name"] for item in inspect(connection).get_columns("schedules")
+            }
+
+        command.upgrade(config, "head")
+        with mysql_engine.connect() as connection:
+            assert "system_managed" in {
+                item["name"] for item in inspect(connection).get_columns("schedules")
+            }
+            assert "ck_schedules_system_ownership" not in {
+                item["name"]
+                for item in inspect(connection).get_check_constraints("schedules")
+            }
+            schedule_foreign_keys = {
+                tuple(item["constrained_columns"]): item
+                for item in inspect(connection).get_foreign_keys("schedules")
+            }
+            assert schedule_foreign_keys[("created_by",)]["options"]["ondelete"] == (
+                "SET NULL"
+            )
+            assert schedule_foreign_keys[("updated_by",)]["options"]["ondelete"] == (
+                "SET NULL"
+            )
+        tables = backup_context.Base.metadata.tables
+        with mysql_engine.begin() as connection:
+            connection.execute(
+                tables["users"].insert(),
+                {
+                    "username": "schedule-owner",
+                    "pass_hash": "hash",
+                    "passwd_last_modified": 100.0,
+                    "created_time": 100.0,
+                    "status": 0,
+                    "secret_key": "secret",
+                    "totp_enabled": False,
+                },
+            )
+            connection.execute(
+                tables["schedules"].insert(),
+                {
+                    "id": "user-schedule",
+                    "task_name": "test.record",
+                    "task_contract_version": 1,
+                    "payload": {"value": 1},
+                    "trigger_type": "date",
+                    "trigger_data": {"run_at": "2026-01-01T00:00:00+00:00"},
+                    "timezone": "UTC",
+                    "system_managed": False,
+                    "enabled": True,
+                    "status": "active",
+                    "revision": 1,
+                    "created_by": "schedule-owner",
+                    "created_at": 100.0,
+                    "updated_by": "schedule-owner",
+                    "updated_at": 100.0,
+                },
+            )
+            connection.execute(
+                tables["users"]
+                .delete()
+                .where(tables["users"].c.username == "schedule-owner")
+            )
+            assert connection.execute(
+                select(
+                    tables["schedules"].c.created_by,
+                    tables["schedules"].c.updated_by,
+                ).where(tables["schedules"].c.id == "user-schedule")
+            ).one() == (None, None)
     finally:
         _clear_mysql_database(mysql_engine)
         mysql_engine.dispose()
@@ -80,7 +174,7 @@ def test_database_migration_round_trip_with_supported_mysql_lts(
             else ("mysql", "sqlite")
         )
         assert (result.source_dialect, result.target_dialect) == expected_dialects
-        assert len(result.tables) == 32
+        assert tuple(table.name for table in result.tables) == APPLICATION_TABLE_NAMES
         with target_engine.begin() as connection:
             comments = base.metadata.tables["comments"]
             inserted = connection.execute(

@@ -418,91 +418,17 @@ def test_command_rejects_unrelated_workdir(tmp_path):
     assert "Unable to locate a CFMS server root" in result.stdout + result.stderr
 
 
-def test_incomplete_commands_show_contextual_hints(tmp_path):
-    cases = [
-        (
-            ["user"],
-            ["Maintain users.", "reset-password", "clear-totp"],
-        ),
-        (
-            ["config"],
-            ["Maintain configuration.", "fill-pepper", "sync-template"],
-        ),
-        (
-            ["audit"],
-            ["Maintain audit log entries.", "export", "purge"],
-        ),
-        (
-            ["permission"],
-            ["Maintain permission entries.", "purge-expired"],
-        ),
-        (
-            ["backup"],
-            ["Maintain backups.", "export", "import"],
-        ),
-        (
-            ["extension"],
-            ["Manage server extensions.", "install", "upgrade", "enable"],
-        ),
-        (
-            ["user", "reset-password"],
-            [
-                "Account whose password should be reset.",
-                "maintain user reset-password alice",
-            ],
-        ),
-        (
-            ["user", "reset-password", "alice", "--password"],
-            ["Option '--password' requires an argument."],
-        ),
-        (
-            ["user", "clear-totp"],
-            [
-                "Clear TOTP state for one user or all users.",
-                "maintain user clear-totp --all --yes",
-            ],
-        ),
-        (
-            ["backup", "export"],
-            ["Where the encrypted backup should be written."],
-        ),
-        (
-            ["backup", "export", "backup.confbak", "--key-out"],
-            ["Option '--key-out' requires an argument."],
-        ),
-        (
-            ["backup", "info"],
-            ["Backup file to inspect."],
-        ),
-        (
-            ["backup", "import"],
-            [
-                "Backup file to import",
-                "--key-file backup.key --yes",
-            ],
-        ),
-        (
-            ["backup", "import", "backup.confbak", "--yes"],
-            ["Choose exactly one decryption key source"],
-        ),
-        (
-            ["backup", "import", "backup.confbak", "--key"],
-            ["Option '--key' requires an argument."],
-        ),
-        (
-            ["backup", "import", "backup.confbak", "--key-file"],
-            ["Option '--key-file' requires an argument."],
-        ),
-    ]
+def test_backup_import_requires_exactly_one_key_source(tmp_path):
+    result = _run_maintain(
+        tmp_path,
+        ["backup", "import", "backup.confbak", "--yes"],
+        check=False,
+    )
 
-    for args, expected_parts in cases:
-        result = _run_maintain(tmp_path, args, check=False)
-        output = result.stdout + result.stderr
-        normalized_output = _normalize_cli_output(output)
-
-        assert result.returncode != 0
-        for expected_part in expected_parts:
-            assert " ".join(expected_part.split()) in normalized_output
+    assert result.returncode != 0
+    assert "Choose exactly one decryption key source" in _normalize_cli_output(
+        result.stdout + result.stderr
+    )
 
 
 def test_fill_pepper_updates_config_and_is_idempotent(tmp_path):

@@ -6,10 +6,7 @@ from loguru import logger
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
-from include.config.validation import (
-    DocumentCreationRiskPolicy,
-    DocumentUploadPolicy,
-)
+from include.config.validation import DocumentCreationRiskPolicy, DocumentUploadPolicy
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -24,6 +21,7 @@ from include.domains.documents.creation_risk import (
     assess_creation_risk,
 )
 from include.domains.security.guards.rate_limits import (
+    RateLimitCleanupCounts,
     cleanup_rate_limit_state,
     consume_bucket,
     count_ip_accounts,
@@ -35,7 +33,6 @@ from include.domains.security.guards.rate_limits import (
 )
 
 _RISK_NAMESPACE = "document_creation"
-_last_cleanup_monotonic = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,24 +127,19 @@ def _risk_cost(
     return 1
 
 
-def _maybe_cleanup(
+def cleanup_document_creation_risk_state(
     session: Session,
-    now: float,
-    upload_policy: DocumentUploadPolicy,
-    risk_policy: DocumentCreationRiskPolicy,
-) -> None:
-    global _last_cleanup_monotonic
-
-    monotonic_now = time.monotonic()
-    if monotonic_now - _last_cleanup_monotonic < upload_policy.cleanup_interval_seconds:
-        return
-    cleanup_rate_limit_state(
+    *,
+    now: float | None = None,
+) -> RateLimitCleanupCounts:
+    current_time = time.time() if now is None else now
+    policy = DocumentCreationRiskPolicy.from_config()
+    return cleanup_rate_limit_state(
         session,
         _RISK_NAMESPACE,
-        ip_account_cutoff=now - risk_policy.ip_account_window_seconds,
-        bucket_cutoff=now - risk_policy.state_retention_seconds,
+        ip_account_cutoff=current_time - policy.ip_account_window_seconds,
+        bucket_cutoff=current_time - policy.state_retention_seconds,
     )
-    _last_cleanup_monotonic = monotonic_now
 
 
 def check_document_creation_limits(
@@ -164,7 +156,6 @@ def check_document_creation_limits(
     upload_policy = DocumentUploadPolicy.from_config()
     risk_policy = DocumentCreationRiskPolicy.from_config()
 
-    _maybe_cleanup(session, now, upload_policy, risk_policy)
     account_bucket = lock_rate_bucket(
         session,
         _RISK_NAMESPACE,

@@ -31,6 +31,9 @@ APPLICATION_TABLE_NAMES = (
     "system_states",
     "traffic_throttles",
     "file_deduplication_tasks",
+    "schedules",
+    "schedule_executions",
+    "scheduling_runtime_state",
 )
 
 DEFERRED_COLUMNS = {

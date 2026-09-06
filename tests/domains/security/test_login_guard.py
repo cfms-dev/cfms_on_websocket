@@ -64,7 +64,6 @@ def guard_context(monkeypatch, tmp_path):
     ProviderManager().register(MemoryCachingProvider())
     monkeypatch.setattr(login.LoginGuard, "_banned_rules", [])
     monkeypatch.setattr(login.LoginGuard, "_networks_loaded", True)
-    monkeypatch.setattr(login.LoginGuard, "_last_cleanup_monotonic", float("inf"))
 
     yield SimpleNamespace(
         login=login,
@@ -185,11 +184,15 @@ def test_cleanup_removes_only_stale_unlocked_records(guard_context):
             )
         )
 
-    guard_context.login.LoginGuard._last_cleanup_monotonic = -3601
-    guard_context.login.LoginGuard._maybe_cleanup(guard_context.policy)
+    result = guard_context.login.purge_expired_auth_throttle_records(
+        guard_context.policy
+    )
 
     with guard_context.Session() as session:
         assert session.get(guard_context.AccountThrottle, ("stale", "password")) is None
+    assert result.account_records == 1
+    assert result.login_records == 0
+    assert result.traffic_records == 0
 
 
 def test_scheduled_and_expired_subnet_rules(guard_context, monkeypatch):

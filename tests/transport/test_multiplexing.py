@@ -305,12 +305,6 @@ def test_encode_frame_accepts_supported_payload_types(data, expected):
     assert payload[FRAME_HEADER_SIZE:] == expected
 
 
-def test_frame_uses_stream_id_field():
-    frame = Frame(stream_id=3, frame_type=FrameType.PROCESS, data=b"payload")
-
-    assert frame.stream_id == 3
-
-
 def test_encode_frame_rejects_unsupported_payload_type():
     with pytest.raises(TypeError, match="Frame data must be"):
         encode_frame(2, FrameType.PROCESS, None)

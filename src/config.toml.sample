@@ -3,6 +3,7 @@ debug = false
 
 [extensions]
 # Extension identifiers to load, in registration order. Changes require a restart.
+# Add "scheduling" only to expose schedule query and configuration actions.
 enabled = []
 
 # Automatically enter lockdown after a service-wide burst of failed local
@@ -158,6 +159,18 @@ retention_days = 365
 # Maximum archived audit entries deleted in each transaction.
 batch_size = 500
 
+[scheduling]
+# Runtime settings for the always-on scheduling core.
+# Worker threads started by each server instance for either scheduling Provider.
+worker_threads = 4
+poll_interval_seconds = 1.0
+execution_lease_seconds = 60
+lease_refresh_seconds = 20
+shutdown_grace_seconds = 30
+misfire_grace_seconds = 300
+history_retention_days = 90
+claim_batch_size = 100
+
 [access]
 # Enable recursive access checks.
 # When enabled, access rules will be checked for the requested object itself, 
@@ -173,7 +186,7 @@ start_timeout_seconds = 3600
 max_duration_seconds = 86400
 # Abort an upload when no frame arrives within this interval.
 idle_timeout_seconds = 300
-# Minimum interval between opportunistic abandoned-upload cleanup batches.
+# Interval for the hidden abandoned-upload and creation-risk cleanup schedules.
 cleanup_interval_seconds = 60
 # Maximum number of empty, not-yet-uploaded documents per creator.
 max_pending_documents_per_creator = 16
@@ -256,6 +269,8 @@ storage = "local" # "local" or "s3"
 event_bus = "local" # "local" or "redis"
 # Request rate-limit state provider ("memory" or "redis")
 rate_limit = "memory" # "memory" or "redis"
+# Scheduled-task runtime ("local" or "redis")
+scheduling = "local"
 
 [redis]
 # Redis server host

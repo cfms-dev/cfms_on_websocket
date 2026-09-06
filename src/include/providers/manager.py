@@ -7,6 +7,7 @@ from include.providers.base import (
     EventBusProvider,
     Provider,
     RateLimitProvider,
+    SchedulingProvider,
     StorageProvider,
 )
 
@@ -55,3 +56,7 @@ class ProviderManager:
     @property
     def rate_limit(self) -> RateLimitProvider:
         return self.get(RateLimitProvider)
+
+    @property
+    def scheduling(self) -> SchedulingProvider:
+        return self.get(SchedulingProvider)

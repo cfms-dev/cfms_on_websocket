@@ -199,6 +199,22 @@ must reject an explicit JSON `null`; use `T | None` when `null` is valid. After
 validation, `ConnectionHandler.data` remains the original JSON dictionary, so
 existing handler and hook code may continue to use dictionary operations.
 
+Extensions that own trusted scheduled task types register them through
+`ext_register_scheduled_tasks()`. The scheduling core is always active; enabling
+the `scheduling` extension only exposes its authenticated management actions. Task
+names, payload contracts, authorization, and at-least-once requirements are
+documented in [SCHEDULING.md](SCHEDULING.md). This hook registers executable task
+types only. User schedule definitions are created through the management API and
+no extension may persist an arbitrary import path.
+
+Tasks that are intrinsic server maintenance rather than operator-created jobs may
+declare a `SystemScheduleDefinition` and set `user_schedulable=False`. The
+scheduling runtime reconciles those definitions, while the management API hides
+both their task types and schedule rows. A system schedule must be safely
+repeatable under the same at-least-once execution contract. Server features that
+need periodic execution should register a system schedule instead of implementing
+an independent polling worker.
+
 When request data fails validation, the server returns `400` with every safe
 Pydantic error under `data.errors`:
 

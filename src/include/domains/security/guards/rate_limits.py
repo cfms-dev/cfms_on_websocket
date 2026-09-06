@@ -1,6 +1,6 @@
 import math
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, cast
@@ -15,7 +15,7 @@ rate_limit_lock = threading.Lock()
 
 
 @contextmanager
-def risk_control_transaction(session: Session) -> Iterator[None]:
+def risk_control_transaction(session: Session) -> Generator[None]:
     lock = (
         rate_limit_lock
         if session.get_bind().dialect.name == "sqlite"
@@ -31,6 +31,12 @@ class BucketDecision:
     scope: str
     effective_limit: int
     retry_after_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitCleanupCounts:
+    ip_accounts: int
+    buckets: int
 
 
 def lock_rate_bucket(
@@ -193,16 +199,23 @@ def cleanup_rate_limit_state(
     *,
     ip_account_cutoff: float,
     bucket_cutoff: float,
-) -> None:
-    session.execute(
-        delete(RiskIPAccount).where(
-            RiskIPAccount.namespace == namespace,
-            RiskIPAccount.last_attempt < ip_account_cutoff,
-        )
-    )
-    session.execute(
-        delete(RateLimitBucket).where(
-            RateLimitBucket.namespace == namespace,
-            RateLimitBucket.last_attempt < bucket_cutoff,
-        )
-    )
+) -> RateLimitCleanupCounts:
+    ip_accounts = cast(
+        CursorResult[Any],
+        session.execute(
+            delete(RiskIPAccount).where(
+                RiskIPAccount.namespace == namespace,
+                RiskIPAccount.last_attempt < ip_account_cutoff,
+            )
+        ),
+    ).rowcount
+    buckets = cast(
+        CursorResult[Any],
+        session.execute(
+            delete(RateLimitBucket).where(
+                RateLimitBucket.namespace == namespace,
+                RateLimitBucket.last_attempt < bucket_cutoff,
+            )
+        ),
+    ).rowcount
+    return RateLimitCleanupCounts(ip_accounts=ip_accounts, buckets=buckets)

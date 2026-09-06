@@ -1,7 +1,7 @@
-import threading
 import time
 
 from loguru import logger as log
+from pydantic import BaseModel, ConfigDict
 
 from include.config.validation import IdentityPermissionRetentionPolicy
 from include.database.session import Session
@@ -9,11 +9,19 @@ from include.domains.identity.commands.permission_cleanup import (
     PermissionEntryCounts,
     purge_expired_permission_entries,
 )
+from include.scheduling import (
+    ScheduledTaskContext,
+    ScheduledTaskRegistration,
+    ScheduledTaskResult,
+    SystemScheduleDefinition,
+)
 
 logger = log.bind(name="permission_cleanup")
 _SECONDS_PER_DAY = 24 * 60 * 60
-_CONFIG_RETRY_INTERVAL_SECONDS = 60
-_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
+
+class _PermissionCleanupPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 def cleanup_expired_permission_entries(
@@ -40,46 +48,37 @@ def cleanup_expired_permission_entries(
     return result
 
 
-class PermissionCleanupWorker:
-    def __init__(self) -> None:
-        self._lifecycle_lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        with self._lifecycle_lock:
-            if self._thread is not None and self._thread.is_alive():
-                return
-            self._stop.clear()
-            self._thread = threading.Thread(
-                target=self._run,
-                name="permission-cleanup-worker",
-                daemon=True,
-            )
-            self._thread.start()
-
-    def stop(self, timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> None:
-        with self._lifecycle_lock:
-            thread = self._thread
-            if thread is None:
-                return
-            self._stop.set()
-        thread.join(timeout)
-        with self._lifecycle_lock:
-            if self._thread is thread and not thread.is_alive():
-                self._thread = None
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            interval = _CONFIG_RETRY_INTERVAL_SECONDS
-            try:
-                policy = IdentityPermissionRetentionPolicy.from_config()
-                interval = policy.cleanup_interval_seconds
-                cleanup_expired_permission_entries(policy)
-            except Exception:
-                logger.exception("Expired permission cleanup failed")
-
-            self._stop.wait(interval)
+def _permission_cleanup_schedule() -> SystemScheduleDefinition:
+    policy = IdentityPermissionRetentionPolicy.from_config()
+    return SystemScheduleDefinition(
+        id="builtin.permission_cleanup",
+        payload={},
+        trigger_type="interval",
+        trigger_data={"seconds": policy.cleanup_interval_seconds},
+    )
 
 
-permission_cleanup_worker = PermissionCleanupWorker()
+def run_scheduled_permission_cleanup(
+    _context: ScheduledTaskContext,
+    _payload: _PermissionCleanupPayload,
+) -> ScheduledTaskResult:
+    result = cleanup_expired_permission_entries(
+        IdentityPermissionRetentionPolicy.from_config()
+    )
+    return ScheduledTaskResult(
+        data={
+            "user_entries": result.user_entries,
+            "group_entries": result.group_entries,
+        }
+    )
+
+
+permission_cleanup_task = ScheduledTaskRegistration(
+    name="builtin.permission_cleanup",
+    contract_version=1,
+    payload_model=_PermissionCleanupPayload,
+    execute=run_scheduled_permission_cleanup,
+    max_attempts=1,
+    user_schedulable=False,
+    system_schedule=_permission_cleanup_schedule,
+)

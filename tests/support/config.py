@@ -1,6 +1,6 @@
 import os
 import socket
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,7 +99,7 @@ def write_test_config(src_dir: Path, port: int) -> ServerTestSettings:
 @contextmanager
 def managed_test_config(
     src_dir: Path = SOURCE_ROOT,
-) -> Iterator[ServerTestSettings]:
+) -> Generator[ServerTestSettings]:
     config_backup = capture_config(src_dir / "config.toml")
     old_environment = {name: os.environ.get(name) for name in _TEST_ENVIRONMENT_NAMES}
 

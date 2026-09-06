@@ -1,4 +1,3 @@
-import threading
 import time
 from dataclasses import dataclass
 from typing import Any, cast
@@ -8,7 +7,6 @@ from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session as ORMSession
 
-from include.config.validation import DocumentUploadPolicy
 from include.database.models.documents import Document, DocumentRevision
 from include.database.models.files import (
     File,
@@ -29,9 +27,6 @@ from include.domains.documents.commands.revision_deletion import (
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 
 logger = log.bind(name="upload_cleanup")
-_opportunistic_cleanup_lock = threading.Lock()
-_last_opportunistic_cleanup = 0.0
-_OPPORTUNISTIC_CLEANUP_BATCH_SIZE = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,20 +233,3 @@ def try_reclaim_abandoned_uploads(
     except Exception:
         logger.exception("Failed to reclaim abandoned uploads")
         return None
-
-
-def maybe_reclaim_abandoned_uploads() -> UploadCleanupResult | None:
-    global _last_opportunistic_cleanup
-
-    interval = DocumentUploadPolicy.from_config().cleanup_interval_seconds
-    if time.monotonic() - _last_opportunistic_cleanup < interval:
-        return None
-    if not _opportunistic_cleanup_lock.acquire(blocking=False):
-        return None
-    try:
-        if time.monotonic() - _last_opportunistic_cleanup < interval:
-            return None
-        return try_reclaim_abandoned_uploads(limit=_OPPORTUNISTIC_CLEANUP_BATCH_SIZE)
-    finally:
-        _last_opportunistic_cleanup = time.monotonic()
-        _opportunistic_cleanup_lock.release()

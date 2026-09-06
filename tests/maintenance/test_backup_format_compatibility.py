@@ -319,6 +319,33 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             },
         )
         connection.execute(
+            insert(tables["schedules"]),
+            {
+                "id": "schedule-1",
+                "task_name": "test.record",
+                "task_contract_version": 1,
+                "payload": {"value": 7},
+                "trigger_type": "interval",
+                "trigger_data": {
+                    "seconds": 3600,
+                    "start_at": "2023-11-14T22:13:20+00:00",
+                },
+                "timezone": "UTC",
+                "system_managed": False,
+                "enabled": True,
+                "status": "active",
+                "revision": 1,
+                "next_run_at": now + 3600,
+                "active_execution_id": None,
+                "pending_scheduled_for": None,
+                "created_by": "alice",
+                "created_at": now,
+                "updated_by": "alice",
+                "updated_at": now,
+                "deleted_at": None,
+            },
+        )
+        connection.execute(
             insert(tables["user_groups"]),
             {
                 "group_name": "sysop",
@@ -603,6 +630,8 @@ def _backup_table_names(base) -> set[str]:
         "login_throttles",
         "rate_limit_buckets",
         "risk_ip_accounts",
+        "schedule_executions",
+        "scheduling_runtime_state",
         "system_states",
         "traffic_throttles",
     }
@@ -667,9 +696,39 @@ def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context)
     assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
 
 
+@pytest.mark.parametrize(
+    "layout",
+    ("current", "previous_compiled", "legacy_access_rules"),
+)
+def test_pre_scheduling_full_backup_manifest_is_accepted(
+    backup_context, layout
+) -> None:
+    core = backup_context.backup_core
+    current_tables = set(core.BACKUP_TABLE_NAMES)
+    layouts = {
+        "current": current_tables,
+        "previous_compiled": current_tables - {"compiled_access_rule_sets"},
+        "legacy_access_rules": (
+            current_tables - set(core.COMPILED_ACCESS_RULE_TABLE_NAMES)
+        )
+        | set(core.LEGACY_ACCESS_RULE_TABLE_NAMES),
+    }
+    historical_tables = layouts[layout] - {"schedules"}
+    manifest = {
+        "format_version": core.BACKUP_FORMAT_VERSION,
+        "tables": {table_name: {"rows": 0} for table_name in historical_tables},
+        "files": [],
+        "configuration": {},
+    }
+
+    assert core._validate_manifest(manifest) is None
+
+
 def test_runtime_state_tables_are_excluded(backup_context):
     excluded = backup_context.backup_core.EXCLUDED_TABLE_NAMES
 
     assert "rate_limit_buckets" in excluded
     assert "risk_ip_accounts" in excluded
+    assert "schedule_executions" in excluded
+    assert "scheduling_runtime_state" in excluded
     assert "system_states" in excluded

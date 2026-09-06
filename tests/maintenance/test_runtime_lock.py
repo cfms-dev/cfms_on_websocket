@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from include.runtime_lock import RuntimeLock, RuntimeLockError, server_runtime_lock
+from include.runtime_lock import (
+    RuntimeLock,
+    RuntimeLockError,
+    server_runtime_lock,
+)
 
 
 def test_runtime_lock_rejects_a_second_process(tmp_path: Path) -> None:
@@ -46,3 +50,11 @@ def test_server_runtime_lock_allows_deployment_recovery(tmp_path: Path) -> None:
 
     with server_runtime_lock(tmp_path, allow_unfinished_deployment=True):
         assert (tmp_path / ".maintenance" / "server.lock").is_file()
+
+
+def test_server_runtime_lock_blocks_maintenance_for_the_same_root(
+    tmp_path: Path,
+) -> None:
+    with server_runtime_lock(tmp_path):
+        with pytest.raises(RuntimeLockError):
+            server_runtime_lock(tmp_path).acquire()

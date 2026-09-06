@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 @pytest.fixture
 def download_limit_context(monkeypatch, tmp_path):
     copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    copyfile(PROJECT_ROOT / "src" / "init", tmp_path / "init")
+    (tmp_path / "init").touch()
     monkeypatch.chdir(tmp_path)
     src_path = str(PROJECT_ROOT / "src")
     if src_path not in sys.path:
@@ -57,11 +57,6 @@ def download_limit_context(monkeypatch, tmp_path):
         download_limits.DocumentDownloadRiskPolicy,
         "from_config",
         classmethod(lambda _cls: policy),
-    )
-    monkeypatch.setattr(
-        download_limits,
-        "_last_cleanup_monotonic",
-        {"download_issue": 0.0, "download_transfer": 0.0},
     )
     yield download_limits, models, session_factory, policy
     engine.dispose()
@@ -191,6 +186,44 @@ def test_download_bypass_does_not_create_shadow_state(download_limit_context):
         )
 
     assert decision.allowed is True
+    with session_factory() as session:
+        assert session.scalar(select(func.count(models.RateLimitBucket.namespace))) == 0
+        assert session.scalar(select(func.count(models.RiskIPAccount.namespace))) == 0
+
+
+def test_download_cleanup_removes_stale_state_from_both_namespaces(
+    download_limit_context,
+):
+    download_limits, models, session_factory, _policy = download_limit_context
+    with session_factory.begin() as session:
+        for namespace in ("download_issue", "download_transfer"):
+            session.add_all(
+                [
+                    models.RateLimitBucket(
+                        namespace=namespace,
+                        scope="account",
+                        identity="stale",
+                        tokens=1.0,
+                        last_refill_at=1.0,
+                        denial_count=0,
+                        last_attempt=1.0,
+                    ),
+                    models.RiskIPAccount(
+                        namespace=namespace,
+                        ip_address="198.51.100.1",
+                        username="stale",
+                        last_attempt=1.0,
+                    ),
+                ]
+            )
+
+    with session_factory.begin() as session:
+        result = download_limits.cleanup_document_download_risk_state(
+            session, now=1000.0
+        )
+
+    assert result.buckets == 2
+    assert result.ip_accounts == 2
     with session_factory() as session:
         assert session.scalar(select(func.count(models.RateLimitBucket.namespace))) == 0
         assert session.scalar(select(func.count(models.RiskIPAccount.namespace))) == 0

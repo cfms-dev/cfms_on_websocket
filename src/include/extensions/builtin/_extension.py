@@ -22,6 +22,7 @@ from include.extensions.manager import (
     hookimpl,
 )
 from include.messages import Messages as smsg
+from include.providers.manager import ProviderManager
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     EmptyRequestDataModel,
@@ -34,13 +35,15 @@ from .file_deduplication import (
     release_file_deduplication,
     schedule_file_deduplication,
 )
-from .permission_cleanup import permission_cleanup_worker
+from .permission_cleanup import permission_cleanup_task
+from .scheduled_tasks import BUILTIN_SCHEDULED_TASKS
 
 logger = log.bind(name="builtin")
 _active_server_lock = threading.Lock()
 _active_server: Server | None = None
 
 _CORE_COMPONENT_DISTRIBUTIONS = {
+    "apscheduler": "APScheduler",
     "cryptography": "cryptography",
     "orjson": "orjson",
     "pluggy": "pluggy",
@@ -59,6 +62,8 @@ def _component_versions() -> dict[str, str]:
         distributions["boto3"] = "boto3"
     if global_config["database"]["type"] == "mysql":
         distributions["mysql_connector_python"] = "mysql-connector-python"
+    if provider_config.get("scheduling", "local") == "redis":
+        distributions["dramatiq"] = "dramatiq"
     return {
         component: distribution_version(distribution)
         for component, distribution in distributions.items()
@@ -105,6 +110,7 @@ class RequestDiagnosticsHandler(RequestHandler):
 
         lockdown_state = lockdown_state_manager.get_state()
         provider_config = global_config["provider"]
+        scheduling_status = ProviderManager().scheduling.status()
         diagnostics = {
             "schema_version": 1,
             "server": {
@@ -131,6 +137,12 @@ class RequestDiagnosticsHandler(RequestHandler):
                 "caching": provider_config["caching"],
                 "event_bus": provider_config["event_bus"],
                 "rate_limit": provider_config.get("rate_limit", "memory"),
+                "scheduling": provider_config.get("scheduling", "local"),
+            },
+            "scheduling": {
+                "available": scheduling_status.available,
+                "mode": scheduling_status.mode,
+                "detail": scheduling_status.detail,
             },
             "extensions": [
                 {
@@ -193,17 +205,13 @@ def ext_on_startup(server: Server) -> None:
         _active_server = server
     try:
         file_deduplication_worker.start()
-        permission_cleanup_worker.start()
     except Exception:
         try:
-            permission_cleanup_worker.stop()
+            file_deduplication_worker.stop()
         finally:
-            try:
-                file_deduplication_worker.stop()
-            finally:
-                with _active_server_lock:
-                    if _active_server is server:
-                        _active_server = None
+            with _active_server_lock:
+                if _active_server is server:
+                    _active_server = None
         raise
 
 
@@ -212,13 +220,10 @@ def ext_on_shutdown() -> None:
     global _active_server
 
     try:
-        permission_cleanup_worker.stop()
+        file_deduplication_worker.stop()
     finally:
-        try:
-            file_deduplication_worker.stop()
-        finally:
-            with _active_server_lock:
-                _active_server = None
+        with _active_server_lock:
+            _active_server = None
 
 
 @hookimpl
@@ -228,6 +233,11 @@ def ext_register_handlers():
         "diagnostics": RequestDiagnosticsHandler,
         "shutdown": RequestShutdownHandler,
     }
+
+
+@hookimpl
+def ext_register_scheduled_tasks():
+    return (permission_cleanup_task, *BUILTIN_SCHEDULED_TASKS)
 
 
 @hookimpl

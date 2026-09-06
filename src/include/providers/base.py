@@ -25,6 +25,35 @@ class Provider(ABC):
 
 
 @dataclass(frozen=True, slots=True)
+class SchedulingProviderStatus:
+    available: bool
+    mode: str
+    detail: str | None = None
+
+
+class SchedulingProvider(Provider):
+    """Runtime boundary for schedule coordination and task delivery."""
+
+    identifier: ClassVar[str] = "scheduling"
+
+    @abstractmethod
+    def start(self, registry: Any) -> None:
+        pass
+
+    @abstractmethod
+    def shutdown(self) -> None:
+        pass
+
+    @abstractmethod
+    def notify_schedule_change(self) -> None:
+        pass
+
+    @abstractmethod
+    def status(self) -> SchedulingProviderStatus:
+        pass
+
+
+@dataclass(frozen=True, slots=True)
 class RateLimitCharge:
     key: str
     scope: str

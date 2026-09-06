@@ -83,6 +83,7 @@ def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
     assert result["created_at"] == header.created_at
     assert "compiled_access_rule_sets" in result["tables"]
     assert "compiled_access_rules" in result["tables"]
+    assert "schedules" in result["tables"]
     assert "document_access_rules" not in result["tables"]
     assert "folder_access_rules" not in result["tables"]
     assert "system_states" not in result["tables"]

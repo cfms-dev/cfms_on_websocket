@@ -218,6 +218,7 @@ def test_provider_bootstrap_uses_validated_s3_policy_defaults(monkeypatch):
                 "rate_limit": "memory",
                 "event_bus": "local",
             },
+            "extensions": {"enabled": []},
             "server": {
                 "admission_control": {
                     "max_connections": 20,
