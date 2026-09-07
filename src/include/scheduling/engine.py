@@ -133,7 +133,12 @@ def ensure_runtime_state(
         state.updated_at = current_time
         session.execute(
             update(ScheduleExecution)
-            .where(ScheduleExecution.state.in_(("pending", "running", "retry_wait")))
+            .where(
+                ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
+                ScheduleExecution.schedule_id.in_(
+                    select(Schedule.id).where(Schedule.status != "deleted")
+                ),
+            )
             .values(
                 provider_generation=state.generation,
                 state="pending",
@@ -626,6 +631,66 @@ def execution_delivery_state(
         return "ready"
 
 
+def cancel_expired_deleted_executions(
+    batch_size: int,
+    *,
+    now: float | None = None,
+) -> int:
+    """Cancel one bounded batch of crashed work whose schedule was deleted."""
+    current_time = time.time() if now is None else now
+    with Session() as session:
+        candidates = tuple(
+            session.execute(
+                select(ScheduleExecution.id, ScheduleExecution.schedule_id)
+                .where(
+                    ScheduleExecution.state == "running",
+                    ScheduleExecution.lease_expires_at <= current_time,
+                    ScheduleExecution.schedule_id.in_(
+                        select(Schedule.id).where(Schedule.status == "deleted")
+                    ),
+                )
+                .order_by(
+                    ScheduleExecution.lease_expires_at,
+                    ScheduleExecution.id,
+                )
+                .limit(batch_size)
+            )
+        )
+
+    cancelled_count = 0
+    for execution_id, schedule_id in candidates:
+        with Session() as session, session.begin():
+            schedule = lock_schedule(session, schedule_id)
+            if schedule is None or schedule.status != "deleted":
+                continue
+            cancelled = cast(
+                CursorResult,
+                session.execute(
+                    update(ScheduleExecution)
+                    .where(
+                        ScheduleExecution.id == execution_id,
+                        ScheduleExecution.schedule_id == schedule_id,
+                        ScheduleExecution.state == "running",
+                        ScheduleExecution.lease_expires_at <= current_time,
+                    )
+                    .values(
+                        state="cancelled",
+                        retry_at=None,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        completed_at=current_time,
+                        error="Execution lease expired after schedule deletion",
+                    )
+                ),
+            )
+            if cancelled.rowcount != 1:
+                continue
+            if schedule.active_execution_id == execution_id:
+                schedule.active_execution_id = None
+            cancelled_count += 1
+    return cancelled_count
+
+
 def pending_dispatches(
     generation: int,
     batch_size: int,
@@ -634,6 +699,7 @@ def pending_dispatches(
 ) -> tuple[str, ...]:
     """Recover expired cluster leases and return executions awaiting delivery."""
     current_time = time.time() if now is None else now
+    cancel_expired_deleted_executions(batch_size, now=current_time)
     with Session() as session, session.begin():
         session.execute(
             update(ScheduleExecution)

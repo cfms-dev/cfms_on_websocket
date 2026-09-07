@@ -11,6 +11,7 @@ def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
     scheduler_ran = threading.Event()
     worker_ran = threading.Event()
     synchronized = threading.Event()
+    expired_deleted_cancelled = threading.Event()
 
     monkeypatch.setattr(local, "ensure_runtime_state", lambda _mode: 1)
 
@@ -24,6 +25,11 @@ def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
 
     monkeypatch.setattr(local, "enqueue_due_schedules", enqueue)
     monkeypatch.setattr(local, "claim_execution", claim)
+    monkeypatch.setattr(
+        local,
+        "cancel_expired_deleted_executions",
+        lambda _batch_size: expired_deleted_cancelled.set(),
+    )
     monkeypatch.setattr(
         local,
         "synchronize_system_schedules",
@@ -41,6 +47,7 @@ def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
 
     assert scheduler_ran.wait(1)
     assert synchronized.wait(1)
+    assert expired_deleted_cancelled.wait(1)
     assert worker_ran.wait(1)
     assert provider.status().available is True
 

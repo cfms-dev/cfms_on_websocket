@@ -914,6 +914,136 @@ def test_deleting_schedule_allows_running_execution_to_finish_without_retry(
         assert execution.completed_at == 102.0
 
 
+def test_expired_deleted_execution_is_cancelled_and_releases_schedule(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy(execution_lease_seconds=60, lease_refresh_seconds=20)
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_engine.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+
+    with factory() as session, session.begin():
+        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+
+    assert (
+        scheduling_engine.cancel_expired_deleted_executions(
+            policy.claim_batch_size, now=159.0
+        )
+        == 0
+    )
+    assert (
+        scheduling_engine.cancel_expired_deleted_executions(
+            policy.claim_batch_size, now=160.0
+        )
+        == 1
+    )
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        execution = session.get(ScheduleExecution, claim.id)
+        assert schedule.status == "deleted"
+        assert schedule.revision == 2
+        assert schedule.active_execution_id is None
+        assert execution.state == "cancelled"
+        assert execution.completed_at == 160.0
+        assert execution.error == "Execution lease expired after schedule deletion"
+        assert execution.attempt == 1
+        assert execution.started_at == 100.0
+        assert execution.dispatch_state == "sent"
+        assert execution.retry_at is None
+        assert execution.lease_owner is None
+        assert execution.lease_expires_at is None
+
+    retention_policy = SchedulingPolicy(history_retention_days=1)
+    assert (
+        scheduling_engine.purge_execution_history(retention_policy, now=160.0 + 86_401)
+        == 1
+    )
+    with factory() as session:
+        assert session.get(ScheduleExecution, claim.id) is None
+
+
+def test_pending_dispatches_cancels_expired_deleted_execution_across_generations(
+    monkeypatch,
+):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy(execution_lease_seconds=60, lease_refresh_seconds=20)
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_engine.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+
+    with factory() as session, session.begin():
+        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+
+    redis_generation = scheduling_engine.ensure_runtime_state(
+        "redis", "test-cluster", now=160.0
+    )
+    with factory() as session:
+        execution = session.get(ScheduleExecution, claim.id)
+        assert execution.provider_generation == generation
+        assert execution.state == "running"
+
+    assert scheduling_engine.pending_dispatches(redis_generation, 10, now=160.0) == ()
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        execution = session.get(ScheduleExecution, claim.id)
+        assert schedule.active_execution_id is None
+        assert execution.state == "cancelled"
+        assert execution.completed_at == 160.0
+
+
+def test_expired_deleted_execution_cancellation_is_bounded(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    with factory() as session, session.begin():
+        for index in range(2):
+            schedule_id = f"deleted-{index}"
+            execution_id = f"execution-{index}"
+            session.add(
+                Schedule(
+                    id=schedule_id,
+                    task_name="test.record",
+                    task_contract_version=1,
+                    payload={"value": index},
+                    trigger_type="date",
+                    trigger_data={"run_at": "1970-01-01T00:00:01+00:00"},
+                    timezone="UTC",
+                    enabled=False,
+                    status="deleted",
+                    active_execution_id=execution_id,
+                    created_at=1.0,
+                    updated_at=1.0,
+                    deleted_at=1.0,
+                )
+            )
+            session.add(
+                ScheduleExecution(
+                    id=execution_id,
+                    schedule_id=schedule_id,
+                    provider_generation=1,
+                    scheduled_for=1.0,
+                    state="running",
+                    dispatch_state="sent",
+                    attempt=1,
+                    lease_owner="worker",
+                    lease_expires_at=2.0,
+                    started_at=1.0,
+                    created_at=1.0,
+                )
+            )
+
+    assert scheduling_engine.cancel_expired_deleted_executions(1, now=3.0) == 1
+    with factory() as session:
+        states = tuple(
+            session.scalars(
+                select(ScheduleExecution.state).order_by(ScheduleExecution.id)
+            )
+        )
+        assert states == ("cancelled", "running")
+    assert scheduling_engine.cancel_expired_deleted_executions(1, now=3.0) == 1
+
+
 def test_completion_after_schedule_deletion_preserves_deleted_status(monkeypatch):
     factory = _session_factory(monkeypatch)
     _schedule(factory)

@@ -160,6 +160,9 @@ updated, or re-enabled.
   coalesce into one latest pending execution.
 - Each attempt owns a renewable database lease. Crashed work is reclaimable after
   expiry and uses the same deterministic execution ID.
+- If a schedule is retired while an attempt is running, that attempt may finish
+  normally. If its worker crashes instead, lease expiry cancels the execution and
+  releases the retired schedule's execution slot.
 - Completed execution history older than `history_retention_days` is removed in
   bounded hourly batches by the hidden `core.schedule_history_cleanup` task.
 - A one-time schedule becomes `completed` after success and `failed` after its final

@@ -7,6 +7,7 @@ from loguru import logger
 from include.config.validation import SchedulingPolicy
 from include.providers.base import SchedulingProvider, SchedulingProviderStatus
 from include.scheduling.engine import (
+    cancel_expired_deleted_executions,
     claim_execution,
     enqueue_due_schedules,
     ensure_runtime_state,
@@ -87,6 +88,7 @@ class LocalSchedulingProvider(SchedulingProvider):
         while not self._stop.is_set():
             try:
                 synchronize_system_schedules(self._registry)
+                cancel_expired_deleted_executions(self._policy.claim_batch_size)
                 enqueue_due_schedules(self._generation, self._policy)
                 with self._state_lock:
                     self._last_error = None
