@@ -225,6 +225,7 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
                     or ScheduledTaskResult(data={"recorded": payload.value})
                 ),
                 required_permission=Permissions.MANAGE_SYSTEM,
+                max_attempts=1,
             )
         ]
     )
@@ -775,6 +776,118 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
     )
     assert second_claim is not None
     assert second_claim.attempt == 2
+
+
+@pytest.mark.parametrize("provider", ["local", "redis"])
+def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
+    monkeypatch, provider
+):
+    factory = _session_factory(monkeypatch)
+    with factory() as session, session.begin():
+        session.add(
+            Schedule(
+                id="schedule-1",
+                task_name="test.record",
+                task_contract_version=1,
+                payload={"value": 7},
+                trigger_type="date",
+                trigger_data={"run_at": "1970-01-01T00:01:40+00:00"},
+                timezone="UTC",
+                next_run_at=100.0,
+                created_by="admin",
+                updated_by="admin",
+            )
+        )
+    policy = SchedulingPolicy(
+        execution_lease_seconds=60,
+        lease_refresh_seconds=20,
+    )
+    generation = scheduling_engine.ensure_runtime_state(
+        provider,
+        "test-cluster" if provider == "redis" else None,
+        now=100.0,
+    )
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    with factory() as session:
+        execution_id = session.scalar(select(ScheduleExecution.id))
+    assert execution_id is not None
+
+    claims = []
+    for attempt, current_time in enumerate((100.0, 160.0, 220.0), start=1):
+        if provider == "redis":
+            assert scheduling_engine.pending_dispatches(
+                generation, 10, now=current_time
+            ) == (execution_id,)
+            assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+            claim = scheduling_engine.claim_execution_by_id(
+                execution_id,
+                generation,
+                f"worker-{attempt}",
+                policy,
+                now=current_time,
+            )
+        else:
+            claim = scheduling_engine.claim_execution(
+                generation,
+                f"worker-{attempt}",
+                policy,
+                now=current_time,
+            )
+        assert claim is not None
+        assert claim.attempt == attempt
+        claims.append(claim)
+
+    calls = []
+    registry = ScheduledTaskRegistry(
+        [
+            ScheduledTaskRegistration(
+                name="test.record",
+                contract_version=1,
+                payload_model=_Payload,
+                execute=lambda context, payload: calls.append((context, payload)),
+                required_permission=Permissions.MANAGE_SYSTEM,
+                max_attempts=1,
+            )
+        ]
+    )
+
+    scheduling_engine.run_claimed_execution(claims[-1], generation, registry, policy)
+
+    assert calls == []
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        execution = session.get(ScheduleExecution, execution_id)
+        assert schedule.active_execution_id is None
+        assert schedule.status == "failed"
+        assert execution.state == "failed"
+        assert execution.attempt == 3
+        assert execution.retry_at is None
+        assert execution.lease_owner is None
+        assert execution.lease_expires_at is None
+        assert execution.completed_at is not None
+        assert execution.error == "Scheduled task maximum attempts exceeded"
+
+    if provider == "redis":
+        assert (
+            scheduling_engine.claim_execution_by_id(
+                execution_id,
+                generation,
+                "worker-4",
+                policy,
+                now=280.0,
+            )
+            is None
+        )
+    else:
+        assert (
+            scheduling_engine.claim_execution(
+                generation,
+                "worker-4",
+                policy,
+                now=280.0,
+            )
+            is None
+        )
 
 
 @pytest.mark.parametrize(

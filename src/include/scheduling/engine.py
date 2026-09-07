@@ -966,6 +966,17 @@ def run_claimed_execution(
         )
         return
 
+    if claim.attempt > registration.max_attempts:
+        fail_execution(
+            claim,
+            generation,
+            registration.max_attempts,
+            registration.initial_backoff_seconds,
+            registration.maximum_backoff_seconds,
+            "Scheduled task maximum attempts exceeded",
+        )
+        return
+
     # Arbitrary task code can outlive the initial lease, so keep ownership alive in
     # a separate thread until success or failure has been persisted.
     heartbeat_stop = threading.Event()

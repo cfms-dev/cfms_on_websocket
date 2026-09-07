@@ -161,7 +161,9 @@ updated, or re-enabled.
 - One schedule has at most one active execution. Occurrences arriving while it runs
   coalesce into one latest pending execution.
 - Each attempt owns a renewable database lease. Crashed work is reclaimable after
-  expiry and uses the same deterministic execution ID.
+  expiry and uses the same deterministic execution ID. Every lease claim, including
+  a recovery claim, consumes the task's attempt budget; a claim beyond
+  `max_attempts` fails before the task callable runs.
 - If a schedule is retired while an attempt is running, that attempt may finish
   normally. If its worker crashes instead, lease expiry cancels the execution and
   releases the retired schedule's execution slot.
