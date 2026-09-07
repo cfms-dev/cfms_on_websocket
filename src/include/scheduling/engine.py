@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from include.config.validation import SchedulingPolicy
+from include.database.clock import database_now
 from include.database.models.scheduling import (
     Schedule,
     ScheduleExecution,
@@ -19,7 +20,6 @@ from include.database.models.scheduling import (
 )
 from include.database.session import Session
 from include.domains.operations.commands.audit import log_audit
-from include.scheduling.clock import database_now
 from include.scheduling.commands import (
     cancel_unstarted_schedule_execution,
     lock_schedule,
@@ -43,6 +43,12 @@ class ClaimedExecution:
     scheduled_for: float
     attempt: int
     lease_owner: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingDispatch:
+    id: str
+    attempt: int
 
 
 def execution_id(schedule_id: str, scheduled_for: float) -> str:
@@ -755,7 +761,7 @@ def pending_dispatches(
     dispatch_timeout_seconds: int,
     *,
     now: float | None = None,
-) -> tuple[str, ...]:
+) -> tuple[PendingDispatch, ...]:
     """Recover expired cluster leases and return executions awaiting delivery."""
     if now is None:
         with Session() as session:
@@ -798,8 +804,9 @@ def pending_dispatches(
             )
         )
         return tuple(
-            session.scalars(
-                select(ScheduleExecution.id)
+            PendingDispatch(id=execution_id, attempt=attempt)
+            for execution_id, attempt in session.execute(
+                select(ScheduleExecution.id, ScheduleExecution.attempt)
                 .where(
                     ScheduleExecution.provider_generation == generation,
                     ScheduleExecution.state.in_(("pending", "retry_wait")),
@@ -818,6 +825,7 @@ def pending_dispatches(
 def mark_dispatched(
     execution_id: str,
     generation: int,
+    expected_attempt: int,
     *,
     now: float | None = None,
 ) -> bool:
@@ -830,6 +838,7 @@ def mark_dispatched(
                 .where(
                     ScheduleExecution.id == execution_id,
                     ScheduleExecution.provider_generation == generation,
+                    ScheduleExecution.attempt == expected_attempt,
                     ScheduleExecution.dispatch_state == "pending",
                     ScheduleExecution.state.in_(("pending", "retry_wait")),
                 )
@@ -1091,7 +1100,15 @@ def run_claimed_execution(
 
     def refresh_lease() -> None:
         while not heartbeat_stop.wait(policy.lease_refresh_seconds):
-            if not refresh_execution_lease(claim.id, claim.lease_owner, policy):
+            try:
+                refreshed = refresh_execution_lease(claim.id, claim.lease_owner, policy)
+            except Exception:  # noqa: BLE001 - task execution continues independently.
+                logger.exception(
+                    "Failed to refresh lease for scheduled execution {}", claim.id
+                )
+                return
+            if not refreshed:
+                logger.warning("Scheduled execution {} lost its lease", claim.id)
                 return
 
     heartbeat = threading.Thread(

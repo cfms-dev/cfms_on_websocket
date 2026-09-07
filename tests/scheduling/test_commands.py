@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from include.database.models.scheduling import Schedule
+from include.database.models.scheduling import Schedule, ScheduleExecution
 from include.domains.access.permissions import Permissions
 from include.scheduling import ScheduledTaskRegistration, ScheduledTaskRegistry
 from include.scheduling import commands as scheduling_commands
@@ -37,6 +37,7 @@ def _registry():
 def _factory():
     database = create_engine("sqlite://")
     Schedule.__table__.create(database)
+    ScheduleExecution.__table__.create(database)
     return sessionmaker(bind=database, expire_on_commit=False)
 
 

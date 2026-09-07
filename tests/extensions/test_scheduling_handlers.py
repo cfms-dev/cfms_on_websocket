@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 
-from include.database.models.scheduling import Schedule
+from include.database.models.scheduling import Schedule, ScheduleExecution
 from include.domains.access.permissions import Permissions
 from include.extensions.scheduling import handlers
 from include.providers.base import SchedulingProviderStatus
@@ -29,6 +29,7 @@ class _Connection:
 def _context(monkeypatch, permissions):
     database = create_engine("sqlite://")
     Schedule.__table__.create(database)
+    ScheduleExecution.__table__.create(database)
     factory = sessionmaker(bind=database, expire_on_commit=False)
     registry = ScheduledTaskRegistry(
         [
@@ -159,6 +160,7 @@ def test_update_schedule_uses_locked_revision_for_task_authorization(
     with database.connect() as connection:
         connection.exec_driver_sql("PRAGMA journal_mode=WAL")
     Schedule.__table__.create(database)
+    ScheduleExecution.__table__.create(database)
     factory = sessionmaker(bind=database, expire_on_commit=False)
     with factory() as session, session.begin():
         session.add(

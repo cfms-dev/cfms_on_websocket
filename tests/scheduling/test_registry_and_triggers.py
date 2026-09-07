@@ -144,6 +144,30 @@ def test_cron_trigger_coalesces_to_latest_occurrence_in_grace_window():
     )
 
 
+@pytest.mark.parametrize(
+    ("trigger_type", "trigger_data", "step"),
+    [
+        (
+            "interval",
+            {"seconds": 1, "start_at": "1970-01-01T00:00:00+00:00"},
+            1,
+        ),
+        ("cron", {"expression": "* * * * *"}, 60),
+    ],
+)
+def test_dense_recurring_trigger_coalesces_without_iteration_limit(
+    trigger_type, trigger_data, step
+):
+    trigger = build_trigger(trigger_type, trigger_data, "UTC")
+    current = 0.0
+    now = 100_001 * step + step / 2
+
+    advanced = advance_trigger(trigger, current, now, int(now + 1))
+
+    assert advanced.latest_due_at == 100_001 * step
+    assert advanced.next_run_at == 100_002 * step
+
+
 def test_interval_trigger_preserves_its_start_anchor():
     trigger = build_trigger(
         "interval",

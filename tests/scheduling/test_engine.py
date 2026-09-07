@@ -2,6 +2,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
@@ -23,7 +24,11 @@ from include.scheduling import (
     SystemScheduleDefinition,
 )
 from include.scheduling import engine as scheduling_engine
-from include.scheduling.commands import delete_schedule, update_schedule
+from include.scheduling.commands import (
+    ScheduleConflictError,
+    delete_schedule,
+    update_schedule,
+)
 
 
 class _Payload(BaseModel):
@@ -251,6 +256,57 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
         assert audits[0][2]["data"]["execution_id"] == execution.id
 
 
+def test_execution_logs_when_lease_refresh_is_lost(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy(
+        execution_lease_seconds=3,
+        lease_refresh_seconds=1,
+    )
+    refresh_attempted = threading.Event()
+    warnings = []
+
+    def lose_lease(_execution_id, _lease_owner, _policy):
+        refresh_attempted.set()
+        return False
+
+    def execute(_context, _payload):
+        assert refresh_attempted.wait(3)
+        return None
+
+    registry = ScheduledTaskRegistry(
+        [
+            ScheduledTaskRegistration(
+                name="test.record",
+                contract_version=1,
+                payload_model=_Payload,
+                execute=execute,
+                required_permission=Permissions.MANAGE_SYSTEM,
+                max_attempts=1,
+            )
+        ]
+    )
+    monkeypatch.setattr(scheduling_engine, "refresh_execution_lease", lose_lease)
+    monkeypatch.setattr(
+        scheduling_engine,
+        "logger",
+        SimpleNamespace(
+            warning=lambda message, *args: warnings.append((message, args)),
+            exception=lambda *_args, **_kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(scheduling_engine, "log_audit", lambda *_args, **_kwargs: None)
+
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_engine.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+
+    scheduling_engine.run_claimed_execution(claim, generation, registry, policy)
+
+    assert warnings == [("Scheduled execution {} lost its lease", (claim.id,))]
+
+
 @pytest.mark.parametrize("terminal_status", ["completed", "failed"])
 def test_updating_terminal_schedule_reactivates_and_enqueues(
     monkeypatch, terminal_status
@@ -307,6 +363,74 @@ def test_updating_terminal_schedule_reactivates_and_enqueues(
         scheduling_engine.claim_execution(generation, "worker", policy, now=200.0)
         is not None
     )
+
+
+def test_updating_terminal_date_schedule_rejects_recorded_occurrence(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    registry = ScheduledTaskRegistry(
+        [
+            ScheduledTaskRegistration(
+                name="test.record",
+                contract_version=1,
+                payload_model=_Payload,
+                execute=lambda _context, _payload: None,
+                required_permission=Permissions.MANAGE_SYSTEM,
+            )
+        ]
+    )
+    scheduled_for = 200.0
+    with factory() as session, session.begin():
+        session.add(
+            Schedule(
+                id="terminal-schedule",
+                task_name="test.record",
+                task_contract_version=1,
+                payload={"value": 7},
+                trigger_type="date",
+                trigger_data={"run_at": "1970-01-01T00:03:20+00:00"},
+                timezone="UTC",
+                status="completed",
+                next_run_at=None,
+                created_by="admin",
+                updated_by="admin",
+            )
+        )
+        session.add(
+            ScheduleExecution(
+                id=scheduling_engine.execution_id("terminal-schedule", scheduled_for),
+                schedule_id="terminal-schedule",
+                task_name="test.record",
+                task_contract_version=1,
+                payload={"value": 7},
+                provider_generation=1,
+                scheduled_for=scheduled_for,
+                state="succeeded",
+                completed_at=scheduled_for,
+            )
+        )
+
+    with (
+        factory() as session,
+        session.begin(),
+        pytest.raises(
+            ScheduleConflictError, match="occurrence has already been recorded"
+        ),
+    ):
+        update_schedule(
+            session,
+            registry,
+            "terminal-schedule",
+            1,
+            {"payload": {"value": 8}},
+            username="admin",
+            now=201.0,
+        )
+
+    with factory() as session:
+        schedule = session.get(Schedule, "terminal-schedule")
+        assert schedule.status == "completed"
+        assert schedule.payload == {"value": 7}
+        assert schedule.revision == 1
 
 
 def test_system_schedule_is_created_updated_and_retired(monkeypatch):
@@ -752,7 +876,7 @@ def test_redis_namespace_switch_requeues_sent_execution(monkeypatch):
     with factory() as session:
         execution_id = session.scalar(select(ScheduleExecution.id))
     assert execution_id is not None
-    assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+    assert scheduling_engine.mark_dispatched(execution_id, generation, 0) is True
     assert (
         scheduling_engine.ensure_runtime_state("redis", "first-cluster", now=101.0)
         == generation
@@ -798,15 +922,19 @@ def test_cluster_dispatch_claims_the_requested_execution(monkeypatch):
     pending = scheduling_engine.pending_dispatches(generation, 10, 60, now=100.0)
 
     assert len(pending) == 1
-    assert scheduling_engine.mark_dispatched(pending[0], generation) is True
+    dispatch = pending[0]
+    assert (
+        scheduling_engine.mark_dispatched(dispatch.id, generation, dispatch.attempt)
+        is True
+    )
     claim = scheduling_engine.claim_execution_by_id(
-        pending[0], generation, "cluster-worker", policy, now=100.0
+        dispatch.id, generation, "cluster-worker", policy, now=100.0
     )
 
     assert claim is not None
-    assert claim.id == pending[0]
+    assert claim.id == dispatch.id
     assert (
-        scheduling_engine.execution_delivery_state(pending[0], generation, now=100.0)
+        scheduling_engine.execution_delivery_state(dispatch.id, generation, now=100.0)
         == "busy"
     )
 
@@ -822,10 +950,13 @@ def test_cluster_dispatch_recovers_sent_execution_that_was_never_claimed(monkeyp
         "redis", "test-cluster", now=100.0
     )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-    (execution_id,) = scheduling_engine.pending_dispatches(
+    (dispatch,) = scheduling_engine.pending_dispatches(
         generation, 10, policy.execution_lease_seconds, now=100.0
     )
-    assert scheduling_engine.mark_dispatched(execution_id, generation, now=100.0)
+    execution_id = dispatch.id
+    assert scheduling_engine.mark_dispatched(
+        execution_id, generation, dispatch.attempt, now=100.0
+    )
 
     assert (
         scheduling_engine.pending_dispatches(
@@ -835,13 +966,117 @@ def test_cluster_dispatch_recovers_sent_execution_that_was_never_claimed(monkeyp
     )
     assert scheduling_engine.pending_dispatches(
         generation, 10, policy.execution_lease_seconds, now=160.0
-    ) == (execution_id,)
+    ) == (scheduling_engine.PendingDispatch(id=execution_id, attempt=0),)
 
     with factory() as session:
         execution = session.get(ScheduleExecution, execution_id)
         assert execution.state == "pending"
         assert execution.dispatch_state == "pending"
         assert execution.dispatched_at is None
+
+
+def test_late_dispatch_acknowledgement_does_not_hide_a_new_retry(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy(
+        execution_lease_seconds=60,
+        lease_refresh_seconds=20,
+    )
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis", "test-cluster", now=100.0
+    )
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    (dispatch,) = scheduling_engine.pending_dispatches(
+        generation, 10, policy.execution_lease_seconds, now=100.0
+    )
+    claim = scheduling_engine.claim_execution_by_id(
+        dispatch.id,
+        generation,
+        "cluster-worker",
+        policy,
+        now=100.0,
+    )
+    assert claim is not None
+    assert scheduling_engine.fail_execution(
+        claim,
+        generation,
+        max_attempts=3,
+        initial_backoff_seconds=5,
+        maximum_backoff_seconds=30,
+        error="task failed",
+        now=101.0,
+    )
+
+    assert (
+        scheduling_engine.mark_dispatched(
+            dispatch.id,
+            generation,
+            dispatch.attempt,
+            now=101.0,
+        )
+        is False
+    )
+    assert scheduling_engine.pending_dispatches(
+        generation,
+        10,
+        policy.execution_lease_seconds,
+        now=106.0,
+    ) == (scheduling_engine.PendingDispatch(id=dispatch.id, attempt=1),)
+
+
+def test_dense_misfire_does_not_block_other_due_schedules(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    with factory() as session, session.begin():
+        session.add_all(
+            [
+                Schedule(
+                    id="dense-interval",
+                    task_name="test.record",
+                    task_contract_version=1,
+                    payload={"value": 1},
+                    trigger_type="interval",
+                    trigger_data={
+                        "seconds": 1,
+                        "start_at": "1970-01-01T00:00:00+00:00",
+                    },
+                    timezone="UTC",
+                    next_run_at=0.0,
+                    created_by="admin",
+                    updated_by="admin",
+                ),
+                Schedule(
+                    id="ordinary-date",
+                    task_name="test.record",
+                    task_contract_version=1,
+                    payload={"value": 2},
+                    trigger_type="date",
+                    trigger_data={"run_at": "1970-01-02T03:46:41+00:00"},
+                    timezone="UTC",
+                    next_run_at=100_001.0,
+                    created_by="admin",
+                    updated_by="admin",
+                ),
+            ]
+        )
+    policy = SchedulingPolicy(
+        misfire_grace_seconds=100_002,
+        claim_batch_size=10,
+    )
+    generation = scheduling_engine.ensure_runtime_state("local", now=100_001.0)
+
+    assert (
+        scheduling_engine.enqueue_due_schedules(
+            generation,
+            policy,
+            now=100_001.0,
+        )
+        == 2
+    )
+    with factory() as session:
+        assert set(session.scalars(select(ScheduleExecution.schedule_id))) == {
+            "dense-interval",
+            "ordinary-date",
+        }
 
 
 def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatch):
@@ -856,10 +1091,14 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
         "redis", "test-cluster", now=100.0
     )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-    (execution_id,) = scheduling_engine.pending_dispatches(
+    (dispatch,) = scheduling_engine.pending_dispatches(
         generation, 10, policy.execution_lease_seconds, now=100.0
     )
-    assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+    execution_id = dispatch.id
+    assert (
+        scheduling_engine.mark_dispatched(execution_id, generation, dispatch.attempt)
+        is True
+    )
     first_claim = scheduling_engine.claim_execution_by_id(
         execution_id, generation, "failed-worker", policy, now=100.0
     )
@@ -875,7 +1114,7 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
     )
     assert scheduling_engine.pending_dispatches(
         generation, 10, policy.execution_lease_seconds, now=401.0
-    ) == (execution_id,)
+    ) == (scheduling_engine.PendingDispatch(id=execution_id, attempt=1),)
 
     with factory() as session:
         execution = session.get(ScheduleExecution, execution_id)
@@ -885,7 +1124,7 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
         assert execution.lease_owner is None
         assert execution.lease_expires_at is None
 
-    assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+    assert scheduling_engine.mark_dispatched(execution_id, generation, 1) is True
     second_claim = scheduling_engine.claim_execution_by_id(
         execution_id, generation, "replacement-worker", policy, now=401.0
     )
@@ -904,10 +1143,14 @@ def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(monkeypatch
         "redis", "test-cluster", now=100.0
     )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-    (execution_id,) = scheduling_engine.pending_dispatches(
+    (dispatch,) = scheduling_engine.pending_dispatches(
         generation, 10, policy.execution_lease_seconds, now=100.0
     )
-    assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+    execution_id = dispatch.id
+    assert (
+        scheduling_engine.mark_dispatched(execution_id, generation, dispatch.attempt)
+        is True
+    )
 
     database_time = [100.0]
     monkeypatch.setattr(
@@ -1005,7 +1248,7 @@ def test_execution_lease_starts_after_schedule_lock_is_acquired(
         execution_id = session.scalar(select(ScheduleExecution.id))
     assert execution_id is not None
     if claim_by_id:
-        assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+        assert scheduling_engine.mark_dispatched(execution_id, generation, 0) is True
 
     database_time = [100.0]
     original_lock_schedule = scheduling_engine.lock_schedule
@@ -1145,13 +1388,21 @@ def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
     claims = []
     for attempt, current_time in enumerate((100.0, 160.0, 220.0), start=1):
         if provider == "redis":
-            assert scheduling_engine.pending_dispatches(
+            (dispatch,) = scheduling_engine.pending_dispatches(
                 generation,
                 10,
                 policy.execution_lease_seconds,
                 now=current_time,
-            ) == (execution_id,)
-            assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+            )
+            assert dispatch == scheduling_engine.PendingDispatch(
+                id=execution_id, attempt=attempt - 1
+            )
+            assert (
+                scheduling_engine.mark_dispatched(
+                    execution_id, generation, dispatch.attempt
+                )
+                is True
+            )
             claim = scheduling_engine.claim_execution_by_id(
                 execution_id,
                 generation,

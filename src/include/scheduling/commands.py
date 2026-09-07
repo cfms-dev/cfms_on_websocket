@@ -3,8 +3,8 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.orm import Session as OrmSession
 
+from include.database.clock import database_now
 from include.database.models.scheduling import Schedule, ScheduleExecution
-from include.scheduling.clock import database_now
 from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import build_trigger, first_run_at
 
@@ -121,6 +121,20 @@ def update_schedule(
         task_name, registration.contract_version, payload
     ).model_dump(mode="json")
     trigger = build_trigger(trigger_type, trigger_data, timezone)
+    next_run_at = first_run_at(trigger, current_time)
+    if (
+        next_run_at is not None
+        and session.scalar(
+            select(ScheduleExecution.id).where(
+                ScheduleExecution.schedule_id == schedule_id,
+                ScheduleExecution.scheduled_for == next_run_at,
+            )
+        )
+        is not None
+    ):
+        raise ScheduleConflictError(
+            "Schedule occurrence has already been recorded; provide a new trigger time"
+        )
     enabled = changes.get("enabled", schedule.enabled)
     values = {
         "task_name": task_name,
@@ -131,7 +145,7 @@ def update_schedule(
         "timezone": timezone,
         "enabled": enabled,
         "status": "active",
-        "next_run_at": first_run_at(trigger, current_time),
+        "next_run_at": next_run_at,
         "pending_scheduled_for": None,
         "updated_by": username,
         "updated_at": current_time,

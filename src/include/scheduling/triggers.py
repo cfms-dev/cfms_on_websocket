@@ -81,6 +81,53 @@ def first_run_at(trigger: BaseTrigger, now: float) -> float | None:
     return None if next_fire is None else next_fire.timestamp()
 
 
+def _advance_builtin_recurring_trigger(
+    trigger: CronTrigger | IntervalTrigger,
+    current_run_at: float,
+    now: float,
+    cutoff: float,
+) -> TriggerAdvance:
+    """Find the latest eligible recurrence without walking every missed fire time."""
+    now_datetime = dt.datetime.fromtimestamp(now, dt.UTC)
+    if current_run_at < cutoff:
+        first_due = trigger.get_next_fire_time(
+            None,
+            dt.datetime.fromtimestamp(cutoff, dt.UTC),
+        )
+    else:
+        first_due = dt.datetime.fromtimestamp(current_run_at, dt.UTC)
+    if first_due is None:
+        return TriggerAdvance(None, None)
+    if first_due.timestamp() > now:
+        return TriggerAdvance(None, first_due.timestamp())
+
+    # For the jitter-free recurring triggers built by this module, asking for the
+    # first fire at or after a timestamp is monotonic. Binary search the boundary
+    # after the final due occurrence instead of iterating through a long outage.
+    latest_due = first_due
+    lower = first_due.timestamp()
+    upper = now + 0.000001
+    for _ in range(64):
+        if upper - lower <= 0.000001:
+            break
+        midpoint = lower + (upper - lower) / 2
+        candidate = trigger.get_next_fire_time(
+            None,
+            dt.datetime.fromtimestamp(midpoint, dt.UTC),
+        )
+        if candidate is not None and candidate.timestamp() <= now:
+            latest_due = candidate
+            lower = midpoint
+        else:
+            upper = midpoint
+
+    next_fire = trigger.get_next_fire_time(latest_due, now_datetime)
+    return TriggerAdvance(
+        latest_due.timestamp(),
+        None if next_fire is None else next_fire.timestamp(),
+    )
+
+
 def advance_trigger(
     trigger: BaseTrigger,
     current_run_at: float,
@@ -93,6 +140,13 @@ def advance_trigger(
     collapse to the latest one so a delayed scheduler does not create a backlog.
     """
     cutoff = now - misfire_grace_seconds
+    if isinstance(trigger, (CronTrigger, IntervalTrigger)) and trigger.jitter is None:
+        return _advance_builtin_recurring_trigger(
+            trigger,
+            current_run_at,
+            now,
+            cutoff,
+        )
     candidate = dt.datetime.fromtimestamp(current_run_at, dt.UTC)
     if current_run_at < cutoff:
         # Jump to the grace window instead of iterating through an unbounded outage.
