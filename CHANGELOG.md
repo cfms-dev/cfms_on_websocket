@@ -9,9 +9,143 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.7.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.8.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.8.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.8.0) - 2026-09-07
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.7.0...v0.8.0)</small>
+
+### Added
+
+- Add Redis-backed scheduling coordination, distributed execution operations,
+  and
+  deployment support for clustered CFMS installations.
+- Add `maintain extension` commands for inspecting, installing, upgrading,
+  enabling,
+  disabling, and uninstalling local server extension packages with
+  dependency-aware
+  activation and hardened ZIP validation.
+- Add an installable PostgreSQL driver extra and exercise scheduling lifecycle
+  races
+  against MySQL and PostgreSQL in CI.
+- Add authenticated WebSocket operations for creating, updating, inspecting,
+  and
+  deleting durable schedules.
+- Add manifest dependency ordering and an optional HTTPS API framework that
+  lets extensions register isolated FastAPI routers.
+- Add persistent scheduling models, configuration validation, provider
+  contracts,
+  and database migration support for durable scheduled work.
+- Add the durable local scheduling engine, task registry, trigger handling, and
+  in-process provider lifecycle.
+- Add verified flat-layout release upgrades and Alembic-backed downgrades with
+  hash-addressed version storage, persistent production content, configuration
+  snapshots, directional third-party extension migration, and an explicit guard
+  against applying release switches to Git repository checkouts. Version
+  switching
+  starts with manifest-bearing releases and does not adopt older flat
+  deployments.
+- `maintain` now locates the nearest CFMS server runtime automatically,
+  including
+  both the current `src` deployment layout and flat release layouts. Explicit
+  file
+  paths remain relative to the directory where the command was invoked.
+
+### Changed
+
+- Periodic server maintenance now uses hidden, system-managed schedules on the
+  always-on scheduling core. The scheduling extension controls only whether
+  users
+  can query and configure schedules.
+- Redis scheduling now runs its scheduler candidate and Dramatiq worker pool
+  inside
+  each CFMS server instance. The separate `cfms-jobs` commands and jobs runtime
+  lock have been removed.
+- Refresh locked Authlib, AWS SDK, JOSE, file-locking, platform, typing, and
+  virtual
+  environment dependencies.
+
+### Fixed
+
+- Avoid acquiring database write locks when registered system schedule
+  definitions
+  already match their persisted state.
+- Bind schedule-update authorization to the requested locked revision so a
+  concurrent
+  task-type change cannot bypass its required permission.
+- Cancel expired running executions after their schedules are deleted so
+  crashed
+  workers cannot leave execution slots and history permanently stuck as active.
+- Count recovered execution leases toward scheduled-task attempt limits so
+  crashed
+  workers cannot cause task code to run beyond `max_attempts`.
+- Create and stamp an empty database during first server initialization without
+  blocking normal startup on an Alembic revision check. Keep SQLite/MySQL
+  upgrades
+  and rejection of non-empty unversioned databases in the maintenance tool.
+- Enforce HTTP request-body and concurrency limits exactly, preserve CORS
+  headers on framework errors, share trusted-proxy resolution, and make HTTP
+  server shutdown and failure state reliable.
+- Keep each scheduling Provider run on its own stop signal and reject restarts
+  until
+  all threads from the previous run have exited.
+- Keep system maintenance intervals anchored when configuration changes request
+  an
+  immediate execution.
+- Make S3 downloads seekable with byte-range requests, preserve operational
+  errors, and support SDK credential and endpoint resolution with configurable
+  connection reuse.
+- Make scheduled-execution completion and failure conditional on the current
+  lease
+  owner and Provider generation, serialize aggregate transitions in one lock
+  order,
+  and isolate every Redis scheduling resource by a required deployment
+  namespace.
+- Read the database clock only after acquiring the scheduled-execution lock
+  during
+  lease refresh so lock contention cannot produce an already-expired renewed
+  lease.
+- Redis scheduling health now reports unavailable when its coordinator,
+  consumer,
+  or configured worker pool is no longer running.
+- Redis scheduling now redelivers crashed executions after their database lease
+  expires, even when the original broker delivery has exhausted its retry
+  budget.
+- Redis scheduling now redelivers messages that were sent but never claimed
+  before
+  the delivery timeout, preventing pending executions from becoming stranded.
+- Reject unsupported document conflict nodes before applying access checks
+  during
+  name-conflict resolution.
+- Scheduled-task reliability fixes now reject replaying an already recorded
+  one-time
+  occurrence, prevent stale Redis dispatch acknowledgements from hiding a new
+  retry,
+  use the shared database clock for built-in maintenance cutoffs, report lost
+  lease
+  heartbeats, and cleanly stop after a partial local worker startup failure.
+  Dense recurring misfires now coalesce without walking every missed
+  occurrence, and
+  upload task deadlines use the same database clock as scheduled cleanup so
+  node
+  clock skew cannot expire newly created uploads.
+- Scheduling now uses the application database clock for persisted schedule
+  state,
+  retry timing, and execution leases so application-node clock skew cannot
+  cause
+  premature recovery.
+- Snapshot the task name, contract version, and payload on each scheduled
+  execution
+  so schedule updates cannot reinterpret work that was already queued.
+- Track local scheduler and worker failures independently so a successful
+  scheduler
+  poll cannot make health checks appear healthy while a worker is still
+  failing.
+- Verify scheduling-table backup compatibility and retained migration behavior
+  on supported MySQL versions.
+
 
 ## [v0.7.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.7.0) - 2026-08-26
 
