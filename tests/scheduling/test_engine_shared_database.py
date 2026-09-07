@@ -26,6 +26,7 @@ _DATABASE_URL_ENVIRONMENTS = (
     "CFMS_TEST_MYSQL_URL",
     "CFMS_TEST_POSTGRESQL_URL",
 )
+_SCHEDULE_ACTOR = "admin"
 
 
 @pytest.fixture(scope="module", params=_DATABASE_URL_ENVIRONMENTS)
@@ -53,6 +54,8 @@ def shared_database(request):
         table.drop(database, checkfirst=True)
     for table in tables:
         table.create(database)
+    with database.begin() as connection:
+        connection.execute(users.insert().values(username=_SCHEDULE_ACTOR))
     try:
         yield database
     finally:
@@ -274,7 +277,7 @@ def test_completion_and_deletion_serialize_without_rollback(
                 session,
                 claim.schedule_id,
                 1,
-                username="admin",
+                username=_SCHEDULE_ACTOR,
                 now=101.0,
             )
 
@@ -320,7 +323,7 @@ def test_completion_and_deleted_lease_cancellation_choose_one_terminal_state(
             session,
             claim.schedule_id,
             1,
-            username="admin",
+            username=_SCHEDULE_ACTOR,
             now=101.0,
         )
 
