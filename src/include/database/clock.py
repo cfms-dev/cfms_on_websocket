@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session as OrmSession
 
 _UNIX_EPOCH_JULIAN_DAY = 2_440_587.5
@@ -12,7 +12,7 @@ def _database_time_expression(dialect_name: str):
         case "postgresql":
             return func.extract("epoch", func.clock_timestamp())
         case "mysql":
-            return func.unix_timestamp(func.current_timestamp(6))
+            return func.unix_timestamp(literal_column("CURRENT_TIMESTAMP(6)"))
         case _:
             raise ValueError(f"Unsupported database dialect: {dialect_name}")
 

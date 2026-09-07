@@ -228,26 +228,28 @@ def enqueue_due_schedules(
             if schedule is None or not schedule.enabled or schedule.status != "active":
                 continue
 
-            next_run_due = (
-                schedule.next_run_at is not None
-                and schedule.next_run_at <= current_time
+            current_run_at = schedule.next_run_at
+            due_run_at = (
+                current_run_at
+                if current_run_at is not None and current_run_at <= current_time
+                else None
             )
             pending_due = (
                 schedule.pending_scheduled_for is not None
                 and schedule.pending_scheduled_for <= current_time
             )
-            if not next_run_due and not pending_due:
+            if due_run_at is None and not pending_due:
                 continue
 
-            next_run_at = schedule.next_run_at
+            next_run_at = current_run_at
             latest_due_at = schedule.pending_scheduled_for if pending_due else None
-            if next_run_due:
+            if due_run_at is not None:
                 trigger = build_trigger(
                     schedule.trigger_type, schedule.trigger_data, schedule.timezone
                 )
                 advance = advance_trigger(
                     trigger,
-                    schedule.next_run_at,
+                    due_run_at,
                     current_time,
                     policy.misfire_grace_seconds,
                 )
@@ -258,7 +260,7 @@ def enqueue_due_schedules(
                     latest_due_at = advance.latest_due_at
 
             if latest_due_at is None:
-                values = {"next_run_at": next_run_at}
+                values: dict[str, float | str | None] = {"next_run_at": next_run_at}
                 if next_run_at is None and schedule.active_execution_id is None:
                     values["status"] = "completed"
                 if not _advance_schedule_if_current(session, schedule, **values):
