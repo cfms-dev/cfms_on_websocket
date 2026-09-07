@@ -1478,19 +1478,24 @@ def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
     ("new_state", "retry_at"),
     (("succeeded", None), ("retry_wait", 200.0)),
 )
-def test_local_claim_rechecks_candidate_state_at_atomic_update(
-    monkeypatch,
-    new_state,
-    retry_at,
+@pytest.mark.parametrize("claim_by_id", [False, True])
+def test_claim_rechecks_candidate_state_at_atomic_update(
+    monkeypatch, new_state, retry_at, claim_by_id
 ):
     factory = _session_factory(monkeypatch)
     _schedule(factory)
     policy = SchedulingPolicy()
-    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis" if claim_by_id else "local",
+        "test-cluster" if claim_by_id else None,
+        now=100.0,
+    )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
     with factory() as session:
         execution_id = session.scalar(select(ScheduleExecution.id))
     assert execution_id is not None
+    if claim_by_id:
+        assert scheduling_engine.mark_dispatched(execution_id, generation, 0) is True
 
     transitioned = False
 
@@ -1510,9 +1515,14 @@ def test_local_claim_rechecks_candidate_state_at_atomic_update(
 
     event.listen(factory.class_, "do_orm_execute", transition_candidate)
     try:
-        claim = scheduling_engine.claim_execution(
-            generation, "worker", policy, now=101.0
-        )
+        if claim_by_id:
+            claim = scheduling_engine.claim_execution_by_id(
+                execution_id, generation, "worker", policy, now=101.0
+            )
+        else:
+            claim = scheduling_engine.claim_execution(
+                generation, "worker", policy, now=101.0
+            )
     finally:
         event.remove(factory.class_, "do_orm_execute", transition_candidate)
 

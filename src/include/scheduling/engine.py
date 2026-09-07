@@ -536,65 +536,83 @@ def claim_execution(
         if candidate is None:
             return None
         candidate_id, schedule_id = candidate
-
-        schedule = lock_schedule(session, schedule_id)
-        if (
-            schedule is None
-            or schedule.status == "deleted"
-            or schedule.active_execution_id != candidate_id
-        ):
-            return None
-
-        current_time = database_now(session) if now is None else now
-
-        # The preceding SELECT only chooses a candidate. This conditional UPDATE is
-        # the claim boundary that prevents two workers from owning the same lease.
-        claimed = cast(
-            CursorResult,
-            session.execute(
-                update(ScheduleExecution)
-                .where(
-                    ScheduleExecution.id == candidate_id,
-                    ScheduleExecution.schedule_id == schedule_id,
-                    ScheduleExecution.provider_generation == generation,
-                    ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
-                    or_(
-                        ScheduleExecution.retry_at.is_(None),
-                        ScheduleExecution.retry_at <= current_time,
-                    ),
-                    or_(
-                        ScheduleExecution.lease_expires_at.is_(None),
-                        ScheduleExecution.lease_expires_at <= current_time,
-                    ),
-                )
-                .values(
-                    state="running",
-                    dispatch_state="sent",
-                    dispatched_at=current_time,
-                    attempt=ScheduleExecution.attempt + 1,
-                    retry_at=None,
-                    lease_owner=lease_owner,
-                    lease_expires_at=current_time + policy.execution_lease_seconds,
-                    started_at=current_time,
-                )
-            ),
+        return _claim_execution(
+            session,
+            candidate_id,
+            schedule_id,
+            generation,
+            lease_owner,
+            policy,
+            now,
         )
-        if claimed.rowcount != 1:
-            return None
 
-        execution = session.get(ScheduleExecution, candidate_id)
-        assert execution is not None
 
-        return ClaimedExecution(
-            id=execution.id,
-            schedule_id=schedule.id,
-            task_name=execution.task_name,
-            task_contract_version=execution.task_contract_version,
-            payload=execution.payload,
-            scheduled_for=execution.scheduled_for,
-            attempt=execution.attempt,
-            lease_owner=lease_owner,
-        )
+def _claim_execution(
+    session,
+    execution_id: str,
+    schedule_id: str,
+    generation: int,
+    lease_owner: str,
+    policy: SchedulingPolicy,
+    now: float | None,
+) -> ClaimedExecution | None:
+    """Lock the schedule and conditionally transition one execution lease."""
+    schedule = lock_schedule(session, schedule_id)
+    if (
+        schedule is None
+        or schedule.status == "deleted"
+        or schedule.active_execution_id != execution_id
+    ):
+        return None
+
+    current_time = database_now(session) if now is None else now
+    # Candidate selection is advisory. This conditional update is the atomic claim
+    # boundary shared by local polling and Redis delivery.
+    claimed = cast(
+        CursorResult,
+        session.execute(
+            update(ScheduleExecution)
+            .where(
+                ScheduleExecution.id == execution_id,
+                ScheduleExecution.schedule_id == schedule_id,
+                ScheduleExecution.provider_generation == generation,
+                ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
+                or_(
+                    ScheduleExecution.retry_at.is_(None),
+                    ScheduleExecution.retry_at <= current_time,
+                ),
+                or_(
+                    ScheduleExecution.lease_expires_at.is_(None),
+                    ScheduleExecution.lease_expires_at <= current_time,
+                ),
+            )
+            .values(
+                state="running",
+                dispatch_state="sent",
+                dispatched_at=current_time,
+                attempt=ScheduleExecution.attempt + 1,
+                retry_at=None,
+                lease_owner=lease_owner,
+                lease_expires_at=current_time + policy.execution_lease_seconds,
+                started_at=current_time,
+            )
+        ),
+    )
+    if claimed.rowcount != 1:
+        return None
+
+    execution = session.get(ScheduleExecution, execution_id)
+    assert execution is not None
+    return ClaimedExecution(
+        id=execution.id,
+        schedule_id=schedule.id,
+        task_name=execution.task_name,
+        task_contract_version=execution.task_contract_version,
+        payload=execution.payload,
+        scheduled_for=execution.scheduled_for,
+        attempt=execution.attempt,
+        lease_owner=lease_owner,
+    )
 
 
 def claim_execution_by_id(
@@ -618,59 +636,14 @@ def claim_execution_by_id(
         )
         if schedule_id is None:
             return None
-        schedule = lock_schedule(session, schedule_id)
-        if (
-            schedule is None
-            or schedule.status == "deleted"
-            or schedule.active_execution_id != execution_id
-        ):
-            return None
-        current_time = database_now(session) if now is None else now
-        claimed = cast(
-            CursorResult,
-            session.execute(
-                update(ScheduleExecution)
-                .where(
-                    ScheduleExecution.id == execution_id,
-                    ScheduleExecution.schedule_id == schedule_id,
-                    ScheduleExecution.provider_generation == generation,
-                    ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
-                    or_(
-                        ScheduleExecution.retry_at.is_(None),
-                        ScheduleExecution.retry_at <= current_time,
-                    ),
-                    or_(
-                        ScheduleExecution.lease_expires_at.is_(None),
-                        ScheduleExecution.lease_expires_at <= current_time,
-                    ),
-                )
-                .values(
-                    state="running",
-                    dispatch_state="sent",
-                    dispatched_at=current_time,
-                    attempt=ScheduleExecution.attempt + 1,
-                    retry_at=None,
-                    lease_owner=lease_owner,
-                    lease_expires_at=current_time + policy.execution_lease_seconds,
-                    started_at=current_time,
-                )
-            ),
-        )
-        if claimed.rowcount != 1:
-            return None
-
-        execution = session.get(ScheduleExecution, execution_id)
-        assert execution is not None
-
-        return ClaimedExecution(
-            id=execution.id,
-            schedule_id=schedule.id,
-            task_name=execution.task_name,
-            task_contract_version=execution.task_contract_version,
-            payload=execution.payload,
-            scheduled_for=execution.scheduled_for,
-            attempt=execution.attempt,
-            lease_owner=lease_owner,
+        return _claim_execution(
+            session,
+            execution_id,
+            schedule_id,
+            generation,
+            lease_owner,
+            policy,
+            now,
         )
 
 
