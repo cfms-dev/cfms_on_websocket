@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 import include.database.models  # noqa: F401
 from include.config.validation import SchedulingPolicy
+from include.database.clock import database_now
 from include.database.models.identity import User
 from include.database.models.scheduling import (
     Schedule,
@@ -19,7 +20,6 @@ from include.scheduling import claims as scheduling_claims
 from include.scheduling import commands as scheduling_commands
 from include.scheduling import engine as scheduling_engine
 from include.scheduling import outcomes as scheduling_outcomes
-from include.scheduling.clock import database_now
 from include.scheduling.commands import delete_schedule
 
 _DATABASE_URL_ENVIRONMENTS = (

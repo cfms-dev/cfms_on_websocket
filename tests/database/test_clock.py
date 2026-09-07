@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.orm import sessionmaker
 
-from include.scheduling.clock import _database_time_expression, database_now
+from include.database.clock import _database_time_expression, database_now
 
 
 @pytest.mark.parametrize(
