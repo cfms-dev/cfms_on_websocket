@@ -870,6 +870,64 @@ def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(monkeypatch
         assert execution.lease_expires_at is None
 
 
+@pytest.mark.parametrize("claim_by_id", [False, True])
+def test_execution_lease_starts_after_schedule_lock_is_acquired(
+    monkeypatch, claim_by_id
+):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy(
+        execution_lease_seconds=60,
+        lease_refresh_seconds=20,
+    )
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis" if claim_by_id else "local",
+        "test-cluster" if claim_by_id else None,
+        now=100.0,
+    )
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    with factory() as session:
+        execution_id = session.scalar(select(ScheduleExecution.id))
+    assert execution_id is not None
+    if claim_by_id:
+        assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+
+    database_time = [100.0]
+    original_lock_schedule = scheduling_engine.lock_schedule
+
+    def lock_after_time_advances(session, schedule_id):
+        schedule = original_lock_schedule(session, schedule_id)
+        database_time[0] = 150.0
+        return schedule
+
+    monkeypatch.setattr(scheduling_engine, "lock_schedule", lock_after_time_advances)
+    monkeypatch.setattr(
+        scheduling_engine,
+        "database_now",
+        lambda _session: database_time[0],
+    )
+
+    if claim_by_id:
+        claim = scheduling_engine.claim_execution_by_id(
+            execution_id,
+            generation,
+            "worker",
+            policy,
+        )
+    else:
+        claim = scheduling_engine.claim_execution(
+            generation,
+            "worker",
+            policy,
+        )
+
+    assert claim is not None
+    with factory() as session:
+        execution = session.get(ScheduleExecution, execution_id)
+        assert execution.started_at == 150.0
+        assert execution.lease_expires_at == 210.0
+
+
 @pytest.mark.parametrize("provider", ["local", "redis"])
 def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
     monkeypatch, provider

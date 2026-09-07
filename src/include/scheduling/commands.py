@@ -96,10 +96,10 @@ def update_schedule(
     The caller owns the transaction. A stale revision or an execution becoming
     active during the update raises :class:`ScheduleConflictError`.
     """
-    current_time = database_now(session) if now is None else now
     schedule = lock_schedule(session, schedule_id)
     if schedule is None or schedule.status == "deleted":
         raise ScheduleNotFoundError(schedule_id)
+    current_time = database_now(session) if now is None else now
     if schedule.system_managed:
         raise ScheduleConflictError("System-managed schedules cannot be updated")
     if schedule.revision != expected_revision:
@@ -215,10 +215,10 @@ def delete_schedule(
     Future and coalesced occurrences are cancelled without interrupting an
     execution that is already active. The caller owns the transaction.
     """
-    current_time = database_now(session) if now is None else now
     schedule = lock_schedule(session, schedule_id)
     if schedule is None or schedule.status == "deleted":
         raise ScheduleNotFoundError(schedule_id)
+    current_time = database_now(session) if now is None else now
     if schedule.system_managed:
         raise ScheduleConflictError("System-managed schedules cannot be deleted")
     if schedule.revision != expected_revision:

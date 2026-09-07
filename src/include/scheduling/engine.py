@@ -463,7 +463,7 @@ def claim_execution(
     or another worker wins the claim.
     """
     with Session() as session, session.begin():
-        current_time = database_now(session) if now is None else now
+        candidate_time = database_now(session) if now is None else now
         candidate = session.execute(
             select(ScheduleExecution.id, ScheduleExecution.schedule_id)
             .where(
@@ -474,11 +474,11 @@ def claim_execution(
                 ),
                 or_(
                     ScheduleExecution.retry_at.is_(None),
-                    ScheduleExecution.retry_at <= current_time,
+                    ScheduleExecution.retry_at <= candidate_time,
                 ),
                 or_(
                     ScheduleExecution.lease_expires_at.is_(None),
-                    ScheduleExecution.lease_expires_at <= current_time,
+                    ScheduleExecution.lease_expires_at <= candidate_time,
                 ),
             )
             .order_by(ScheduleExecution.created_at, ScheduleExecution.id)
@@ -495,6 +495,8 @@ def claim_execution(
             or schedule.active_execution_id != candidate_id
         ):
             return None
+
+        current_time = database_now(session) if now is None else now
 
         # The preceding SELECT only chooses a candidate. This conditional UPDATE is
         # the claim boundary that prevents two workers from owning the same lease.
@@ -559,7 +561,6 @@ def claim_execution_by_id(
     the provider can decide whether the message should be retried or discarded.
     """
     with Session() as session, session.begin():
-        current_time = database_now(session) if now is None else now
         schedule_id = session.scalar(
             select(ScheduleExecution.schedule_id).where(
                 ScheduleExecution.id == execution_id
@@ -574,6 +575,7 @@ def claim_execution_by_id(
             or schedule.active_execution_id != execution_id
         ):
             return None
+        current_time = database_now(session) if now is None else now
         claimed = cast(
             CursorResult,
             session.execute(
@@ -857,10 +859,10 @@ def complete_execution(
     schedule. ``False`` means ownership was lost and no state was changed.
     """
     with Session() as session, session.begin():
-        current_time = database_now(session) if now is None else now
         schedule = lock_schedule(session, claim.schedule_id)
         if schedule is None:
             return False
+        current_time = database_now(session) if now is None else now
         completed = cast(
             CursorResult,
             session.execute(
@@ -910,10 +912,10 @@ def fail_execution(
     schedule slot so a coalesced recurring occurrence can proceed.
     """
     with Session() as session, session.begin():
-        current_time = database_now(session) if now is None else now
         schedule = lock_schedule(session, claim.schedule_id)
         if schedule is None:
             return False
+        current_time = database_now(session) if now is None else now
         retry = claim.attempt < max_attempts and schedule.status != "deleted"
         values = {
             "error": error[:1024],
