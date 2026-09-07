@@ -97,6 +97,9 @@ class ScheduleExecution(Base):
     schedule_id: Mapped[str] = mapped_column(
         ForeignKey("schedules.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    task_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    task_contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     provider_generation: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=1
     )

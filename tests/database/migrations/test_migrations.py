@@ -5,7 +5,18 @@ import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import Boolean, String, column, create_engine, inspect, select, table
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Float,
+    Integer,
+    String,
+    column,
+    create_engine,
+    inspect,
+    select,
+    table,
+)
 
 from alembic import command
 from tests.support.config import reserve_local_port, write_test_config
@@ -77,6 +88,87 @@ def test_retained_revision_chain_round_trips_to_head(
                 )
             }
             assert "redis_namespace" in runtime_columns
+    finally:
+        engine.dispose()
+
+
+def test_execution_contract_snapshot_migration_backfills_queued_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src_dir = Path(__file__).resolve().parents[3] / "src"
+    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
+    write_test_config(tmp_path, reserve_local_port())
+    monkeypatch.chdir(tmp_path)
+
+    from include.database import models as database_models
+
+    config = Config(src_dir / "alembic.ini")
+    database_url = f"sqlite:///{(tmp_path / 'execution-snapshots.db').as_posix()}"
+    config.set_main_option("sqlalchemy.url", database_url)
+    engine = create_engine(database_url)
+    schedules = database_models.User.metadata.tables["schedules"]
+    old_executions = table(
+        "schedule_executions",
+        column("id", String()),
+        column("schedule_id", String()),
+        column("provider_generation", Integer()),
+        column("scheduled_for", Float()),
+        column("state", String()),
+        column("dispatch_state", String()),
+        column("attempt", Integer()),
+        column("created_at", Float()),
+    )
+    snapshot_rows = table(
+        "schedule_executions",
+        column("task_name", String()),
+        column("task_contract_version", Integer()),
+        column("payload", JSON()),
+    )
+    try:
+        database_models.User.metadata.create_all(engine)
+        command.stamp(config, "head")
+        command.downgrade(config, "6dba0956fa9d")
+        with engine.begin() as connection:
+            connection.execute(
+                schedules.insert(),
+                {
+                    "id": "schedule-1",
+                    "task_name": "test.record",
+                    "task_contract_version": 3,
+                    "payload": {"value": 7},
+                    "trigger_type": "interval",
+                    "trigger_data": {"seconds": 60},
+                    "timezone": "UTC",
+                    "system_managed": False,
+                    "enabled": True,
+                    "status": "active",
+                    "revision": 1,
+                    "created_at": 1.0,
+                    "updated_at": 1.0,
+                },
+            )
+            connection.execute(
+                old_executions.insert(),
+                {
+                    "id": "execution-1",
+                    "schedule_id": "schedule-1",
+                    "provider_generation": 1,
+                    "scheduled_for": 1.0,
+                    "state": "pending",
+                    "dispatch_state": "pending",
+                    "attempt": 0,
+                    "created_at": 1.0,
+                },
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            assert connection.execute(select(snapshot_rows)).one() == (
+                "test.record",
+                3,
+                {"value": 7},
+            )
     finally:
         engine.dispose()
 

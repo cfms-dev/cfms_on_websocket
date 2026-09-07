@@ -71,8 +71,10 @@ compare-and-renew and compare-and-delete semantics elects one active scheduler
 across the cluster. Total worker capacity therefore grows with the number of CFMS
 server instances. Redis Pub/Sub reduces change latency, while periodic SQL
 reconciliation remains authoritative if a notification is lost. Dramatiq
-transports execution IDs; workers revalidate the database generation, task
-contract, payload, and execution lease before running.
+transports execution IDs; each execution snapshots its task name, contract version,
+and payload when it is queued, and workers revalidate that snapshot and the database
+execution lease before running. Updating a schedule therefore does not reinterpret
+work that was already queued.
 
 Deliveries that remain unclaimed for one execution-lease interval are made
 deliverable again. Duplicate broker messages are harmless because claiming the

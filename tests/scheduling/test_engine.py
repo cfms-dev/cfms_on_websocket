@@ -393,6 +393,50 @@ def test_system_schedule_immediate_reconciliation_preserves_interval_cadence(
         assert schedule.next_run_at == 220.0
 
 
+def test_system_schedule_update_preserves_queued_execution_contract(monkeypatch):
+    factory = _session_factory(monkeypatch)
+
+    def registry(contract_version, value):
+        return ScheduledTaskRegistry(
+            [
+                ScheduledTaskRegistration(
+                    name="test.system_cleanup",
+                    contract_version=contract_version,
+                    payload_model=_Payload,
+                    execute=lambda _context, _payload: None,
+                    user_schedulable=False,
+                    system_schedule=lambda: SystemScheduleDefinition(
+                        id="test.system_cleanup",
+                        payload={"value": value},
+                        trigger_type="interval",
+                        trigger_data={"seconds": 60},
+                    ),
+                )
+            ]
+        )
+
+    original_registry = registry(1, 1)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.synchronize_system_schedules(original_registry, now=100.0)
+    assert scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0) == 1
+
+    updated_registry = registry(2, 2)
+    scheduling_engine.synchronize_system_schedules(updated_registry, now=101.0)
+    claim = scheduling_engine.claim_execution(generation, "worker", policy, now=101.0)
+
+    assert claim is not None
+    assert claim.task_contract_version == 1
+    assert claim.payload == {"value": 1}
+    with factory() as session:
+        schedule = session.get(Schedule, "test.system_cleanup")
+        execution = session.get(ScheduleExecution, claim.id)
+        assert schedule.task_contract_version == 2
+        assert schedule.payload == {"value": 2}
+        assert execution.task_contract_version == 1
+        assert execution.payload == {"value": 1}
+
+
 def test_system_schedule_reconciliation_clears_user_attribution(monkeypatch):
     factory = _session_factory(monkeypatch)
 
@@ -546,6 +590,9 @@ def test_retiring_system_schedule_clears_stale_execution_slot(
                 ScheduleExecution(
                     id="stale-execution",
                     schedule_id=schedule.id,
+                    task_name=schedule.task_name,
+                    task_contract_version=schedule.task_contract_version,
+                    payload=schedule.payload,
                     provider_generation=1,
                     scheduled_for=100.0,
                     state=execution_state,
@@ -1334,6 +1381,9 @@ def test_expired_deleted_execution_cancellation_is_bounded(monkeypatch):
                 ScheduleExecution(
                     id=execution_id,
                     schedule_id=schedule_id,
+                    task_name="test.record",
+                    task_contract_version=1,
+                    payload={"value": index},
                     provider_generation=1,
                     scheduled_for=1.0,
                     state="running",
@@ -1552,6 +1602,9 @@ def test_completed_execution_history_is_purged_in_bounded_batches(monkeypatch):
                 ScheduleExecution(
                     id="old-succeeded",
                     schedule_id="schedule-1",
+                    task_name="test.record",
+                    task_contract_version=1,
+                    payload={"value": 7},
                     provider_generation=1,
                     scheduled_for=1.0,
                     state="succeeded",
@@ -1560,6 +1613,9 @@ def test_completed_execution_history_is_purged_in_bounded_batches(monkeypatch):
                 ScheduleExecution(
                     id="recent-failed",
                     schedule_id="schedule-1",
+                    task_name="test.record",
+                    task_contract_version=1,
+                    payload={"value": 7},
                     provider_generation=1,
                     scheduled_for=2.0,
                     state="failed",
@@ -1568,6 +1624,9 @@ def test_completed_execution_history_is_purged_in_bounded_batches(monkeypatch):
                 ScheduleExecution(
                     id="old-pending",
                     schedule_id="schedule-1",
+                    task_name="test.record",
+                    task_contract_version=1,
+                    payload={"value": 7},
                     provider_generation=1,
                     scheduled_for=3.0,
                     state="pending",
