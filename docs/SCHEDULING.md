@@ -82,8 +82,9 @@ database execution lease, rather than receiving a message, grants permission to
 run the task.
 
 The application database clock is authoritative for persisted schedule times,
-retry delays, and execution leases. Application-node wall clocks therefore do not
-decide whether work is due or whether another node's lease has expired.
+retry delays, execution leases, and built-in maintenance cutoffs. Application-node
+wall clocks therefore do not decide whether work is due, whether another node's
+lease has expired, or whether shared records are old enough to purge.
 
 Redis outages leave the WebSocket server running in a degraded state. Scheduling
 management actions return 503 until Redis recovers. The Provider retries its
@@ -184,7 +185,9 @@ updated, or re-enabled.
 - A one-time schedule becomes `completed` after success and `failed` after its final
   failed attempt. Failure of one recurring occurrence does not disable the schedule.
 - Updating a completed or failed schedule reactivates it with a newly calculated
-  next run; the `enabled` flag continues to control whether it is dispatched.
+  next run; the `enabled` flag continues to control whether it is dispatched. A
+  recorded one-time occurrence cannot be replayed in place: provide a new `run_at`
+  value when reactivating that schedule.
 - Retiring a schedule cancels pending and retrying work without interrupting an
   execution that is already running.
 
