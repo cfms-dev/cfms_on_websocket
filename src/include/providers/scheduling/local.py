@@ -63,11 +63,18 @@ class LocalSchedulingProvider(SchedulingProvider):
             self._generation = generation
             self._stop = stop
             self._wake = wake
-            self._threads = [scheduler, *workers]
+            threads = [scheduler, *workers]
+            self._threads = []
             self._scheduler_error = None
             self._worker_errors.clear()
-            for thread in self._threads:
-                thread.start()
+            try:
+                for thread in threads:
+                    thread.start()
+                    self._threads.append(thread)
+            except BaseException:
+                stop.set()
+                wake.set()
+                raise
 
     def shutdown(self) -> None:
         with self._state_lock:

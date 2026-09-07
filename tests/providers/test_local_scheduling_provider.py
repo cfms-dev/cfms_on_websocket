@@ -59,6 +59,37 @@ def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
     provider.shutdown()
 
 
+def test_local_provider_cleans_up_after_partial_thread_start(monkeypatch):
+    original_start = threading.Thread.start
+
+    def start_or_fail(thread):
+        if thread.name == "schedule-local-worker-1":
+            raise RuntimeError("worker thread failed to start")
+        original_start(thread)
+
+    monkeypatch.setattr(local, "ensure_runtime_state", lambda _mode: 1)
+    monkeypatch.setattr(local, "synchronize_system_schedules", lambda _registry: None)
+    monkeypatch.setattr(
+        local, "cancel_expired_deleted_executions", lambda _batch_size: 0
+    )
+    monkeypatch.setattr(local, "enqueue_due_schedules", lambda _generation, _policy: 0)
+    monkeypatch.setattr(threading.Thread, "start", start_or_fail)
+    provider = LocalSchedulingProvider(
+        SchedulingPolicy(
+            worker_threads=1,
+            poll_interval_seconds=0.01,
+            shutdown_grace_seconds=1,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="worker thread failed to start"):
+        provider.start(ScheduledTaskRegistry())
+
+    provider.shutdown()
+    assert provider.status().available is False
+    assert provider._threads == []
+
+
 def test_scheduler_success_does_not_hide_worker_failure(monkeypatch):
     provider = LocalSchedulingProvider(SchedulingPolicy())
     registry = ScheduledTaskRegistry()
