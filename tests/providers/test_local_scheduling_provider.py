@@ -90,6 +90,54 @@ def test_local_provider_cleans_up_after_partial_thread_start(monkeypatch):
     assert provider._threads == []
 
 
+def test_local_provider_fails_startup_before_threads_for_invalid_definition(
+    monkeypatch,
+):
+    provider = LocalSchedulingProvider(SchedulingPolicy())
+    monkeypatch.setattr(local, "ensure_runtime_state", lambda _mode: 1)
+    monkeypatch.setattr(
+        local,
+        "synchronize_system_schedules",
+        lambda _registry: (_ for _ in ()).throw(ValueError("invalid definition")),
+    )
+
+    with pytest.raises(ValueError, match="invalid definition"):
+        provider.start(ScheduledTaskRegistry())
+
+    assert provider._threads == []
+    assert provider.status().detail == "not_running"
+
+
+def test_reconciliation_failure_does_not_block_due_scan(monkeypatch):
+    provider = LocalSchedulingProvider(SchedulingPolicy())
+    registry = ScheduledTaskRegistry()
+    stop = threading.Event()
+    wake = SimpleNamespace(wait=lambda _timeout: None, clear=lambda: None)
+    scanned = []
+
+    monkeypatch.setattr(
+        local,
+        "synchronize_system_schedules",
+        lambda _registry: (_ for _ in ()).throw(ValueError("invalid definition")),
+    )
+    monkeypatch.setattr(
+        local, "cancel_expired_deleted_executions", lambda batch: scanned.append(batch)
+    )
+
+    def enqueue(generation, policy):
+        scanned.append((generation, policy))
+        stop.set()
+
+    monkeypatch.setattr(local, "enqueue_due_schedules", enqueue)
+
+    provider._scheduler_loop(registry, 3, stop, wake)
+    provider._threads = [threading.current_thread()]
+    provider._stop = threading.Event()
+
+    assert scanned == [provider._policy.claim_batch_size, (3, provider._policy)]
+    assert provider.status().detail == "ValueError"
+
+
 def test_scheduler_success_does_not_hide_worker_failure(monkeypatch):
     provider = LocalSchedulingProvider(SchedulingPolicy())
     registry = ScheduledTaskRegistry()

@@ -86,6 +86,7 @@ class RedisSchedulingProvider(SchedulingProvider):
         self._scheduler_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._redis_error: str | None = None
+        self._reconciliation_error: str | None = None
         self._runtime_error: str | None = None
         self._started = False
         self._closed = False
@@ -116,6 +117,7 @@ class RedisSchedulingProvider(SchedulingProvider):
             self._generation = ensure_runtime_state(
                 "redis", self._policy.redis_namespace
             )
+            synchronize_system_schedules(registry)
             stop = threading.Event()
             self._ensure_actor(registry)
             assert self._broker is not None
@@ -247,7 +249,9 @@ class RedisSchedulingProvider(SchedulingProvider):
         except redis.RedisError:
             pass
         with self._state_lock:
-            detail = self._runtime_error or self._redis_error
+            detail = (
+                self._reconciliation_error or self._runtime_error or self._redis_error
+            )
         return SchedulingProviderStatus(
             available=detail is None,
             mode="redis",
@@ -371,12 +375,33 @@ class RedisSchedulingProvider(SchedulingProvider):
                             )
                         )
                     if leader:
-                        synchronize_system_schedules(registry)
-                        enqueue_due_schedules(generation, self._policy)
-                        self._dispatch_pending(generation)
+                        try:
+                            synchronize_system_schedules(registry)
+                            with self._state_lock:
+                                self._reconciliation_error = None
+                        except Exception as exc:  # noqa: BLE001 - dispatch continues.
+                            with self._state_lock:
+                                self._reconciliation_error = type(exc).__name__
+                            logger.exception(
+                                "Redis system schedule reconciliation failed"
+                            )
+                        try:
+                            enqueue_due_schedules(generation, self._policy)
+                            self._dispatch_pending(generation)
+                            with self._state_lock:
+                                self._runtime_error = None
+                        except Exception as exc:  # noqa: BLE001 - provider retries.
+                            with self._state_lock:
+                                self._runtime_error = type(exc).__name__
+                            logger.exception(
+                                "Redis scheduling due scan or dispatch failed"
+                            )
+                    else:
+                        with self._state_lock:
+                            self._reconciliation_error = None
+                            self._runtime_error = None
                     with self._state_lock:
                         self._redis_error = None
-                        self._runtime_error = None
                     pubsub.get_message(
                         timeout=min(self._policy.poll_interval_seconds, 1.0)
                     )

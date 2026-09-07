@@ -131,6 +131,7 @@ def _provider(client=None):
     provider._registry = ScheduledTaskRegistry()
     provider._generation = 1
     provider._redis_error = None
+    provider._reconciliation_error = None
     provider._runtime_error = None
     provider._started = False
     provider._closed = False
@@ -158,6 +159,9 @@ def _prepare_embedded_runtime(monkeypatch, provider):
         scheduling_redis,
         "ensure_runtime_state",
         lambda _mode, _namespace: 7,
+    )
+    monkeypatch.setattr(
+        scheduling_redis, "synchronize_system_schedules", lambda _registry: None
     )
     monkeypatch.setattr(provider, "_ensure_actor", ensure_actor)
     monkeypatch.setattr(provider, "_scheduler_loop", coordinator)
@@ -350,6 +354,29 @@ def test_redis_provider_propagates_database_runtime_initialization_failure(
     provider.shutdown()
 
 
+def test_redis_provider_fails_startup_before_runtime_for_invalid_definition(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(
+        scheduling_redis,
+        "ensure_runtime_state",
+        lambda _mode, _namespace: 7,
+    )
+    monkeypatch.setattr(
+        scheduling_redis,
+        "synchronize_system_schedules",
+        lambda _registry: (_ for _ in ()).throw(ValueError("invalid definition")),
+    )
+
+    with pytest.raises(ValueError, match="invalid definition"):
+        provider.start(ScheduledTaskRegistry())
+
+    assert provider._started is False
+    assert provider._worker is None
+    assert provider._scheduler_thread is None
+
+
 def test_redis_notification_failure_is_recorded_but_not_raised():
     client = _FakeRedis()
     provider = _provider(client)
@@ -432,6 +459,33 @@ def test_coordinator_renews_and_releases_leadership_with_one_owner_token(
     assert {call[2] for call in client.eval_calls} == {provider._leader_key}
     assert client.set_calls[0][0] == provider._leader_key
     assert pubsub.closed == 1
+
+
+def test_reconciliation_failure_does_not_block_redis_dispatch(monkeypatch):
+    provider = _provider()
+    pubsub = _FakePubSub(on_message=provider._stop.set)
+    provider._client = _CoordinatorRedis([pubsub])
+    enqueued = []
+    dispatched = []
+    monkeypatch.setattr(
+        scheduling_redis,
+        "synchronize_system_schedules",
+        lambda _registry: (_ for _ in ()).throw(ValueError("invalid definition")),
+    )
+    monkeypatch.setattr(
+        scheduling_redis,
+        "enqueue_due_schedules",
+        lambda generation, policy: enqueued.append((generation, policy)),
+    )
+    monkeypatch.setattr(
+        provider, "_dispatch_pending", lambda generation: dispatched.append(generation)
+    )
+
+    provider._scheduler_loop(ScheduledTaskRegistry(), 11, provider._stop)
+
+    assert enqueued == [(11, provider._policy)]
+    assert dispatched == [11]
+    assert provider._reconciliation_error == "ValueError"
 
 
 def test_redis_resources_are_scoped_to_the_deployment_namespace(monkeypatch):

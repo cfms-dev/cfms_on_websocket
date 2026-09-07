@@ -27,6 +27,7 @@ class LocalSchedulingProvider(SchedulingProvider):
         self._wake = threading.Event()
         self._threads: list[threading.Thread] = []
         self._state_lock = threading.Lock()
+        self._reconciliation_error: str | None = None
         self._scheduler_error: str | None = None
         self._worker_errors: dict[str, str] = {}
 
@@ -42,6 +43,7 @@ class LocalSchedulingProvider(SchedulingProvider):
                     return
                 self._threads = []
             generation = ensure_runtime_state("local")
+            synchronize_system_schedules(registry)
             stop = threading.Event()
             wake = threading.Event()
             scheduler = threading.Thread(
@@ -65,6 +67,7 @@ class LocalSchedulingProvider(SchedulingProvider):
             self._wake = wake
             threads = [scheduler, *workers]
             self._threads = []
+            self._reconciliation_error = None
             self._scheduler_error = None
             self._worker_errors.clear()
             try:
@@ -113,8 +116,10 @@ class LocalSchedulingProvider(SchedulingProvider):
             elif not running:
                 detail = "not_running"
             else:
-                detail = self._scheduler_error or next(
-                    iter(self._worker_errors.values()), None
+                detail = (
+                    self._reconciliation_error
+                    or self._scheduler_error
+                    or next(iter(self._worker_errors.values()), None)
                 )
         return SchedulingProviderStatus(
             available=running and not stopping and detail is None,
@@ -132,6 +137,13 @@ class LocalSchedulingProvider(SchedulingProvider):
         while not stop.is_set():
             try:
                 synchronize_system_schedules(registry)
+                with self._state_lock:
+                    self._reconciliation_error = None
+            except Exception as exc:  # noqa: BLE001 - valid schedules must continue.
+                with self._state_lock:
+                    self._reconciliation_error = type(exc).__name__
+                logger.exception("Local system schedule reconciliation failed")
+            try:
                 cancel_expired_deleted_executions(self._policy.claim_batch_size)
                 enqueue_due_schedules(generation, self._policy)
                 with self._state_lock:
@@ -139,7 +151,7 @@ class LocalSchedulingProvider(SchedulingProvider):
             except Exception as exc:  # noqa: BLE001 - provider remains degraded and retries.
                 with self._state_lock:
                     self._scheduler_error = type(exc).__name__
-                logger.exception("Local scheduling loop failed")
+                logger.exception("Local scheduling due scan failed")
             wake.wait(self._policy.poll_interval_seconds)
             wake.clear()
 

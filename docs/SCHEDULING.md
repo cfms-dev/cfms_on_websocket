@@ -13,6 +13,11 @@ these schedules from current configuration. System schedules have no user owner,
 are not returned by the management API, and cannot be created, changed, or deleted
 through that API.
 
+Every Provider performs a complete reconciliation before starting its scheduler or
+workers, so an invalid system definition fails server startup without leaving a
+partially running scheduling runtime. Later reconciliation failures degrade health
+but do not stop due scans or dispatch of schedules that were already persisted.
+
 ## Installation and configuration
 
 For a single server process without Redis, the normal core installation is
