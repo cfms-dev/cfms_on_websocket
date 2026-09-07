@@ -7,7 +7,7 @@ from include.scheduling.contracts import (
     ScheduledTaskResult,
     SystemScheduleDefinition,
 )
-from include.scheduling.engine import purge_execution_history
+from include.scheduling.outcomes import purge_execution_history
 
 
 class _EmptyPayload(BaseModel):

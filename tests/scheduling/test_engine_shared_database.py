@@ -15,8 +15,10 @@ from include.database.models.scheduling import (
     ScheduleExecution,
     SchedulingRuntimeState,
 )
+from include.scheduling import claims as scheduling_claims
 from include.scheduling import commands as scheduling_commands
 from include.scheduling import engine as scheduling_engine
+from include.scheduling import outcomes as scheduling_outcomes
 from include.scheduling.clock import database_now
 from include.scheduling.commands import delete_schedule
 
@@ -63,6 +65,8 @@ def shared_database(request):
 def shared_session_factory(monkeypatch, shared_database):
     factory = sessionmaker(bind=shared_database)
     monkeypatch.setattr(scheduling_engine, "Session", factory)
+    monkeypatch.setattr(scheduling_claims, "Session", factory)
+    monkeypatch.setattr(scheduling_outcomes, "Session", factory)
     try:
         yield factory
     finally:
@@ -139,7 +143,8 @@ def _run_with_fixed_lock_order(
         role.value = current_role
         return operation()
 
-    monkeypatch.setattr(scheduling_engine, "lock_schedule", gated_lock_schedule)
+    monkeypatch.setattr(scheduling_claims, "lock_schedule", gated_lock_schedule)
+    monkeypatch.setattr(scheduling_outcomes, "lock_schedule", gated_lock_schedule)
     monkeypatch.setattr(scheduling_commands, "lock_schedule", gated_lock_schedule)
     with ThreadPoolExecutor(max_workers=2) as executor:
         first_result = executor.submit(run_as, "first", first)

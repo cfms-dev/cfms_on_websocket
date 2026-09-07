@@ -8,6 +8,24 @@ from include.domains.access.permissions import Permissions
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimedExecution:
+    id: str
+    schedule_id: str
+    task_name: str
+    task_contract_version: int
+    payload: dict
+    scheduled_for: float
+    attempt: int
+    lease_owner: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingDispatch:
+    id: str
+    attempt: int
+
+
+@dataclass(frozen=True, slots=True)
 class ScheduledTaskContext:
     schedule_id: str
     execution_id: str

@@ -23,7 +23,11 @@ from include.scheduling import (
     ScheduledTaskResult,
     SystemScheduleDefinition,
 )
+from include.scheduling import claims as scheduling_claims
 from include.scheduling import engine as scheduling_engine
+from include.scheduling import outcomes as scheduling_outcomes
+from include.scheduling import reconciliation as scheduling_reconciliation
+from include.scheduling import runner as scheduling_runner
 from include.scheduling.commands import (
     ScheduleConflictError,
     delete_schedule,
@@ -50,6 +54,9 @@ def _session_factory(monkeypatch):
     ScheduleExecution.__table__.create(database)
     factory = sessionmaker(bind=database)
     monkeypatch.setattr(scheduling_engine, "Session", factory)
+    monkeypatch.setattr(scheduling_claims, "Session", factory)
+    monkeypatch.setattr(scheduling_outcomes, "Session", factory)
+    monkeypatch.setattr(scheduling_reconciliation, "Session", factory)
     return factory
 
 
@@ -63,6 +70,9 @@ def _file_session_factory(monkeypatch, tmp_path):
     ScheduleExecution.__table__.create(database)
     factory = sessionmaker(bind=database)
     monkeypatch.setattr(scheduling_engine, "Session", factory)
+    monkeypatch.setattr(scheduling_claims, "Session", factory)
+    monkeypatch.setattr(scheduling_outcomes, "Session", factory)
+    monkeypatch.setattr(scheduling_reconciliation, "Session", factory)
     return database, factory
 
 
@@ -216,7 +226,7 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
     calls = []
     audits = []
     monkeypatch.setattr(
-        scheduling_engine,
+        scheduling_runner,
         "log_audit",
         lambda action, result, **values: audits.append((action, result, values)),
     )
@@ -241,7 +251,7 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
     claim = scheduling_engine.claim_execution(generation, "worker", policy, now=100.0)
     assert claim is not None
 
-    monkeypatch.setattr(scheduling_engine, "database_now", lambda _session: 100.0)
+    monkeypatch.setattr(scheduling_outcomes, "database_now", lambda _session: 100.0)
     scheduling_engine.run_claimed_execution(claim, generation, registry, policy)
 
     with factory() as session:
@@ -286,16 +296,16 @@ def test_execution_logs_when_lease_refresh_is_lost(monkeypatch):
             )
         ]
     )
-    monkeypatch.setattr(scheduling_engine, "refresh_execution_lease", lose_lease)
+    monkeypatch.setattr(scheduling_runner, "refresh_execution_lease", lose_lease)
     monkeypatch.setattr(
-        scheduling_engine,
+        scheduling_runner,
         "logger",
         SimpleNamespace(
             warning=lambda message, *args: warnings.append((message, args)),
             exception=lambda *_args, **_kwargs: None,
         ),
     )
-    monkeypatch.setattr(scheduling_engine, "log_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scheduling_runner, "log_audit", lambda *_args, **_kwargs: None)
 
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
@@ -496,13 +506,13 @@ def test_unchanged_system_schedule_does_not_acquire_write_lock(monkeypatch):
     registry = _system_registry(system_schedule)
     scheduling_engine.synchronize_system_schedules(registry, now=100.0)
     locked_schedule_ids = []
-    original_lock_schedule = scheduling_engine.lock_schedule
+    original_lock_schedule = scheduling_reconciliation.lock_schedule
 
     def record_lock(session, schedule_id):
         locked_schedule_ids.append(schedule_id)
         return original_lock_schedule(session, schedule_id)
 
-    monkeypatch.setattr(scheduling_engine, "lock_schedule", record_lock)
+    monkeypatch.setattr(scheduling_reconciliation, "lock_schedule", record_lock)
 
     assert scheduling_engine.synchronize_system_schedules(registry, now=101.0) == 0
     assert locked_schedule_ids == []
@@ -1154,7 +1164,12 @@ def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(monkeypatch
 
     database_time = [100.0]
     monkeypatch.setattr(
-        scheduling_engine,
+        scheduling_claims,
+        "database_now",
+        lambda _session: database_time[0],
+    )
+    monkeypatch.setattr(
+        scheduling_outcomes,
         "database_now",
         lambda _session: database_time[0],
     )
@@ -1251,16 +1266,16 @@ def test_execution_lease_starts_after_schedule_lock_is_acquired(
         assert scheduling_engine.mark_dispatched(execution_id, generation, 0) is True
 
     database_time = [100.0]
-    original_lock_schedule = scheduling_engine.lock_schedule
+    original_lock_schedule = scheduling_claims.lock_schedule
 
     def lock_after_time_advances(session, schedule_id):
         schedule = original_lock_schedule(session, schedule_id)
         database_time[0] = 150.0
         return schedule
 
-    monkeypatch.setattr(scheduling_engine, "lock_schedule", lock_after_time_advances)
+    monkeypatch.setattr(scheduling_claims, "lock_schedule", lock_after_time_advances)
     monkeypatch.setattr(
-        scheduling_engine,
+        scheduling_claims,
         "database_now",
         lambda _session: database_time[0],
     )
@@ -1303,7 +1318,7 @@ def test_execution_lease_refresh_uses_time_after_execution_lock(monkeypatch, tmp
     database_time = [100.0]
     refresh_update_started = threading.Event()
     monkeypatch.setattr(
-        scheduling_engine,
+        scheduling_claims,
         "database_now",
         lambda _session: database_time[0],
     )
