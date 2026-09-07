@@ -1,7 +1,7 @@
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
 
 import pytest
 from pydantic import BaseModel
@@ -64,7 +64,7 @@ def _file_session_factory(monkeypatch, tmp_path):
 def _assert_concurrent_runtime_initialization(monkeypatch, database) -> None:
     factory = sessionmaker(bind=database)
     monkeypatch.setattr(scheduling_engine, "Session", factory)
-    insert_barrier = Barrier(2)
+    insert_barrier = threading.Barrier(2)
 
     @event.listens_for(database, "before_cursor_execute")
     def synchronize_runtime_inserts(
@@ -1017,6 +1017,71 @@ def test_execution_lease_starts_after_schedule_lock_is_acquired(
         assert execution.lease_expires_at == 210.0
 
 
+def test_execution_lease_refresh_uses_time_after_execution_lock(monkeypatch, tmp_path):
+    database, factory = _file_session_factory(monkeypatch, tmp_path)
+    _schedule(factory)
+    policy = SchedulingPolicy(
+        execution_lease_seconds=60,
+        lease_refresh_seconds=20,
+    )
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_engine.claim_execution(
+        generation, "original-worker", policy, now=100.0
+    )
+    assert claim is not None
+
+    database_time = [100.0]
+    refresh_update_started = threading.Event()
+    monkeypatch.setattr(
+        scheduling_engine,
+        "database_now",
+        lambda _session: database_time[0],
+    )
+    blocker = factory()
+    blocker.begin()
+    blocker.execute(
+        update(ScheduleExecution)
+        .where(ScheduleExecution.id == claim.id)
+        .values(error="blocking refresh")
+    )
+
+    @event.listens_for(database, "before_cursor_execute")
+    def observe_refresh_update(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if (
+            threading.current_thread() is not threading.main_thread()
+            and statement.lstrip().upper().startswith("UPDATE SCHEDULE_EXECUTIONS")
+        ):
+            refresh_update_started.set()
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            refreshed = executor.submit(
+                scheduling_engine.refresh_execution_lease,
+                claim.id,
+                claim.lease_owner,
+                policy,
+            )
+            assert refresh_update_started.wait(5)
+            database_time[0] = 150.0
+            blocker.commit()
+            assert refreshed.result(timeout=5) is True
+        with factory() as session:
+            execution = session.get(ScheduleExecution, claim.id)
+            assert execution.lease_expires_at == 210.0
+    finally:
+        event.remove(database, "before_cursor_execute", observe_refresh_update)
+        blocker.close()
+        database.dispose()
+
+
 @pytest.mark.parametrize("provider", ["local", "redis"])
 def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
     monkeypatch, provider
@@ -1445,7 +1510,7 @@ def test_concurrent_completion_and_deletion_serialize_without_deadlock(
             generation, "worker", policy, now=100.0
         )
         assert claim is not None
-        barrier = Barrier(2)
+        barrier = threading.Barrier(2)
 
         def complete():
             barrier.wait(timeout=10)
@@ -1493,7 +1558,7 @@ def test_concurrent_claim_and_deletion_have_one_complete_outcome(
         with factory() as session:
             execution_id = session.scalar(select(ScheduleExecution.id))
         assert execution_id is not None
-        barrier = Barrier(2)
+        barrier = threading.Barrier(2)
 
         def claim():
             barrier.wait(timeout=10)

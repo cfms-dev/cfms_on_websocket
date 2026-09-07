@@ -839,16 +839,36 @@ def refresh_execution_lease(
     now: float | None = None,
 ) -> bool:
     with Session() as session, session.begin():
+        criteria = (
+            ScheduleExecution.id == execution_id,
+            ScheduleExecution.state == "running",
+            ScheduleExecution.lease_owner == lease_owner,
+        )
+        if session.get_bind().dialect.name == "sqlite":
+            locked = cast(
+                CursorResult,
+                session.execute(
+                    update(ScheduleExecution)
+                    .where(*criteria)
+                    .values(lease_expires_at=ScheduleExecution.lease_expires_at)
+                ),
+            )
+            if locked.rowcount != 1:
+                return False
+        elif (
+            session.scalar(
+                select(ScheduleExecution.id).where(*criteria).with_for_update()
+            )
+            is None
+        ):
+            return False
+
         current_time = database_now(session) if now is None else now
         refreshed = cast(
             CursorResult,
             session.execute(
                 update(ScheduleExecution)
-                .where(
-                    ScheduleExecution.id == execution_id,
-                    ScheduleExecution.state == "running",
-                    ScheduleExecution.lease_owner == lease_owner,
-                )
+                .where(*criteria)
                 .values(lease_expires_at=current_time + policy.execution_lease_seconds)
             ),
         )
