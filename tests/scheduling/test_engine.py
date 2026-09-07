@@ -722,7 +722,7 @@ def test_cluster_dispatch_claims_the_requested_execution(monkeypatch):
         "redis", "test-cluster", now=100.0
     )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-    pending = scheduling_engine.pending_dispatches(generation, 10, now=100.0)
+    pending = scheduling_engine.pending_dispatches(generation, 10, 60, now=100.0)
 
     assert len(pending) == 1
     assert scheduling_engine.mark_dispatched(pending[0], generation) is True
@@ -738,6 +738,39 @@ def test_cluster_dispatch_claims_the_requested_execution(monkeypatch):
     )
 
 
+def test_cluster_dispatch_recovers_sent_execution_that_was_never_claimed(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy(
+        execution_lease_seconds=60,
+        lease_refresh_seconds=20,
+    )
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis", "test-cluster", now=100.0
+    )
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    (execution_id,) = scheduling_engine.pending_dispatches(
+        generation, 10, policy.execution_lease_seconds, now=100.0
+    )
+    assert scheduling_engine.mark_dispatched(execution_id, generation, now=100.0)
+
+    assert (
+        scheduling_engine.pending_dispatches(
+            generation, 10, policy.execution_lease_seconds, now=159.0
+        )
+        == ()
+    )
+    assert scheduling_engine.pending_dispatches(
+        generation, 10, policy.execution_lease_seconds, now=160.0
+    ) == (execution_id,)
+
+    with factory() as session:
+        execution = session.get(ScheduleExecution, execution_id)
+        assert execution.state == "pending"
+        assert execution.dispatch_state == "pending"
+        assert execution.dispatched_at is None
+
+
 def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatch):
     factory = _session_factory(monkeypatch)
     _schedule(factory)
@@ -750,7 +783,9 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
         "redis", "test-cluster", now=100.0
     )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-    (execution_id,) = scheduling_engine.pending_dispatches(generation, 10, now=100.0)
+    (execution_id,) = scheduling_engine.pending_dispatches(
+        generation, 10, policy.execution_lease_seconds, now=100.0
+    )
     assert scheduling_engine.mark_dispatched(execution_id, generation) is True
     first_claim = scheduling_engine.claim_execution_by_id(
         execution_id, generation, "failed-worker", policy, now=100.0
@@ -759,10 +794,15 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
 
     # A 100-retry delivery budget at the one-second poll interval is exhausted
     # well before this lease, so recovery must not depend on that delivery surviving.
-    assert scheduling_engine.pending_dispatches(generation, 10, now=201.0) == ()
-    assert scheduling_engine.pending_dispatches(generation, 10, now=401.0) == (
-        execution_id,
+    assert (
+        scheduling_engine.pending_dispatches(
+            generation, 10, policy.execution_lease_seconds, now=201.0
+        )
+        == ()
     )
+    assert scheduling_engine.pending_dispatches(
+        generation, 10, policy.execution_lease_seconds, now=401.0
+    ) == (execution_id,)
 
     with factory() as session:
         execution = session.get(ScheduleExecution, execution_id)
@@ -791,7 +831,9 @@ def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(monkeypatch
         "redis", "test-cluster", now=100.0
     )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-    (execution_id,) = scheduling_engine.pending_dispatches(generation, 10, now=100.0)
+    (execution_id,) = scheduling_engine.pending_dispatches(
+        generation, 10, policy.execution_lease_seconds, now=100.0
+    )
     assert scheduling_engine.mark_dispatched(execution_id, generation) is True
 
     database_time = [100.0]
@@ -966,7 +1008,10 @@ def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
     for attempt, current_time in enumerate((100.0, 160.0, 220.0), start=1):
         if provider == "redis":
             assert scheduling_engine.pending_dispatches(
-                generation, 10, now=current_time
+                generation,
+                10,
+                policy.execution_lease_seconds,
+                now=current_time,
             ) == (execution_id,)
             assert scheduling_engine.mark_dispatched(execution_id, generation) is True
             claim = scheduling_engine.claim_execution_by_id(
@@ -1248,7 +1293,12 @@ def test_pending_dispatches_cancels_expired_deleted_execution_across_generations
         assert execution.provider_generation == generation
         assert execution.state == "running"
 
-    assert scheduling_engine.pending_dispatches(redis_generation, 10, now=160.0) == ()
+    assert (
+        scheduling_engine.pending_dispatches(
+            redis_generation, 10, policy.execution_lease_seconds, now=160.0
+        )
+        == ()
+    )
     with factory() as session:
         schedule = session.get(Schedule, "schedule-1")
         execution = session.get(ScheduleExecution, claim.id)

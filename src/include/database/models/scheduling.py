@@ -107,6 +107,7 @@ class ScheduleExecution(Base):
     )
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     retry_at: Mapped[float | None] = mapped_column(Double, nullable=True)
+    dispatched_at: Mapped[float | None] = mapped_column(Double, nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
     lease_expires_at: Mapped[float | None] = mapped_column(Double, nullable=True)
     started_at: Mapped[float | None] = mapped_column(Double, nullable=True)

@@ -318,7 +318,9 @@ class RedisSchedulingProvider(SchedulingProvider):
     def _dispatch_pending(self, generation: int) -> None:
         assert self._actor is not None
         for execution_id in pending_dispatches(
-            generation, self._policy.claim_batch_size
+            generation,
+            self._policy.claim_batch_size,
+            self._policy.execution_lease_seconds,
         ):
             # Send before marking so a broker failure leaves the execution visible.
             # A crash between these calls can duplicate delivery, which the database

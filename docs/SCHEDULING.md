@@ -74,6 +74,11 @@ reconciliation remains authoritative if a notification is lost. Dramatiq
 transports execution IDs; workers revalidate the database generation, task
 contract, payload, and execution lease before running.
 
+Deliveries that remain unclaimed for one execution-lease interval are made
+deliverable again. Duplicate broker messages are harmless because claiming the
+database execution lease, rather than receiving a message, grants permission to
+run the task.
+
 The application database clock is authoritative for persisted schedule times,
 retry delays, and execution leases. Application-node wall clocks therefore do not
 decide whether work is due or whether another node's lease has expired.

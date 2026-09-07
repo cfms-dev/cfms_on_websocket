@@ -143,6 +143,7 @@ def ensure_runtime_state(
                 provider_generation=state.generation,
                 state="pending",
                 dispatch_state="pending",
+                dispatched_at=None,
                 retry_at=None,
                 lease_owner=None,
                 lease_expires_at=None,
@@ -521,6 +522,7 @@ def claim_execution(
                 .values(
                     state="running",
                     dispatch_state="sent",
+                    dispatched_at=current_time,
                     attempt=ScheduleExecution.attempt + 1,
                     retry_at=None,
                     lease_owner=lease_owner,
@@ -597,6 +599,7 @@ def claim_execution_by_id(
                 .values(
                     state="running",
                     dispatch_state="sent",
+                    dispatched_at=current_time,
                     attempt=ScheduleExecution.attempt + 1,
                     retry_at=None,
                     lease_owner=lease_owner,
@@ -707,6 +710,7 @@ def cancel_expired_deleted_executions(
 def pending_dispatches(
     generation: int,
     batch_size: int,
+    dispatch_timeout_seconds: int,
     *,
     now: float | None = None,
 ) -> tuple[str, ...]:
@@ -722,6 +726,20 @@ def pending_dispatches(
             update(ScheduleExecution)
             .where(
                 ScheduleExecution.provider_generation == generation,
+                ScheduleExecution.state.in_(("pending", "retry_wait")),
+                ScheduleExecution.dispatch_state == "sent",
+                or_(
+                    ScheduleExecution.dispatched_at.is_(None),
+                    ScheduleExecution.dispatched_at
+                    <= current_time - dispatch_timeout_seconds,
+                ),
+            )
+            .values(dispatch_state="pending", dispatched_at=None)
+        )
+        session.execute(
+            update(ScheduleExecution)
+            .where(
+                ScheduleExecution.provider_generation == generation,
                 ScheduleExecution.state == "running",
                 ScheduleExecution.lease_expires_at <= current_time,
                 ScheduleExecution.schedule_id.in_(
@@ -731,6 +749,7 @@ def pending_dispatches(
             .values(
                 state="pending",
                 dispatch_state="pending",
+                dispatched_at=None,
                 retry_at=None,
                 lease_owner=None,
                 lease_expires_at=None,
@@ -754,8 +773,14 @@ def pending_dispatches(
         )
 
 
-def mark_dispatched(execution_id: str, generation: int) -> bool:
+def mark_dispatched(
+    execution_id: str,
+    generation: int,
+    *,
+    now: float | None = None,
+) -> bool:
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         marked = cast(
             CursorResult,
             session.execute(
@@ -766,7 +791,7 @@ def mark_dispatched(execution_id: str, generation: int) -> bool:
                     ScheduleExecution.dispatch_state == "pending",
                     ScheduleExecution.state.in_(("pending", "retry_wait")),
                 )
-                .values(dispatch_state="sent")
+                .values(dispatch_state="sent", dispatched_at=current_time)
             ),
         )
         return marked.rowcount == 1
@@ -930,6 +955,7 @@ def fail_execution(
             values.update(
                 state="retry_wait",
                 dispatch_state="pending",
+                dispatched_at=None,
                 retry_at=current_time + delay,
             )
         else:
