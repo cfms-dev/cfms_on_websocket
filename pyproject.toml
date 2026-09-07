@@ -39,6 +39,9 @@ cluster = [
 mysql = [
     "mysql-connector-python>=9.6.0",
 ]
+postgresql = [
+    "psycopg2-binary>=2.9.12",
+]
 ext_oidc_sso = [
     "authlib>=1.7.2",
     "requests>=2.34.2",

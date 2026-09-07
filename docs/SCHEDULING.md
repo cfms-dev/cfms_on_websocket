@@ -38,10 +38,12 @@ scheduler or worker service is required, and Redis should not be deployed merely
 for scheduling. The server runtime lock still enforces one WebSocket process for
 the configured runtime root.
 
-For a distributed deployment:
+For a distributed deployment, install the Redis scheduling runtime and the driver
+for the selected shared database:
 
 ```powershell
-uv sync --extra ext-scheduling-cluster
+uv sync --extra ext-scheduling-cluster --extra mysql
+uv sync --extra ext-scheduling-cluster --extra postgresql
 ```
 
 Set `provider.scheduling = "redis"`, configure `[redis]`, and use a shared MySQL

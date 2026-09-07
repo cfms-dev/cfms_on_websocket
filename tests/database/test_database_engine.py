@@ -22,6 +22,24 @@ def test_mysql_database_url_keeps_password_out_of_rendered_value() -> None:
     assert "secret" not in str(url)
 
 
+def test_postgresql_database_url_uses_packaged_driver() -> None:
+    url = database_url(
+        {
+            "type": "postgresql",
+            "host": "database.example",
+            "port": 5432,
+            "username": "cfms",
+            "password": "secret@/value",
+            "name": "app_db",
+        }
+    )
+
+    assert url.drivername == "postgresql+psycopg2"
+    assert url.password == "secret@/value"
+    assert url.query == {}
+    assert "secret" not in str(url)
+
+
 def test_sqlite_engine_applies_runtime_pragmas(tmp_path) -> None:
     engine = create_database_engine(
         {"type": "sqlite", "file": str(tmp_path / "runtime.db")}

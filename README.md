@@ -46,12 +46,13 @@ source .venv/bin/activate
 
 ## Optional Dependencies
 
-CFMS has some optional features that require additional dependencies to be 
-installed to enable them. For example, the following command will install 
-the necessary dependencies for cluster functionality and MySQL support:
+CFMS has optional features and database drivers that must be installed explicitly.
+For example, these commands install cluster functionality with either supported
+shared database:
 
 ```bash
-uv sync --extra cluster --extra mysql
+uv sync --extra cluster --extra ext-scheduling-cluster --extra mysql
+uv sync --extra cluster --extra ext-scheduling-cluster --extra postgresql
 ```
 
 Durable scheduling is always part of the server core, and the embedded local

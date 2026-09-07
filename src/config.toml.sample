@@ -246,18 +246,18 @@ high_cost = 10
 state_retention_seconds = 86400
 
 [database]
-# Database type to use ("sqlite" or "mysql")
+# Database type to use ("sqlite", "mysql", or "postgresql")
 type = "sqlite"
 
 # Specify the database file name if using SQLite
 file = "app.db"
 
-# Specify connection properties if using MySQL
+# Specify connection properties if using MySQL or PostgreSQL
 host = "localhost"
-port = 3306
+port = 3306 # Use 5432 for PostgreSQL
 username = ""
 password = ""
-# Specify the database name if using MySQL
+# Specify the database name if using MySQL or PostgreSQL
 name = "app_db"
 # Specify the character set if using MySQL
 charset = "utf8mb4"
