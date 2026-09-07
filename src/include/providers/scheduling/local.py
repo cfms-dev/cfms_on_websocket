@@ -27,7 +27,8 @@ class LocalSchedulingProvider(SchedulingProvider):
         self._wake = threading.Event()
         self._threads: list[threading.Thread] = []
         self._state_lock = threading.Lock()
-        self._last_error: str | None = None
+        self._scheduler_error: str | None = None
+        self._worker_errors: dict[str, str] = {}
 
     def start(self, registry: ScheduledTaskRegistry) -> None:
         with self._state_lock:
@@ -63,6 +64,8 @@ class LocalSchedulingProvider(SchedulingProvider):
             self._stop = stop
             self._wake = wake
             self._threads = [scheduler, *workers]
+            self._scheduler_error = None
+            self._worker_errors.clear()
             for thread in self._threads:
                 thread.start()
 
@@ -103,16 +106,14 @@ class LocalSchedulingProvider(SchedulingProvider):
             elif not running:
                 detail = "not_running"
             else:
-                detail = self._last_error
+                detail = self._scheduler_error or next(
+                    iter(self._worker_errors.values()), None
+                )
         return SchedulingProviderStatus(
             available=running and not stopping and detail is None,
             mode="local",
             detail=detail,
         )
-
-    def _record_error(self, error: Exception) -> None:
-        with self._state_lock:
-            self._last_error = type(error).__name__
 
     def _scheduler_loop(
         self,
@@ -127,9 +128,10 @@ class LocalSchedulingProvider(SchedulingProvider):
                 cancel_expired_deleted_executions(self._policy.claim_batch_size)
                 enqueue_due_schedules(generation, self._policy)
                 with self._state_lock:
-                    self._last_error = None
+                    self._scheduler_error = None
             except Exception as exc:  # noqa: BLE001 - provider remains degraded and retries.
-                self._record_error(exc)
+                with self._state_lock:
+                    self._scheduler_error = type(exc).__name__
                 logger.exception("Local scheduling loop failed")
             wake.wait(self._policy.poll_interval_seconds)
             wake.clear()
@@ -147,9 +149,13 @@ class LocalSchedulingProvider(SchedulingProvider):
                 claim = claim_execution(generation, lease_owner, self._policy)
                 if claim is not None:
                     run_claimed_execution(claim, generation, registry, self._policy)
+                with self._state_lock:
+                    self._worker_errors.pop(lease_owner, None)
+                if claim is not None:
                     continue
             except Exception as exc:  # noqa: BLE001 - provider remains degraded and retries.
-                self._record_error(exc)
+                with self._state_lock:
+                    self._worker_errors[lease_owner] = type(exc).__name__
                 logger.exception("Local scheduling worker failed")
             wake.wait(self._policy.poll_interval_seconds)
             wake.clear()

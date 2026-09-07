@@ -59,6 +59,41 @@ def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
     provider.shutdown()
 
 
+def test_scheduler_success_does_not_hide_worker_failure(monkeypatch):
+    provider = LocalSchedulingProvider(SchedulingPolicy())
+    registry = ScheduledTaskRegistry()
+    stop = threading.Event()
+    wake = SimpleNamespace(wait=lambda _timeout: None, clear=lambda: None)
+
+    def fail_claim(_generation, _owner, _policy):
+        stop.set()
+        raise RuntimeError("worker failed")
+
+    monkeypatch.setattr(local, "claim_execution", fail_claim)
+    provider._worker_loop(registry, 1, stop, wake)
+
+    stop.clear()
+
+    def finish_scheduler_iteration(_registry):
+        stop.set()
+
+    monkeypatch.setattr(
+        local, "synchronize_system_schedules", finish_scheduler_iteration
+    )
+    monkeypatch.setattr(
+        local, "cancel_expired_deleted_executions", lambda _batch_size: 0
+    )
+    monkeypatch.setattr(local, "enqueue_due_schedules", lambda _generation, _policy: 0)
+    provider._scheduler_loop(registry, 1, stop, wake)
+
+    provider._threads = [threading.current_thread()]
+    provider._stop = threading.Event()
+    status = provider.status()
+
+    assert status.available is False
+    assert status.detail == "RuntimeError"
+
+
 def test_provider_bootstrap_registers_scheduling_when_api_extension_is_disabled(
     monkeypatch,
 ):
