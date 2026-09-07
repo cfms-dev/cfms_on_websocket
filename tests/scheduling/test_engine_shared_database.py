@@ -17,6 +17,7 @@ from include.database.models.scheduling import (
 )
 from include.scheduling import commands as scheduling_commands
 from include.scheduling import engine as scheduling_engine
+from include.scheduling.clock import database_now
 from include.scheduling.commands import delete_schedule
 
 _DATABASE_URL_ENVIRONMENTS = (
@@ -69,6 +70,16 @@ def shared_session_factory(monkeypatch, shared_database):
             connection.execute(delete(ScheduleExecution))
             connection.execute(delete(Schedule))
             connection.execute(delete(SchedulingRuntimeState))
+
+
+def test_shared_database_exposes_scheduling_clock(shared_database):
+    factory = sessionmaker(bind=shared_database)
+    with factory() as session:
+        first = database_now(session)
+        second = database_now(session)
+
+    assert first > 0
+    assert second >= first
 
 
 def _claimed_execution(factory):

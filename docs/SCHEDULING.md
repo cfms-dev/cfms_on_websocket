@@ -74,6 +74,10 @@ reconciliation remains authoritative if a notification is lost. Dramatiq
 transports execution IDs; workers revalidate the database generation, task
 contract, payload, and execution lease before running.
 
+The application database clock is authoritative for persisted schedule times,
+retry delays, and execution leases. Application-node wall clocks therefore do not
+decide whether work is due or whether another node's lease has expired.
+
 Redis outages leave the WebSocket server running in a degraded state. Scheduling
 management actions return 503 until Redis recovers. The Provider retries its
 infrastructure connections; the server never silently falls back to the local

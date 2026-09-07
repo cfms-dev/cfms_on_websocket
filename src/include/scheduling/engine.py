@@ -1,7 +1,6 @@
 import datetime as dt
 import hashlib
 import threading
-import time
 from dataclasses import dataclass
 from typing import cast
 
@@ -20,6 +19,7 @@ from include.database.models.scheduling import (
 )
 from include.database.session import Session
 from include.domains.operations.commands.audit import log_audit
+from include.scheduling.clock import database_now
 from include.scheduling.commands import (
     cancel_unstarted_schedule_execution,
     lock_schedule,
@@ -96,8 +96,8 @@ def ensure_runtime_state(
     if provider == "redis" and redis_namespace is None:
         raise ValueError("Redis scheduling requires a deployment namespace")
     desired_namespace = redis_namespace if provider == "redis" else None
-    current_time = time.time() if now is None else now
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         session.execute(
             _build_runtime_state_upsert(
                 session.get_bind().dialect.name,
@@ -161,7 +161,6 @@ def synchronize_system_schedules(
     Missing registrations retire their schedules, while new or changed definitions
     are created or updated. The return value is the number of schedules changed.
     """
-    current_time = time.time() if now is None else now
     # Validate and materialize every definition before opening the transaction so a
     # bad registration cannot leave the persisted desired state partly reconciled.
     desired: dict[str, tuple] = {}
@@ -185,6 +184,7 @@ def synchronize_system_schedules(
 
     changed = 0
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         orphaned = session.scalars(
             select(Schedule).where(
                 Schedule.system_managed.is_(True),
@@ -296,13 +296,18 @@ def synchronize_system_schedules(
 
 
 def _create_execution(
-    session, schedule: Schedule, scheduled_for: float, generation: int
+    session,
+    schedule: Schedule,
+    scheduled_for: float,
+    generation: int,
+    current_time: float,
 ) -> ScheduleExecution:
     item = ScheduleExecution(
         id=execution_id(schedule.id, scheduled_for),
         schedule_id=schedule.id,
         provider_generation=generation,
         scheduled_for=scheduled_for,
+        created_at=current_time,
     )
     session.add(item)
     schedule.active_execution_id = item.id
@@ -345,10 +350,10 @@ def enqueue_due_schedules(
     Eligible missed occurrences coalesce to the latest one. If a schedule already
     has an active execution, that occurrence is retained as its next pending run.
     """
-    current_time = time.time() if now is None else now
     # The shortlist is intentionally advisory. Each candidate is rechecked in its
     # own transaction so concurrent schedule updates cannot enqueue stale work.
     with Session() as session:
+        current_time = database_now(session) if now is None else now
         due_ids = session.scalars(
             select(Schedule.id)
             .where(
@@ -434,7 +439,13 @@ def enqueue_due_schedules(
             ):
                 session.rollback()
                 continue
-            _create_execution(session, schedule, latest_due_at, generation)
+            _create_execution(
+                session,
+                schedule,
+                latest_due_at,
+                generation,
+                current_time,
+            )
             created += 1
     return created
 
@@ -451,8 +462,8 @@ def claim_execution(
     Return an immutable task snapshot, or ``None`` when no execution is available
     or another worker wins the claim.
     """
-    current_time = time.time() if now is None else now
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         candidate = session.execute(
             select(ScheduleExecution.id, ScheduleExecution.schedule_id)
             .where(
@@ -547,8 +558,8 @@ def claim_execution_by_id(
     Stale generations, retry delays, and live leases are rejected with ``None`` so
     the provider can decide whether the message should be retried or discarded.
     """
-    current_time = time.time() if now is None else now
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         schedule_id = session.scalar(
             select(ScheduleExecution.schedule_id).where(
                 ScheduleExecution.id == execution_id
@@ -614,8 +625,8 @@ def execution_delivery_state(
     execution_id: str, generation: int, *, now: float | None = None
 ) -> str:
     """Classify delivery as ``stale``, ``terminal``, ``busy``, or ``ready``."""
-    current_time = time.time() if now is None else now
     with Session() as session:
+        current_time = database_now(session) if now is None else now
         execution = session.get(ScheduleExecution, execution_id)
         if execution is None or execution.provider_generation != generation:
             return "stale"
@@ -637,8 +648,8 @@ def cancel_expired_deleted_executions(
     now: float | None = None,
 ) -> int:
     """Cancel one bounded batch of crashed work whose schedule was deleted."""
-    current_time = time.time() if now is None else now
     with Session() as session:
+        current_time = database_now(session) if now is None else now
         candidates = tuple(
             session.execute(
                 select(ScheduleExecution.id, ScheduleExecution.schedule_id)
@@ -698,7 +709,11 @@ def pending_dispatches(
     now: float | None = None,
 ) -> tuple[str, ...]:
     """Recover expired cluster leases and return executions awaiting delivery."""
-    current_time = time.time() if now is None else now
+    if now is None:
+        with Session() as session:
+            current_time = database_now(session)
+    else:
+        current_time = now
     cancel_expired_deleted_executions(batch_size, now=current_time)
     with Session() as session, session.begin():
         session.execute(
@@ -761,9 +776,9 @@ def purge_execution_history(
     now: float | None = None,
 ) -> int:
     """Delete one bounded batch of terminal executions past the retention cutoff."""
-    current_time = time.time() if now is None else now
-    cutoff = current_time - policy.history_retention_days * 86_400
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
+        cutoff = current_time - policy.history_retention_days * 86_400
         execution_ids = tuple(
             session.scalars(
                 select(ScheduleExecution.id)
@@ -793,8 +808,8 @@ def refresh_execution_lease(
     *,
     now: float | None = None,
 ) -> bool:
-    current_time = time.time() if now is None else now
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         refreshed = cast(
             CursorResult,
             session.execute(
@@ -815,6 +830,7 @@ def _release_schedule_execution(
     schedule: Schedule,
     generation: int,
     terminal_status: str,
+    current_time: float,
 ) -> None:
     """Release a schedule's slot and promote its latest coalesced occurrence."""
     schedule.active_execution_id = None
@@ -823,7 +839,7 @@ def _release_schedule_execution(
     if schedule.pending_scheduled_for is not None:
         pending = schedule.pending_scheduled_for
         schedule.pending_scheduled_for = None
-        _create_execution(session, schedule, pending, generation)
+        _create_execution(session, schedule, pending, generation, current_time)
     elif schedule.next_run_at is None:
         schedule.status = terminal_status
 
@@ -840,8 +856,8 @@ def complete_execution(
     The schedule slot is released only for the execution currently attached to the
     schedule. ``False`` means ownership was lost and no state was changed.
     """
-    current_time = time.time() if now is None else now
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         schedule = lock_schedule(session, claim.schedule_id)
         if schedule is None:
             return False
@@ -873,6 +889,7 @@ def complete_execution(
                 schedule,
                 generation,
                 "completed",
+                current_time,
             )
         return True
 
@@ -892,8 +909,8 @@ def fail_execution(
     Retry delays use capped exponential backoff. A terminal failure releases the
     schedule slot so a coalesced recurring occurrence can proceed.
     """
-    current_time = time.time() if now is None else now
     with Session() as session, session.begin():
+        current_time = database_now(session) if now is None else now
         schedule = lock_schedule(session, claim.schedule_id)
         if schedule is None:
             return False
@@ -940,6 +957,7 @@ def fail_execution(
                 schedule,
                 generation,
                 "failed",
+                current_time,
             )
         return True
 

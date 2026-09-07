@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from include.database.models.scheduling import Schedule
 from include.domains.access.permissions import Permissions
 from include.scheduling import ScheduledTaskRegistration, ScheduledTaskRegistry
+from include.scheduling import commands as scheduling_commands
 from include.scheduling.commands import (
     ScheduleConflictError,
     create_schedule,
@@ -78,6 +79,50 @@ def test_schedule_create_update_and_delete_use_revisions():
         deleted = session.get(Schedule, schedule_id)
         assert deleted.status == "deleted"
         assert deleted.revision == 3
+
+
+def test_schedule_mutations_use_database_clock(monkeypatch):
+    factory = _factory()
+    registry = _registry()
+    database_times = iter((100.0, 200.0, 300.0))
+    monkeypatch.setattr(
+        scheduling_commands,
+        "database_now",
+        lambda _session: next(database_times),
+    )
+
+    with factory() as session, session.begin():
+        schedule = create_schedule(
+            session,
+            registry,
+            username="admin",
+            task_name="test.record",
+            payload={"value": 1},
+            trigger_type="date",
+            trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
+            timezone="UTC",
+            enabled=True,
+        )
+        schedule_id = schedule.id
+        assert schedule.created_at == 100.0
+        assert schedule.updated_at == 100.0
+
+    with factory() as session, session.begin():
+        schedule = update_schedule(
+            session,
+            registry,
+            schedule_id,
+            1,
+            {"payload": {"value": 2}},
+            username="admin",
+        )
+        assert schedule.updated_at == 200.0
+
+    with factory() as session, session.begin():
+        delete_schedule(session, schedule_id, 2, username="admin")
+        schedule = session.get(Schedule, schedule_id)
+        assert schedule.updated_at == 300.0
+        assert schedule.deleted_at == 300.0
 
 
 def test_schedule_update_rejects_stale_revision():

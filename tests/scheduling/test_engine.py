@@ -1,4 +1,5 @@
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -235,13 +236,14 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
     claim = scheduling_engine.claim_execution(generation, "worker", policy, now=100.0)
     assert claim is not None
 
-    monkeypatch.setattr(scheduling_engine.time, "time", lambda: 100.0)
+    monkeypatch.setattr(scheduling_engine, "database_now", lambda _session: 100.0)
     scheduling_engine.run_claimed_execution(claim, generation, registry, policy)
 
     with factory() as session:
         execution = session.scalar(select(ScheduleExecution))
         schedule = session.get(Schedule, "schedule-1")
         assert execution.state == "succeeded"
+        assert execution.created_at == 100.0
         assert execution.result == {"recorded": 7}
         assert schedule.active_execution_id is None
         assert calls == [(execution.id, 7)]
@@ -776,6 +778,96 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
     )
     assert second_claim is not None
     assert second_claim.attempt == 2
+
+
+def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy(
+        execution_lease_seconds=60,
+        lease_refresh_seconds=20,
+    )
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis", "test-cluster", now=100.0
+    )
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    (execution_id,) = scheduling_engine.pending_dispatches(generation, 10, now=100.0)
+    assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+
+    database_time = [100.0]
+    monkeypatch.setattr(
+        scheduling_engine,
+        "database_now",
+        lambda _session: database_time[0],
+    )
+    with monkeypatch.context() as slow_node:
+        slow_node.setattr(time, "time", lambda: -3_600.0)
+        first_claim = scheduling_engine.claim_execution_by_id(
+            execution_id,
+            generation,
+            "slow-node",
+            policy,
+        )
+    assert first_claim is not None
+
+    database_time[0] = 120.0
+    with monkeypatch.context() as fast_node:
+        fast_node.setattr(time, "time", lambda: 3_600.0)
+        assert (
+            scheduling_engine.claim_execution_by_id(
+                execution_id,
+                generation,
+                "fast-node",
+                policy,
+            )
+            is None
+        )
+    assert scheduling_engine.refresh_execution_lease(
+        execution_id,
+        first_claim.lease_owner,
+        policy,
+    )
+
+    database_time[0] = 161.0
+    with monkeypatch.context() as fast_node:
+        fast_node.setattr(time, "time", lambda: 3_600.0)
+        assert (
+            scheduling_engine.claim_execution_by_id(
+                execution_id,
+                generation,
+                "fast-node",
+                policy,
+            )
+            is None
+        )
+
+    database_time[0] = 181.0
+    replacement = scheduling_engine.claim_execution_by_id(
+        execution_id,
+        generation,
+        "replacement-node",
+        policy,
+    )
+    assert replacement is not None
+    assert replacement.attempt == 2
+
+    database_time[0] = 182.0
+    with monkeypatch.context() as fast_node:
+        fast_node.setattr(time, "time", lambda: 3_600.0)
+        assert scheduling_engine.fail_execution(
+            replacement,
+            generation,
+            max_attempts=3,
+            initial_backoff_seconds=5,
+            maximum_backoff_seconds=30,
+            error="task failed",
+        )
+    with factory() as session:
+        execution = session.get(ScheduleExecution, execution_id)
+        assert execution.state == "retry_wait"
+        assert execution.retry_at == 192.0
+        assert execution.lease_owner is None
+        assert execution.lease_expires_at is None
 
 
 @pytest.mark.parametrize("provider", ["local", "redis"])

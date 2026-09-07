@@ -1,10 +1,10 @@
-import time
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.orm import Session as OrmSession
 
 from include.database.models.scheduling import Schedule, ScheduleExecution
+from include.scheduling.clock import database_now
 from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import build_trigger, first_run_at
 
@@ -52,7 +52,7 @@ def create_schedule(
     now: float | None = None,
 ) -> Schedule:
     """Validate and add a user-managed schedule to the caller's transaction."""
-    current_time = time.time() if now is None else now
+    current_time = database_now(session) if now is None else now
     registration = registry.get(task_name)
     if registration is None:
         raise LookupError(f"Scheduled task type {task_name!r} is not registered")
@@ -96,7 +96,7 @@ def update_schedule(
     The caller owns the transaction. A stale revision or an execution becoming
     active during the update raises :class:`ScheduleConflictError`.
     """
-    current_time = time.time() if now is None else now
+    current_time = database_now(session) if now is None else now
     schedule = lock_schedule(session, schedule_id)
     if schedule is None or schedule.status == "deleted":
         raise ScheduleNotFoundError(schedule_id)
@@ -215,7 +215,7 @@ def delete_schedule(
     Future and coalesced occurrences are cancelled without interrupting an
     execution that is already active. The caller owns the transaction.
     """
-    current_time = time.time() if now is None else now
+    current_time = database_now(session) if now is None else now
     schedule = lock_schedule(session, schedule_id)
     if schedule is None or schedule.status == "deleted":
         raise ScheduleNotFoundError(schedule_id)
