@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 
 from include.database.models.scheduling import Schedule
@@ -39,6 +40,13 @@ def _context(monkeypatch, permissions):
                 required_permission=Permissions.MANAGE_SYSTEM,
             ),
             ScheduledTaskRegistration(
+                name="test.audit",
+                contract_version=1,
+                payload_model=_Payload,
+                execute=lambda _context, _payload: None,
+                required_permission=Permissions.PURGE,
+            ),
+            ScheduledTaskRegistration(
                 name="test.system_cleanup",
                 contract_version=1,
                 payload_model=_Payload,
@@ -55,7 +63,11 @@ def _context(monkeypatch, permissions):
     )
     monkeypatch.setattr(handlers, "Session", factory)
     monkeypatch.setattr(handlers, "collect_scheduled_tasks", lambda: registry)
-    monkeypatch.setattr(handlers, "_permissions", lambda _username: permissions)
+    monkeypatch.setattr(
+        handlers,
+        "_permissions",
+        lambda _username, _session=None: permissions,
+    )
     monkeypatch.setattr(
         handlers, "ProviderManager", lambda: SimpleNamespace(scheduling=provider)
     )
@@ -134,6 +146,140 @@ def test_create_schedule_rejects_unrepresentable_interval(monkeypatch):
     assert notifications == []
     with handlers.Session() as session:
         assert session.scalar(select(Schedule.id)) is None
+
+
+def test_update_schedule_uses_locked_revision_for_task_authorization(
+    monkeypatch, tmp_path
+):
+    notifications = _context(
+        monkeypatch,
+        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+    )
+    database = create_engine(f"sqlite:///{tmp_path / 'scheduling.db'}")
+    with database.connect() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    Schedule.__table__.create(database)
+    factory = sessionmaker(bind=database, expire_on_commit=False)
+    with factory() as session, session.begin():
+        session.add(
+            Schedule(
+                id="schedule-1",
+                task_name="test.record",
+                task_contract_version=1,
+                payload={"value": 1},
+                trigger_type="date",
+                trigger_data={"run_at": "2026-12-01T00:00:00+00:00"},
+                timezone="UTC",
+                next_run_at=1_796_083_200.0,
+                created_by="admin",
+                updated_by="admin",
+            )
+        )
+
+    class RacingSession(OrmSession):
+        raced = False
+
+        def get(self, entity, ident, **kwargs):
+            current = super().get(entity, ident, **kwargs)
+            if entity is Schedule and not type(self).raced:
+                type(self).raced = True
+                with factory() as concurrent, concurrent.begin():
+                    concurrent.execute(
+                        update(Schedule)
+                        .where(Schedule.id == ident)
+                        .values(task_name="test.audit", revision=2)
+                    )
+            return current
+
+    racing_factory = sessionmaker(
+        bind=database,
+        class_=RacingSession,
+        expire_on_commit=False,
+    )
+    monkeypatch.setattr(handlers, "Session", racing_factory)
+    connection = _Connection(
+        {"id": "schedule-1", "revision": 2, "payload": {"value": 2}}
+    )
+
+    result = handlers.RequestUpdateScheduleHandler().handle(connection)
+
+    assert result.code == 409
+    assert connection.response == (409, {}, "Schedule revision is stale")
+    assert notifications == []
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        assert schedule.task_name == "test.record"
+        assert schedule.payload == {"value": 1}
+        assert schedule.revision == 1
+    database.dispose()
+
+
+def test_update_schedule_checks_permission_for_locked_current_task(monkeypatch):
+    notifications = _context(
+        monkeypatch,
+        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+    )
+    with handlers.Session() as session, session.begin():
+        session.add(
+            Schedule(
+                id="schedule-1",
+                task_name="test.audit",
+                task_contract_version=1,
+                payload={"value": 1},
+                trigger_type="date",
+                trigger_data={"run_at": "2026-12-01T00:00:00+00:00"},
+                timezone="UTC",
+                next_run_at=1_796_083_200.0,
+                created_by="admin",
+                updated_by="admin",
+            )
+        )
+    connection = _Connection(
+        {"id": "schedule-1", "revision": 1, "payload": {"value": 2}}
+    )
+
+    result = handlers.RequestUpdateScheduleHandler().handle(connection)
+
+    assert result.code == 403
+    assert connection.response == (403, {}, "Permission denied")
+    assert notifications == []
+    with handlers.Session() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        assert schedule.payload == {"value": 1}
+        assert schedule.revision == 1
+
+
+def test_update_schedule_persists_and_notifies_provider(monkeypatch):
+    notifications = _context(
+        monkeypatch,
+        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+    )
+    with handlers.Session() as session, session.begin():
+        session.add(
+            Schedule(
+                id="schedule-1",
+                task_name="test.record",
+                task_contract_version=1,
+                payload={"value": 1},
+                trigger_type="date",
+                trigger_data={"run_at": "2026-12-01T00:00:00+00:00"},
+                timezone="UTC",
+                next_run_at=1_796_083_200.0,
+                created_by="admin",
+                updated_by="admin",
+            )
+        )
+    connection = _Connection(
+        {"id": "schedule-1", "revision": 1, "payload": {"value": 2}}
+    )
+
+    result = handlers.RequestUpdateScheduleHandler().handle(connection)
+
+    assert result.code == 0
+    assert connection.response[0] == 200
+    assert connection.response[1]["payload"] == {"value": 2}
+    assert connection.response[1]["revision"] == 2
+    assert notifications == [True]
 
 
 def test_scheduling_api_returns_503_when_provider_is_degraded(monkeypatch):

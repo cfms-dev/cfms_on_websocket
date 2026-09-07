@@ -2,6 +2,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, StringConstraints
 from sqlalchemy import and_, desc, or_, select
+from sqlalchemy.orm import Session as OrmSession
 
 from include.database.models.identity import User
 from include.database.models.scheduling import Schedule
@@ -22,6 +23,7 @@ from include.scheduling.commands import (
     ScheduleNotFoundError,
     create_schedule,
     delete_schedule,
+    lock_schedule,
     schedule_response,
     update_schedule,
 )
@@ -96,7 +98,9 @@ def _provider_error(handler: ConnectionHandler, username: str) -> Result | None:
     return Result(code=503, username=username)
 
 
-def _permissions(username: str) -> set[Permissions]:
+def _permissions(username: str, session: OrmSession | None = None) -> set[Permissions]:
+    if session is not None:
+        return User.get_existing(session, username).all_permissions
     with Session() as session:
         return User.get_existing(session, username).all_permissions
 
@@ -280,20 +284,7 @@ class RequestUpdateScheduleHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         if error := _provider_error(handler, handler.username):
             return error
-        permissions = _permissions(handler.username)
         registry = collect_scheduled_tasks()
-        with Session() as session:
-            current = session.get(Schedule, handler.data["id"])
-            if current is None or current.status == "deleted" or current.system_managed:
-                handler.conclude_request(404, {}, "Schedule not found")
-                return Result(code=404, username=handler.username)
-            task_name = handler.data.get("task_name", current.task_name)
-        if (
-            Permissions.MANAGE_SCHEDULES not in permissions
-            or not _task_permission_allowed(permissions, task_name, registry)
-        ):
-            return _deny(handler, handler.username)
-
         changes = {
             key: handler.data[key]
             for key in ("task_name", "payload", "enabled")
@@ -306,11 +297,30 @@ class RequestUpdateScheduleHandler(RequestHandler):
                 trigger_data=trigger["data"],
                 timezone=trigger["timezone"],
             )
-        if not changes:
-            handler.conclude_request(400, {}, "No schedule changes were provided")
-            return Result(code=400, username=handler.username)
         try:
             with Session() as session, session.begin():
+                current = lock_schedule(session, handler.data["id"])
+                if (
+                    current is None
+                    or current.status == "deleted"
+                    or current.system_managed
+                ):
+                    handler.conclude_request(404, {}, "Schedule not found")
+                    return Result(code=404, username=handler.username)
+                if current.revision != handler.data["revision"]:
+                    raise ScheduleConflictError("Schedule revision is stale")
+                task_name = changes.get("task_name", current.task_name)
+                permissions = _permissions(handler.username, session)
+                if (
+                    Permissions.MANAGE_SCHEDULES not in permissions
+                    or not _task_permission_allowed(permissions, task_name, registry)
+                ):
+                    return _deny(handler, handler.username)
+                if not changes:
+                    handler.conclude_request(
+                        400, {}, "No schedule changes were provided"
+                    )
+                    return Result(code=400, username=handler.username)
                 schedule = update_schedule(
                     session,
                     registry,
