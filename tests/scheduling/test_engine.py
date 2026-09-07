@@ -358,6 +358,32 @@ def test_system_schedule_is_created_updated_and_retired(monkeypatch):
         assert schedule.status == "deleted"
 
 
+def test_unchanged_system_schedule_does_not_acquire_write_lock(monkeypatch):
+    _session_factory(monkeypatch)
+
+    def system_schedule():
+        return SystemScheduleDefinition(
+            id="test.system_cleanup",
+            payload={},
+            trigger_type="interval",
+            trigger_data={"seconds": 60},
+        )
+
+    registry = _system_registry(system_schedule)
+    scheduling_engine.synchronize_system_schedules(registry, now=100.0)
+    locked_schedule_ids = []
+    original_lock_schedule = scheduling_engine.lock_schedule
+
+    def record_lock(session, schedule_id):
+        locked_schedule_ids.append(schedule_id)
+        return original_lock_schedule(session, schedule_id)
+
+    monkeypatch.setattr(scheduling_engine, "lock_schedule", record_lock)
+
+    assert scheduling_engine.synchronize_system_schedules(registry, now=101.0) == 0
+    assert locked_schedule_ids == []
+
+
 def test_system_schedule_immediate_reconciliation_preserves_interval_cadence(
     monkeypatch,
 ):

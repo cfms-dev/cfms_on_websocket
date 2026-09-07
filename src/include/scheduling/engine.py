@@ -2,7 +2,7 @@ import datetime as dt
 import hashlib
 import threading
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import orjson
 from loguru import logger
@@ -24,7 +24,11 @@ from include.scheduling.commands import (
     cancel_unstarted_schedule_execution,
     lock_schedule,
 )
-from include.scheduling.contracts import ScheduledTaskContext
+from include.scheduling.contracts import (
+    ScheduledTaskContext,
+    ScheduledTaskRegistration,
+    SystemScheduleDefinition,
+)
 from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import advance_trigger, build_trigger, first_run_at
 
@@ -45,6 +49,56 @@ def execution_id(schedule_id: str, scheduled_for: float) -> str:
     """Return the deterministic SHA-256 ID for one scheduled occurrence."""
     occurrence = round(scheduled_for * 1_000_000)
     return hashlib.sha256(f"{schedule_id}:{occurrence}".encode()).hexdigest()
+
+
+def _system_schedule_values(
+    registration: ScheduledTaskRegistration,
+    definition: SystemScheduleDefinition,
+    payload: dict[str, Any],
+    configured_trigger_data: dict[str, Any],
+    schedule: Schedule | None,
+    current_time: float,
+) -> tuple[dict[str, Any], float | None, float | None]:
+    trigger_data = dict(configured_trigger_data)
+    if definition.trigger_type == "interval" and "start_at" not in trigger_data:
+        if (
+            schedule is not None
+            and schedule.trigger_type == "interval"
+            and "start_at" in schedule.trigger_data
+        ):
+            trigger_data["start_at"] = schedule.trigger_data["start_at"]
+        else:
+            trigger_data["start_at"] = dt.datetime.fromtimestamp(
+                current_time, dt.UTC
+            ).isoformat()
+    trigger = build_trigger(
+        definition.trigger_type,
+        trigger_data,
+        definition.timezone,
+    )
+    values = {
+        "task_name": registration.name,
+        "task_contract_version": registration.contract_version,
+        "payload": payload,
+        "trigger_type": definition.trigger_type,
+        "trigger_data": trigger_data,
+        "timezone": definition.timezone,
+        "created_by": None,
+        "updated_by": None,
+    }
+    return (
+        values,
+        first_run_at(trigger, current_time),
+        current_time if definition.run_immediately else None,
+    )
+
+
+def _matches_system_schedule(schedule: Schedule, values: dict[str, Any]) -> bool:
+    return (
+        all(getattr(schedule, name) == value for name, value in values.items())
+        and schedule.enabled
+        and schedule.status == "active"
+    )
 
 
 def _build_runtime_state_upsert(
@@ -218,42 +272,37 @@ def synchronize_system_schedules(
             changed += 1
 
         for schedule_id, item in desired.items():
-            registration, definition, payload, trigger_data = item
+            registration, definition, payload, configured_trigger_data = item
+            candidate = session.get(Schedule, schedule_id)
+            if candidate is not None and not candidate.system_managed:
+                raise RuntimeError(
+                    f"System schedule ID {schedule_id!r} is already user managed"
+                )
+            if candidate is not None:
+                candidate_values, _, _ = _system_schedule_values(
+                    registration,
+                    definition,
+                    payload,
+                    configured_trigger_data,
+                    candidate,
+                    current_time,
+                )
+                if _matches_system_schedule(candidate, candidate_values):
+                    continue
+
             schedule = lock_schedule(session, schedule_id)
             if schedule is not None and not schedule.system_managed:
                 raise RuntimeError(
                     f"System schedule ID {schedule_id!r} is already user managed"
                 )
-            if definition.trigger_type == "interval" and "start_at" not in trigger_data:
-                # Preserve the original interval anchor; deriving it from each poll
-                # would silently shift the cadence whenever definitions reconcile.
-                if (
-                    schedule is not None
-                    and schedule.trigger_type == "interval"
-                    and "start_at" in schedule.trigger_data
-                ):
-                    trigger_data["start_at"] = schedule.trigger_data["start_at"]
-                else:
-                    trigger_data["start_at"] = dt.datetime.fromtimestamp(
-                        current_time, dt.UTC
-                    ).isoformat()
-            trigger = build_trigger(
-                definition.trigger_type,
-                trigger_data,
-                definition.timezone,
+            values, next_run_at, pending_scheduled_for = _system_schedule_values(
+                registration,
+                definition,
+                payload,
+                configured_trigger_data,
+                schedule,
+                current_time,
             )
-            next_run_at = first_run_at(trigger, current_time)
-            pending_scheduled_for = current_time if definition.run_immediately else None
-            values = {
-                "task_name": registration.name,
-                "task_contract_version": registration.contract_version,
-                "payload": payload,
-                "trigger_type": definition.trigger_type,
-                "trigger_data": trigger_data,
-                "timezone": definition.timezone,
-                "created_by": None,
-                "updated_by": None,
-            }
             if schedule is None:
                 session.add(
                     Schedule(
@@ -271,17 +320,7 @@ def synchronize_system_schedules(
                 changed += 1
                 continue
 
-            current = {
-                "task_name": schedule.task_name,
-                "task_contract_version": schedule.task_contract_version,
-                "payload": schedule.payload,
-                "trigger_type": schedule.trigger_type,
-                "trigger_data": schedule.trigger_data,
-                "timezone": schedule.timezone,
-                "created_by": schedule.created_by,
-                "updated_by": schedule.updated_by,
-            }
-            if current == values and schedule.enabled and schedule.status == "active":
+            if _matches_system_schedule(schedule, values):
                 continue
             for name, value in values.items():
                 setattr(schedule, name, value)
