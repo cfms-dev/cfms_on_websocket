@@ -162,6 +162,9 @@ batch_size = 500
 [scheduling]
 # Runtime settings for the always-on scheduling core.
 # Worker threads started by each server instance for either scheduling Provider.
+# Required when provider.scheduling = "redis". Use one stable value on every
+# node in a deployment and a different value for deployments sharing Redis.
+# redis_namespace = "replace-with-deployment-id"
 worker_threads = 4
 poll_interval_seconds = 1.0
 execution_lease_seconds = 60

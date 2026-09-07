@@ -1,5 +1,6 @@
 import ipaddress
 import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import field
 from functools import lru_cache
@@ -500,6 +501,7 @@ class SchedulingPolicy(_ConfigPolicy):
     misfire_grace_seconds: PositiveInt = 300
     history_retention_days: PositiveInt = 90
     claim_batch_size: PositiveInt = 100
+    redis_namespace: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -511,6 +513,14 @@ class SchedulingPolicy(_ConfigPolicy):
             raise ConfigValidationError(
                 "scheduling.lease_refresh_seconds must be less than "
                 "execution_lease_seconds"
+            )
+        if (
+            self.redis_namespace is not None
+            and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", self.redis_namespace) is None
+        ):
+            raise ConfigValidationError(
+                "scheduling.redis_namespace must contain 1 to 63 lowercase ASCII "
+                "letters, digits, underscores, or hyphens"
             )
 
 
@@ -563,7 +573,7 @@ def validate_config(config: _ConfigSource) -> None:
     DocumentUploadPolicy.from_config(config)
     DocumentCreationRiskPolicy.from_config(config)
     DocumentDownloadRiskPolicy.from_config(config)
-    SchedulingPolicy.from_config(config)
+    scheduling_policy = SchedulingPolicy.from_config(config)
     _validate_file_chunk_size_config(config)
     _validate_client_certificate_config(config)
 
@@ -589,6 +599,10 @@ def validate_config(config: _ConfigSource) -> None:
     ):
         raise ConfigValidationError(
             "provider.scheduling='redis' requires a shared non-SQLite database"
+        )
+    if scheduling_provider == "redis" and scheduling_policy.redis_namespace is None:
+        raise ConfigValidationError(
+            "scheduling.redis_namespace is required when provider.scheduling='redis'"
         )
 
     from include.extensions.manager import validate_extension_config

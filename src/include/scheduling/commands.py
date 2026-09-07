@@ -17,6 +17,27 @@ class ScheduleConflictError(RuntimeError):
     pass
 
 
+def lock_schedule(session: OrmSession, schedule_id: str) -> Schedule | None:
+    """Lock and refresh a schedule before mutating its execution aggregate."""
+    if session.get_bind().dialect.name == "sqlite":
+        locked = cast(
+            CursorResult,
+            session.execute(
+                update(Schedule)
+                .where(Schedule.id == schedule_id)
+                .values(active_execution_id=Schedule.active_execution_id)
+            ),
+        )
+        if locked.rowcount != 1:
+            return None
+    return session.scalar(
+        select(Schedule)
+        .where(Schedule.id == schedule_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
 def create_schedule(
     session: OrmSession,
     registry: ScheduledTaskRegistry,
@@ -76,7 +97,7 @@ def update_schedule(
     active during the update raises :class:`ScheduleConflictError`.
     """
     current_time = time.time() if now is None else now
-    schedule = session.get(Schedule, schedule_id)
+    schedule = lock_schedule(session, schedule_id)
     if schedule is None or schedule.status == "deleted":
         raise ScheduleNotFoundError(schedule_id)
     if schedule.system_managed:
@@ -195,44 +216,27 @@ def delete_schedule(
     execution that is already active. The caller owns the transaction.
     """
     current_time = time.time() if now is None else now
-    schedule = session.get(Schedule, schedule_id)
+    schedule = lock_schedule(session, schedule_id)
     if schedule is None or schedule.status == "deleted":
         raise ScheduleNotFoundError(schedule_id)
     if schedule.system_managed:
         raise ScheduleConflictError("System-managed schedules cannot be deleted")
-    deleted = cast(
-        CursorResult,
-        session.execute(
-            update(Schedule)
-            .where(
-                Schedule.id == schedule_id,
-                Schedule.status != "deleted",
-                Schedule.revision == expected_revision,
-            )
-            .values(
-                enabled=False,
-                status="deleted",
-                next_run_at=None,
-                pending_scheduled_for=None,
-                revision=expected_revision + 1,
-                updated_by=username,
-                updated_at=current_time,
-                deleted_at=current_time,
-            )
-        ),
+    if schedule.revision != expected_revision:
+        raise ScheduleConflictError("Schedule revision is stale")
+    schedule.enabled = False
+    schedule.status = "deleted"
+    schedule.next_run_at = None
+    schedule.pending_scheduled_for = None
+    schedule.revision = expected_revision + 1
+    schedule.updated_by = username
+    schedule.updated_at = current_time
+    schedule.deleted_at = current_time
+    cancel_unstarted_schedule_execution(
+        session,
+        schedule,
+        now=current_time,
+        reason="Schedule deleted before execution started",
     )
-    if deleted.rowcount == 1:
-        cancel_unstarted_schedule_execution(
-            session,
-            schedule,
-            now=current_time,
-            reason="Schedule deleted before execution started",
-        )
-        return
-    schedule = session.get(Schedule, schedule_id)
-    if schedule is None or schedule.status == "deleted":
-        raise ScheduleNotFoundError(schedule_id)
-    raise ScheduleConflictError("Schedule revision is stale")
 
 
 def schedule_response(

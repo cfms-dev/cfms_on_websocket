@@ -46,8 +46,22 @@ uv sync --extra ext-scheduling-cluster
 
 Set `provider.scheduling = "redis"`, configure `[redis]`, and use a shared MySQL
 or PostgreSQL application database. SQLite is intentionally rejected for this
-mode. Start CFMS normally on every application node; no separate scheduled-task
-processes are used.
+mode. Redis scheduling also requires an explicit deployment namespace:
+
+```toml
+[scheduling]
+redis_namespace = "production"
+
+[provider]
+scheduling = "redis"
+```
+
+Use exactly the same stable namespace on every node sharing the application
+database. Deployments that share a Redis database must use different namespaces;
+the value scopes scheduler leadership, notifications, Dramatiq broker keys, and
+the scheduled-task queue. Changing it is a Provider-generation transition, not a
+routine live configuration change. Start CFMS normally on every application node;
+no separate scheduled-task processes are used.
 
 Every WebSocket server embeds one scheduler candidate and a Dramatiq worker pool
 containing `scheduling.worker_threads` threads. A Redis lease with
@@ -65,8 +79,13 @@ Provider.
 
 The runtime lock prevents deployment, rollback, or recovery while the server using
 that runtime root is active. In a distributed deployment, stop every CFMS server
-that shares the application database before changing the scheduling Provider,
-running database migrations, or switching releases.
+that shares the application database before changing the scheduling Provider or
+Redis namespace, running database migrations, or switching releases. The first
+upgrade to namespaced Redis scheduling is a stop-the-world upgrade: stop all old
+nodes, wait for their execution leases to expire, migrate the database, configure
+one namespace on every node, and then restart. Mixed old and new scheduler nodes
+are not supported. Legacy Redis keys are intentionally left untouched because the
+Redis database may also contain another deployment's data.
 
 ## Task registration
 

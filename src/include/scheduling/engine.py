@@ -20,7 +20,10 @@ from include.database.models.scheduling import (
 )
 from include.database.session import Session
 from include.domains.operations.commands.audit import log_audit
-from include.scheduling.commands import cancel_unstarted_schedule_execution
+from include.scheduling.commands import (
+    cancel_unstarted_schedule_execution,
+    lock_schedule,
+)
 from include.scheduling.contracts import ScheduledTaskContext
 from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import advance_trigger, build_trigger, first_run_at
@@ -48,10 +51,12 @@ def _build_runtime_state_upsert(
     dialect_name: str,
     provider: str,
     current_time: float,
+    redis_namespace: str | None = None,
 ):
     values = {
         "id": 1,
         "provider": provider,
+        "redis_namespace": redis_namespace,
         "generation": 1,
         "schema_version": 1,
         "updated_at": current_time,
@@ -77,12 +82,20 @@ def _build_runtime_state_upsert(
     raise ValueError(f"Unsupported database dialect: {dialect_name}")
 
 
-def ensure_runtime_state(provider: str, now: float | None = None) -> int:
+def ensure_runtime_state(
+    provider: str,
+    redis_namespace: str | None = None,
+    *,
+    now: float | None = None,
+) -> int:
     """Ensure the active scheduling provider state exists and return its generation.
 
     If the provider changes, active execution leases prevent the switch; otherwise
     pending work is reset and moved to the new provider generation.
     """
+    if provider == "redis" and redis_namespace is None:
+        raise ValueError("Redis scheduling requires a deployment namespace")
+    desired_namespace = redis_namespace if provider == "redis" else None
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
         session.execute(
@@ -90,11 +103,17 @@ def ensure_runtime_state(provider: str, now: float | None = None) -> int:
                 session.get_bind().dialect.name,
                 provider,
                 current_time,
+                desired_namespace,
             )
         )
-        state = session.get(SchedulingRuntimeState, 1)
+        state = session.scalar(
+            select(SchedulingRuntimeState)
+            .where(SchedulingRuntimeState.id == 1)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         assert state is not None
-        if state.provider == provider:
+        if state.provider == provider and state.redis_namespace == desired_namespace:
             return state.generation
 
         active_execution = session.scalar(
@@ -109,6 +128,7 @@ def ensure_runtime_state(provider: str, now: float | None = None) -> int:
             )
 
         state.provider = provider
+        state.redis_namespace = desired_namespace
         state.generation += 1
         state.updated_at = current_time
         session.execute(
@@ -167,7 +187,15 @@ def synchronize_system_schedules(
                 or_(Schedule.enabled.is_(True), Schedule.status != "deleted"),
             )
         ).all()
-        for schedule in orphaned:
+        for candidate in orphaned:
+            schedule = lock_schedule(session, candidate.id)
+            if (
+                schedule is None
+                or not schedule.system_managed
+                or schedule.id in desired
+                or (not schedule.enabled and schedule.status == "deleted")
+            ):
+                continue
             schedule.enabled = False
             schedule.status = "deleted"
             schedule.next_run_at = None
@@ -185,7 +213,7 @@ def synchronize_system_schedules(
 
         for schedule_id, item in desired.items():
             registration, definition, payload, trigger_data = item
-            schedule = session.get(Schedule, schedule_id)
+            schedule = lock_schedule(session, schedule_id)
             if schedule is not None and not schedule.system_managed:
                 raise RuntimeError(
                     f"System schedule ID {schedule_id!r} is already user managed"
@@ -340,7 +368,7 @@ def enqueue_due_schedules(
     created = 0
     for schedule_id in due_ids:
         with Session() as session, session.begin():
-            schedule = session.get(Schedule, schedule_id)
+            schedule = lock_schedule(session, schedule_id)
             if schedule is None or not schedule.enabled or schedule.status != "active":
                 continue
 
@@ -420,8 +448,8 @@ def claim_execution(
     """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
-        candidate_id = session.scalar(
-            select(ScheduleExecution.id)
+        candidate = session.execute(
+            select(ScheduleExecution.id, ScheduleExecution.schedule_id)
             .where(
                 ScheduleExecution.provider_generation == generation,
                 ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
@@ -439,8 +467,17 @@ def claim_execution(
             )
             .order_by(ScheduleExecution.created_at, ScheduleExecution.id)
             .limit(1)
-        )
-        if candidate_id is None:
+        ).one_or_none()
+        if candidate is None:
+            return None
+        candidate_id, schedule_id = candidate
+
+        schedule = lock_schedule(session, schedule_id)
+        if (
+            schedule is None
+            or schedule.status == "deleted"
+            or schedule.active_execution_id != candidate_id
+        ):
             return None
 
         # The preceding SELECT only chooses a candidate. This conditional UPDATE is
@@ -451,11 +488,9 @@ def claim_execution(
                 update(ScheduleExecution)
                 .where(
                     ScheduleExecution.id == candidate_id,
+                    ScheduleExecution.schedule_id == schedule_id,
                     ScheduleExecution.provider_generation == generation,
                     ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
-                    ScheduleExecution.schedule_id.in_(
-                        select(Schedule.id).where(Schedule.status != "deleted")
-                    ),
                     or_(
                         ScheduleExecution.retry_at.is_(None),
                         ScheduleExecution.retry_at <= current_time,
@@ -481,10 +516,6 @@ def claim_execution(
 
         execution = session.get(ScheduleExecution, candidate_id)
         assert execution is not None
-
-        schedule = session.get(Schedule, execution.schedule_id)
-        if schedule is None:
-            return None
 
         return ClaimedExecution(
             id=execution.id,
@@ -513,17 +544,29 @@ def claim_execution_by_id(
     """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
+        schedule_id = session.scalar(
+            select(ScheduleExecution.schedule_id).where(
+                ScheduleExecution.id == execution_id
+            )
+        )
+        if schedule_id is None:
+            return None
+        schedule = lock_schedule(session, schedule_id)
+        if (
+            schedule is None
+            or schedule.status == "deleted"
+            or schedule.active_execution_id != execution_id
+        ):
+            return None
         claimed = cast(
             CursorResult,
             session.execute(
                 update(ScheduleExecution)
                 .where(
                     ScheduleExecution.id == execution_id,
+                    ScheduleExecution.schedule_id == schedule_id,
                     ScheduleExecution.provider_generation == generation,
                     ScheduleExecution.state.in_(("pending", "running", "retry_wait")),
-                    ScheduleExecution.schedule_id.in_(
-                        select(Schedule.id).where(Schedule.status != "deleted")
-                    ),
                     or_(
                         ScheduleExecution.retry_at.is_(None),
                         ScheduleExecution.retry_at <= current_time,
@@ -549,10 +592,6 @@ def claim_execution_by_id(
 
         execution = session.get(ScheduleExecution, execution_id)
         assert execution is not None
-
-        schedule = session.get(Schedule, execution.schedule_id)
-        if schedule is None:
-            return None
 
         return ClaimedExecution(
             id=execution.id,
@@ -705,7 +744,12 @@ def refresh_execution_lease(
         return refreshed.rowcount == 1
 
 
-def _release_schedule_execution(session, schedule: Schedule, generation: int) -> None:
+def _release_schedule_execution(
+    session,
+    schedule: Schedule,
+    generation: int,
+    terminal_status: str,
+) -> None:
     """Release a schedule's slot and promote its latest coalesced occurrence."""
     schedule.active_execution_id = None
     if schedule.status == "deleted":
@@ -715,7 +759,7 @@ def _release_schedule_execution(session, schedule: Schedule, generation: int) ->
         schedule.pending_scheduled_for = None
         _create_execution(session, schedule, pending, generation)
     elif schedule.next_run_at is None:
-        schedule.status = "completed"
+        schedule.status = terminal_status
 
 
 def complete_execution(
@@ -732,21 +776,38 @@ def complete_execution(
     """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
-        execution = session.get(ScheduleExecution, claim.id)
-        if (
-            execution is None
-            or execution.state != "running"
-            or execution.lease_owner != claim.lease_owner
-        ):
+        schedule = lock_schedule(session, claim.schedule_id)
+        if schedule is None:
             return False
-        execution.state = "succeeded"
-        execution.completed_at = current_time
-        execution.result = result
-        execution.lease_owner = None
-        execution.lease_expires_at = None
-        schedule = session.get(Schedule, execution.schedule_id)
-        if schedule is not None and schedule.active_execution_id == execution.id:
-            _release_schedule_execution(session, schedule, generation)
+        completed = cast(
+            CursorResult,
+            session.execute(
+                update(ScheduleExecution)
+                .where(
+                    ScheduleExecution.id == claim.id,
+                    ScheduleExecution.schedule_id == claim.schedule_id,
+                    ScheduleExecution.provider_generation == generation,
+                    ScheduleExecution.state == "running",
+                    ScheduleExecution.lease_owner == claim.lease_owner,
+                )
+                .values(
+                    state="succeeded",
+                    completed_at=current_time,
+                    result=result,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+            ),
+        )
+        if completed.rowcount != 1:
+            return False
+        if schedule.active_execution_id == claim.id:
+            _release_schedule_execution(
+                session,
+                schedule,
+                generation,
+                "completed",
+            )
         return True
 
 
@@ -767,39 +828,53 @@ def fail_execution(
     """
     current_time = time.time() if now is None else now
     with Session() as session, session.begin():
-        execution = session.get(ScheduleExecution, claim.id)
-        if (
-            execution is None
-            or execution.state != "running"
-            or execution.lease_owner != claim.lease_owner
-        ):
+        schedule = lock_schedule(session, claim.schedule_id)
+        if schedule is None:
             return False
-        execution.error = error[:1024]
-        execution.lease_owner = None
-        execution.lease_expires_at = None
-        schedule = session.get(Schedule, execution.schedule_id)
-        if execution.attempt < max_attempts and (
-            schedule is None or schedule.status != "deleted"
-        ):
+        retry = claim.attempt < max_attempts and schedule.status != "deleted"
+        values = {
+            "error": error[:1024],
+            "lease_owner": None,
+            "lease_expires_at": None,
+        }
+        if retry:
             delay = min(
-                initial_backoff_seconds * 2 ** (execution.attempt - 1),
+                initial_backoff_seconds * 2 ** (claim.attempt - 1),
                 maximum_backoff_seconds,
             )
-            execution.state = "retry_wait"
-            execution.dispatch_state = "pending"
-            execution.retry_at = current_time + delay
-            return True
-
-        execution.state = "failed"
-        execution.completed_at = current_time
-        if schedule is not None and schedule.active_execution_id == execution.id:
-            _release_schedule_execution(session, schedule, generation)
-            if (
-                schedule.status != "deleted"
-                and schedule.next_run_at is None
-                and schedule.active_execution_id is None
-            ):
-                schedule.status = "failed"
+            values.update(
+                state="retry_wait",
+                dispatch_state="pending",
+                retry_at=current_time + delay,
+            )
+        else:
+            values.update(
+                state="failed",
+                completed_at=current_time,
+            )
+        failed = cast(
+            CursorResult,
+            session.execute(
+                update(ScheduleExecution)
+                .where(
+                    ScheduleExecution.id == claim.id,
+                    ScheduleExecution.schedule_id == claim.schedule_id,
+                    ScheduleExecution.provider_generation == generation,
+                    ScheduleExecution.state == "running",
+                    ScheduleExecution.lease_owner == claim.lease_owner,
+                )
+                .values(**values)
+            ),
+        )
+        if failed.rowcount != 1:
+            return False
+        if not retry and schedule.active_execution_id == claim.id:
+            _release_schedule_execution(
+                session,
+                schedule,
+                generation,
+                "failed",
+            )
         return True
 
 

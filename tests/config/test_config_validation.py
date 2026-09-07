@@ -359,6 +359,43 @@ def test_redis_scheduling_requires_shared_database():
         validate_config(config)
 
 
+def test_redis_scheduling_requires_explicit_deployment_namespace():
+    config = _valid_config()
+    config["provider"] = {"scheduling": "redis"}
+    config["database"] = {"type": "postgresql"}
+
+    with pytest.raises(ConfigValidationError, match="redis_namespace is required"):
+        validate_config(config)
+
+
+def test_redis_scheduling_accepts_explicit_deployment_namespace():
+    config = _valid_config()
+    config["provider"] = {"scheduling": "redis"}
+    config["database"] = {"type": "postgresql"}
+    config["scheduling"] = {"redis_namespace": "production-1"}
+
+    validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    ["", "Uppercase", "contains.space", "x" * 64, "namespace:part"],
+)
+def test_redis_scheduling_namespace_is_validated(namespace):
+    config = _valid_config()
+    config["scheduling"] = {"redis_namespace": namespace}
+
+    with pytest.raises(ConfigValidationError, match="redis_namespace"):
+        validate_config(config)
+
+
+def test_local_scheduling_does_not_require_redis_namespace():
+    config = _valid_config()
+    config["provider"] = {"scheduling": "local"}
+
+    validate_config(config)
+
+
 def test_scheduling_lease_refresh_must_precede_expiry():
     config = _valid_config()
     config["scheduling"] = {

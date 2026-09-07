@@ -47,6 +47,19 @@ def _session_factory(monkeypatch):
     return factory
 
 
+def _file_session_factory(monkeypatch, tmp_path):
+    database = create_engine(
+        f"sqlite:///{tmp_path / 'scheduling.db'}",
+        connect_args={"timeout": 10},
+    )
+    SchedulingRuntimeState.__table__.create(database)
+    Schedule.__table__.create(database)
+    ScheduleExecution.__table__.create(database)
+    factory = sessionmaker(bind=database)
+    monkeypatch.setattr(scheduling_engine, "Session", factory)
+    return database, factory
+
+
 def _assert_concurrent_runtime_initialization(monkeypatch, database) -> None:
     factory = sessionmaker(bind=database)
     monkeypatch.setattr(scheduling_engine, "Session", factory)
@@ -74,7 +87,8 @@ def _assert_concurrent_runtime_initialization(monkeypatch, database) -> None:
                 executor.submit(
                     scheduling_engine.ensure_runtime_state,
                     "redis",
-                    100.0,
+                    "test-cluster",
+                    now=100.0,
                 )
                 for _ in range(2)
             ]
@@ -639,7 +653,9 @@ def test_provider_switch_requeues_unfinished_execution(monkeypatch):
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
 
-    new_generation = scheduling_engine.ensure_runtime_state("redis", now=101.0)
+    new_generation = scheduling_engine.ensure_runtime_state(
+        "redis", "test-cluster", now=101.0
+    )
 
     with factory() as session:
         execution = session.scalar(select(ScheduleExecution))
@@ -649,11 +665,59 @@ def test_provider_switch_requeues_unfinished_execution(monkeypatch):
         assert execution.dispatch_state == "pending"
 
 
+def test_redis_namespace_switch_requeues_sent_execution(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis", "first-cluster", now=100.0
+    )
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    with factory() as session:
+        execution_id = session.scalar(select(ScheduleExecution.id))
+    assert execution_id is not None
+    assert scheduling_engine.mark_dispatched(execution_id, generation) is True
+    assert (
+        scheduling_engine.ensure_runtime_state("redis", "first-cluster", now=101.0)
+        == generation
+    )
+
+    new_generation = scheduling_engine.ensure_runtime_state(
+        "redis", "second-cluster", now=102.0
+    )
+
+    with factory() as session:
+        state = session.get(SchedulingRuntimeState, 1)
+        execution = session.get(ScheduleExecution, execution_id)
+        assert new_generation == generation + 1
+        assert state.redis_namespace == "second-cluster"
+        assert execution.provider_generation == new_generation
+        assert execution.state == "pending"
+        assert execution.dispatch_state == "pending"
+
+
+def test_redis_namespace_switch_rejects_live_execution_lease(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis", "first-cluster", now=100.0
+    )
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_engine.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+
+    with pytest.raises(RuntimeError, match="execution lease is active"):
+        scheduling_engine.ensure_runtime_state("redis", "second-cluster", now=101.0)
+
+
 def test_cluster_dispatch_claims_the_requested_execution(monkeypatch):
     factory = _session_factory(monkeypatch)
     _schedule(factory)
     policy = SchedulingPolicy()
-    generation = scheduling_engine.ensure_runtime_state("redis", now=100.0)
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis", "test-cluster", now=100.0
+    )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
     pending = scheduling_engine.pending_dispatches(generation, 10, now=100.0)
 
@@ -679,7 +743,9 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
         execution_lease_seconds=300,
         lease_refresh_seconds=100,
     )
-    generation = scheduling_engine.ensure_runtime_state("redis", now=100.0)
+    generation = scheduling_engine.ensure_runtime_state(
+        "redis", "test-cluster", now=100.0
+    )
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
     (execution_id,) = scheduling_engine.pending_dispatches(generation, 10, now=100.0)
     assert scheduling_engine.mark_dispatched(execution_id, generation) is True
@@ -846,6 +912,192 @@ def test_deleting_schedule_allows_running_execution_to_finish_without_retry(
         assert execution.state == "failed"
         assert execution.retry_at is None
         assert execution.completed_at == 102.0
+
+
+def test_completion_after_schedule_deletion_preserves_deleted_status(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_engine.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+
+    with factory() as session, session.begin():
+        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+
+    assert scheduling_engine.complete_execution(
+        claim, generation, {"completed": True}, now=102.0
+    )
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        execution = session.get(ScheduleExecution, claim.id)
+        assert schedule.status == "deleted"
+        assert schedule.active_execution_id is None
+        assert execution.state == "succeeded"
+        assert execution.result == {"completed": True}
+
+
+def test_concurrent_completion_and_deletion_serialize_without_deadlock(
+    monkeypatch,
+    tmp_path,
+):
+    database, factory = _file_session_factory(monkeypatch, tmp_path)
+    try:
+        _schedule(factory)
+        policy = SchedulingPolicy()
+        generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+        scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+        claim = scheduling_engine.claim_execution(
+            generation, "worker", policy, now=100.0
+        )
+        assert claim is not None
+        barrier = Barrier(2)
+
+        def complete():
+            barrier.wait(timeout=10)
+            return scheduling_engine.complete_execution(
+                claim, generation, {"completed": True}, now=102.0
+            )
+
+        def delete():
+            barrier.wait(timeout=10)
+            with factory() as session, session.begin():
+                delete_schedule(
+                    session,
+                    "schedule-1",
+                    1,
+                    username="admin",
+                    now=101.0,
+                )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            completed = executor.submit(complete)
+            deleted = executor.submit(delete)
+            assert completed.result(timeout=15) is True
+            assert deleted.result(timeout=15) is None
+
+        with factory() as session:
+            schedule = session.get(Schedule, "schedule-1")
+            execution = session.get(ScheduleExecution, claim.id)
+            assert schedule.status == "deleted"
+            assert schedule.active_execution_id is None
+            assert execution.state == "succeeded"
+    finally:
+        database.dispose()
+
+
+def test_concurrent_claim_and_deletion_have_one_complete_outcome(
+    monkeypatch,
+    tmp_path,
+):
+    database, factory = _file_session_factory(monkeypatch, tmp_path)
+    try:
+        _schedule(factory)
+        policy = SchedulingPolicy()
+        generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+        scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+        with factory() as session:
+            execution_id = session.scalar(select(ScheduleExecution.id))
+        assert execution_id is not None
+        barrier = Barrier(2)
+
+        def claim():
+            barrier.wait(timeout=10)
+            return scheduling_engine.claim_execution(
+                generation, "worker", policy, now=101.0
+            )
+
+        def delete():
+            barrier.wait(timeout=10)
+            with factory() as session, session.begin():
+                delete_schedule(
+                    session,
+                    "schedule-1",
+                    1,
+                    username="admin",
+                    now=101.0,
+                )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claimed = executor.submit(claim)
+            deleted = executor.submit(delete)
+            claim_result = claimed.result(timeout=15)
+            assert deleted.result(timeout=15) is None
+
+        with factory() as session:
+            schedule = session.get(Schedule, "schedule-1")
+            execution = session.get(ScheduleExecution, execution_id)
+            assert schedule.status == "deleted"
+            if claim_result is None:
+                assert schedule.active_execution_id is None
+                assert execution.state == "cancelled"
+            else:
+                assert schedule.active_execution_id == execution_id
+                assert execution.state == "running"
+                assert execution.lease_owner == "worker"
+    finally:
+        database.dispose()
+
+
+@pytest.mark.parametrize("lost_condition", ["owner", "generation"])
+def test_terminal_transition_rejects_lost_execution_lease(
+    monkeypatch,
+    lost_condition,
+):
+    factory = _session_factory(monkeypatch)
+    _schedule(factory)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_engine.claim_execution(
+        generation, "original-worker", policy, now=100.0
+    )
+    assert claim is not None
+
+    if lost_condition == "owner":
+        replacement = scheduling_engine.claim_execution(
+            generation,
+            "replacement-worker",
+            policy,
+            now=100.0 + policy.execution_lease_seconds,
+        )
+        assert replacement is not None
+        rejected_generation = generation
+    else:
+        rejected_generation = generation + 1
+
+    assert (
+        scheduling_engine.complete_execution(
+            claim,
+            rejected_generation,
+            {"stale": True},
+            now=200.0,
+        )
+        is False
+    )
+    assert (
+        scheduling_engine.fail_execution(
+            claim,
+            rejected_generation,
+            max_attempts=1,
+            initial_backoff_seconds=1,
+            maximum_backoff_seconds=1,
+            error="stale failure",
+            now=200.0,
+        )
+        is False
+    )
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        execution = session.get(ScheduleExecution, claim.id)
+        assert schedule.active_execution_id == claim.id
+        assert execution.state == "running"
+        assert execution.result is None
+        assert execution.error is None
+        assert execution.lease_owner == (
+            "replacement-worker" if lost_condition == "owner" else "original-worker"
+        )
 
 
 def test_completed_execution_history_is_purged_in_bounded_batches(monkeypatch):

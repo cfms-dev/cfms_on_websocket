@@ -25,8 +25,6 @@ from include.scheduling.engine import (
 )
 from include.scheduling.registry import ScheduledTaskRegistry
 
-_NOTIFY_CHANNEL = "cfms:scheduling:changed"
-_LEADER_KEY = "cfms:scheduling:leader"
 _RENEW_LEASE = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('pexpire', KEYS[1], ARGV[2])
@@ -47,6 +45,8 @@ class RedisSchedulingProvider(SchedulingProvider):
     _generation: int
 
     def __init__(self, redis_config: Mapping[str, Any], policy: SchedulingPolicy):
+        if policy.redis_namespace is None:
+            raise ValueError("Redis scheduling requires a deployment namespace")
         self._policy = policy
         self._redis_config = {
             "host": redis_config["host"],
@@ -54,6 +54,11 @@ class RedisSchedulingProvider(SchedulingProvider):
             "password": redis_config.get("password", "") or None,
             "db": redis_config.get("db", 0),
         }
+        resource_namespace = f"cfms:{policy.redis_namespace}:scheduling"
+        self._notify_channel = f"{resource_namespace}:changed"
+        self._leader_key = f"{resource_namespace}:leader"
+        self._broker_namespace = f"{resource_namespace}:dramatiq"
+        self._queue_name = f"cfms-{policy.redis_namespace}-scheduled-tasks"
         self._client = self._create_client()
         self._broker = None
         self._actor = None
@@ -79,13 +84,15 @@ class RedisSchedulingProvider(SchedulingProvider):
                 self._closed = False
 
             self._registry = registry
-            self._generation = ensure_runtime_state("redis")
+            self._generation = ensure_runtime_state(
+                "redis", self._policy.redis_namespace
+            )
             self._stop.clear()
             self._ensure_actor(registry)
             assert self._broker is not None
             worker = Worker(
                 self._broker,
-                queues={"cfms-scheduled-tasks"},
+                queues={self._queue_name},
                 worker_threads=self._policy.worker_threads,
             )
             scheduler_thread = threading.Thread(
@@ -147,7 +154,7 @@ class RedisSchedulingProvider(SchedulingProvider):
 
     def notify_schedule_change(self) -> None:
         try:
-            self._client.publish(_NOTIFY_CHANNEL, "1")
+            self._client.publish(self._notify_channel, "1")
             with self._state_lock:
                 self._redis_error = None
         except redis.RedisError as exc:
@@ -202,11 +209,11 @@ class RedisSchedulingProvider(SchedulingProvider):
         self._registry = registry
         self._broker = RedisBroker(
             **self._redis_config,
-            namespace="cfms-scheduling",
+            namespace=self._broker_namespace,
         )
         self._actor = dramatiq.actor(
             actor_name="cfms_scheduled_task",
-            queue_name="cfms-scheduled-tasks",
+            queue_name=self._queue_name,
             broker=self._broker,
             max_retries=100,
             min_backoff=1000,
@@ -264,7 +271,7 @@ class RedisSchedulingProvider(SchedulingProvider):
                 try:
                     if pubsub is None:
                         pubsub = self._client.pubsub(ignore_subscribe_messages=True)
-                        pubsub.subscribe(_NOTIFY_CHANNEL)
+                        pubsub.subscribe(self._notify_channel)
                     # The random token makes renewal conditional: a candidate whose
                     # lease expired cannot renew or release its successor's lease.
                     if leader:
@@ -272,7 +279,7 @@ class RedisSchedulingProvider(SchedulingProvider):
                             self._client.eval(
                                 _RENEW_LEASE,
                                 1,
-                                _LEADER_KEY,
+                                self._leader_key,
                                 token,
                                 lease_ttl_ms,
                             )
@@ -280,7 +287,7 @@ class RedisSchedulingProvider(SchedulingProvider):
                     else:
                         leader = bool(
                             self._client.set(
-                                _LEADER_KEY,
+                                self._leader_key,
                                 token,
                                 nx=True,
                                 px=lease_ttl_ms,
@@ -311,7 +318,7 @@ class RedisSchedulingProvider(SchedulingProvider):
         finally:
             if leader:
                 try:
-                    self._client.eval(_RELEASE_LEASE, 1, _LEADER_KEY, token)
+                    self._client.eval(_RELEASE_LEASE, 1, self._leader_key, token)
                 except redis.RedisError:
                     logger.exception("Failed to release Redis scheduler leadership")
             if pubsub is not None:

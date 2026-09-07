@@ -70,6 +70,13 @@ def test_retained_revision_chain_round_trips_to_head(
             }
             assert "active_name" in node_columns
             assert "active_parent_id" not in node_columns
+            runtime_columns = {
+                column["name"]
+                for column in inspect(connection).get_columns(
+                    "scheduling_runtime_state"
+                )
+            }
+            assert "redis_namespace" in runtime_columns
     finally:
         engine.dispose()
 

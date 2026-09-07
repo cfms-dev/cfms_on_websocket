@@ -128,6 +128,7 @@ class SchedulingRuntimeState(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     provider: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
+    redis_namespace: Mapped[str | None] = mapped_column(VARCHAR(63), nullable=True)
     generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[float] = mapped_column(Double, nullable=False, default=time.time)

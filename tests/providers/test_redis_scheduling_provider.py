@@ -100,8 +100,12 @@ class _CoordinatorRedis(_FakeRedis):
 
 def _provider(client=None):
     provider = RedisSchedulingProvider.__new__(RedisSchedulingProvider)
-    provider._policy = SchedulingPolicy()
+    provider._policy = SchedulingPolicy(redis_namespace="test-cluster")
     provider._redis_config = {}
+    provider._notify_channel = "cfms:test-cluster:scheduling:changed"
+    provider._leader_key = "cfms:test-cluster:scheduling:leader"
+    provider._broker_namespace = "cfms:test-cluster:scheduling:dramatiq"
+    provider._queue_name = "cfms-test-cluster-scheduled-tasks"
     provider._client = client or _FakeRedis()
     provider._broker = None
     provider._actor = None
@@ -134,7 +138,11 @@ def _prepare_embedded_runtime(monkeypatch, provider):
 
     _FakeWorker.instances.clear()
     monkeypatch.setattr(scheduling_redis, "Worker", _FakeWorker)
-    monkeypatch.setattr(scheduling_redis, "ensure_runtime_state", lambda _mode: 7)
+    monkeypatch.setattr(
+        scheduling_redis,
+        "ensure_runtime_state",
+        lambda _mode, _namespace: 7,
+    )
     monkeypatch.setattr(provider, "_ensure_actor", ensure_actor)
     monkeypatch.setattr(provider, "_scheduler_loop", coordinator)
     return broker, coordinator_started
@@ -153,7 +161,7 @@ def test_redis_provider_embeds_coordinator_and_worker_pool(monkeypatch):
     assert len(_FakeWorker.instances) == 1
     worker = _FakeWorker.instances[0]
     assert worker.started == 1
-    assert worker.queues == {"cfms-scheduled-tasks"}
+    assert worker.queues == {"cfms-test-cluster-scheduled-tasks"}
     assert worker.worker_threads == provider._policy.worker_threads
     assert provider.status().available is True
 
@@ -191,7 +199,9 @@ def test_redis_provider_propagates_database_runtime_initialization_failure(
     monkeypatch.setattr(
         scheduling_redis,
         "ensure_runtime_state",
-        lambda _mode: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+        lambda _mode, _namespace: (_ for _ in ()).throw(
+            RuntimeError("database unavailable")
+        ),
     )
 
     with pytest.raises(RuntimeError, match="database unavailable"):
@@ -207,7 +217,7 @@ def test_redis_notification_failure_is_recorded_but_not_raised():
     client = _FakeRedis()
     provider = _provider(client)
     provider.notify_schedule_change()
-    assert client.messages == [(scheduling_redis._NOTIFY_CHANNEL, "1")]
+    assert client.messages == [(provider._notify_channel, "1")]
 
     client.error = redis.ConnectionError("unavailable")
     provider.notify_schedule_change()
@@ -282,7 +292,57 @@ def test_coordinator_renews_and_releases_leadership_with_one_owner_token(
     assert client.eval_calls[0][3] == owner_token
     assert client.eval_calls[-1][0] == scheduling_redis._RELEASE_LEASE
     assert client.eval_calls[-1][3] == owner_token
+    assert {call[2] for call in client.eval_calls} == {provider._leader_key}
+    assert client.set_calls[0][0] == provider._leader_key
     assert pubsub.closed == 1
+
+
+def test_redis_resources_are_scoped_to_the_deployment_namespace(monkeypatch):
+    monkeypatch.setattr(
+        RedisSchedulingProvider,
+        "_create_client",
+        lambda _provider: _FakeRedis(),
+    )
+
+    first = RedisSchedulingProvider(
+        {"host": "localhost"},
+        SchedulingPolicy(redis_namespace="first"),
+    )
+    second = RedisSchedulingProvider(
+        {"host": "localhost"},
+        SchedulingPolicy(redis_namespace="second"),
+    )
+
+    assert first._notify_channel == "cfms:first:scheduling:changed"
+    assert first._leader_key == "cfms:first:scheduling:leader"
+    assert first._broker_namespace == "cfms:first:scheduling:dramatiq"
+    assert first._queue_name == "cfms-first-scheduled-tasks"
+    assert second._notify_channel != first._notify_channel
+    assert second._leader_key != first._leader_key
+    assert second._broker_namespace != first._broker_namespace
+    assert second._queue_name != first._queue_name
+
+
+def test_dramatiq_broker_and_actor_use_namespaced_resources(monkeypatch):
+    provider = _provider()
+    captured = {}
+    broker = _FakeBroker()
+
+    def create_broker(**kwargs):
+        captured["broker"] = kwargs
+        return broker
+
+    def create_actor(**kwargs):
+        captured["actor"] = kwargs
+        return lambda function: function
+
+    monkeypatch.setattr(scheduling_redis, "RedisBroker", create_broker)
+    monkeypatch.setattr(scheduling_redis.dramatiq, "actor", create_actor)
+
+    provider._ensure_actor(ScheduledTaskRegistry())
+
+    assert captured["broker"]["namespace"] == provider._broker_namespace
+    assert captured["actor"]["queue_name"] == provider._queue_name
 
 
 def test_coordinator_retries_after_redis_recovers(monkeypatch):
