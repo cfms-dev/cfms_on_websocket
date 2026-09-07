@@ -19,132 +19,44 @@ Changes for the next release are collected as
 
 ### Added
 
-- Add Redis-backed scheduling coordination, distributed execution operations,
-  and
-  deployment support for clustered CFMS installations.
-- Add `maintain extension` commands for inspecting, installing, upgrading,
-  enabling,
-  disabling, and uninstalling local server extension packages with
-  dependency-aware
-  activation and hardened ZIP validation.
-- Add an installable PostgreSQL driver extra and exercise scheduling lifecycle
-  races
-  against MySQL and PostgreSQL in CI.
-- Add authenticated WebSocket operations for creating, updating, inspecting,
-  and
-  deleting durable schedules.
-- Add manifest dependency ordering and an optional HTTPS API framework that
-  lets extensions register isolated FastAPI routers.
-- Add persistent scheduling models, configuration validation, provider
-  contracts,
-  and database migration support for durable scheduled work.
-- Add the durable local scheduling engine, task registry, trigger handling, and
-  in-process provider lifecycle.
-- Add verified flat-layout release upgrades and Alembic-backed downgrades with
-  hash-addressed version storage, persistent production content, configuration
-  snapshots, directional third-party extension migration, and an explicit guard
-  against applying release switches to Git repository checkouts. Version
-  switching
-  starts with manifest-bearing releases and does not adopt older flat
-  deployments.
-- `maintain` now locates the nearest CFMS server runtime automatically,
-  including
-  both the current `src` deployment layout and flat release layouts. Explicit
-  file
-  paths remain relative to the directory where the command was invoked.
+- Add Redis-backed scheduling coordination, distributed execution operations, and deployment support for clustered CFMS installations.
+- Add `maintain extension` commands for inspecting, installing, upgrading, enabling, disabling, and uninstalling local server extension packages with dependency-aware activation and hardened ZIP validation.
+- Add an installable PostgreSQL driver extra and exercise scheduling lifecycle races against MySQL and PostgreSQL in CI.
+- Add authenticated WebSocket operations for creating, updating, inspecting, and deleting durable schedules.
+- Add manifest dependency ordering and an optional HTTPS API framework that lets extensions register isolated FastAPI routers.
+- Add persistent scheduling models, configuration validation, provider contracts, and database migration support for durable scheduled work.
+- Add the durable local scheduling engine, task registry, trigger handling, and in-process provider lifecycle.
+- Add verified flat-layout release upgrades and Alembic-backed downgrades with hash-addressed version storage, persistent production content, configuration snapshots, directional third-party extension migration, and an explicit guard against applying release switches to Git repository checkouts. Version switching starts with manifest-bearing releases and does not adopt older flat deployments.
+- `maintain` now locates the nearest CFMS server runtime automatically, including both the current `src` deployment layout and flat release layouts. Explicit file paths remain relative to the directory where the command was invoked.
 
 ### Changed
 
-- Periodic server maintenance now uses hidden, system-managed schedules on the
-  always-on scheduling core. The scheduling extension controls only whether
-  users
-  can query and configure schedules.
-- Redis scheduling now runs its scheduler candidate and Dramatiq worker pool
-  inside
-  each CFMS server instance. The separate `cfms-jobs` commands and jobs runtime
-  lock have been removed.
-- Refresh locked Authlib, AWS SDK, JOSE, file-locking, platform, typing, and
-  virtual
-  environment dependencies.
+- Periodic server maintenance now uses hidden, system-managed schedules on the always-on scheduling core. The scheduling extension controls only whether users can query and configure schedules.
+- Redis scheduling now runs its scheduler candidate and Dramatiq worker pool inside each CFMS server instance. The separate `cfms-jobs` commands and jobs runtime lock have been removed.
+- Refresh locked Authlib, AWS SDK, JOSE, file-locking, platform, typing, and virtual environment dependencies.
 
 ### Fixed
 
-- Avoid acquiring database write locks when registered system schedule
-  definitions
-  already match their persisted state.
-- Bind schedule-update authorization to the requested locked revision so a
-  concurrent
-  task-type change cannot bypass its required permission.
-- Cancel expired running executions after their schedules are deleted so
-  crashed
-  workers cannot leave execution slots and history permanently stuck as active.
-- Count recovered execution leases toward scheduled-task attempt limits so
-  crashed
-  workers cannot cause task code to run beyond `max_attempts`.
-- Create and stamp an empty database during first server initialization without
-  blocking normal startup on an Alembic revision check. Keep SQLite/MySQL
-  upgrades
-  and rejection of non-empty unversioned databases in the maintenance tool.
-- Enforce HTTP request-body and concurrency limits exactly, preserve CORS
-  headers on framework errors, share trusted-proxy resolution, and make HTTP
-  server shutdown and failure state reliable.
-- Keep each scheduling Provider run on its own stop signal and reject restarts
-  until
-  all threads from the previous run have exited.
-- Keep system maintenance intervals anchored when configuration changes request
-  an
-  immediate execution.
-- Make S3 downloads seekable with byte-range requests, preserve operational
-  errors, and support SDK credential and endpoint resolution with configurable
-  connection reuse.
-- Make scheduled-execution completion and failure conditional on the current
-  lease
-  owner and Provider generation, serialize aggregate transitions in one lock
-  order,
-  and isolate every Redis scheduling resource by a required deployment
-  namespace.
-- Read the database clock only after acquiring the scheduled-execution lock
-  during
-  lease refresh so lock contention cannot produce an already-expired renewed
-  lease.
-- Redis scheduling health now reports unavailable when its coordinator,
-  consumer,
-  or configured worker pool is no longer running.
-- Redis scheduling now redelivers crashed executions after their database lease
-  expires, even when the original broker delivery has exhausted its retry
-  budget.
-- Redis scheduling now redelivers messages that were sent but never claimed
-  before
-  the delivery timeout, preventing pending executions from becoming stranded.
-- Reject unsupported document conflict nodes before applying access checks
-  during
-  name-conflict resolution.
-- Scheduled-task reliability fixes now reject replaying an already recorded
-  one-time
-  occurrence, prevent stale Redis dispatch acknowledgements from hiding a new
-  retry,
-  use the shared database clock for built-in maintenance cutoffs, report lost
-  lease
-  heartbeats, and cleanly stop after a partial local worker startup failure.
-  Dense recurring misfires now coalesce without walking every missed
-  occurrence, and
-  upload task deadlines use the same database clock as scheduled cleanup so
-  node
-  clock skew cannot expire newly created uploads.
-- Scheduling now uses the application database clock for persisted schedule
-  state,
-  retry timing, and execution leases so application-node clock skew cannot
-  cause
-  premature recovery.
-- Snapshot the task name, contract version, and payload on each scheduled
-  execution
-  so schedule updates cannot reinterpret work that was already queued.
-- Track local scheduler and worker failures independently so a successful
-  scheduler
-  poll cannot make health checks appear healthy while a worker is still
-  failing.
-- Verify scheduling-table backup compatibility and retained migration behavior
-  on supported MySQL versions.
+- Avoid acquiring database write locks when registered system schedule definitions already match their persisted state.
+- Bind schedule-update authorization to the requested locked revision so a concurrent task-type change cannot bypass its required permission.
+- Cancel expired running executions after their schedules are deleted so crashed workers cannot leave execution slots and history permanently stuck as active.
+- Count recovered execution leases toward scheduled-task attempt limits so crashed workers cannot cause task code to run beyond `max_attempts`.
+- Create and stamp an empty database during first server initialization without blocking normal startup on an Alembic revision check. Keep SQLite/MySQL upgrades and rejection of non-empty unversioned databases in the maintenance tool.
+- Enforce HTTP request-body and concurrency limits exactly, preserve CORS headers on framework errors, share trusted-proxy resolution, and make HTTP server shutdown and failure state reliable.
+- Keep each scheduling Provider run on its own stop signal and reject restarts until all threads from the previous run have exited.
+- Keep system maintenance intervals anchored when configuration changes request an immediate execution.
+- Make S3 downloads seekable with byte-range requests, preserve operational errors, and support SDK credential and endpoint resolution with configurable connection reuse.
+- Make scheduled-execution completion and failure conditional on the current lease owner and Provider generation, serialize aggregate transitions in one lock order, and isolate every Redis scheduling resource by a required deployment namespace.
+- Read the database clock only after acquiring the scheduled-execution lock during lease refresh so lock contention cannot produce an already-expired renewed lease.
+- Redis scheduling health now reports unavailable when its coordinator, consumer, or configured worker pool is no longer running.
+- Redis scheduling now redelivers crashed executions after their database lease expires, even when the original broker delivery has exhausted its retry budget.
+- Redis scheduling now redelivers messages that were sent but never claimed before the delivery timeout, preventing pending executions from becoming stranded.
+- Reject unsupported document conflict nodes before applying access checks during name-conflict resolution.
+- Scheduled-task reliability fixes now reject replaying an already recorded one-time occurrence, prevent stale Redis dispatch acknowledgements from hiding a new retry, use the shared database clock for built-in maintenance cutoffs, report lost lease heartbeats, and cleanly stop after a partial local worker startup failure. Dense recurring misfires now coalesce without walking every missed occurrence, and upload task deadlines use the same database clock as scheduled cleanup so node clock skew cannot expire newly created uploads.
+- Scheduling now uses the application database clock for persisted schedule state, retry timing, and execution leases so application-node clock skew cannot cause premature recovery.
+- Snapshot the task name, contract version, and payload on each scheduled execution so schedule updates cannot reinterpret work that was already queued.
+- Track local scheduler and worker failures independently so a successful scheduler poll cannot make health checks appear healthy while a worker is still failing.
+- Verify scheduling-table backup compatibility and retained migration behavior on supported MySQL versions.
 
 
 ## [v0.7.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.7.0) - 2026-08-26
@@ -153,31 +65,19 @@ Changes for the next release are collected as
 
 ### Added
 
-- Add Towncrier-based changelog fragments and a single release-preparation
-  command that keeps the server, package, bundled extension, and release notes
-  in sync.
-- Add an offline maintenance command that migrates and verifies every
-  application database table between SQLite and MySQL 8.4, with an optional
-  backed-up configuration switch.
-- Added manual audit-log preview, filtered JSONL export, and
-  archive-before-purge maintenance commands with configurable retention and
-  bounded deletion batches.
+- Add Towncrier-based changelog fragments and a single release-preparation command that keeps the server, package, bundled extension, and release notes in sync.
+- Add an offline maintenance command that migrates and verifies every application database table between SQLite and MySQL 8.4, with an optional backed-up configuration switch.
+- Added manual audit-log preview, filtered JSONL export, and archive-before-purge maintenance commands with configurable retention and bounded deletion batches.
 
 ### Changed
 
-- Database migration and CI now support MySQL 9.7 LTS while retaining MySQL 8.4
-  LTS support. Streaming reads are scoped to their statements so they cannot
-  affect subsequent migration DDL.
+- Database migration and CI now support MySQL 9.7 LTS while retaining MySQL 8.4 LTS support. Streaming reads are scoped to their statements so they cannot affect subsequent migration DDL.
 
 ### Fixed
 
-- Fix abandoned upload cleanup on MySQL when processing distinct tasks in
-  deadline
-  order.
-- Make the active-node name uniqueness schema compatible with MySQL 8.4 while
-  preserving cascading directory deletion and existing SQLite databases.
-- Prevent concurrent document download risk tracking on MySQL from returning an
-  internal server error when two requests record the same IP and account.
+- Fix abandoned upload cleanup on MySQL when processing distinct tasks in deadline order.
+- Make the active-node name uniqueness schema compatible with MySQL 8.4 while preserving cascading directory deletion and existing SQLite databases.
+- Prevent concurrent document download risk tracking on MySQL from returning an internal server error when two requests record the same IP and account.
 
 
 ## [v0.6.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.6.0) - 2026-08-25
@@ -186,23 +86,12 @@ Changes for the next release are collected as
 
 ### Added
 
-- Add a permission-protected `diagnostics` action with a fixed, non-secret
-  runtime snapshot and a dedicated `diagnostics` permission granted to `sysop`
-  by default.
-- Add adaptive download controls at task issuance and transfer start, with
-  persistent account, IP, and bearer-task token buckets, observe/enforce modes,
-  structured risk telemetry, and a `bypass_document_download_rate_limit`
-  permission granted to `sysop` by default.
-- Add durable, leased background file deduplication with crash recovery and
-  retryable storage cleanup.
-- Add adaptive document-creation risk control using persistent account and IP
-  token buckets, explainable risk levels, observe/enforce modes, and a
-  `bypass_document_creation_rate_limit` permission granted to `sysop` by
-  default.
-- Add two-stage upload leases, abandoned-upload cleanup, and configurable
-  per-creator reservation and document-creation limits.
-- Add explicit pending, in-progress, completed, cancelled, and expired file-task
-  lifecycle states.
+- Add a permission-protected `diagnostics` action with a fixed, non-secret runtime snapshot and a dedicated `diagnostics` permission granted to `sysop` by default.
+- Add adaptive download controls at task issuance and transfer start, with persistent account, IP, and bearer-task token buckets, observe/enforce modes, structured risk telemetry, and a `bypass_document_download_rate_limit` permission granted to `sysop` by default.
+- Add durable, leased background file deduplication with crash recovery and retryable storage cleanup.
+- Add adaptive document-creation risk control using persistent account and IP token buckets, explainable risk levels, observe/enforce modes, and a `bypass_document_creation_rate_limit` permission granted to `sysop` by default.
+- Add two-stage upload leases, abandoned-upload cleanup, and configurable per-creator reservation and document-creation limits.
+- Add explicit pending, in-progress, completed, cancelled, and expired file-task lifecycle states.
 - Add versioned extension manifests and identifier-based extension activation.
 - Add versioned persistent system state storage for core features and extensions.
 - Persist lockdown status, reasons, and the last disable timestamp across restarts.
@@ -210,58 +99,26 @@ Changes for the next release are collected as
 
 ### Changed
 
-- Increase the protocol version to 25 and replace ambiguous file-task claim
-  failures with dedicated `46000` through `46005` conclusion codes. Invalid
-  credentials, transfer-mode mismatches, and tasks that are not yet claimable
-  remain indistinguishable to prevent task probing.
-- Increase the protocol version to 24 and replace identity permission string
-  lists with structured grant/revocation entries and explicit effective-permission
-  fields. Expired entries are retained for a configurable period before bounded
-  background cleanup. Protocol 23 clients must upgrade together with the server.
-- Increase the protocol version to 22 and remove the exact core version from
-  the unauthenticated `server_info` response to reduce software fingerprinting.
-- Replace request-handler JSON Schema dictionaries with strict Pydantic request
-  models. Extensions that register handlers must now define a
-  `RequestDataModel` subclass as `request_model`; legacy `schema` dictionaries
-  are no longer supported. The validated request remains available to handlers
-  as the original JSON dictionary.
-- Return every request-data validation failure in `data.errors` using Pydantic's
-  `type`, `loc`, and `msg` fields while omitting submitted input, validation
-  context, and documentation URLs from client responses.
-- Assign calibrated request-token costs to every core, built-in extension,
-  optional OIDC, and debugging action while preserving per-deployment
-  `action_costs` overrides.
-- Increase the protocol version to 19. Download-limit responses use `429` with
-  account, IP, or task scope while preserving bearer capability and resumable
-  transfer semantics.
-- Unify document creation and download rate state in namespaced persistent
-  tables while preserving existing adaptive creation state across migration.
-- Keep durable file-deduplication scheduling and worker lifecycle in the
-  always-enabled `builtin` extension, with core uploads exposing transactional
-  and post-response hooks.
-- Return successful non-empty uploads before duplicate reference migration and
-  physical deletion, keeping duplicate and unique confirmation latency close.
-- Replace fixed-window document-creation limits with risk-weighted continuous
-  refill while preserving the protocol 18 `429` response shape. The adaptive
-  `creation_risk_control` table is now the only active rate-policy interface.
-- Increase the protocol version to 18. Cancelled or expired transfer requests
-  now return `410` with `data.task_status`; concurrent upload claims return
-  `409`; document creation limits return `429` with limit details.
-- Repeated `upload_document` calls reuse the pending initial upload instead of
-  creating another revision or extending its lease.
+- Increase the protocol version to 25 and replace ambiguous file-task claim failures with dedicated `46000` through `46005` conclusion codes. Invalid credentials, transfer-mode mismatches, and tasks that are not yet claimable remain indistinguishable to prevent task probing.
+- Increase the protocol version to 24 and replace identity permission string lists with structured grant/revocation entries and explicit effective-permission fields. Expired entries are retained for a configurable period before bounded background cleanup. Protocol 23 clients must upgrade together with the server.
+- Increase the protocol version to 22 and remove the exact core version from the unauthenticated `server_info` response to reduce software fingerprinting.
+- Replace request-handler JSON Schema dictionaries with strict Pydantic request models. Extensions that register handlers must now define a `RequestDataModel` subclass as `request_model`; legacy `schema` dictionaries are no longer supported. The validated request remains available to handlers as the original JSON dictionary.
+- Return every request-data validation failure in `data.errors` using Pydantic's `type`, `loc`, and `msg` fields while omitting submitted input, validation context, and documentation URLs from client responses.
+- Assign calibrated request-token costs to every core, built-in extension, optional OIDC, and debugging action while preserving per-deployment `action_costs` overrides.
+- Increase the protocol version to 19. Download-limit responses use `429` with account, IP, or task scope while preserving bearer capability and resumable transfer semantics.
+- Unify document creation and download rate state in namespaced persistent tables while preserving existing adaptive creation state across migration.
+- Keep durable file-deduplication scheduling and worker lifecycle in the always-enabled `builtin` extension, with core uploads exposing transactional and post-response hooks.
+- Return successful non-empty uploads before duplicate reference migration and physical deletion, keeping duplicate and unique confirmation latency close.
+- Replace fixed-window document-creation limits with risk-weighted continuous refill while preserving the protocol 18 `429` response shape. The adaptive `creation_risk_control` table is now the only active rate-policy interface.
+- Increase the protocol version to 18. Cancelled or expired transfer requests now return `410` with `data.task_status`; concurrent upload claims return `409`; document creation limits return `429` with limit details.
+- Repeated `upload_document` calls reuse the pending initial upload instead of creating another revision or extending its lease.
 
 ### Fixed
 
-- Cancel pending and active file transfers when the last live reference is
-  removed by document, revision, directory, or lockdown operations, while
-  preserving transfers for files still referenced elsewhere.
+- Cancel pending and active file transfers when the last live reference is removed by document, revision, directory, or lockdown operations, while preserving transfers for files still referenced elsewhere.
 - Prevent OIDC clients from overriding the configured redirect URI.
-- Enforce one shared active-name namespace for documents and directories at the
-  database layer, eliminating concurrent create, rename, move, and restore races.
-  Soft-deleted nodes release their names; upgrades stop and report historical
-  conflicts before changing the schema.
-- Treat the legacy `document.allow_name_duplicate` setting as obsolete and
-  ignored. Active sibling names are now always unique.
+- Enforce one shared active-name namespace for documents and directories at the database layer, eliminating concurrent create, rename, move, and restore races. Soft-deleted nodes release their names; upgrades stop and report historical conflicts before changing the schema.
+- Treat the legacy `document.allow_name_duplicate` setting as obsolete and ignored. Active sibling names are now always unique.
 
 ## [v0.2.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.2.0) - 2026-05-17
 

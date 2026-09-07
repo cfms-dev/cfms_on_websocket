@@ -82,7 +82,10 @@ def _successful_commands(project_root: Path, command: list[str]):
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
     if "--draft" in command:
         return subprocess.CompletedProcess(
-            command, 0, stdout="### Added\n\n- Add a release feature.\n", stderr=""
+            command,
+            0,
+            stdout="### Added\n\n- Add a release\n  feature.\n",
+            stderr="",
         )
 
     version = command[command.index("--version") + 1]
@@ -92,7 +95,7 @@ def _successful_commands(project_root: Path, command: list[str]):
         f"## [v{version}]"
         "(https://github.com/cfms-dev/cfms_on_websocket/releases/tag/"
         f"v{version}) - {release_date}\n\n"
-        "### Added\n\n- Add a release feature.\n"
+        "### Added\n\n- Add a release\n  feature.\n"
     )
     changelog_path.write_text(
         changelog_path.read_text(encoding="utf-8").replace(
@@ -116,7 +119,7 @@ def _successful_commands(project_root: Path, command: list[str]):
     ],
 )
 def test_prepare_release_synchronizes_managed_versions(
-    tmp_path, monkeypatch, version, bump, expected
+    tmp_path, monkeypatch, capsys, version, bump, expected
 ):
     _write_project(tmp_path)
     optional_manifest = tmp_path / "src/include/extensions/oidc_sso/manifest.toml"
@@ -161,6 +164,7 @@ def test_prepare_release_synchronizes_managed_versions(
     assert manage_release.extract_release_notes(tmp_path, expected) == (
         "### Added\n\n- Add a release feature.\n"
     )
+    assert "- Add a release feature." in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("version", ["0.6.0", "0.5.9", "v0.7.0", "0.7"])

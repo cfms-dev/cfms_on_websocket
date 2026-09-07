@@ -63,6 +63,29 @@ def _replace_once(text: str, pattern: re.Pattern[str], replacement: str) -> str:
     return updated
 
 
+def _unwrap_markdown_list_items(markdown: str) -> str:
+    lines = markdown.splitlines()
+    unwrapped: list[str] = []
+    in_list_item = False
+    for line in lines:
+        if line.startswith("- "):
+            unwrapped.append(line)
+            in_list_item = True
+        elif (
+            in_list_item
+            and line.startswith("  ")
+            and not line.startswith("    ")
+            and line.strip()
+            and not re.match(r"(?:[-*+] |\d+[.)] )", line[2:])
+        ):
+            unwrapped[-1] += f" {line.strip()}"
+        else:
+            unwrapped.append(line)
+            in_list_item = False
+    trailing_newline = "\n" if markdown.endswith("\n") else ""
+    return "\n".join(unwrapped) + trailing_newline
+
+
 def _parse_version(version: str) -> tuple[int, int, int]:
     if VERSION_PATTERN.fullmatch(version) is None:
         raise ReleaseError(f"Version must use stable X.Y.Z format: {version!r}")
@@ -248,6 +271,16 @@ def _update_changelog_links(
     )
     if changelog.count(heading) != 1:
         raise ReleaseError("Towncrier did not generate the expected release heading")
+    release_start = changelog.index(heading)
+    next_release = RELEASE_HEADING_PATTERN.search(
+        changelog, release_start + len(heading)
+    )
+    release_end = next_release.start() if next_release is not None else len(changelog)
+    changelog = (
+        changelog[:release_start]
+        + _unwrap_markdown_list_items(changelog[release_start:release_end])
+        + changelog[release_end:]
+    )
     comparison = (
         "<small>[Compare with previous release]"
         "(https://github.com/cfms-dev/cfms_on_websocket/compare/"
@@ -357,7 +390,7 @@ def prepare_release(
     )
     if not draft.stdout.strip():
         raise ReleaseError("Towncrier generated an empty release draft")
-    print(draft.stdout.rstrip())
+    print(_unwrap_markdown_list_items(draft.stdout).rstrip())
 
     snapshots = {path: (project_root / path).read_bytes() for path in MANAGED_PATHS}
     fragment_snapshots = {path: path.read_bytes() for path in fragments}

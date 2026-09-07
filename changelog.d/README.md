@@ -14,9 +14,11 @@ Use an orphan fragment when no issue number exists:
 uv run --locked towncrier create +short-description.changed.md
 ```
 
-Write one concise, user-facing change per fragment. Available categories are
-`security`, `removed`, `deprecated`, `added`, `changed`, and `fixed`. Preview
-the pending release notes without changing files:
+Write one concise, user-facing change per fragment. Fragment prose may be wrapped
+across source lines while editing; release preparation emits each entry as one
+physical Markdown line so GitHub can wrap it to the available page width. Available
+categories are `security`, `removed`, `deprecated`, `added`, `changed`, and `fixed`.
+Preview the pending release notes without changing files:
 
 ```powershell
 uv run --locked towncrier build --draft --version 0.7.0

@@ -112,7 +112,7 @@ title_format = "## [v{version}](https://github.com/cfms-dev/cfms_on_websocket/re
 issue_format = "[#{issue}](https://github.com/cfms-dev/cfms_on_websocket/issues/{issue})"
 underlines = ["", "", ""]
 ignore = []
-wrap = true
+wrap = false
 
 [[tool.towncrier.type]]
 name = "Security"
