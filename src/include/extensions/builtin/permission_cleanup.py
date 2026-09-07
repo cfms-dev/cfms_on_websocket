@@ -1,9 +1,8 @@
-import time
-
 from loguru import logger as log
 from pydantic import BaseModel, ConfigDict
 
 from include.config.validation import IdentityPermissionRetentionPolicy
+from include.database.clock import database_now
 from include.database.session import Session
 from include.domains.identity.commands.permission_cleanup import (
     PermissionEntryCounts,
@@ -28,11 +27,9 @@ def cleanup_expired_permission_entries(
     policy: IdentityPermissionRetentionPolicy,
     now: float | None = None,
 ) -> PermissionEntryCounts:
-    if now is None:
-        now = time.time()
-    cutoff = now - policy.retention_days * _SECONDS_PER_DAY
-
     with Session.begin() as session:
+        current_time = database_now(session) if now is None else now
+        cutoff = current_time - policy.retention_days * _SECONDS_PER_DAY
         result = purge_expired_permission_entries(
             session,
             cutoff,

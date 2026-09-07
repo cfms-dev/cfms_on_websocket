@@ -1,4 +1,3 @@
-import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, cast
@@ -8,6 +7,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, joinedload
 
 from include.config.validation import DocumentUploadPolicy
+from include.database.clock import database_now
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 
 ACTIVE_FILE_TASK_STATUSES = (
@@ -202,7 +202,7 @@ def expire_file_task_if_due(
     session: Session, task_id: str, *, now: float | None = None
 ) -> FileTaskStatus | None:
     if now is None:
-        now = time.time()
+        now = database_now(session)
     task = session.get(FileTask, task_id)
     if task is None:
         return None
@@ -241,7 +241,7 @@ def claim_file_task(
     *,
     now: float | None = None,
 ) -> ClaimedFileTask | FileTaskClaimFailure:
-    now = time.time() if now is None else now
+    now = database_now(session) if now is None else now
     is_upload = transfer_mode == TransferMode.UPLOAD
 
     task = session.get(
@@ -415,7 +415,7 @@ def release_file_task(
     session: Session, task_id: str, *, now: float | None = None
 ) -> FileTaskStatus | None:
     if now is None:
-        now = time.time()
+        now = database_now(session)
     task = session.get(FileTask, task_id)
     if task is None or task.status != FileTaskStatus.IN_PROGRESS:
         return None

@@ -74,6 +74,45 @@ def _add_pending_document(context, *, status):
         session.add_all([root, document, file, revision, task])
 
 
+def test_database_clock_upload_is_not_expired_by_a_slow_node_clock(
+    upload_cleanup_context, monkeypatch
+):
+    from include.domains.documents.handlers import documents
+
+    context = upload_cleanup_context
+    models = context.models
+    monkeypatch.setattr(documents, "database_now", lambda _session: 1_000.0)
+    monkeypatch.setattr(documents, "time", SimpleNamespace(time=lambda: -10_000.0))
+    with context.session.begin() as session:
+        root = models.Folder(id="/", name="/", inherit=False)
+        document = models.Document(id="document", title="reserved", folder=root)
+        file = models.File(id="file", path="pending-file")
+        revision = models.DocumentRevision(
+            id="revision",
+            document=document,
+            file=file,
+        )
+        document.current_revision = revision
+        session.add_all([root, document, file, revision])
+        session.flush()
+        task_data = documents.create_file_task(
+            session,
+            file,
+            models.TransferMode.UPLOAD,
+        )
+
+    result = context.cleanup.reclaim_abandoned_uploads(now=1_000.0)
+
+    assert result.matched_tasks == 0
+    assert context.removed_paths == []
+    with context.session() as session:
+        task = session.get(models.FileTask, task_data["task_id"])
+        assert task.status == models.FileTaskStatus.PENDING
+        assert task.start_time == 1_000.0
+        assert task.end_time > 1_000.0
+        assert session.get(models.Document, "document") is not None
+
+
 @pytest.mark.parametrize("status_name", ["PENDING", "EXPIRED"])
 def test_expired_initial_upload_removes_empty_document(
     upload_cleanup_context, status_name

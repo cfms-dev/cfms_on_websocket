@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 
 from include.config.validation import AuthThrottlePolicy, DocumentUploadPolicy
+from include.database.clock import database_now
 from include.database.session import Session
 from include.domains.documents.commands.upload_cleanup import reclaim_abandoned_uploads
 from include.domains.documents.creation_limits import (
@@ -51,7 +52,12 @@ def _run_upload_cleanup(
     _context: ScheduledTaskContext,
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
-    result = reclaim_abandoned_uploads(limit=_UPLOAD_CLEANUP_BATCH_SIZE)
+    with Session() as session:
+        current_time = database_now(session)
+    result = reclaim_abandoned_uploads(
+        now=current_time,
+        limit=_UPLOAD_CLEANUP_BATCH_SIZE,
+    )
     return ScheduledTaskResult(
         data={
             "matched_tasks": result.matched_tasks,
@@ -67,7 +73,12 @@ def _run_auth_throttle_cleanup(
     _context: ScheduledTaskContext,
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
-    result = purge_expired_auth_throttle_records(AuthThrottlePolicy.from_config())
+    with Session() as session:
+        current_time = database_now(session)
+    result = purge_expired_auth_throttle_records(
+        AuthThrottlePolicy.from_config(),
+        now=current_time,
+    )
     return ScheduledTaskResult(
         data={
             "account_records": result.account_records,
@@ -82,7 +93,10 @@ def _run_creation_risk_cleanup(
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
     with Session.begin() as session:
-        result = cleanup_document_creation_risk_state(session)
+        result = cleanup_document_creation_risk_state(
+            session,
+            now=database_now(session),
+        )
     return ScheduledTaskResult(
         data={"ip_accounts": result.ip_accounts, "buckets": result.buckets}
     )
@@ -93,7 +107,10 @@ def _run_download_risk_cleanup(
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
     with Session.begin() as session:
-        result = cleanup_document_download_risk_state(session)
+        result = cleanup_document_download_risk_state(
+            session,
+            now=database_now(session),
+        )
     return ScheduledTaskResult(
         data={"ip_accounts": result.ip_accounts, "buckets": result.buckets}
     )

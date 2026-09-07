@@ -74,20 +74,37 @@ def test_builtin_system_tasks_return_cleanup_counts(monkeypatch):
     from include.extensions.builtin import scheduled_tasks
 
     session = object()
+
+    class SessionFactory:
+        def __call__(self):
+            return nullcontext(session)
+
+        def begin(self):
+            return nullcontext(session)
+
     monkeypatch.setattr(
         scheduled_tasks,
         "Session",
-        SimpleNamespace(begin=lambda: nullcontext(session)),
+        SessionFactory(),
+    )
+    monkeypatch.setattr(
+        scheduled_tasks,
+        "database_now",
+        lambda received_session: 123.0 if received_session is session else None,
     )
     monkeypatch.setattr(
         scheduled_tasks,
         "reclaim_abandoned_uploads",
-        lambda *, limit: SimpleNamespace(
-            matched_tasks=limit,
-            expired_tasks=2,
-            removed_revisions=3,
-            removed_documents=4,
-            storage_cleanup_failures=5,
+        lambda now, *, limit: (
+            SimpleNamespace(
+                matched_tasks=limit,
+                expired_tasks=2,
+                removed_revisions=3,
+                removed_documents=4,
+                storage_cleanup_failures=5,
+            )
+            if now == 123.0
+            else None
         ),
     )
     policy = object()
@@ -99,27 +116,27 @@ def test_builtin_system_tasks_return_cleanup_counts(monkeypatch):
     monkeypatch.setattr(
         scheduled_tasks,
         "purge_expired_auth_throttle_records",
-        lambda received_policy: (
+        lambda received_policy, *, now: (
             SimpleNamespace(account_records=6, login_records=7, traffic_records=8)
-            if received_policy is policy
+            if received_policy is policy and now == 123.0
             else None
         ),
     )
     monkeypatch.setattr(
         scheduled_tasks,
         "cleanup_document_creation_risk_state",
-        lambda received_session: (
+        lambda received_session, *, now: (
             SimpleNamespace(ip_accounts=9, buckets=10)
-            if received_session is session
+            if received_session is session and now == 123.0
             else None
         ),
     )
     monkeypatch.setattr(
         scheduled_tasks,
         "cleanup_document_download_risk_state",
-        lambda received_session: (
+        lambda received_session, *, now: (
             SimpleNamespace(ip_accounts=11, buckets=12)
-            if received_session is session
+            if received_session is session and now == 123.0
             else None
         ),
     )
@@ -149,6 +166,35 @@ def test_builtin_system_tasks_return_cleanup_counts(monkeypatch):
         "builtin.creation_risk_cleanup": {"ip_accounts": 9, "buckets": 10},
         "builtin.download_risk_cleanup": {"ip_accounts": 11, "buckets": 12},
     }
+
+
+def test_permission_cleanup_uses_database_clock(monkeypatch):
+    from include.extensions.builtin import permission_cleanup
+
+    session = object()
+    policy = SimpleNamespace(retention_days=2, batch_size=10)
+    monkeypatch.setattr(
+        permission_cleanup,
+        "Session",
+        SimpleNamespace(begin=lambda: nullcontext(session)),
+    )
+    monkeypatch.setattr(
+        permission_cleanup,
+        "database_now",
+        lambda received_session: 200_000.0 if received_session is session else None,
+    )
+    calls = []
+
+    def purge(received_session, cutoff, batch_size):
+        calls.append((received_session, cutoff, batch_size))
+        return PermissionEntryCounts(user_entries=0, group_entries=0)
+
+    monkeypatch.setattr(permission_cleanup, "purge_expired_permission_entries", purge)
+
+    result = permission_cleanup.cleanup_expired_permission_entries(policy)
+
+    assert result.total == 0
+    assert calls == [(session, 27_200.0, 10)]
 
 
 def test_core_schedule_history_cleanup_is_always_registered(monkeypatch):

@@ -29,6 +29,7 @@ from include.config.constants import (
     UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
 )
 from include.config.validation import DocumentUploadPolicy
+from include.database.clock import database_now
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -195,7 +196,7 @@ def create_file_task(
     if not file:
         raise ValueError("File can not be None when creating a file task")
 
-    now = time.time()
+    now = database_now(session)
     duration = (
         DocumentUploadPolicy.from_config().start_timeout_seconds
         if transfer_mode == TransferMode.UPLOAD

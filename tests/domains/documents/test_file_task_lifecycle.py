@@ -393,17 +393,13 @@ def test_download_task_records_issuer_without_binding_bearer(file_task_context) 
         assert task.issued_by_username == "alice"
 
 
-def test_upload_task_lifecycle_uses_two_stage_deadline(
-    file_task_context, monkeypatch
-) -> None:
+def test_upload_task_lifecycle_uses_two_stage_deadline(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
     from include.domains.documents.commands import file_tasks
 
     task_id, _file_id = _create_file_task(
         file_task_context, "uploads/lifecycle.bin", mode=TransferMode.UPLOAD
     )
-    monkeypatch.setattr(file_tasks.time, "time", lambda: 1000.0)
-
     with file_task_context.session.begin() as session:
         task = session.get(file_task_context.FileTask, task_id)
         task.start_time = 900.0
