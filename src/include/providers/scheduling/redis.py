@@ -43,10 +43,20 @@ def _worker_threads(worker: Worker) -> tuple[threading.Thread, ...]:
     return (*worker.workers, *worker.consumers.values())
 
 
-def _worker_is_alive(worker: Worker | None) -> bool:
+def _worker_has_live_threads(worker: Worker | None) -> bool:
     return worker is not None and any(
         thread.is_alive() for thread in _worker_threads(worker)
     )
+
+
+def _worker_is_running(worker: Worker | None, expected_worker_threads: int) -> bool:
+    if (
+        worker is None
+        or len(worker.workers) != expected_worker_threads
+        or not worker.consumers
+    ):
+        return False
+    return all(thread.is_alive() for thread in _worker_threads(worker))
 
 
 class RedisSchedulingProvider(SchedulingProvider):
@@ -91,7 +101,7 @@ class RedisSchedulingProvider(SchedulingProvider):
                 return
             if (
                 self._scheduler_thread is not None and self._scheduler_thread.is_alive()
-            ) or _worker_is_alive(self._worker):
+            ) or _worker_has_live_threads(self._worker):
                 raise RuntimeError(
                     "Cannot restart scheduling provider while the previous run is "
                     "still stopping"
@@ -138,7 +148,7 @@ class RedisSchedulingProvider(SchedulingProvider):
                 self._closed = True
                 if not scheduler_thread.is_alive():
                     self._scheduler_thread = None
-                if not _worker_is_alive(worker):
+                if not _worker_has_live_threads(worker):
                     self._worker = None
                 raise
             self._started = True
@@ -184,7 +194,7 @@ class RedisSchedulingProvider(SchedulingProvider):
                     self._client.close()
 
         scheduler_alive = scheduler_thread is not None and scheduler_thread.is_alive()
-        worker_alive = _worker_is_alive(worker)
+        worker_alive = _worker_has_live_threads(worker)
         with self._state_lock:
             if self._scheduler_thread is scheduler_thread and not scheduler_alive:
                 self._scheduler_thread = None
@@ -210,9 +220,10 @@ class RedisSchedulingProvider(SchedulingProvider):
         with self._state_lock:
             started = self._started
             scheduler_thread = self._scheduler_thread
+            worker = self._worker
             stopping = self._stop.is_set() and (
                 (scheduler_thread is not None and scheduler_thread.is_alive())
-                or _worker_is_alive(self._worker)
+                or _worker_has_live_threads(worker)
             )
         if stopping:
             return SchedulingProviderStatus(
@@ -220,7 +231,12 @@ class RedisSchedulingProvider(SchedulingProvider):
                 mode="redis",
                 detail="stopping",
             )
-        if not started or scheduler_thread is None or not scheduler_thread.is_alive():
+        if (
+            not started
+            or scheduler_thread is None
+            or not scheduler_thread.is_alive()
+            or not _worker_is_running(worker, self._policy.worker_threads)
+        ):
             return SchedulingProviderStatus(
                 available=False,
                 mode="redis",

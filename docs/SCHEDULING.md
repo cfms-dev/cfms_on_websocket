@@ -77,7 +77,8 @@ contract, payload, and execution lease before running.
 Redis outages leave the WebSocket server running in a degraded state. Scheduling
 management actions return 503 until Redis recovers. The Provider retries its
 infrastructure connections; the server never silently falls back to the local
-Provider.
+Provider. The same unavailable state is reported if the embedded coordinator,
+consumer, or configured worker pool is no longer running.
 
 The runtime lock prevents deployment, rollback, or recovery while the server using
 that runtime root is active. In a distributed deployment, stop every CFMS server

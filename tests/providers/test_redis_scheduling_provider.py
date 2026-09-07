@@ -38,6 +38,17 @@ class _FakeBroker:
         self.closed += 1
 
 
+class _FakeThread:
+    def __init__(self, alive=True):
+        self.alive = alive
+
+    def is_alive(self):
+        return self.alive
+
+    def join(self, timeout=None):
+        pass
+
+
 class _FakeWorker:
     instances = []
 
@@ -53,9 +64,14 @@ class _FakeWorker:
 
     def start(self):
         self.started += 1
+        self.workers = [_FakeThread() for _ in range(self.worker_threads)]
+        self.consumers = {next(iter(self.queues)): _FakeThread()}
 
     def stop(self, timeout):
         self.stop_timeouts.append(timeout)
+        for thread in (*self.workers, *self.consumers.values()):
+            if isinstance(thread, _FakeThread):
+                thread.alive = False
 
 
 class _FakePubSub:
@@ -174,6 +190,40 @@ def test_redis_provider_embeds_coordinator_and_worker_pool(monkeypatch):
     assert provider.status().detail == "not_running"
 
 
+@pytest.mark.parametrize(
+    "failure",
+    ("coordinator", "consumer", "worker_pool", "partial_worker", "worker_count"),
+)
+def test_redis_provider_requires_complete_runtime_for_health(failure):
+    provider = _provider()
+    provider._started = True
+    provider._scheduler_thread = _FakeThread()
+    worker = _FakeWorker(
+        _FakeBroker(),
+        queues={provider._queue_name},
+        worker_threads=provider._policy.worker_threads,
+    )
+    worker.start()
+    provider._worker = worker
+
+    if failure == "coordinator":
+        provider._scheduler_thread.alive = False
+    elif failure == "consumer":
+        next(iter(worker.consumers.values())).alive = False
+    elif failure == "worker_pool":
+        for thread in worker.workers:
+            thread.alive = False
+    elif failure == "partial_worker":
+        worker.workers[0].alive = False
+    else:
+        worker.workers.pop()
+
+    status = provider.status()
+
+    assert status.available is False
+    assert status.detail == "not_running"
+
+
 def test_redis_provider_rejects_restart_until_previous_run_exits(monkeypatch):
     release_run = threading.Event()
     first_coordinator_started = threading.Event()
@@ -184,15 +234,18 @@ def test_redis_provider_rejects_restart_until_previous_run_exits(monkeypatch):
 
     class BlockingWorker(_FakeWorker):
         def start(self):
-            super().start()
+            self.started += 1
             thread = threading.Thread(target=lambda: release_run.wait(5), daemon=True)
             self.workers = [thread]
+            self.consumers = {next(iter(self.queues)): _FakeThread()}
             thread.start()
 
         def stop(self, timeout):
             self.stop_timeouts.append(timeout)
             for thread in self.workers:
                 thread.join(timeout=timeout / 1000)
+            for consumer in self.consumers.values():
+                consumer.alive = False
 
     provider = _provider()
     provider._policy = SchedulingPolicy(
