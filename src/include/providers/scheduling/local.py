@@ -32,50 +32,80 @@ class LocalSchedulingProvider(SchedulingProvider):
     def start(self, registry: ScheduledTaskRegistry) -> None:
         with self._state_lock:
             if self._threads:
-                return
-            self._registry = registry
-            self._generation = ensure_runtime_state("local")
-            self._stop.clear()
+                if any(thread.is_alive() for thread in self._threads):
+                    if self._stop.is_set():
+                        raise RuntimeError(
+                            "Cannot restart scheduling provider while the previous "
+                            "run is still stopping"
+                        )
+                    return
+                self._threads = []
+            generation = ensure_runtime_state("local")
+            stop = threading.Event()
+            wake = threading.Event()
             scheduler = threading.Thread(
                 target=self._scheduler_loop,
+                args=(registry, generation, stop, wake),
                 name="schedule-local-scheduler",
                 daemon=True,
             )
             workers = [
                 threading.Thread(
                     target=self._worker_loop,
+                    args=(registry, generation, stop, wake),
                     name=f"schedule-local-worker-{index + 1}",
                     daemon=True,
                 )
                 for index in range(self._policy.worker_threads)
             ]
+            self._registry = registry
+            self._generation = generation
+            self._stop = stop
+            self._wake = wake
             self._threads = [scheduler, *workers]
             for thread in self._threads:
                 thread.start()
 
     def shutdown(self) -> None:
         with self._state_lock:
-            threads = self._threads
+            threads = tuple(self._threads)
             if not threads:
                 return
-            self._threads = []
-        self._stop.set()
-        self._wake.set()
+            stop = self._stop
+            wake = self._wake
+            stop.set()
+            wake.set()
         deadline = time.monotonic() + self._policy.shutdown_grace_seconds
         for thread in threads:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        alive = tuple(thread for thread in threads if thread.is_alive())
+        with self._state_lock:
+            if tuple(self._threads) == threads and not alive:
+                self._threads = []
+        if alive:
+            logger.warning(
+                "Local scheduling shutdown timed out with threads still running: {}",
+                ", ".join(thread.name for thread in alive),
+            )
 
     def notify_schedule_change(self) -> None:
-        self._wake.set()
+        with self._state_lock:
+            wake = self._wake
+        wake.set()
 
     def status(self) -> SchedulingProviderStatus:
         with self._state_lock:
-            running = bool(self._threads) and all(
-                thread.is_alive() for thread in self._threads
-            )
-            detail = self._last_error
+            alive = tuple(thread for thread in self._threads if thread.is_alive())
+            stopping = bool(alive) and self._stop.is_set()
+            running = bool(self._threads) and len(alive) == len(self._threads)
+            if stopping:
+                detail = "stopping"
+            elif not running:
+                detail = "not_running"
+            else:
+                detail = self._last_error
         return SchedulingProviderStatus(
-            available=running and detail is None,
+            available=running and not stopping and detail is None,
             mode="local",
             detail=detail,
         )
@@ -84,32 +114,42 @@ class LocalSchedulingProvider(SchedulingProvider):
         with self._state_lock:
             self._last_error = type(error).__name__
 
-    def _scheduler_loop(self) -> None:
-        while not self._stop.is_set():
+    def _scheduler_loop(
+        self,
+        registry: ScheduledTaskRegistry,
+        generation: int,
+        stop: threading.Event,
+        wake: threading.Event,
+    ) -> None:
+        while not stop.is_set():
             try:
-                synchronize_system_schedules(self._registry)
+                synchronize_system_schedules(registry)
                 cancel_expired_deleted_executions(self._policy.claim_batch_size)
-                enqueue_due_schedules(self._generation, self._policy)
+                enqueue_due_schedules(generation, self._policy)
                 with self._state_lock:
                     self._last_error = None
             except Exception as exc:  # noqa: BLE001 - provider remains degraded and retries.
                 self._record_error(exc)
                 logger.exception("Local scheduling loop failed")
-            self._wake.wait(self._policy.poll_interval_seconds)
-            self._wake.clear()
+            wake.wait(self._policy.poll_interval_seconds)
+            wake.clear()
 
-    def _worker_loop(self) -> None:
+    def _worker_loop(
+        self,
+        registry: ScheduledTaskRegistry,
+        generation: int,
+        stop: threading.Event,
+        wake: threading.Event,
+    ) -> None:
         lease_owner = secrets.token_hex(32)
-        while not self._stop.is_set():
+        while not stop.is_set():
             try:
-                claim = claim_execution(self._generation, lease_owner, self._policy)
+                claim = claim_execution(generation, lease_owner, self._policy)
                 if claim is not None:
-                    run_claimed_execution(
-                        claim, self._generation, self._registry, self._policy
-                    )
+                    run_claimed_execution(claim, generation, registry, self._policy)
                     continue
             except Exception as exc:  # noqa: BLE001 - provider remains degraded and retries.
                 self._record_error(exc)
                 logger.exception("Local scheduling worker failed")
-            self._wake.wait(self._policy.poll_interval_seconds)
-            self._wake.clear()
+            wake.wait(self._policy.poll_interval_seconds)
+            wake.clear()

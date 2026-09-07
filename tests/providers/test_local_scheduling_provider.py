@@ -1,6 +1,8 @@
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from include.config.validation import SchedulingPolicy
 from include.providers.scheduling import local
 from include.providers.scheduling.local import LocalSchedulingProvider
@@ -83,3 +85,68 @@ def test_provider_bootstrap_registers_scheduling_when_api_extension_is_disabled(
     )
 
     assert any(isinstance(item, LocalSchedulingProvider) for item in registered)
+
+
+def test_local_provider_rejects_restart_until_long_running_worker_exits(monkeypatch):
+    task_started = threading.Event()
+    release_task = threading.Event()
+    restarted_worker = threading.Event()
+    claim_lock = threading.Lock()
+    claim_count = 0
+    generations = iter((1, 2))
+
+    monkeypatch.setattr(local, "ensure_runtime_state", lambda _mode: next(generations))
+    monkeypatch.setattr(local, "synchronize_system_schedules", lambda _registry: None)
+    monkeypatch.setattr(
+        local, "cancel_expired_deleted_executions", lambda _batch_size: 0
+    )
+    monkeypatch.setattr(local, "enqueue_due_schedules", lambda _generation, _policy: 0)
+
+    def claim(_generation, _owner, _policy):
+        nonlocal claim_count
+        with claim_lock:
+            claim_count += 1
+            current_claim = claim_count
+        if current_claim == 1:
+            return object()
+        restarted_worker.set()
+        return None
+
+    def run(_claim, _generation, _registry, _policy):
+        task_started.set()
+        assert release_task.wait(5)
+
+    monkeypatch.setattr(local, "claim_execution", claim)
+    monkeypatch.setattr(local, "run_claimed_execution", run)
+    provider = LocalSchedulingProvider(
+        SchedulingPolicy(
+            worker_threads=1,
+            poll_interval_seconds=0.01,
+            shutdown_grace_seconds=1,
+        )
+    )
+    registry = ScheduledTaskRegistry()
+
+    provider.start(registry)
+    provider.start(registry)
+    assert task_started.wait(1)
+
+    provider.shutdown()
+
+    status = provider.status()
+    assert status.available is False
+    assert status.detail == "stopping"
+    with pytest.raises(
+        RuntimeError,
+        match="previous run is still stopping",
+    ):
+        provider.start(registry)
+
+    release_task.set()
+    provider.shutdown()
+    with claim_lock:
+        assert claim_count == 1
+
+    provider.start(registry)
+    assert restarted_worker.wait(1)
+    provider.shutdown()

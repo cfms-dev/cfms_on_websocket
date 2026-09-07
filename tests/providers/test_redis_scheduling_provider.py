@@ -132,9 +132,9 @@ def _prepare_embedded_runtime(monkeypatch, provider):
         provider._actor = object()
         return provider._actor
 
-    def coordinator(_registry, _generation):
+    def coordinator(_registry, _generation, stop):
         coordinator_started.set()
-        provider._stop.wait()
+        stop.wait()
 
     _FakeWorker.instances.clear()
     monkeypatch.setattr(scheduling_redis, "Worker", _FakeWorker)
@@ -172,6 +172,90 @@ def test_redis_provider_embeds_coordinator_and_worker_pool(monkeypatch):
     assert broker.closed == 1
     assert provider._client.closed == 1
     assert provider.status().detail == "not_running"
+
+
+def test_redis_provider_rejects_restart_until_previous_run_exits(monkeypatch):
+    release_run = threading.Event()
+    first_coordinator_started = threading.Event()
+    second_coordinator_started = threading.Event()
+    coordinator_stops = []
+    coordinator_lock = threading.Lock()
+    brokers = []
+
+    class BlockingWorker(_FakeWorker):
+        def start(self):
+            super().start()
+            thread = threading.Thread(target=lambda: release_run.wait(5), daemon=True)
+            self.workers = [thread]
+            thread.start()
+
+        def stop(self, timeout):
+            self.stop_timeouts.append(timeout)
+            for thread in self.workers:
+                thread.join(timeout=timeout / 1000)
+
+    provider = _provider()
+    provider._policy = SchedulingPolicy(
+        redis_namespace="test-cluster",
+        shutdown_grace_seconds=1,
+    )
+
+    def ensure_actor(registry):
+        broker = _FakeBroker()
+        brokers.append(broker)
+        provider._registry = registry
+        provider._broker = broker
+        provider._actor = object()
+        return provider._actor
+
+    def coordinator(_registry, _generation, stop):
+        with coordinator_lock:
+            coordinator_stops.append(stop)
+            run_number = len(coordinator_stops)
+        if run_number == 1:
+            first_coordinator_started.set()
+            stop.wait()
+            assert release_run.wait(5)
+        else:
+            second_coordinator_started.set()
+            stop.wait()
+
+    monkeypatch.setattr(scheduling_redis, "Worker", BlockingWorker)
+    monkeypatch.setattr(
+        scheduling_redis,
+        "ensure_runtime_state",
+        lambda _mode, _namespace: 7,
+    )
+    monkeypatch.setattr(provider, "_ensure_actor", ensure_actor)
+    monkeypatch.setattr(provider, "_scheduler_loop", coordinator)
+    monkeypatch.setattr(provider, "_create_client", lambda: _FakeRedis())
+    registry = ScheduledTaskRegistry()
+
+    provider.start(registry)
+    assert first_coordinator_started.wait(1)
+
+    provider.shutdown()
+
+    status = provider.status()
+    assert status.available is False
+    assert status.detail == "stopping"
+    with pytest.raises(
+        RuntimeError,
+        match="previous run is still stopping",
+    ):
+        provider.start(registry)
+    assert coordinator_stops[0].is_set()
+
+    release_run.set()
+    provider.shutdown()
+    provider.start(registry)
+    assert second_coordinator_started.wait(1)
+    assert coordinator_stops[0] is not coordinator_stops[1]
+    assert coordinator_stops[0].is_set()
+    assert not coordinator_stops[1].is_set()
+
+    provider.shutdown()
+    assert all(broker.closed == 1 for broker in brokers)
 
 
 def test_redis_provider_reports_degraded_without_stopping_server(monkeypatch):
@@ -282,7 +366,7 @@ def test_coordinator_renews_and_releases_leadership_with_one_owner_token(
     )
     registry = ScheduledTaskRegistry()
 
-    provider._scheduler_loop(registry, 11)
+    provider._scheduler_loop(registry, 11, provider._stop)
 
     assert len(synchronized) == 2
     assert [generation for generation, _policy in enqueued] == [11, 11]
@@ -362,7 +446,7 @@ def test_coordinator_retries_after_redis_recovers(monkeypatch):
     )
     monkeypatch.setattr(provider, "_dispatch_pending", lambda _generation: None)
 
-    provider._scheduler_loop(ScheduledTaskRegistry(), 1)
+    provider._scheduler_loop(ScheduledTaskRegistry(), 1, provider._stop)
 
     assert failed_pubsub.closed == 1
     assert recovered_pubsub.closed == 1

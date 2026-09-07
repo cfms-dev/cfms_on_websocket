@@ -39,6 +39,16 @@ return 0
 """
 
 
+def _worker_threads(worker: Worker) -> tuple[threading.Thread, ...]:
+    return (*worker.workers, *worker.consumers.values())
+
+
+def _worker_is_alive(worker: Worker | None) -> bool:
+    return worker is not None and any(
+        thread.is_alive() for thread in _worker_threads(worker)
+    )
+
+
 class RedisSchedulingProvider(SchedulingProvider):
     _broker: RedisBroker | None
     _registry: ScheduledTaskRegistry
@@ -79,6 +89,15 @@ class RedisSchedulingProvider(SchedulingProvider):
         with self._state_lock:
             if self._started:
                 return
+            if (
+                self._scheduler_thread is not None and self._scheduler_thread.is_alive()
+            ) or _worker_is_alive(self._worker):
+                raise RuntimeError(
+                    "Cannot restart scheduling provider while the previous run is "
+                    "still stopping"
+                )
+            self._scheduler_thread = None
+            self._worker = None
             if self._closed:
                 self._client = self._create_client()
                 self._closed = False
@@ -87,7 +106,7 @@ class RedisSchedulingProvider(SchedulingProvider):
             self._generation = ensure_runtime_state(
                 "redis", self._policy.redis_namespace
             )
-            self._stop.clear()
+            stop = threading.Event()
             self._ensure_actor(registry)
             assert self._broker is not None
             worker = Worker(
@@ -97,25 +116,30 @@ class RedisSchedulingProvider(SchedulingProvider):
             )
             scheduler_thread = threading.Thread(
                 target=self._scheduler_loop,
-                args=(registry, self._generation),
+                args=(registry, self._generation, stop),
                 name="schedule-redis-coordinator",
                 daemon=True,
             )
+            self._stop = stop
             self._worker = worker
             self._scheduler_thread = scheduler_thread
             try:
                 worker.start()
                 scheduler_thread.start()
             except Exception:
-                self._stop.set()
-                self._worker = None
-                self._scheduler_thread = None
+                stop.set()
                 self._actor = None
                 broker = self._broker
                 self._broker = None
                 if worker.workers or worker.consumers:
                     worker.stop(timeout=self._policy.shutdown_grace_seconds * 1000)
                 broker.close()
+                self._client.close()
+                self._closed = True
+                if not scheduler_thread.is_alive():
+                    self._scheduler_thread = None
+                if not _worker_is_alive(worker):
+                    self._worker = None
                 raise
             self._started = True
 
@@ -126,31 +150,51 @@ class RedisSchedulingProvider(SchedulingProvider):
 
     def shutdown(self) -> None:
         with self._state_lock:
-            if self._closed:
+            if self._closed and self._scheduler_thread is None and self._worker is None:
                 return
+            first_shutdown = not self._closed
             self._closed = True
             self._started = False
             self._stop.set()
             scheduler_thread = self._scheduler_thread
             worker = self._worker
-            broker = self._broker
-            self._scheduler_thread = None
-            self._worker = None
-            self._broker = None
-            self._actor = None
+            broker = self._broker if first_shutdown else None
+            if first_shutdown:
+                self._broker = None
+                self._actor = None
 
         deadline = time.monotonic() + self._policy.shutdown_grace_seconds
         try:
             if scheduler_thread is not None:
                 scheduler_thread.join(timeout=max(0.0, deadline - time.monotonic()))
             if worker is not None:
-                worker.stop(timeout=max(0, int((deadline - time.monotonic()) * 1000)))
+                if first_shutdown:
+                    worker.stop(
+                        timeout=max(0, int((deadline - time.monotonic()) * 1000))
+                    )
+                else:
+                    for thread in _worker_threads(worker):
+                        thread.join(timeout=max(0.0, deadline - time.monotonic()))
         finally:
-            try:
-                if broker is not None:
-                    broker.close()
-            finally:
-                self._client.close()
+            if first_shutdown:
+                try:
+                    if broker is not None:
+                        broker.close()
+                finally:
+                    self._client.close()
+
+        scheduler_alive = scheduler_thread is not None and scheduler_thread.is_alive()
+        worker_alive = _worker_is_alive(worker)
+        with self._state_lock:
+            if self._scheduler_thread is scheduler_thread and not scheduler_alive:
+                self._scheduler_thread = None
+            if self._worker is worker and not worker_alive:
+                self._worker = None
+        if scheduler_alive or worker_alive:
+            logger.warning(
+                "Redis scheduling shutdown timed out while the previous run is "
+                "still stopping"
+            )
 
     def notify_schedule_change(self) -> None:
         try:
@@ -166,6 +210,16 @@ class RedisSchedulingProvider(SchedulingProvider):
         with self._state_lock:
             started = self._started
             scheduler_thread = self._scheduler_thread
+            stopping = self._stop.is_set() and (
+                (scheduler_thread is not None and scheduler_thread.is_alive())
+                or _worker_is_alive(self._worker)
+            )
+        if stopping:
+            return SchedulingProviderStatus(
+                available=False,
+                mode="redis",
+                detail="stopping",
+            )
         if not started or scheduler_thread is None or not scheduler_thread.is_alive():
             return SchedulingProviderStatus(
                 available=False,
@@ -256,7 +310,12 @@ class RedisSchedulingProvider(SchedulingProvider):
             self._actor.send(execution_id, generation)
             mark_dispatched(execution_id, generation)
 
-    def _scheduler_loop(self, registry: ScheduledTaskRegistry, generation: int) -> None:
+    def _scheduler_loop(
+        self,
+        registry: ScheduledTaskRegistry,
+        generation: int,
+        stop: threading.Event,
+    ) -> None:
         """Run this Provider's Redis-elected scheduler candidate.
 
         Redis coordinates leadership and wake-ups, while the application database
@@ -267,7 +326,7 @@ class RedisSchedulingProvider(SchedulingProvider):
         leader = False
         pubsub = None
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 try:
                     if pubsub is None:
                         pubsub = self._client.pubsub(ignore_subscribe_messages=True)
@@ -314,7 +373,7 @@ class RedisSchedulingProvider(SchedulingProvider):
                     if pubsub is not None:
                         pubsub.close()
                         pubsub = None
-                    self._stop.wait(self._policy.poll_interval_seconds)
+                    stop.wait(self._policy.poll_interval_seconds)
         finally:
             if leader:
                 try:
