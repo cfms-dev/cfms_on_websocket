@@ -330,3 +330,37 @@ def test_visible_search_query_honors_read_block(search_query_context):
     )
 
     assert rows == []
+
+
+def test_visible_search_query_filters_before_limit(search_query_context):
+    context = search_query_context
+    user = _make_user(context)
+    query = "SearchVisibilityLimit"
+    for index in range(3):
+        _make_folder(
+            context,
+            f"hidden-{index}",
+            f"{query}Hidden{index}",
+            access_rules=_SYSOP_READ_RULES,
+        )
+    visible_folder = _make_folder(
+        context,
+        "visible-after-hidden",
+        f"{query}Visible",
+    )
+    context.session.commit()
+
+    rows = context.fetch_visible_search_candidate_rows(
+        context.session,
+        user=user,
+        now=_NOW,
+        query=query,
+        sort_by="name",
+        sort_order="asc",
+        search_documents=False,
+        search_directories=True,
+        last_key=None,
+        limit=1,
+    )
+
+    assert [item["id"] for item in rows] == [visible_folder.id]
