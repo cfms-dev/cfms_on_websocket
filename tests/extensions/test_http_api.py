@@ -3,9 +3,10 @@ import datetime
 import socket
 import ssl
 import threading
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-import httpx
+import httpx2 as httpx
 import jwt
 import pluggy
 import pytest
@@ -14,7 +15,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, Depends, FastAPI, Request
-from fastapi.testclient import TestClient
 from starlette import convertors as starlette_convertors
 
 from include.domains.access.permissions import Permissions
@@ -47,6 +47,25 @@ def _allow_all_subnets(monkeypatch, application) -> None:
         "evaluate_subnet_access",
         classmethod(lambda _cls, _address: SimpleNamespace(allowed=True)),
     )
+
+
+@asynccontextmanager
+async def _http_client(
+    app,
+    *,
+    client: tuple[str, int] = ("testclient", 50000),
+    raise_app_exceptions: bool = True,
+):
+    transport = httpx.ASGITransport(
+        app=app,
+        client=client,
+        raise_app_exceptions=raise_app_exceptions,
+    )
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as test_client:
+        yield test_client
 
 
 def _install_http_plugins(monkeypatch, modules, registrations_by_owner):
@@ -114,7 +133,8 @@ def test_invalid_http_configuration_is_rejected(http_api_modules, section):
         http_api_modules.config.HttpApiPolicy.from_config(config)
 
 
-def test_registered_router_is_http_only_and_docs_are_disabled(
+@pytest.mark.asyncio
+async def test_registered_router_is_http_only_and_docs_are_disabled(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -129,11 +149,11 @@ def test_registered_router_is_http_only_and_docs_are_disabled(
     _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        assert client.get("/api/v1/example/value").json() == {"value": 42}
-        assert client.get("/healthz").json() == {"status": "ok"}
-        assert client.get("/api/v1/openapi.json").status_code == 404
-        assert client.get("/api/v1/docs").status_code == 404
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        assert (await client.get("/api/v1/example/value")).json() == {"value": 42}
+        assert (await client.get("/healthz")).json() == {"status": "ok"}
+        assert (await client.get("/api/v1/openapi.json")).status_code == 404
+        assert (await client.get("/api/v1/docs")).status_code == 404
 
     websocket_actions = set()
     for result in extension_manager.pm.hook.ext_register_handlers():
@@ -141,16 +161,17 @@ def test_registered_router_is_http_only_and_docs_are_disabled(
     assert "value" not in websocket_actions
 
 
-def test_docs_use_fixed_api_paths_when_enabled(monkeypatch, http_api_modules):
+@pytest.mark.asyncio
+async def test_docs_use_fixed_api_paths_when_enabled(monkeypatch, http_api_modules):
     modules = http_api_modules
     _allow_all_subnets(monkeypatch, modules.application)
     _install_http_plugins(monkeypatch, modules, [])
     policy = modules.config.HttpApiPolicy(docs_enabled=True)
     app = modules.application.build_http_application(policy)
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        assert client.get("/api/v1/openapi.json").status_code == 200
-        assert client.get("/api/v1/docs").status_code == 200
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        assert (await client.get("/api/v1/openapi.json")).status_code == 200
+        assert (await client.get("/api/v1/docs")).status_code == 200
 
 
 @pytest.mark.parametrize("invalid_router", [object(), APIRouter()])
@@ -291,7 +312,8 @@ def test_dynamic_route_cannot_shadow_later_static_route_across_extensions(
     assert "'static'" in message
 
 
-def test_static_route_before_dynamic_route_keeps_both_reachable(
+@pytest.mark.asyncio
+async def test_static_route_before_dynamic_route_keeps_both_reachable(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -314,15 +336,16 @@ def test_static_route_before_dynamic_route_keeps_both_reachable(
 
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        assert client.get("/api/v1/users/me").json() == {"handler": "static"}
-        assert client.get("/api/v1/users/alice").json() == {
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        assert (await client.get("/api/v1/users/me")).json() == {"handler": "static"}
+        assert (await client.get("/api/v1/users/alice")).json() == {
             "handler": "dynamic",
             "username": "alice",
         }
 
 
-def test_dynamic_converter_that_does_not_match_static_path_is_allowed(
+@pytest.mark.asyncio
+async def test_dynamic_converter_that_does_not_match_static_path_is_allowed(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -345,15 +368,16 @@ def test_dynamic_converter_that_does_not_match_static_path_is_allowed(
 
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        assert client.get("/api/v1/users/42").json() == {
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        assert (await client.get("/api/v1/users/42")).json() == {
             "handler": "dynamic",
             "user_id": 42,
         }
-        assert client.get("/api/v1/users/me").json() == {"handler": "static"}
+        assert (await client.get("/api/v1/users/me")).json() == {"handler": "static"}
 
 
-def test_different_converters_keep_reachable_routes_distinct(
+@pytest.mark.asyncio
+async def test_different_converters_keep_reachable_routes_distinct(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -376,18 +400,19 @@ def test_different_converters_keep_reachable_routes_distinct(
 
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        assert client.get("/api/v1/users/42").json() == {
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        assert (await client.get("/api/v1/users/42")).json() == {
             "handler": "integer",
             "value": 42,
         }
-        assert client.get("/api/v1/users/alice").json() == {
+        assert (await client.get("/api/v1/users/alice")).json() == {
             "handler": "string",
             "value": "alice",
         }
 
 
-def test_equivalent_route_patterns_with_different_methods_are_allowed(
+@pytest.mark.asyncio
+async def test_equivalent_route_patterns_with_different_methods_are_allowed(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -408,12 +433,12 @@ def test_equivalent_route_patterns_with_different_methods_are_allowed(
 
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        assert client.get("/api/v1/users/alice").json() == {
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        assert (await client.get("/api/v1/users/alice")).json() == {
             "method": "GET",
             "id": "alice",
         }
-        assert client.post("/api/v1/users/alice").json() == {
+        assert (await client.post("/api/v1/users/alice")).json() == {
             "method": "POST",
             "id": "alice",
         }
@@ -432,7 +457,8 @@ def test_router_cannot_replace_enabled_docs(monkeypatch, http_api_modules):
         )
 
 
-def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
+@pytest.mark.asyncio
+async def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -452,17 +478,17 @@ def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
     app = modules.application.build_http_application(policy)
 
     headers = {"Origin": "https://ui.example"}
-    with TestClient(
+    async with _http_client(
         app,
-        raise_server_exceptions=False,
+        raise_app_exceptions=False,
         client=("127.0.0.1", 5000),
     ) as client:
-        oversized = client.post(
+        oversized = await client.post(
             "/api/v1/example/echo", content=b"12345", headers=headers
         )
         assert oversized.status_code == 413
 
-        failure = client.post(
+        failure = await client.post(
             "/api/v1/example/echo",
             content=b"key",
             headers={
@@ -470,7 +496,7 @@ def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
                 "Authorization": "Bearer highly-sensitive-token",
             },
         )
-        disallowed_origin = client.post(
+        disallowed_origin = await client.post(
             "/api/v1/example/echo",
             content=b"12345",
             headers={"Origin": "https://other.example"},
@@ -487,7 +513,8 @@ def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
     assert "Access-Control-Allow-Origin" not in disallowed_origin.headers
 
 
-def test_body_limit_counts_chunked_body_before_endpoint_runs(
+@pytest.mark.asyncio
+async def test_body_limit_counts_chunked_body_before_endpoint_runs(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -501,20 +528,24 @@ def test_body_limit_counts_chunked_body_before_endpoint_runs(
         calls += 1
         return {"ok": True}
 
+    async def stream_chunks(*chunks):
+        for chunk in chunks:
+            yield chunk
+
     registration = modules.contracts.HttpRouterRegistration("consumer", router)
     _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
     app = modules.application.build_http_application(
         modules.config.HttpApiPolicy(max_request_body_bytes=4)
     )
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        accepted = client.post(
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        accepted = await client.post(
             "/api/v1/example/ignore",
-            content=(chunk for chunk in (b"12", b"34")),
+            content=stream_chunks(b"12", b"34"),
         )
-        rejected = client.post(
+        rejected = await client.post(
             "/api/v1/example/ignore",
-            content=(chunk for chunk in (b"123", b"45")),
+            content=stream_chunks(b"123", b"45"),
         )
 
     assert accepted.status_code == 200
@@ -560,7 +591,8 @@ async def test_body_receive_timeout_closes_connection_before_endpoint_runs(
 
 
 @pytest.mark.parametrize("content_length", ["-1", "not-a-number"])
-def test_invalid_content_length_is_rejected(
+@pytest.mark.asyncio
+async def test_invalid_content_length_is_rejected(
     monkeypatch, http_api_modules, content_length
 ):
     modules = http_api_modules
@@ -568,14 +600,17 @@ def test_invalid_content_length_is_rejected(
     _install_http_plugins(monkeypatch, modules, [])
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        response = client.get("/healthz", headers={"Content-Length": content_length})
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        response = await client.get(
+            "/healthz", headers={"Content-Length": content_length}
+        )
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Invalid Content-Length"}
 
 
-def test_banned_client_is_rejected(monkeypatch, http_api_modules):
+@pytest.mark.asyncio
+async def test_banned_client_is_rejected(monkeypatch, http_api_modules):
     modules = http_api_modules
     monkeypatch.setattr(
         modules.application.LoginGuard,
@@ -589,9 +624,11 @@ def test_banned_client_is_rejected(monkeypatch, http_api_modules):
         )
     )
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        response = client.get("/healthz", headers={"Origin": "https://ui.example"})
-        disallowed_origin = client.get(
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        response = await client.get(
+            "/healthz", headers={"Origin": "https://ui.example"}
+        )
+        disallowed_origin = await client.get(
             "/healthz", headers={"Origin": "https://other.example"}
         )
 
@@ -601,7 +638,8 @@ def test_banned_client_is_rejected(monkeypatch, http_api_modules):
     assert "Access-Control-Allow-Origin" not in disallowed_origin.headers
 
 
-def test_banned_cors_preflight_is_rejected_before_body_and_cors(
+@pytest.mark.asyncio
+async def test_banned_cors_preflight_is_rejected_before_body_and_cors(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -618,8 +656,8 @@ def test_banned_cors_preflight_is_rejected_before_body_and_cors(
         )
     )
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        response = client.request(
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        response = await client.request(
             "OPTIONS",
             "/healthz",
             content=b"12345",
@@ -635,7 +673,8 @@ def test_banned_cors_preflight_is_rejected_before_body_and_cors(
     assert "Origin" in response.headers["Vary"]
 
 
-def test_oversized_cors_preflight_is_rejected_before_cors(
+@pytest.mark.asyncio
+async def test_oversized_cors_preflight_is_rejected_before_cors(
     monkeypatch, http_api_modules
 ):
     modules = http_api_modules
@@ -648,8 +687,8 @@ def test_oversized_cors_preflight_is_rejected_before_cors(
         )
     )
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        response = client.request(
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        response = await client.request(
             "OPTIONS",
             "/healthz",
             content=b"12345",
@@ -665,7 +704,10 @@ def test_oversized_cors_preflight_is_rejected_before_cors(
     assert "Origin" in response.headers["Vary"]
 
 
-def test_admitted_cors_preflight_reaches_cors_middleware(monkeypatch, http_api_modules):
+@pytest.mark.asyncio
+async def test_admitted_cors_preflight_reaches_cors_middleware(
+    monkeypatch, http_api_modules
+):
     modules = http_api_modules
     _allow_all_subnets(monkeypatch, modules.application)
     _install_http_plugins(monkeypatch, modules, [])
@@ -676,8 +718,8 @@ def test_admitted_cors_preflight_reaches_cors_middleware(monkeypatch, http_api_m
         )
     )
 
-    with TestClient(app, client=("127.0.0.1", 5000)) as client:
-        response = client.request(
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        response = await client.request(
             "OPTIONS",
             "/healthz",
             content=b"1234",
@@ -699,18 +741,20 @@ def test_admitted_cors_preflight_reaches_cors_middleware(monkeypatch, http_api_m
     assert {"authorization", "content-type"}.issubset(allowed_headers)
 
 
-def test_invalid_peer_address_is_rejected(monkeypatch, http_api_modules):
+@pytest.mark.asyncio
+async def test_invalid_peer_address_is_rejected(monkeypatch, http_api_modules):
     modules = http_api_modules
     _install_http_plugins(monkeypatch, modules, [])
     app = modules.application.build_http_application(modules.config.HttpApiPolicy())
 
-    with TestClient(app) as client:
-        response = client.get("/healthz")
+    async with _http_client(app) as client:
+        response = await client.get("/healthz")
 
     assert response.status_code == 403
 
 
-def test_trusted_proxy_resolution_uses_rightmost_untrusted_address(
+@pytest.mark.asyncio
+async def test_trusted_proxy_resolution_uses_rightmost_untrusted_address(
     monkeypatch, http_api_modules
 ):
     security = http_api_modules.security
@@ -725,8 +769,8 @@ def test_trusted_proxy_resolution_uses_rightmost_untrusted_address(
     def address(request: Request):
         return {"address": security.get_http_client_address(request)}
 
-    with TestClient(app, client=("10.0.0.2", 5000)) as client:
-        response = client.get(
+    async with _http_client(app, client=("10.0.0.2", 5000)) as client:
+        response = await client.get(
             "/",
             headers={"X-Forwarded-For": "192.0.2.1, 198.51.100.7, 10.0.0.1"},
         )
@@ -759,7 +803,8 @@ def _session_factory(user):
         ("valid", 200),
     ],
 )
-def test_bearer_authentication_fully_validates_user_token(
+@pytest.mark.asyncio
+async def test_bearer_authentication_fully_validates_user_token(
     monkeypatch, http_api_modules, token_kind, status_code
 ):
     security = http_api_modules.security
@@ -813,15 +858,16 @@ def test_bearer_authentication_fully_validates_user_token(
     elif token_kind in {"disabled", "valid"}:
         headers["Authorization"] = f"Bearer {valid_token}"
 
-    with TestClient(app) as client:
-        response = client.get("/", headers=headers)
+    async with _http_client(app) as client:
+        response = await client.get("/", headers=headers)
 
     assert response.status_code == status_code
     if status_code == 401:
         assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
-def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modules):
+@pytest.mark.asyncio
+async def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modules):
     security = http_api_modules.security
     principal = http_api_modules.contracts.HttpPrincipal(
         username="alice",
@@ -852,9 +898,9 @@ def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modules):
     ):
         return {}
 
-    with TestClient(app) as client:
-        limited_response = client.get("/limited")
-        forbidden_response = client.get("/forbidden")
+    async with _http_client(app) as client:
+        limited_response = await client.get("/limited")
+        forbidden_response = await client.get("/forbidden")
 
     assert limited_response.status_code == 429
     assert limited_response.headers["Retry-After"] == "7"
