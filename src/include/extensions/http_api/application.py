@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from loguru import logger as log
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware import Middleware
 
 from include.domains.security.guards.login import LoginGuard
 from include.extensions.manager import get_loaded_extension_metadata, pm
@@ -16,6 +18,32 @@ from .security import get_http_client_address
 
 logger = log.bind(name="http_api")
 _API_PREFIX = "/api/v1"
+
+
+class _CorsResponseHeadersMiddleware:
+    def __init__(self, app, allowed_origins: tuple[str, ...]):
+        self.app = app
+        self.allowed_origins = frozenset(allowed_origins)
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        origin = Headers(scope=scope).get("origin")
+        if origin not in self.allowed_origins:
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_cors_headers(message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                if "access-control-allow-origin" not in headers:
+                    headers["Access-Control-Allow-Origin"] = origin
+                    headers.add_vary_header("Origin")
+            await send(message)
+
+        await self.app(scope, receive, send_with_cors_headers)
 
 
 class _RequestBodyLimitMiddleware:
@@ -201,6 +229,33 @@ def _validate_routes(
 def build_http_application(policy: HttpApiPolicy) -> FastAPI:
     registrations = collect_http_router_registrations()
     _validate_routes(registrations, docs_enabled=policy.docs_enabled)
+    middleware = []
+    if policy.cors_allowed_origins:
+        middleware.append(
+            Middleware(
+                _CorsResponseHeadersMiddleware,
+                allowed_origins=policy.cors_allowed_origins,
+            )
+        )
+    middleware.extend(
+        (
+            Middleware(_SecurityBoundaryMiddleware),
+            Middleware(
+                _RequestBodyLimitMiddleware,
+                max_bytes=policy.max_request_body_bytes,
+            ),
+        )
+    )
+    if policy.cors_allowed_origins:
+        middleware.append(
+            Middleware(
+                CORSMiddleware,
+                allow_origins=list(policy.cors_allowed_origins),
+                allow_credentials=False,
+                allow_methods=["*"],
+                allow_headers=["Authorization", "Content-Type"],
+            )
+        )
     app = FastAPI(
         docs_url=f"{_API_PREFIX}/docs" if policy.docs_enabled else None,
         redoc_url=None,
@@ -208,6 +263,7 @@ def build_http_application(policy: HttpApiPolicy) -> FastAPI:
         swagger_ui_oauth2_redirect_url=(
             f"{_API_PREFIX}/docs/oauth2-redirect" if policy.docs_enabled else None
         ),
+        middleware=middleware,
     )
 
     @app.get("/healthz", include_in_schema=False)
@@ -217,17 +273,4 @@ def build_http_application(policy: HttpApiPolicy) -> FastAPI:
     for registration in registrations:
         app.include_router(registration.router, prefix=_API_PREFIX)
 
-    app.add_middleware(
-        _RequestBodyLimitMiddleware,
-        max_bytes=policy.max_request_body_bytes,
-    )
-    app.add_middleware(_SecurityBoundaryMiddleware)
-    if policy.cors_allowed_origins:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=list(policy.cors_allowed_origins),
-            allow_credentials=False,
-            allow_methods=["*"],
-            allow_headers=["Authorization", "Content-Type"],
-        )
     return app

@@ -239,6 +239,11 @@ def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
                 "Authorization": "Bearer highly-sensitive-token",
             },
         )
+        disallowed_origin = client.post(
+            "/api/v1/example/echo",
+            content=b"12345",
+            headers={"Origin": "https://other.example"},
+        )
 
     assert oversized.headers["Access-Control-Allow-Origin"] == "https://ui.example"
     assert failure.status_code == 500
@@ -247,6 +252,8 @@ def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
     assert set(payload) == {"detail", "log_id"}
     assert "highly-sensitive-token" not in failure.text
     assert "key" not in failure.text
+    assert disallowed_origin.status_code == 413
+    assert "Access-Control-Allow-Origin" not in disallowed_origin.headers
 
 
 def test_body_limit_counts_chunked_body_before_endpoint_runs(
@@ -316,9 +323,112 @@ def test_banned_client_is_rejected(monkeypatch, http_api_modules):
 
     with TestClient(app, client=("127.0.0.1", 5000)) as client:
         response = client.get("/healthz", headers={"Origin": "https://ui.example"})
+        disallowed_origin = client.get(
+            "/healthz", headers={"Origin": "https://other.example"}
+        )
 
     assert response.status_code == 403
     assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+    assert disallowed_origin.status_code == 403
+    assert "Access-Control-Allow-Origin" not in disallowed_origin.headers
+
+
+def test_banned_cors_preflight_is_rejected_before_body_and_cors(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    monkeypatch.setattr(
+        modules.application.LoginGuard,
+        "evaluate_subnet_access",
+        classmethod(lambda _cls, _address: SimpleNamespace(allowed=False)),
+    )
+    _install_http_plugins(monkeypatch, modules, [])
+    app = modules.application.build_http_application(
+        modules.config.HttpApiPolicy(
+            max_request_body_bytes=4,
+            cors_allowed_origins=("https://ui.example",),
+        )
+    )
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        response = client.request(
+            "OPTIONS",
+            "/healthz",
+            content=b"12345",
+            headers={
+                "Origin": "https://ui.example",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Forbidden"}
+    assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+    assert "Origin" in response.headers["Vary"]
+
+
+def test_oversized_cors_preflight_is_rejected_before_cors(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    _install_http_plugins(monkeypatch, modules, [])
+    app = modules.application.build_http_application(
+        modules.config.HttpApiPolicy(
+            max_request_body_bytes=4,
+            cors_allowed_origins=("https://ui.example",),
+        )
+    )
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        response = client.request(
+            "OPTIONS",
+            "/healthz",
+            content=b"12345",
+            headers={
+                "Origin": "https://ui.example",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request body too large"}
+    assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+    assert "Origin" in response.headers["Vary"]
+
+
+def test_admitted_cors_preflight_reaches_cors_middleware(monkeypatch, http_api_modules):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    _install_http_plugins(monkeypatch, modules, [])
+    app = modules.application.build_http_application(
+        modules.config.HttpApiPolicy(
+            max_request_body_bytes=4,
+            cors_allowed_origins=("https://ui.example",),
+        )
+    )
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        response = client.request(
+            "OPTIONS",
+            "/healthz",
+            content=b"1234",
+            headers={
+                "Origin": "https://ui.example",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization, Content-Type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.text == "OK"
+    assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+    assert "GET" in response.headers["Access-Control-Allow-Methods"]
+    allowed_headers = {
+        value.strip().lower()
+        for value in response.headers["Access-Control-Allow-Headers"].split(",")
+    }
+    assert {"authorization", "content-type"}.issubset(allowed_headers)
 
 
 def test_invalid_peer_address_is_rejected(monkeypatch, http_api_modules):

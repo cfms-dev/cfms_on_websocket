@@ -285,13 +285,15 @@ docs_enabled = false
 Omit `ssl_certfile` and `ssl_keyfile` to reuse the WebSocket server certificate.
 If one is set, both are required. TLS is always enabled with a TLS 1.3 minimum;
 the core client-certificate CA and requirement are inherited. Trusted proxies
-come from `server.trusted_proxy_networks`. CORS and the OpenAPI UI are disabled
-by default. When enabled, the schema and UI are available at
+come from `server.trusted_proxy_networks`. Every HTTP request, including CORS
+preflight, passes subnet admission before CORS processing. CORS and the OpenAPI
+UI are disabled by default. When enabled, the schema and UI are available at
 `/api/v1/openapi.json` and `/api/v1/docs`. `/healthz` is always available and
 does not disclose versions or enabled extensions. `max_concurrency` is the exact
 number of simultaneous HTTP connections admitted before overload responses begin.
-`max_request_body_bytes` applies to the raw body for fixed-length and streamed
-requests, even when an endpoint does not consume the body. Every
+For admitted requests, `max_request_body_bytes` applies to the raw body for
+fixed-length, streamed, and CORS preflight requests, even when an endpoint does
+not consume the body. Every
 `extensions.http_api` setting requires a server restart to take effect.
 
 Consumers use a version 3 manifest dependency and register HTTP-only routers:
