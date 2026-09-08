@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.testclient import TestClient
+from starlette import convertors as starlette_convertors
 
 from include.domains.access.permissions import Permissions
 from include.extensions import manager as extension_manager
@@ -192,6 +193,230 @@ def test_duplicate_method_and_final_path_fails_startup(monkeypatch, http_api_mod
 
     with pytest.raises(ValueError, match="Duplicate HTTP route GET"):
         modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+
+@pytest.mark.parametrize(
+    ("first_path", "second_path"),
+    [
+        ("/{user_id}", "/{username}"),
+        ("/{user_id:int}", "/{number:int}"),
+    ],
+)
+def test_equivalent_parameterized_routes_fail_startup_across_extensions(
+    monkeypatch, http_api_modules, first_path, second_path
+):
+    modules = http_api_modules
+    first = APIRouter(prefix="/users")
+    second = APIRouter(prefix="/users")
+    first.get(first_path)(lambda: None)
+    second.get(second_path)(lambda: None)
+    registrations = (
+        modules.contracts.HttpRouterRegistration("first", first),
+        modules.contracts.HttpRouterRegistration("second", second),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("first", (registrations[0],)), ("second", (registrations[1],))],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    message = str(exc_info.value)
+    assert f"Duplicate HTTP route GET /api/v1/users{second_path}" in message
+    assert f"/api/v1/users{first_path}" in message
+    assert "'first'" in message
+    assert "'second'" in message
+
+
+def test_equivalent_custom_converter_regex_fails_startup(monkeypatch, http_api_modules):
+    modules = http_api_modules
+
+    class AliasConvertor(starlette_convertors.Convertor[str]):
+        regex = "[^/]+"
+
+        def convert(self, value: str) -> str:
+            return value
+
+        def to_string(self, value: str) -> str:
+            return value
+
+    monkeypatch.setitem(
+        starlette_convertors.CONVERTOR_TYPES, "test_alias", AliasConvertor()
+    )
+    first = APIRouter(prefix="/users")
+    second = APIRouter(prefix="/users")
+    first.get("/{username}")(lambda: None)
+    second.get("/{alias:test_alias}")(lambda: None)
+    registrations = (
+        modules.contracts.HttpRouterRegistration("first", first),
+        modules.contracts.HttpRouterRegistration("second", second),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("first", (registrations[0],)), ("second", (registrations[1],))],
+    )
+
+    with pytest.raises(ValueError, match="Duplicate HTTP route GET"):
+        modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+
+def test_dynamic_route_cannot_shadow_later_static_route_across_extensions(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    dynamic = APIRouter(prefix="/users")
+    static = APIRouter(prefix="/users")
+    dynamic.get("/{username}")(lambda username: {"username": username})
+    static.get("/me")(lambda: {"handler": "static"})
+    registrations = (
+        modules.contracts.HttpRouterRegistration("dynamic", dynamic),
+        modules.contracts.HttpRouterRegistration("static", static),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("dynamic", (registrations[0],)), ("static", (registrations[1],))],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    message = str(exc_info.value)
+    assert "Shadowed HTTP route GET /api/v1/users/me" in message
+    assert "/api/v1/users/{username}" in message
+    assert "'dynamic'" in message
+    assert "'static'" in message
+
+
+def test_static_route_before_dynamic_route_keeps_both_reachable(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    static = APIRouter(prefix="/users")
+    dynamic = APIRouter(prefix="/users")
+    static.get("/me")(lambda: {"handler": "static"})
+    dynamic.get("/{username}")(
+        lambda username: {"handler": "dynamic", "username": username}
+    )
+    registrations = (
+        modules.contracts.HttpRouterRegistration("static", static),
+        modules.contracts.HttpRouterRegistration("dynamic", dynamic),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("static", (registrations[0],)), ("dynamic", (registrations[1],))],
+    )
+
+    app = modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        assert client.get("/api/v1/users/me").json() == {"handler": "static"}
+        assert client.get("/api/v1/users/alice").json() == {
+            "handler": "dynamic",
+            "username": "alice",
+        }
+
+
+def test_dynamic_converter_that_does_not_match_static_path_is_allowed(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    dynamic = APIRouter(prefix="/users")
+    static = APIRouter(prefix="/users")
+    dynamic.get("/{user_id:int}")(
+        lambda user_id: {"handler": "dynamic", "user_id": user_id}
+    )
+    static.get("/me")(lambda: {"handler": "static"})
+    registrations = (
+        modules.contracts.HttpRouterRegistration("dynamic", dynamic),
+        modules.contracts.HttpRouterRegistration("static", static),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("dynamic", (registrations[0],)), ("static", (registrations[1],))],
+    )
+
+    app = modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        assert client.get("/api/v1/users/42").json() == {
+            "handler": "dynamic",
+            "user_id": 42,
+        }
+        assert client.get("/api/v1/users/me").json() == {"handler": "static"}
+
+
+def test_different_converters_keep_reachable_routes_distinct(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    integer = APIRouter(prefix="/users")
+    string = APIRouter(prefix="/users")
+    integer.get("/{user_id:int}")(
+        lambda user_id: {"handler": "integer", "value": user_id}
+    )
+    string.get("/{username}")(lambda username: {"handler": "string", "value": username})
+    registrations = (
+        modules.contracts.HttpRouterRegistration("integer", integer),
+        modules.contracts.HttpRouterRegistration("string", string),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("integer", (registrations[0],)), ("string", (registrations[1],))],
+    )
+
+    app = modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        assert client.get("/api/v1/users/42").json() == {
+            "handler": "integer",
+            "value": 42,
+        }
+        assert client.get("/api/v1/users/alice").json() == {
+            "handler": "string",
+            "value": "alice",
+        }
+
+
+def test_equivalent_route_patterns_with_different_methods_are_allowed(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    get_router = APIRouter(prefix="/users")
+    post_router = APIRouter(prefix="/users")
+    get_router.get("/{user_id}")(lambda user_id: {"method": "GET", "id": user_id})
+    post_router.post("/{username}")(lambda username: {"method": "POST", "id": username})
+    registrations = (
+        modules.contracts.HttpRouterRegistration("reader", get_router),
+        modules.contracts.HttpRouterRegistration("writer", post_router),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("reader", (registrations[0],)), ("writer", (registrations[1],))],
+    )
+
+    app = modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    with TestClient(app, client=("127.0.0.1", 5000)) as client:
+        assert client.get("/api/v1/users/alice").json() == {
+            "method": "GET",
+            "id": "alice",
+        }
+        assert client.post("/api/v1/users/alice").json() == {
+            "method": "POST",
+            "id": "alice",
+        }
 
 
 def test_router_cannot_replace_enabled_docs(monkeypatch, http_api_modules):

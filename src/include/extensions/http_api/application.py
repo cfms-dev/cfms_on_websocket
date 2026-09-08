@@ -1,6 +1,7 @@
 __all__ = ["build_http_application", "collect_http_router_registrations"]
 
 import asyncio
+from string import Formatter
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -205,19 +206,38 @@ def collect_http_router_registrations() -> tuple[HttpRouterRegistration, ...]:
     return tuple(sorted(registrations, key=lambda item: order[item.owner]))
 
 
+def _normalized_route_pattern(
+    route: APIRoute,
+) -> tuple[tuple[str, str | None], ...]:
+    return tuple(
+        (
+            literal,
+            route.param_convertors[field_name].regex
+            if field_name is not None
+            else None,
+        )
+        for literal, field_name, _format_spec, _conversion in Formatter().parse(
+            f"{_API_PREFIX}{route.path_format}"
+        )
+    )
+
+
 def _validate_routes(
     registrations: tuple[HttpRouterRegistration, ...],
     *,
     docs_enabled: bool,
 ) -> None:
-    route_keys: dict[tuple[str, str], str] = {}
+    route_keys: dict[
+        tuple[str, tuple[tuple[str, str | None], ...]], tuple[str, str]
+    ] = {}
+    dynamic_routes: dict[str, list[tuple[APIRoute, str, str]]] = {}
     if docs_enabled:
         for path in (
             f"{_API_PREFIX}/docs",
             f"{_API_PREFIX}/docs/oauth2-redirect",
             f"{_API_PREFIX}/openapi.json",
         ):
-            route_keys[("GET", path)] = "http_api"
+            route_keys[("GET", ((path, None),))] = ("http_api", path)
     for registration in registrations:
         router = registration.router
         if not router.prefix or router.prefix == "/":
@@ -232,15 +252,34 @@ def _validate_routes(
                     "unsupported non-HTTP route"
                 )
             final_path = f"{_API_PREFIX}{route.path}"
-            for method in route.methods or set():
-                key = (method.upper(), final_path)
-                previous_owner = route_keys.get(key)
-                if previous_owner is not None:
+            normalized_pattern = _normalized_route_pattern(route)
+            for method in sorted(route.methods or set()):
+                method = method.upper()
+                key = (method, normalized_pattern)
+                previous_route = route_keys.get(key)
+                if previous_route is not None:
+                    previous_owner, previous_path = previous_route
                     raise ValueError(
-                        f"Duplicate HTTP route {key[0]} {key[1]} registered by "
-                        f"{previous_owner!r} and {registration.owner!r}"
+                        f"Duplicate HTTP route {method} {final_path} registered by "
+                        f"{registration.owner!r} has the same match pattern as "
+                        f"{previous_path} registered by {previous_owner!r}"
                     )
-                route_keys[key] = registration.owner
+                if not route.param_convertors:
+                    for previous, previous_owner, previous_path in dynamic_routes.get(
+                        method, ()
+                    ):
+                        if previous.path_regex.fullmatch(route.path):
+                            raise ValueError(
+                                f"Shadowed HTTP route {method} {final_path} registered "
+                                f"by {registration.owner!r} is unreachable because "
+                                f"{previous_path} registered by {previous_owner!r} "
+                                "matches it first"
+                            )
+                route_keys[key] = (registration.owner, final_path)
+                if route.param_convertors:
+                    dynamic_routes.setdefault(method, []).append(
+                        (route, registration.owner, final_path)
+                    )
 
 
 def build_http_application(policy: HttpApiPolicy) -> FastAPI:
