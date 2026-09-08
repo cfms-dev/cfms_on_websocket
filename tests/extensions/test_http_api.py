@@ -112,6 +112,36 @@ def test_http_extension_adds_hook_spec_to_core_manager(http_api_modules):
     assert _extension.http_hookimpl is extension_manager.hookimpl
 
 
+def test_http_extension_shutdown_does_not_reload_changed_config(
+    monkeypatch, http_api_modules
+):
+    from include.extensions.http_api import _extension
+
+    class FakeRuntime:
+        def __init__(self):
+            self.started_policy = None
+            self.shutdown_calls = 0
+
+        def start(self, _app, policy):
+            self.started_policy = policy
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    config = {"extensions": {"http_api": {"shutdown_timeout_seconds": 1.0}}}
+    runtime = FakeRuntime()
+    monkeypatch.setattr(_extension, "global_config", config)
+    monkeypatch.setattr(_extension, "_runtime", runtime)
+    monkeypatch.setattr(_extension, "build_http_application", lambda policy: policy)
+
+    _extension.ext_on_startup()
+    config["extensions"]["http_api"]["shutdown_timeout_seconds"] = 2.0
+    _extension.ext_on_shutdown()
+
+    assert runtime.started_policy.shutdown_timeout_seconds == 1.0
+    assert runtime.shutdown_calls == 1
+
+
 @pytest.mark.parametrize(
     "section",
     [
@@ -1041,8 +1071,8 @@ def test_real_tls_listener_reclaims_slow_headers_and_releases_port(
             recovered = client.get(f"https://127.0.0.1:{port}/healthz")
         assert recovered.status_code == 200
     finally:
-        runtime.shutdown(5.0)
-        runtime.shutdown(5.0)
+        runtime.shutdown()
+        runtime.shutdown()
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", port))
@@ -1080,7 +1110,7 @@ def test_listener_bind_failure_is_propagated(monkeypatch, http_api_modules, tmp_
             runtime.start(FastAPI(), policy)
 
     assert runtime._active is None
-    runtime.shutdown(5.0)
+    runtime.shutdown()
 
 
 def test_runtime_uses_exact_concurrency_and_rounded_shutdown_limits(
@@ -1126,7 +1156,7 @@ def test_runtime_uses_exact_concurrency_and_rounded_shutdown_limits(
     assert server.config.request_header_timeout_seconds == 10.0
     assert server.config.http is modules.runtime._RequestHeaderTimeoutH11Protocol
     assert server.config.timeout_graceful_shutdown == 1
-    runtime.shutdown(policy.shutdown_timeout_seconds)
+    runtime.shutdown()
 
     assert runtime._active is None
 
@@ -1208,9 +1238,12 @@ def test_shutdown_force_exit_gets_a_second_join(monkeypatch, http_api_modules):
     monkeypatch.setattr(modules.runtime, "_SignallingServer", FakeServer)
     monkeypatch.setattr(modules.runtime, "_SERVER_STOP_MARGIN_SECONDS", 0.01)
     runtime = modules.runtime.HttpApiRuntime()
-    runtime.start(FastAPI(), modules.config.HttpApiPolicy())
+    runtime.start(
+        FastAPI(),
+        modules.config.HttpApiPolicy(shutdown_timeout_seconds=0.01),
+    )
 
-    runtime.shutdown(0.01)
+    runtime.shutdown()
 
     assert instances[0].force_exit is True
     assert runtime._active is None

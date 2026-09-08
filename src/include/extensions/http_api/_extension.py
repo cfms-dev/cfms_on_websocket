@@ -52,5 +52,4 @@ def ext_on_startup() -> None:
 
 @hookimpl
 def ext_on_shutdown() -> None:
-    policy = HttpApiPolicy.from_config(global_config)
-    _runtime.shutdown(policy.shutdown_timeout_seconds)
+    _runtime.shutdown()

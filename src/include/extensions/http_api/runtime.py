@@ -98,6 +98,7 @@ class _ActiveServer:
     server: _SignallingServer
     thread: threading.Thread
     startup_event: threading.Event
+    shutdown_timeout_seconds: float
     failure: BaseException | None = None
 
 
@@ -154,13 +155,14 @@ class HttpApiRuntime:
                     daemon=False,
                 ),
                 startup_event=startup_event,
+                shutdown_timeout_seconds=policy.shutdown_timeout_seconds,
             )
             self._active = active
             active.thread.start()
 
         if not startup_event.wait(policy.startup_timeout_seconds):
-            if not self._stop(active, policy.shutdown_timeout_seconds):
-                stop_budget = ceil(policy.shutdown_timeout_seconds) + (
+            if not self._stop(active):
+                stop_budget = ceil(active.shutdown_timeout_seconds) + (
                     2 * _SERVER_STOP_MARGIN_SECONDS
                 )
                 logger.error(
@@ -199,9 +201,9 @@ class HttpApiRuntime:
                     self._active = None
 
     @staticmethod
-    def _stop(active: _ActiveServer, timeout_seconds: float) -> bool:
+    def _stop(active: _ActiveServer) -> bool:
         active.server.should_exit = True
-        graceful_timeout = ceil(timeout_seconds)
+        graceful_timeout = ceil(active.shutdown_timeout_seconds)
         active.thread.join(graceful_timeout + _SERVER_STOP_MARGIN_SECONDS)
         if not active.thread.is_alive():
             return True
@@ -210,14 +212,16 @@ class HttpApiRuntime:
         active.thread.join(_SERVER_STOP_MARGIN_SECONDS)
         return not active.thread.is_alive()
 
-    def shutdown(self, timeout_seconds: float) -> None:
+    def shutdown(self) -> None:
         with self._lock:
             active = self._active
         if active is None:
             return
 
-        if not self._stop(active, timeout_seconds):
-            stop_budget = ceil(timeout_seconds) + (2 * _SERVER_STOP_MARGIN_SECONDS)
+        if not self._stop(active):
+            stop_budget = ceil(active.shutdown_timeout_seconds) + (
+                2 * _SERVER_STOP_MARGIN_SECONDS
+            )
             logger.error(
                 f"HTTP API server did not stop within {stop_budget} seconds, "
                 "including its force-exit margin"
