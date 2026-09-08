@@ -95,7 +95,10 @@ class TestFileTransfer:
             def __init__(self):
                 self.sent_payloads = []
                 self.responses = [
-                    FakeFrame(b'{"action":"transfer_file"}'),
+                    FakeFrame(
+                        b'{"action":"transfer_file","data":{"file_size":1,'
+                        b'"chunk_size":65536}}'
+                    ),
                     FakeFrame(b'{"action":"abort"}'),
                 ]
 
@@ -130,7 +133,10 @@ class TestFileTransfer:
             def __init__(self):
                 self.sent_payloads = []
                 self.responses = [
-                    FakeFrame(b'{"action":"transfer_file","data":{"file_size":0}}'),
+                    FakeFrame(
+                        b'{"action":"transfer_file","data":{"file_size":0,'
+                        b'"chunk_size":65536}}'
+                    ),
                     FakeFrame(
                         b'{"action":"transfer_file","data":{"flag":"empty_file"}}'
                     ),

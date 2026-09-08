@@ -1,0 +1,66 @@
+schema_version = 1
+
+[profiles.smoke]
+scenario = "server-info"
+users = 2
+duration = "5s"
+ramp_up = "0s"
+arrival_pattern = "closed"
+rate = 0
+inflight_per_user = 1
+payload_size = 65536
+seed = 20260908
+
+[profiles.peak]
+scenario = "mixed"
+users = 32
+duration = "5m"
+ramp_up = "30s"
+arrival_pattern = "fixed"
+rate = 100
+inflight_per_user = 2
+payload_size = 1048576
+seed = 20260908
+
+[profiles.peak.action_weights]
+read = 45
+create = 25
+update = 15
+delete = 15
+
+[profiles.stress]
+scenario = "server-info"
+users = 64
+duration = "8m"
+ramp_up = "10s"
+arrival_pattern = "step"
+rate = 0
+stage_rates = [25, 50, 100, 200, 400, 800, 1200, 1600]
+inflight_per_user = 4
+payload_size = 262144
+seed = 20260908
+
+[profiles.spike]
+scenario = "server-info"
+users = 64
+duration = "3m"
+ramp_up = "5s"
+arrival_pattern = "spike"
+rate = 50
+spike_rate = 500
+spike_start = "1m"
+spike_duration = "30s"
+inflight_per_user = 4
+payload_size = 262144
+seed = 20260908
+
+[profiles.soak]
+scenario = "auth-read"
+users = 16
+duration = "8h"
+ramp_up = "2m"
+arrival_pattern = "fixed"
+rate = 40
+inflight_per_user = 2
+payload_size = 262144
+seed = 20260908

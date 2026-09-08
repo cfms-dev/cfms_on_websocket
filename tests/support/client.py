@@ -14,6 +14,7 @@ import secrets
 import ssl
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,17 @@ class _RequestValueUnset:
 
 
 _REQUEST_VALUE_UNSET = _RequestValueUnset()
+
+
+@dataclass
+class DownloadCheckpoint:
+    file_size: int
+    chunk_size: int
+    chunks: list[tuple[int, bytes, bytes, bytes]] = field(default_factory=list)
+
+    @property
+    def offset(self) -> int:
+        return min(self.file_size, len(self.chunks) * self.chunk_size)
 
 
 def calculate_sha256(file_path: str) -> str:
@@ -230,7 +242,7 @@ class CFMSTestClient:
         self.username: str | None = None
         self.token: str | None = None
 
-    async def connect(self) -> None:
+    async def connect(self, *, max_retries: int = 5) -> None:
         """
         Establish a WebSocket connection to the server with retry/backoff logic.
         """
@@ -249,7 +261,8 @@ class CFMSTestClient:
         else:
             ssl_context = None
 
-        max_retries = 5
+        if max_retries <= 0:
+            raise ValueError("max_retries must be positive")
         delay = 0.5
         backoff = 2.0
         last_exc: BaseException | None = None
@@ -889,7 +902,15 @@ class CFMSTestClient:
             {"group_name": group_name, "permissions": permissions},
         )
 
-    async def download_file_from_server(self, dl_task_id: str, dest_path: str):
+    async def download_file_from_server(
+        self,
+        dl_task_id: str,
+        dest_path: str,
+        *,
+        resume_state: DownloadCheckpoint | None = None,
+        interrupt_after_bytes: int | None = None,
+        max_chunk_size: int = 64 * 1024,
+    ) -> DownloadCheckpoint | None:
         if self.multiplexer is None:
             raise RuntimeError("Not connected (multiplexing missing).")
 
@@ -897,7 +918,11 @@ class CFMSTestClient:
         frame = await self._build_and_send_request(
             stream,
             "download_file",
-            {"task_id": dl_task_id, "offset": 0, "max_chunk_size": 64 * 1024},
+            {
+                "task_id": dl_task_id,
+                "offset": resume_state.offset if resume_state is not None else 0,
+                "max_chunk_size": max_chunk_size,
+            },
             include_auth=True,
         )
 
@@ -910,10 +935,20 @@ class CFMSTestClient:
         if not isinstance(response, dict) or response.get("action") != "transfer_file":
             raise ValueError(f"Invalid response: {response}")
 
+        transfer_data = response.get("data", {})
+        file_size = transfer_data.get("file_size")
+        chunk_size = transfer_data.get("chunk_size")
+        if not isinstance(file_size, int) or not isinstance(chunk_size, int):
+            raise RuntimeError("Invalid resumable download response")
+        if resume_state is not None and (
+            resume_state.file_size != file_size or resume_state.chunk_size != chunk_size
+        ):
+            raise RuntimeError("Download resume metadata changed")
+
         # 2. Tell server we are ready
         await stream.send(b"ready")
 
-        chunks = []
+        chunks = list(resume_state.chunks) if resume_state is not None else []
         aes_key = None
         empty_file = False
 
@@ -939,6 +974,13 @@ class CFMSTestClient:
                 prefix = base64.b64decode(chunk_data["prefix"])
                 index = chunk_data["index"]
                 chunks.append((index, encrypted_chunk, tag, prefix))
+                checkpoint = DownloadCheckpoint(file_size, chunk_size, chunks)
+                if (
+                    interrupt_after_bytes is not None
+                    and checkpoint.offset >= interrupt_after_bytes
+                    and checkpoint.offset < file_size
+                ):
+                    return checkpoint
             elif action == "aes_key":
                 aes_key = base64.b64decode(msg["data"]["key"])
                 break
@@ -971,6 +1013,7 @@ class CFMSTestClient:
             or completion.get("action") != "transfer_complete"
         ):
             raise RuntimeError("Server did not confirm file transfer completion")
+        return None
 
     async def upload_file_to_server(
         self,
@@ -979,7 +1022,8 @@ class CFMSTestClient:
         *,
         restart: bool = False,
         max_chunk_size: int = 64 * 1024,
-    ):
+        interrupt_after_bytes: int | None = None,
+    ) -> dict[str, Any] | int:
         """
         Upload a file to the server over WebSocket connection.
 
@@ -1044,6 +1088,12 @@ class CFMSTestClient:
                     raise RuntimeError("Upload source ended before declared file size")
                 await stream.send(chunk)
                 offset += len(chunk)
+                if (
+                    interrupt_after_bytes is not None
+                    and offset >= interrupt_after_bytes
+                    and offset < file_size
+                ):
+                    return offset
 
         server_frame = await stream.recv()
         return await self._parse_frame_data(server_frame)
