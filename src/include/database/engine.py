@@ -6,6 +6,7 @@ from sqlalchemy import URL, Engine, create_engine, event
 
 from include.config import paths
 from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
+from include.config.validation import DatabasePoolPolicy
 
 SUPPORTED_DB_TYPES = {
     "mysql": "mysql+mysqlconnector",
@@ -46,11 +47,20 @@ def create_database_engine(
     echo: bool = False,
 ) -> Engine:
     url = database_url(database_config)
+    pool_policy = DatabasePoolPolicy.from_config({"database": database_config})
+    pool_options = {
+        "pool_size": pool_policy.size,
+        "max_overflow": pool_policy.max_overflow,
+        "pool_timeout": pool_policy.timeout_seconds,
+    }
     if url.get_backend_name() == "sqlite":
+        if url.database == ":memory:":
+            pool_options = {}
         engine = create_engine(
             url,
             connect_args={"timeout": 30},
             echo=echo,
+            **pool_options,
         )
 
         @event.listens_for(engine, "connect")
@@ -68,4 +78,5 @@ def create_database_engine(
         url,
         pool_recycle=DEFAULT_TOKEN_EXPIRY_SECONDS,
         echo=echo,
+        **pool_options,
     )

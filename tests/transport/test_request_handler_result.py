@@ -3,6 +3,7 @@ from shutil import copyfile
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -10,6 +11,55 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _prepare_config(monkeypatch, tmp_path):
     copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
     monkeypatch.chdir(tmp_path)
+
+
+def _allow_routed_request(monkeypatch, router):
+    hook = SimpleNamespace(
+        ext_before_request=lambda **_kwargs: None,
+        ext_post_request=lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(router, "get_client_ip", lambda _websocket: "192.0.2.10")
+    monkeypatch.setattr(
+        router.LoginGuard,
+        "evaluate_subnet_access",
+        lambda _ip: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router,
+        "check_request_rate",
+        lambda *_args, **_kwargs: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router.lockdown_state_manager,
+        "get_state",
+        lambda: SimpleNamespace(enabled=False),
+    )
+    monkeypatch.setattr(router, "pm", SimpleNamespace(hook=hook))
+
+
+def _capture_pool_overload(monkeypatch, router, retry_after_seconds):
+    responses = []
+    released = []
+    monkeypatch.setattr(
+        router.AdmissionControlPolicy,
+        "from_config",
+        classmethod(
+            lambda cls, config=None: SimpleNamespace(
+                busy_retry_after_seconds=retry_after_seconds
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        router,
+        "send_conclusion",
+        lambda *args: responses.append(args),
+    )
+    monkeypatch.setattr(
+        router.admission_controller,
+        "release_request",
+        lambda connection: released.append(connection),
+    )
+    return responses, released
 
 
 def test_log_handler_result_maps_all_audit_fields(monkeypatch, tmp_path):
@@ -437,6 +487,141 @@ def test_request_admission_is_released_when_handler_raises(monkeypatch, tmp_path
         router._handle_request_with_admission(stream)
 
     assert released == [connection]
+
+
+def test_authentication_pool_timeout_returns_retryable_503(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+
+    class FakeConnectionHandler:
+        def __init__(self, _stream):
+            self.action = "authenticated_action"
+            self.data = {}
+            self.username = "alice"
+            self.token = "token"
+            self.remote_address = "192.0.2.10"
+
+    def unavailable_session():
+        raise SQLAlchemyTimeoutError("database pool exhausted")
+
+    monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
+    _allow_routed_request(monkeypatch, router)
+    monkeypatch.setattr(router, "Session", unavailable_session)
+    responses, released = _capture_pool_overload(monkeypatch, router, 3)
+    connection = SimpleNamespace(_ws=object())
+    stream = SimpleNamespace(connection=connection)
+
+    router._handle_request_with_admission(stream)
+
+    assert responses == [
+        (
+            stream,
+            503,
+            {"scope": "database_pool", "retry_after_seconds": 3},
+            "Server database capacity is busy. Please try again later.",
+        )
+    ]
+    assert released == [connection]
+
+
+def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(
+    monkeypatch, tmp_path
+):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+
+    reported_errors = []
+
+    class FakeConnectionHandler:
+        def __init__(self, _stream):
+            self.action = "pool_timeout_action"
+            self.data = {}
+            self.username = ""
+            self.token = ""
+            self.remote_address = "192.0.2.10"
+
+        def conclude_request(self, *_args, **_kwargs):
+            raise AssertionError(
+                "request should be concluded by the pool timeout handler"
+            )
+
+        def report_error(self, error):
+            reported_errors.append(error)
+
+    class PoolTimeoutHandler:
+        request_model = SimpleNamespace(model_validate=lambda _data: None)
+        require_auth = False
+        rate_limit_cost = 1
+
+        def handle(self, _handler):
+            raise SQLAlchemyTimeoutError("database pool exhausted")
+
+    monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
+    _allow_routed_request(monkeypatch, router)
+    monkeypatch.setitem(
+        router.available_functions, "pool_timeout_action", PoolTimeoutHandler
+    )
+    responses, released = _capture_pool_overload(monkeypatch, router, 2)
+    connection = SimpleNamespace(_ws=object())
+    stream = SimpleNamespace(connection=connection)
+
+    router._handle_request_with_admission(stream)
+
+    assert responses == [
+        (
+            stream,
+            503,
+            {"scope": "database_pool", "retry_after_seconds": 2},
+            "Server database capacity is busy. Please try again later.",
+        )
+    ]
+    assert reported_errors == []
+    assert released == [connection]
+
+
+def test_non_pool_handler_failure_keeps_generic_500_response(monkeypatch, tmp_path):
+    _prepare_config(monkeypatch, tmp_path)
+
+    from include.transport import router
+
+    reported_errors = []
+
+    class FakeConnectionHandler:
+        def __init__(self, _stream):
+            self.action = "failing_action"
+            self.data = {}
+            self.username = ""
+            self.token = ""
+            self.remote_address = "192.0.2.10"
+
+        def conclude_request(self, *_args, **_kwargs):
+            raise AssertionError("generic failure should use report_error")
+
+        def report_error(self, error, code=500):
+            reported_errors.append((error, code))
+
+    class FailingHandler:
+        request_model = SimpleNamespace(model_validate=lambda _data: None)
+        require_auth = False
+        rate_limit_cost = 1
+
+        def handle(self, _handler):
+            raise RuntimeError("handler failed")
+
+    monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
+    _allow_routed_request(monkeypatch, router)
+    monkeypatch.setitem(router.available_functions, "failing_action", FailingHandler)
+    stream = SimpleNamespace(connection=SimpleNamespace(_ws=object()))
+
+    router.handle_request(stream)
+
+    assert len(reported_errors) == 1
+    error, code = reported_errors[0]
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "handler failed"
+    assert code == 500
 
 
 def test_login_throttled_response_returns_result(monkeypatch, tmp_path):

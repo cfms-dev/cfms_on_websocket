@@ -25,13 +25,20 @@ from include.config._policy import (
 )
 from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 from include.extensions.identifiers import validate_extension_identifier
-from include.types import NonEmptyString, PositiveInt, UnitRatio
+from include.types import (
+    NonEmptyString,
+    NonNegativeFloat,
+    NonNegativeInt,
+    PositiveInt,
+    UnitRatio,
+)
 
 __all__ = [
     "AdmissionControlPolicy",
     "AuditRetentionPolicy",
     "AuthThrottlePolicy",
     "ConfigValidationError",
+    "DatabasePoolPolicy",
     "DocumentCreationRiskPolicy",
     "DocumentDownloadRiskPolicy",
     "DocumentUploadPolicy",
@@ -191,10 +198,24 @@ class AdmissionControlPolicy(_ConfigPolicy):
 
     max_connections: PositiveInt = 64
     max_connections_per_ip: PositiveInt = 16
-    max_inflight_requests: PositiveInt = 64
+    max_inflight_requests: PositiveInt = 12
     max_inflight_requests_per_connection: PositiveInt = 8
     max_pending_streams_per_connection: PositiveInt = 16
     busy_retry_after_seconds: PositiveInt = 1
+
+
+@dataclass(frozen=True)
+class DatabasePoolPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource(
+        (
+            _Section("database"),
+            _Section("pool"),
+        )
+    )
+
+    size: PositiveInt = 5
+    max_overflow: NonNegativeInt = 10
+    timeout_seconds: NonNegativeFloat = 30
 
 
 @dataclass(frozen=True)
@@ -567,6 +588,7 @@ def validate_config(config: _ConfigSource) -> None:
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)
     AdmissionControlPolicy.from_config(config)
+    DatabasePoolPolicy.from_config(config)
     AuditRetentionPolicy.from_config(config)
     IdentityPermissionRetentionPolicy.from_config(config)
     RequestRateControlPolicy.from_config(config)
@@ -622,6 +644,17 @@ def parse_config_document(source: str) -> TOMLDocument:
 def get_config_warnings(config: _ConfigSource) -> tuple[str, ...]:
     security = _section(config, "security")
     warnings = []
+    admission_policy = AdmissionControlPolicy.from_config(config)
+    pool_policy = DatabasePoolPolicy.from_config(config)
+    if admission_policy.max_inflight_requests > (
+        pool_policy.size + pool_policy.max_overflow
+    ):
+        warnings.append(
+            "`server.admission_control.max_inflight_requests` exceeds the configured "
+            "database pool capacity (`database.pool.size + "
+            "database.pool.max_overflow`); bursts of database-bound requests may "
+            "wait for a connection or receive a 503 response"
+        )
     try:
         document = config["document"]
     except KeyError:

@@ -5,6 +5,7 @@ import jsonschema
 import orjson
 from loguru import logger as log
 from pydantic import ValidationError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.sync.server import ServerConnection
 
@@ -362,6 +363,20 @@ def handle_connection(websocket: ServerConnection):
 def _handle_request_with_admission(stream: Stream) -> None:
     try:
         handle_request(stream)
+    except SQLAlchemyTimeoutError:
+        policy = AdmissionControlPolicy.from_config()
+        logger.bind(scope="database_pool").warning(
+            "Database connection pool exhausted while handling a request"
+        )
+        send_conclusion(
+            stream,
+            503,
+            {
+                "scope": "database_pool",
+                "retry_after_seconds": policy.busy_retry_after_seconds,
+            },
+            "Server database capacity is busy. Please try again later.",
+        )
     finally:
         admission_controller.release_request(stream.connection)
 
@@ -518,6 +533,8 @@ def handle_request(stream: Stream):
                 callback=callback,
                 time_cost=t2 - t1,
             )
+        except SQLAlchemyTimeoutError:
+            raise
         except (
             ConnectionClosedOK,
             ConnectionClosedError,

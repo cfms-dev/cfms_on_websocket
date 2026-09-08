@@ -10,6 +10,7 @@ from include.config.validation import (
     AuditRetentionPolicy,
     AuthThrottlePolicy,
     ConfigValidationError,
+    DatabasePoolPolicy,
     DocumentCreationRiskPolicy,
     DocumentDownloadRiskPolicy,
     DocumentUploadPolicy,
@@ -186,7 +187,64 @@ def test_request_rate_control_defaults_to_observation_mode():
 
     assert policy.mode == "observe"
     assert policy.cost_for("unconfigured") == 1
-    assert AdmissionControlPolicy.from_config(config).max_connections == 64
+    admission_policy = AdmissionControlPolicy.from_config(config)
+    assert admission_policy.max_connections == 64
+    assert admission_policy.max_inflight_requests == 12
+
+
+def test_database_pool_policy_defaults_and_overrides():
+    config = _valid_config()
+
+    assert DatabasePoolPolicy.from_config(config) == DatabasePoolPolicy(
+        size=5,
+        max_overflow=10,
+        timeout_seconds=30,
+    )
+
+    config["database"] = {"pool": {"size": 3, "max_overflow": 2, "timeout_seconds": 0}}
+    assert DatabasePoolPolicy.from_config(config) == DatabasePoolPolicy(
+        size=3,
+        max_overflow=2,
+        timeout_seconds=0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [
+        ("size", 0),
+        ("size", True),
+        ("size", "5"),
+        ("max_overflow", -1),
+        ("max_overflow", True),
+        ("max_overflow", "10"),
+        ("timeout_seconds", -0.1),
+        ("timeout_seconds", True),
+        ("timeout_seconds", "30"),
+    ],
+)
+def test_database_pool_policy_rejects_invalid_values(setting, value):
+    config = _valid_config()
+    config["database"] = {"pool": {setting: value}}
+
+    with pytest.raises(ConfigValidationError) as error:
+        validate_config(config)
+
+    assert f"database.pool.{setting}" in str(error.value)
+
+
+def test_database_pool_capacity_mismatch_emits_warning():
+    config = _valid_config()
+    config["server"]["admission_control"] = {"max_inflight_requests": 16}
+    config["database"] = {
+        "pool": {"size": 5, "max_overflow": 10, "timeout_seconds": 30}
+    }
+
+    warnings = get_config_warnings(config)
+
+    assert len(warnings) == 1
+    assert "max_inflight_requests" in warnings[0]
+    assert "database pool capacity" in warnings[0]
 
 
 def test_identity_permission_retention_defaults_and_overrides():

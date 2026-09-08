@@ -87,3 +87,24 @@ def test_connection_admission_enforces_global_cap_concurrently(monkeypatch):
         assert not thread.is_alive()
 
     assert sum(outcomes.get() for _ in threads) == 10
+
+
+def test_default_request_admission_caps_sixteen_request_burst_at_twelve(monkeypatch):
+    policy = AdmissionControlPolicy()
+    _use_policy(monkeypatch, policy)
+    controller = AdmissionController()
+    barrier = threading.Barrier(16)
+    outcomes: queue.SimpleQueue[bool] = queue.SimpleQueue()
+
+    def acquire() -> None:
+        barrier.wait()
+        outcomes.put(controller.acquire_request(object()).allowed)
+
+    threads = [threading.Thread(target=acquire) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert sum(outcomes.get() for _ in threads) == 12

@@ -58,7 +58,8 @@ file_chunk_size = 2097152 # 2MB
 # rate control is disabled or observing.
 max_connections = 64
 max_connections_per_ip = 16
-max_inflight_requests = 64
+# Keep below database.pool total capacity to leave room for background work.
+max_inflight_requests = 12
 max_inflight_requests_per_connection = 8
 max_pending_streams_per_connection = 16
 busy_retry_after_seconds = 1
@@ -262,6 +263,13 @@ name = "app_db"
 # Specify the character set if using MySQL
 charset = "utf8mb4"
 options = "" # Not implemented yet
+
+# QueuePool settings for file-based SQLite, MySQL, and PostgreSQL. Changes
+# require a server restart. In-memory SQLite keeps its dedicated pool behavior.
+[database.pool]
+size = 5
+max_overflow = 10
+timeout_seconds = 30
 
 [provider]
 # Caching provider ("memory" or "redis")
