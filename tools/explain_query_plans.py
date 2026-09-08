@@ -14,6 +14,11 @@ EXPECTED_INDEXES = {
         "ix_nodes_parent_status_lower_name_id",
         "ix_nodes_status_lower_name_id",
     },
+    "documents": {"ix_documents_current_revision_id"},
+    "document_revisions": {
+        "ix_document_revisions_document_created_id",
+        "ix_document_revisions_parent_revision_id",
+    },
 }
 
 QUERIES = {

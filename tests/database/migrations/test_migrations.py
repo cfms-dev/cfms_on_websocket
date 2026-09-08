@@ -22,6 +22,49 @@ from alembic import command
 from tests.support.config import reserve_local_port, write_test_config
 
 
+def test_document_lookup_indexes_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src_dir = Path(__file__).resolve().parents[3] / "src"
+    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
+    write_test_config(tmp_path, reserve_local_port())
+    monkeypatch.chdir(tmp_path)
+
+    from include.database import models as database_models
+
+    config = Config(src_dir / "alembic.ini")
+    database_url = f"sqlite:///{(tmp_path / 'document-indexes.db').as_posix()}"
+    config.set_main_option("sqlalchemy.url", database_url)
+    engine = create_engine(database_url)
+    expected_indexes = {
+        "documents": {"ix_documents_current_revision_id"},
+        "document_revisions": {
+            "ix_document_revisions_document_created_id",
+            "ix_document_revisions_parent_revision_id",
+        },
+    }
+    try:
+        database_models.User.metadata.create_all(engine)
+        command.stamp(config, "head")
+        command.downgrade(config, "3c496a214a87")
+
+        inspector = inspect(engine)
+        for table_name, index_names in expected_indexes.items():
+            assert index_names.isdisjoint(
+                index["name"] for index in inspector.get_indexes(table_name)
+            )
+
+        command.upgrade(config, "head")
+
+        inspector = inspect(engine)
+        for table_name, index_names in expected_indexes.items():
+            assert index_names <= {
+                index["name"] for index in inspector.get_indexes(table_name)
+            }
+    finally:
+        engine.dispose()
+
+
 def test_retained_revision_chain_round_trips_to_head(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

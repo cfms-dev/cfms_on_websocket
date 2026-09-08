@@ -1,6 +1,16 @@
 from sqlalchemy import create_engine
 
-from tools.explain_query_plans import QUERIES, explain, time_query
+from include.database.models.documents import Document, DocumentRevision
+from tools.explain_query_plans import EXPECTED_INDEXES, QUERIES, explain, time_query
+
+
+def test_expected_indexes_match_document_models():
+    assert EXPECTED_INDEXES["documents"] <= {
+        index.name for index in Document.__table__.indexes
+    }
+    assert EXPECTED_INDEXES["document_revisions"] <= {
+        index.name for index in DocumentRevision.__table__.indexes
+    }
 
 
 def test_queries_match_current_node_schema(tmp_path):

@@ -258,6 +258,7 @@ class Document(Node):
             use_alter=True,
         ),
         nullable=True,
+        index=True,
     )
     current_revision: Mapped[DocumentRevision | None] = relationship(
         "DocumentRevision",
@@ -342,6 +343,18 @@ class DocumentRevision(Base):
     """
 
     __tablename__ = "document_revisions"
+    __table_args__ = (
+        Index(
+            "ix_document_revisions_document_created_id",
+            "document_id",
+            "created_time",
+            "id",
+        ),
+        Index(
+            "ix_document_revisions_parent_revision_id",
+            "parent_revision_id",
+        ),
+    )
     id: Mapped[str] = mapped_column(
         VARCHAR(64), primary_key=True, default=lambda: secrets.token_hex(32)
     )
