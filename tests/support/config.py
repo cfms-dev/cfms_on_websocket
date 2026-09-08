@@ -61,7 +61,9 @@ def restore_config(backup: ConfigBackup) -> None:
     atomic_write(backup.path, backup.original_bytes)
 
 
-def write_test_config(src_dir: Path, port: int) -> ServerTestSettings:
+def write_test_config(
+    src_dir: Path, port: int, *, debug: bool = True
+) -> ServerTestSettings:
     config_path = src_dir / "config.toml"
     sample_path = src_dir / "config.toml.sample"
 
@@ -73,7 +75,7 @@ def write_test_config(src_dir: Path, port: int) -> ServerTestSettings:
         raise RuntimeError("Config sample file not found: src/config.toml.sample")
 
     config = parse(base_content)
-    config["debug"] = True
+    config["debug"] = debug
     config["server"]["host"] = "::1"
     config["server"]["port"] = port
     config["server"]["dualstack_ipv6"] = False

@@ -10,30 +10,19 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 EXPECTED_INDEXES = {
-    "folders": {
-        "ix_folders_parent_status_lower_name_id",
-        "ix_folders_status_lower_name_id",
-        "ix_folders_status_created_time_id",
+    "nodes": {
+        "ix_nodes_parent_status_lower_name_id",
+        "ix_nodes_status_lower_name_id",
     },
-    "documents": {
-        "ix_documents_folder_status_lower_title_id",
-        "ix_documents_status_lower_title_id",
-        "ix_documents_status_created_time_id",
-        "ix_documents_current_revision_id",
-    },
-    "document_revisions": {
-        "ix_document_revisions_document_created_id",
-        "ix_document_revisions_parent_revision_id",
-    },
-    "files": {"ix_files_active_size_id"},
 }
 
 QUERIES = {
     "search_directory_candidates": """
-        SELECT id, name, lower(name) AS name_sort_key
-        FROM folders
-        WHERE status != 1 AND name LIKE :pattern
-        ORDER BY lower(name), id
+        SELECT n.id, n.name, lower(n.name) AS name_sort_key
+        FROM folders f
+        JOIN nodes n ON n.id = f.id
+        WHERE n.status != 1 AND n.name LIKE :pattern
+        ORDER BY lower(n.name), n.id
         LIMIT :limit
     """,
     "effective_active_revision_chain": """
@@ -44,9 +33,10 @@ QUERIES = {
             SELECT d.id, dr.id, dr.created_time, dr.file_id,
                    dr.parent_revision_id, f.active, 0
             FROM documents d
+            JOIN nodes n ON n.id = d.id
             JOIN document_revisions dr ON d.current_revision_id = dr.id
             JOIN files f ON dr.file_id = f.id
-            WHERE d.status != 1 AND d.title LIKE :pattern
+            WHERE n.status != 1 AND n.name LIKE :pattern
 
             UNION ALL
 
@@ -67,32 +57,53 @@ QUERIES = {
     """,
     "access_ancestor_tree": """
         WITH RECURSIVE anc(id, parent_id, inherit) AS (
-            SELECT id, parent_id, inherit
-            FROM folders
-            WHERE id = :folder_id
+            SELECT f.id, n.parent_id, n.inherit
+            FROM folders f
+            JOIN nodes n ON n.id = f.id
+            WHERE f.id = :folder_id
 
             UNION
 
-            SELECT f.id, f.parent_id, f.inherit
+            SELECT f.id, n.parent_id, n.inherit
             FROM folders f
-            INNER JOIN anc ON f.id = anc.parent_id
+            JOIN nodes n ON n.id = f.id
+            JOIN anc ON f.id = anc.parent_id
         )
         SELECT DISTINCT id FROM anc
     """,
     "deletion_subtree": """
         WITH RECURSIVE subtree(id, parent_id, status) AS (
-            SELECT id, parent_id, status
-            FROM folders
-            WHERE id = :folder_id
+            SELECT f.id, n.parent_id, n.status
+            FROM folders f
+            JOIN nodes n ON n.id = f.id
+            WHERE f.id = :folder_id
 
             UNION ALL
 
-            SELECT f.id, f.parent_id, f.status
+            SELECT f.id, n.parent_id, n.status
             FROM folders f
-            INNER JOIN subtree s ON f.parent_id = s.id
-            WHERE f.status = 0
+            JOIN nodes n ON n.id = f.id
+            JOIN subtree s ON n.parent_id = s.id
+            WHERE n.status = 0
         )
         SELECT id FROM subtree WHERE id != :folder_id
+    """,
+    "revisions_by_document": """
+        SELECT id, file_id, created_time
+        FROM document_revisions
+        WHERE document_id = :document_id
+        ORDER BY created_time, id
+        LIMIT :limit
+    """,
+    "child_revisions": """
+        SELECT id
+        FROM document_revisions
+        WHERE parent_revision_id = :revision_id
+    """,
+    "documents_by_current_revision": """
+        SELECT id
+        FROM documents
+        WHERE current_revision_id = :revision_id
     """,
 }
 
@@ -132,6 +143,16 @@ def scalar_or_none(
 
 def first_folder_id(engine: Engine) -> str | None:
     return scalar_or_none(engine, "SELECT id FROM folders ORDER BY id LIMIT 1")
+
+
+def first_document_id(engine: Engine) -> str | None:
+    return scalar_or_none(engine, "SELECT id FROM documents ORDER BY id LIMIT 1")
+
+
+def first_revision_id(engine: Engine) -> str | None:
+    return scalar_or_none(
+        engine, "SELECT id FROM document_revisions ORDER BY id LIMIT 1"
+    )
 
 
 def table_count(engine: Engine, table_name: str) -> int | None:
@@ -207,11 +228,13 @@ def main() -> None:
 
     pattern = args.query if "%" in args.query else f"%{args.query}%"
     params = {"pattern": pattern, "limit": args.limit, "folder_id": folder_id}
+    params["document_id"] = first_document_id(engine) or ""
+    params["revision_id"] = first_revision_id(engine) or ""
 
     print(f"Dialect: {engine.dialect.name}")
     print(f"Folder seed: {folder_id}")
     print("Table counts:")
-    for table in ("folders", "documents", "document_revisions", "files"):
+    for table in ("nodes", "folders", "documents", "document_revisions", "files"):
         print(f"  {table}: {table_count(engine, table)}")
 
     print("\nExpected index check:")

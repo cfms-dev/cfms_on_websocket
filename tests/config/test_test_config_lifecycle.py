@@ -4,7 +4,7 @@ from shutil import copyfile
 import pytest
 from tomlkit import parse
 
-from tests.support.config import SOURCE_ROOT, managed_test_config
+from tests.support.config import SOURCE_ROOT, managed_test_config, write_test_config
 
 
 def _copy_config_sample(src_dir):
@@ -35,6 +35,16 @@ def test_managed_test_config_removes_generated_config_and_restores_environment(
     assert os.environ["CFMS_TEST_HOST"] == "original-host"
     assert "CFMS_TEST_PORT" not in os.environ
     assert "CFMS_TEST_USE_SSL" not in os.environ
+
+
+def test_write_test_config_can_disable_debug_for_load_tests(tmp_path):
+    src_dir = tmp_path / "src"
+    _copy_config_sample(src_dir)
+
+    settings = write_test_config(src_dir, 5104, debug=False)
+
+    config = parse(settings.config_path.read_text(encoding="utf-8"))
+    assert config["debug"] is False
 
 
 @pytest.mark.parametrize("raise_during_test", [False, True])

@@ -217,9 +217,11 @@ async def run_worker(
 
 def prepare_managed_server(
     src_dir: Path,
+    *,
+    debug: bool = False,
 ) -> tuple[ServerTestSettings, ConfigBackup, tuple[Popen, ServerLogCapture]]:
     backup = capture_config(src_dir / "config.toml")
-    settings = write_test_config(src_dir, reserve_local_port())
+    settings = write_test_config(src_dir, reserve_local_port(), debug=debug)
     for key, value in {
         "CFMS_TEST_HOST": settings.host,
         "CFMS_TEST_PORT": str(settings.port),
@@ -252,7 +254,7 @@ async def run_load(args) -> dict:
                 "Managed mode deletes src/app.db and src/content/files; "
                 "rerun in a disposable worktree with --managed-reset"
             )
-        settings, backup, server = prepare_managed_server(src_dir)
+        settings, backup, server = prepare_managed_server(src_dir, debug=args.debug)
     else:
         settings = ServerTestSettings(
             host=args.host or os.environ.get("CFMS_TEST_HOST", "localhost"),
@@ -327,6 +329,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     parser.add_argument("--no-ssl", action="store_true")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable server debug mode and verbose SQL logging in managed mode",
+    )
     parser.add_argument(
         "--managed-reset",
         action="store_true",
