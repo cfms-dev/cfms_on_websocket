@@ -346,6 +346,10 @@ def test_normalized_parameters_do_not_contain_credentials(monkeypatch):
             "perf-a",
             "--target-environment",
             "performance",
+            "--server-commit",
+            "server-a",
+            "--server-version",
+            "0.8.0",
             "--username",
             "load-user",
         ]

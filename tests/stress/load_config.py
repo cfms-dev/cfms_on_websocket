@@ -416,6 +416,8 @@ def _validate_resolved_args(args: argparse.Namespace) -> None:
     if remote:
         if not args.target_id or not args.target_environment:
             raise ValueError("remote runs require --target-id and --target-environment")
+        if not args.server_commit or not args.server_version:
+            raise ValueError("remote runs require --server-commit and --server-version")
         if args.target_environment == "production":
             raise ValueError("performance tests must not target production")
         if args.scenario in MUTATING_SCENARIOS and (

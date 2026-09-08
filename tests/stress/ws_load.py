@@ -1000,18 +1000,22 @@ async def server_metadata(
     client: CFMSTestClient,
     credentials: LoadCredentials | None,
     explicit_commit: str | None,
+    explicit_version: str | None,
 ) -> dict:
     info = await client.server_info()
     data = info.get("data", {}) if info.get("code") == 200 else {}
     metadata = {
         "commit": explicit_commit,
+        "version": explicit_version,
         "protocol_version": data.get("protocol_version"),
     }
     if credentials is not None:
         diagnostics = await client.diagnostics()
         if diagnostics.get("code") == 200:
             diagnostic_data = diagnostics.get("data", {})
-            metadata["version"] = diagnostic_data.get("server", {}).get("core_version")
+            metadata["version"] = metadata["version"] or diagnostic_data.get(
+                "server", {}
+            ).get("core_version")
             metadata["python_version"] = diagnostic_data.get("runtime", {}).get(
                 "python_version"
             )
@@ -1110,12 +1114,16 @@ async def run_load(args: argparse.Namespace) -> dict:
             total.merge(setup_stats)
 
             explicit_server_commit = args.server_commit
+            explicit_server_version = args.server_version
             if managed and explicit_server_commit is None:
                 explicit_server_commit = _git_commit(repo_root)
+            if managed and explicit_server_version is None:
+                explicit_server_version = version("cfms-on-websocket")
             server_details = await server_metadata(
                 metadata_client,
                 metadata_credential,
                 explicit_server_commit,
+                explicit_server_version,
             )
             started_at = datetime.now(UTC)
             overall_start = time.perf_counter()
@@ -1287,6 +1295,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--allow-remote-mutations", action="store_true")
     parser.add_argument("--server-commit")
+    parser.add_argument("--server-version")
     parser.add_argument("--harness-commit")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--managed-reset", action="store_true")

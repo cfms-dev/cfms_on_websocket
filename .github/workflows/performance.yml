@@ -1,0 +1,110 @@
+name: Manual Performance Comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Baseline Git ref or commit
+        required: true
+        type: string
+      candidate_ref:
+        description: Candidate Git ref or commit
+        required: true
+        type: string
+      profile:
+        description: Load profile
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - peak
+          - stress
+          - spike
+          - soak
+      target:
+        description: Target type; only managed-disposable is currently implemented
+        required: true
+        default: managed-disposable
+        type: string
+      environment:
+        description: Target environment; use local-disposable with managed-disposable
+        required: true
+        default: local-disposable
+        type: string
+      repetitions:
+        description: Repeated runs per revision
+        required: true
+        default: 3
+        type: number
+      regression_threshold:
+        description: Maximum relative throughput or latency regression (0 to <1)
+        required: true
+        default: "0.10"
+        type: string
+      performance_runner_label:
+        description: Project-owner supplied label for a fixed self-hosted performance runner
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.repository }}-${{ inputs.performance_runner_label }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    runs-on:
+      - self-hosted
+      - ${{ inputs.performance_runner_label }}
+    timeout-minutes: 4320
+
+    steps:
+      - name: Check out candidate harness
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.16"
+
+      - name: Install orchestration environment
+        run: uv sync --locked --dev
+
+      - name: Validate owner-supplied infrastructure inputs
+        env:
+          PERF_TARGET: ${{ inputs.target }}
+          PERF_ENVIRONMENT: ${{ inputs.environment }}
+          PERF_RUNNER_LABEL: ${{ inputs.performance_runner_label }}
+        run: python -c "import os; assert os.environ['PERF_RUNNER_LABEL'] != 'self-hosted', 'Supply a dedicated fixed performance runner label'; assert os.environ['PERF_TARGET'] == 'managed-disposable', 'Remote deployment and Secret names require project-owner configuration'; assert os.environ['PERF_ENVIRONMENT'] == 'local-disposable', 'managed-disposable requires local-disposable'"
+
+      - name: Run baseline and candidate comparisons
+        env:
+          CFMS_PERF_BASELINE_REF: ${{ inputs.baseline_ref }}
+          CFMS_PERF_CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          CFMS_PERF_PROFILE: ${{ inputs.profile }}
+          CFMS_PERF_TARGET: ${{ inputs.target }}
+          CFMS_PERF_ENVIRONMENT: ${{ inputs.environment }}
+          CFMS_PERF_REPETITIONS: ${{ inputs.repetitions }}
+          CFMS_PERF_MAX_REGRESSION: ${{ inputs.regression_threshold }}
+        run: uv run --locked python tools/run_performance_comparison.py --output-dir performance-artifacts
+
+      - name: Upload raw results, comparison, and service logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-${{ inputs.profile }}-${{ github.run_id }}
+          path: performance-artifacts/
+          if-no-files-found: error
+          retention-days: 30

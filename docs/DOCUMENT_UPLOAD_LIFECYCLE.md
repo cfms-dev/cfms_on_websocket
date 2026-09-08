@@ -101,56 +101,32 @@ arrival-rate scheduling, and the result schema shared by all load scenarios.
 
 Run benchmarks only in disposable worktrees. Managed mode requires
 `--managed-reset` because every run deletes `src/app.db` and
-`src/content/files`. The following PowerShell example compares the revision
-immediately before deferred deduplication (`42b2044`) with the candidate. It
-copies the candidate's benchmark harness into the baseline worktree so client
-and measurement code remain identical.
+`src/content/files`. The orchestrator creates those worktrees and materializes
+the same harness revision into both server revisions:
 
 ```powershell
-$repo = (Get-Location).Path
-$parent = Split-Path $repo
-$baseline = Join-Path $parent "cfms-perf-baseline"
-$candidate = Join-Path $parent "cfms-perf-candidate"
-$results = Join-Path $parent "cfms-perf-results"
-
-git worktree add --detach $baseline 42b2044
-git worktree add --detach $candidate HEAD
-Copy-Item -LiteralPath "$candidate\tests\stress\ws_load.py" `
-    -Destination "$baseline\tests\stress\ws_load.py" -Force
-Copy-Item -LiteralPath "$candidate\tests\support\client.py" `
-    -Destination "$baseline\tests\support\client.py" -Force
-New-Item -ItemType Directory -Force -Path "$results\baseline", `
-    "$results\candidate" | Out-Null
-
-foreach ($entry in @(
-    @{ Name = "baseline"; Path = $baseline },
-    @{ Name = "candidate"; Path = $candidate }
-)) {
-    Push-Location $entry.Path
-    uv sync --locked --dev
-    foreach ($scenario in "upload-unique", "upload-duplicate") {
-        1..5 | ForEach-Object {
-            uv run --locked python -m tests.stress.ws_load `
-                --scenario $scenario --users 8 --duration 30 `
-                --payload-size 1048576 --managed-reset --json |
-                Set-Content -Encoding utf8 `
-                    "$results\$($entry.Name)\$scenario-$_.json"
-        }
-    }
-    Pop-Location
-}
-
-uv run --locked python tools/compare_upload_benchmarks.py `
-    "$results\baseline" "$results\candidate" --max-regression 0.10
+uv run --locked python tools/run_performance_comparison.py `
+    --baseline-ref 42b2044 --candidate-ref HEAD --harness-ref HEAD `
+    --profile smoke --repetitions 5 --max-regression 0.10 `
+    --load-arg=--scenario --load-arg=upload-unique `
+    --load-arg=--duration --load-arg=30s `
+    --load-arg=--users --load-arg=8 `
+    --load-arg=--payload-size --load-arg=1048576 `
+    --output-dir cfms-upload-performance-results
 ```
 
-The comparator uses the median throughput and median p95 across repeated runs,
-requires matching parameters, requires `upload-unique` results, and exits with
-status 1 if success rate drops or either throughput or p95 regresses beyond the
-chosen threshold. Run on the same otherwise-idle host, keep power and storage
-conditions fixed, and inspect both raw JSON and server logs before accepting a
-result. Add worktrees for intermediate commits when the first comparison finds
-a regression and the introducing commit needs to be isolated.
+Run the same command with `upload-duplicate` and a separate output directory
+when deduplication behavior also needs a baseline.
+
+The comparator now supports every performance scenario while retaining this
+script path. It checks matching harness commits, normalized parameters, and
+random-seed sets, then compares median throughput, p95, p99, success rate,
+dropped iterations, and file throughput when available. Relative thresholds
+and absolute SLOs are supported, with machine-readable JSON and process exit
+codes. Run on the same otherwise-idle fixed host, keep power and storage
+conditions stable, and inspect raw JSON and server logs before accepting a
+result. See [Performance testing](PERFORMANCE_TESTING.md) for the reusable
+worktree orchestrator and migration behavior for older result files.
 
 ## Limits and client responses
 
