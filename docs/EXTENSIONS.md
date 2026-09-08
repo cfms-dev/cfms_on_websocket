@@ -293,6 +293,11 @@ UI are disabled by default. When enabled, the schema and UI are available at
 `/api/v1/openapi.json` and `/api/v1/docs`. `/healthz` is always available and
 does not disclose versions or enabled extensions. `max_concurrency` is the exact
 number of simultaneous HTTP connections admitted before overload responses begin.
+Each `cors_allowed_origins` entry must use the browser Origin form
+`scheme://host[:port]`, without credentials, a path (including a trailing slash),
+query, fragment, or surrounding whitespace. HTTP(S) scheme and host casing,
+internationalized or IP hosts, and default ports are normalized before exact
+matching; non-default ports are preserved.
 For admitted requests, `max_request_body_bytes` applies to the raw body for
 fixed-length, streamed, and CORS preflight requests, even when an endpoint does
 not consume the body. `request_header_timeout_seconds` closes a connection without

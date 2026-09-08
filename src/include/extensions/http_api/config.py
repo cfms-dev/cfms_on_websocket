@@ -4,7 +4,15 @@ from collections.abc import Mapping
 from typing import Annotated, Any, Self
 from urllib.parse import urlsplit
 
-from pydantic import ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from include.config.validation import ConfigValidationError
@@ -18,6 +26,8 @@ _PositiveInt = Annotated[int, Field(gt=0)]
 _Port = Annotated[int, Field(ge=1, le=65535)]
 _PositiveSeconds = Annotated[float, Field(gt=0)]
 _Origins = Annotated[tuple[str, ...], Field(strict=False)]
+_HTTP_ORIGIN_ADAPTER = TypeAdapter(AnyHttpUrl)
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 @pydantic_dataclass(frozen=True, slots=True, config=_POLICY_CONFIG)
@@ -35,6 +45,47 @@ class HttpApiPolicy:
     cors_allowed_origins: _Origins = ()
     docs_enabled: bool = False
 
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def normalize_cors_allowed_origins(
+        cls, origins: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        normalized_origins = []
+        for origin in origins:
+            if any(character.isspace() for character in origin) or any(
+                delimiter in origin for delimiter in ("?", "#", "\\")
+            ):
+                raise ValueError(
+                    f"cors_allowed_origins contains invalid origin {origin!r}"
+                )
+            try:
+                parsed = urlsplit(origin)
+                parsed_port = parsed.port
+                url = _HTTP_ORIGIN_ADAPTER.validate_python(origin, strict=True)
+            except ValidationError, ValueError:
+                raise ValueError(
+                    f"cors_allowed_origins contains invalid origin {origin!r}"
+                ) from None
+
+            if (
+                parsed.path
+                or parsed.username is not None
+                or parsed.password is not None
+                or (parsed_port is None and parsed.netloc.endswith(":"))
+            ):
+                raise ValueError(
+                    f"cors_allowed_origins contains invalid origin {origin!r}"
+                )
+
+            normalized_origin = f"{url.scheme}://{url.host}"
+            if url.port != _DEFAULT_PORTS[url.scheme]:
+                normalized_origin = f"{normalized_origin}:{url.port}"
+            normalized_origins.append(normalized_origin)
+
+        if len(normalized_origins) != len(set(normalized_origins)):
+            raise ValueError("cors_allowed_origins must not contain duplicates")
+        return tuple(normalized_origins)
+
     @model_validator(mode="after")
     def validate_policy(self) -> Self:
         if not self.host or self.host != self.host.strip():
@@ -48,20 +99,6 @@ class HttpApiPolicy:
             if value is not None and (not value or value != value.strip()):
                 raise ValueError(
                     f"{name} must not be blank or have surrounding whitespace"
-                )
-        if len(self.cors_allowed_origins) != len(set(self.cors_allowed_origins)):
-            raise ValueError("cors_allowed_origins must not contain duplicates")
-        for origin in self.cors_allowed_origins:
-            parsed = urlsplit(origin)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or not parsed.netloc
-                or parsed.path not in {"", "/"}
-                or parsed.query
-                or parsed.fragment
-            ):
-                raise ValueError(
-                    f"cors_allowed_origins contains invalid origin {origin!r}"
                 )
         return self
 

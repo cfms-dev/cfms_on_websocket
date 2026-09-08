@@ -30,7 +30,7 @@ request_header_timeout_seconds = 10.0  # Total time to receive complete headers.
 request_body_timeout_seconds = 30.0  # Total time to receive the complete body.
 startup_timeout_seconds = 10.0
 shutdown_timeout_seconds = 10.0
-cors_allowed_origins = []
+cors_allowed_origins = []  # Browser origins only: scheme://host[:port], without a trailing slash.
 docs_enabled = false
 
 [server]

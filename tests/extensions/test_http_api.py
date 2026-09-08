@@ -163,6 +163,88 @@ def test_invalid_http_configuration_is_rejected(http_api_modules, section):
         http_api_modules.config.HttpApiPolicy.from_config(config)
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        " https://ui.example",
+        "https://ui.example ",
+        "https://ui.example/",
+        "https://ui.example/path",
+        "https://user@ui.example",
+        "https://user:password@ui.example",
+        "https://ui.example:",
+        "https://ui.example?",
+        "https://ui.example?mode=cors",
+        "https://ui.example#fragment",
+        "https://ui.example\\path",
+    ],
+)
+def test_cors_origin_rejects_non_origin_url_components(http_api_modules, origin):
+    config = {"extensions": {"http_api": {"cors_allowed_origins": [origin]}}}
+
+    with pytest.raises(
+        http_api_modules.config.ConfigValidationError,
+        match="contains invalid origin",
+    ):
+        http_api_modules.config.HttpApiPolicy.from_config(config)
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("HTTPS://UI.Example:443", "https://ui.example"),
+        ("http://UI.Example:80", "http://ui.example"),
+        ("https://UI.Example:8443", "https://ui.example:8443"),
+        ("https://bücher.example", "https://xn--bcher-kva.example"),
+        ("https://[2001:0DB8::1]:443", "https://[2001:db8::1]"),
+    ],
+)
+def test_cors_origin_is_normalized(http_api_modules, configured, expected):
+    policy = http_api_modules.config.HttpApiPolicy(cors_allowed_origins=(configured,))
+
+    assert policy.cors_allowed_origins == (expected,)
+
+
+def test_cors_origin_rejects_duplicates_after_normalization(http_api_modules):
+    config = {
+        "extensions": {
+            "http_api": {
+                "cors_allowed_origins": [
+                    "https://ui.example",
+                    "HTTPS://UI.EXAMPLE:443",
+                ]
+            }
+        }
+    }
+
+    with pytest.raises(
+        http_api_modules.config.ConfigValidationError,
+        match="must not contain duplicates",
+    ):
+        http_api_modules.config.HttpApiPolicy.from_config(config)
+
+
+@pytest.mark.asyncio
+async def test_normalized_cors_origin_matches_browser_header(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    _install_http_plugins(monkeypatch, modules, [])
+    policy = modules.config.HttpApiPolicy(
+        cors_allowed_origins=("HTTPS://UI.Example:443",)
+    )
+    app = modules.application.build_http_application(policy)
+
+    async with _http_client(app, client=("127.0.0.1", 5000)) as client:
+        response = await client.get(
+            "/healthz", headers={"Origin": "https://ui.example"}
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+
+
 @pytest.mark.asyncio
 async def test_registered_router_is_http_only_and_docs_are_disabled(
     monkeypatch, http_api_modules
