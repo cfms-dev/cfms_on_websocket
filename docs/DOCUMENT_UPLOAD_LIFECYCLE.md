@@ -96,6 +96,9 @@ for uploads that do not need reference merging. The reported latency covers the
 file-transfer request through the server's success confirmation. Throughput is
 measured across the whole create-and-upload loop.
 
+See [Performance testing](PERFORMANCE_TESTING.md) for remote credentials, TLS,
+arrival-rate scheduling, and the result schema shared by all load scenarios.
+
 Run benchmarks only in disposable worktrees. Managed mode requires
 `--managed-reset` because every run deletes `src/app.db` and
 `src/content/files`. The following PowerShell example compares the revision
@@ -114,6 +117,8 @@ git worktree add --detach $baseline 42b2044
 git worktree add --detach $candidate HEAD
 Copy-Item -LiteralPath "$candidate\tests\stress\ws_load.py" `
     -Destination "$baseline\tests\stress\ws_load.py" -Force
+Copy-Item -LiteralPath "$candidate\tests\support\client.py" `
+    -Destination "$baseline\tests\support\client.py" -Force
 New-Item -ItemType Directory -Force -Path "$results\baseline", `
     "$results\candidate" | Out-Null
 

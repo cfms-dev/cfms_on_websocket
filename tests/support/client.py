@@ -206,6 +206,7 @@ class CFMSTestClient:
         host: str | None = None,
         port: int | None = None,
         use_ssl: bool | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ):
         """
         Initialize the test client.
@@ -214,6 +215,7 @@ class CFMSTestClient:
             host: Server hostname
             port: Server port
             use_ssl: Whether to use SSL/TLS connection
+            ssl_context: Optional caller-owned TLS configuration
         """
         self.host = host or os.environ.get("CFMS_TEST_HOST", "localhost")
         self.port = (
@@ -222,6 +224,7 @@ class CFMSTestClient:
         self.use_ssl = (
             use_ssl if use_ssl is not None else _env_bool("CFMS_TEST_USE_SSL", True)
         )
+        self.ssl_context = ssl_context
         self.websocket: ClientConnection | None = None
         self.multiplexer: AsyncMultiplexConnection | None = None
         self.username: str | None = None
@@ -238,9 +241,11 @@ class CFMSTestClient:
         uri = f"{protocol}://{_format_ws_host(self.host)}:{self.port}"
 
         if self.use_ssl:
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+            ssl_context = self.ssl_context
+            if ssl_context is None:
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
         else:
             ssl_context = None
 
