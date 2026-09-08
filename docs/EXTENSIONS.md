@@ -276,6 +276,8 @@ host = "localhost"
 port = 5105
 max_concurrency = 64
 max_request_body_bytes = 1048576
+request_header_timeout_seconds = 10.0
+request_body_timeout_seconds = 30.0
 startup_timeout_seconds = 10.0
 shutdown_timeout_seconds = 10.0
 cors_allowed_origins = []
@@ -293,7 +295,11 @@ does not disclose versions or enabled extensions. `max_concurrency` is the exact
 number of simultaneous HTTP connections admitted before overload responses begin.
 For admitted requests, `max_request_body_bytes` applies to the raw body for
 fixed-length, streamed, and CORS preflight requests, even when an endpoint does
-not consume the body. Every
+not consume the body. `request_header_timeout_seconds` closes a connection without
+an HTTP response if it doesn't provide complete request headers within the total
+deadline. `request_body_timeout_seconds` is a total, non-renewing deadline for
+receiving the body; an expired request receives HTTP 408 and the connection closes.
+These deadlines don't limit endpoint execution time. Every
 `extensions.http_api` setting requires a server restart to take effect.
 
 Consumers use a version 3 manifest dependency and register HTTP-only routers:

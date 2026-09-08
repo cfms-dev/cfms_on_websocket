@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import socket
 import ssl
@@ -79,6 +80,8 @@ def test_sample_http_configuration_is_valid(http_api_modules):
 
     assert policy.host == "localhost"
     assert policy.port == 5105
+    assert policy.request_header_timeout_seconds == 10.0
+    assert policy.request_body_timeout_seconds == 30.0
     assert policy.cors_allowed_origins == ()
 
 
@@ -98,6 +101,9 @@ def test_http_extension_adds_hook_spec_to_core_manager(http_api_modules):
         {"cors_allowed_origins": ["*"]},
         {"host": " "},
         {"port": 0},
+        {"request_header_timeout_seconds": 0},
+        {"request_body_timeout_seconds": -1.0},
+        {"request_body_timeout_seconds": "30"},
     ],
 )
 def test_invalid_http_configuration_is_rejected(http_api_modules, section):
@@ -289,6 +295,43 @@ def test_body_limit_counts_chunked_body_before_endpoint_runs(
     assert accepted.status_code == 200
     assert rejected.status_code == 413
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_body_receive_timeout_closes_connection_before_endpoint_runs(
+    monkeypatch, http_api_modules
+):
+    modules = http_api_modules
+    _allow_all_subnets(monkeypatch, modules.application)
+    router = APIRouter(prefix="/example")
+    calls = 0
+
+    @router.post("/ignore")
+    def ignore_body():
+        nonlocal calls
+        calls += 1
+        return {"ok": True}
+
+    registration = modules.contracts.HttpRouterRegistration("consumer", router)
+    _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
+    app = modules.application.build_http_application(
+        modules.config.HttpApiPolicy(request_body_timeout_seconds=0.05)
+    )
+
+    async def slow_body():
+        yield b"first chunk"
+        await asyncio.Event().wait()
+
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.post("/api/v1/example/ignore", content=slow_body())
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Request body timeout"}
+    assert response.headers["Connection"] == "close"
+    assert calls == 0
 
 
 @pytest.mark.parametrize("content_length", ["-1", "not-a-number"])
@@ -630,7 +673,7 @@ def _reserve_ipv4_port() -> int:
         return listener.getsockname()[1]
 
 
-def test_real_tls_listener_becomes_ready_and_releases_port(
+def test_real_tls_listener_reclaims_slow_headers_and_releases_port(
     monkeypatch, http_api_modules, tmp_path
 ):
     modules = http_api_modules
@@ -653,6 +696,7 @@ def test_real_tls_listener_becomes_ready_and_releases_port(
         ssl_certfile=str(cert_path),
         ssl_keyfile=str(key_path),
         max_concurrency=1,
+        request_header_timeout_seconds=0.25,
         startup_timeout_seconds=5.0,
         shutdown_timeout_seconds=5.0,
     )
@@ -684,7 +728,47 @@ def test_real_tls_listener_becomes_ready_and_releases_port(
         ):
             assert held_connection.version() == "TLSv1.3"
             rejected = client.get(f"https://127.0.0.1:{port}/healthz")
-        assert rejected.status_code == 503
+            assert rejected.status_code == 503
+            held_connection.settimeout(2.0)
+            assert held_connection.recv(1) == b""
+
+        with httpx.Client(verify=False, trust_env=False, timeout=5.0) as client:
+            recovered = client.get(f"https://127.0.0.1:{port}/healthz")
+        assert recovered.status_code == 200
+
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5.0) as connection,
+            client_context.wrap_socket(
+                connection, server_hostname="localhost"
+            ) as dripping_connection,
+        ):
+            dripping_connection.settimeout(2.0)
+            dripping_connection.sendall(
+                b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
+            response_bytes = bytearray()
+            while b'{"status":"ok"}' not in response_bytes:
+                response_bytes.extend(dripping_connection.recv(4096))
+            assert b"HTTP/1.1 200 OK" in response_bytes
+
+            dripping_connection.sendall(b"G")
+            dripping_connection.settimeout(0.05)
+            disconnected = False
+            for _ in range(20):
+                try:
+                    disconnected = dripping_connection.recv(1) == b""
+                except TimeoutError:
+                    try:
+                        dripping_connection.sendall(b"X")
+                    except OSError:
+                        continue
+                if disconnected:
+                    break
+            assert disconnected
+
+        with httpx.Client(verify=False, trust_env=False, timeout=5.0) as client:
+            recovered = client.get(f"https://127.0.0.1:{port}/healthz")
+        assert recovered.status_code == 200
     finally:
         runtime.shutdown(5.0)
         runtime.shutdown(5.0)
@@ -768,6 +852,8 @@ def test_runtime_uses_exact_concurrency_and_rounded_shutdown_limits(
     runtime.start(FastAPI(), policy)
     server = instances[0]
     assert server.config.limit_concurrency == 2
+    assert server.config.request_header_timeout_seconds == 10.0
+    assert server.config.http is modules.runtime._RequestHeaderTimeoutH11Protocol
     assert server.config.timeout_graceful_shutdown == 1
     runtime.shutdown(policy.shutdown_timeout_seconds)
 

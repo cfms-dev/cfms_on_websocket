@@ -1,5 +1,7 @@
 __all__ = ["build_http_application", "collect_http_router_registrations"]
 
+import asyncio
+
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -47,9 +49,10 @@ class _CorsResponseHeadersMiddleware:
 
 
 class _RequestBodyLimitMiddleware:
-    def __init__(self, app, max_bytes: int):
+    def __init__(self, app, max_bytes: int, timeout_seconds: float):
         self.app = app
         self.max_bytes = max_bytes
+        self.timeout_seconds = timeout_seconds
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -73,24 +76,38 @@ class _RequestBodyLimitMiddleware:
 
         body = bytearray()
         disconnected = False
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                disconnected = True
-                break
+        too_large = False
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        disconnected = True
+                        break
 
-            chunk = message.get("body", b"")
-            remaining = self.max_bytes - len(body)
-            if len(chunk) > remaining:
-                body.extend(chunk[: remaining + 1])
-                response = JSONResponse(
-                    {"detail": "Request body too large"}, status_code=413
-                )
-                await response(scope, receive, send)
-                return
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                break
+                    chunk = message.get("body", b"")
+                    remaining = self.max_bytes - len(body)
+                    if len(chunk) > remaining:
+                        too_large = True
+                        break
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        break
+        except TimeoutError:
+            response = JSONResponse(
+                {"detail": "Request body timeout"},
+                status_code=408,
+                headers={"Connection": "close"},
+            )
+            await response(scope, receive, send)
+            return
+
+        if too_large:
+            response = JSONResponse(
+                {"detail": "Request body too large"}, status_code=413
+            )
+            await response(scope, receive, send)
+            return
 
         replayed = False
 
@@ -243,6 +260,7 @@ def build_http_application(policy: HttpApiPolicy) -> FastAPI:
             Middleware(
                 _RequestBodyLimitMiddleware,
                 max_bytes=policy.max_request_body_bytes,
+                timeout_seconds=policy.request_body_timeout_seconds,
             ),
         )
     )

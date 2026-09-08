@@ -1,12 +1,16 @@
 __all__ = ["HttpApiRuntime"]
 
+import asyncio
 import threading
 from dataclasses import dataclass
 from math import ceil
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
 from loguru import logger as log
+from uvicorn.protocols.http.h11_impl import H11Protocol
+from uvicorn.server import ServerState
 
 from include.config.settings import global_config
 from include.transport.tls import create_server_ssl_context
@@ -15,6 +19,65 @@ from .config import HttpApiPolicy
 
 logger = log.bind(name="http_api")
 _SERVER_STOP_MARGIN_SECONDS = 1.0
+
+
+class _HttpApiConfig(uvicorn.Config):
+    request_header_timeout_seconds: float
+
+
+class _RequestHeaderTimeoutH11Protocol(H11Protocol):
+    def __init__(
+        self,
+        config: _HttpApiConfig,
+        server_state: ServerState,
+        app_state: dict[str, Any],
+        _loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__(config, server_state, app_state, _loop)
+        self._request_header_timeout_seconds = config.request_header_timeout_seconds
+        self._request_header_timeout_handle: asyncio.TimerHandle | None = None
+
+    def connection_made(self, transport: asyncio.Transport) -> None:
+        super().connection_made(transport)
+        self._arm_request_header_timeout()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self._cancel_request_header_timeout()
+        super().connection_lost(exc)
+
+    def data_received(self, data: bytes) -> None:
+        previous_cycle = self.cycle
+        if (
+            previous_cycle is not None
+            and previous_cycle.response_complete
+            and self._request_header_timeout_handle is None
+        ):
+            self._arm_request_header_timeout()
+
+        super().data_received(data)
+        if self.cycle is not previous_cycle:
+            self._cancel_request_header_timeout()
+
+    def shutdown(self) -> None:
+        self._cancel_request_header_timeout()
+        super().shutdown()
+
+    def _arm_request_header_timeout(self) -> None:
+        self._cancel_request_header_timeout()
+        self._request_header_timeout_handle = self.loop.call_later(
+            self._request_header_timeout_seconds,
+            self._request_header_timeout_handler,
+        )
+
+    def _cancel_request_header_timeout(self) -> None:
+        if self._request_header_timeout_handle is not None:
+            self._request_header_timeout_handle.cancel()
+            self._request_header_timeout_handle = None
+
+    def _request_header_timeout_handler(self) -> None:
+        self._request_header_timeout_handle = None
+        if not self.transport.is_closing():
+            self.transport.close()
 
 
 class _SignallingServer(uvicorn.Server):
@@ -63,10 +126,11 @@ class HttpApiRuntime:
                 raise RuntimeError("The HTTP API server is already active")
 
             startup_event = threading.Event()
-            config = uvicorn.Config(
+            config = _HttpApiConfig(
                 app,
                 host=policy.host,
                 port=policy.port,
+                http=_RequestHeaderTimeoutH11Protocol,
                 workers=1,
                 access_log=False,
                 proxy_headers=False,
@@ -77,6 +141,9 @@ class HttpApiRuntime:
                 ssl_context_factory=lambda _config, _factory: self._create_ssl_context(
                     policy
                 ),
+            )
+            config.request_header_timeout_seconds = (
+                policy.request_header_timeout_seconds
             )
             server = _SignallingServer(config, startup_event)
             active = _ActiveServer(

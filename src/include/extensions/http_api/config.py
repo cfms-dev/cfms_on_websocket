@@ -28,6 +28,8 @@ class HttpApiPolicy:
     ssl_keyfile: str | None = None
     max_concurrency: _PositiveInt = 64
     max_request_body_bytes: _PositiveInt = 1_048_576
+    request_header_timeout_seconds: _PositiveSeconds = 10.0
+    request_body_timeout_seconds: _PositiveSeconds = 30.0
     startup_timeout_seconds: _PositiveSeconds = 10.0
     shutdown_timeout_seconds: _PositiveSeconds = 10.0
     cors_allowed_origins: _Origins = ()
