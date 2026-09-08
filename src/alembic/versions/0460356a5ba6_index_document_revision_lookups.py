@@ -41,6 +41,47 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    if op.get_bind().dialect.name == "mysql":
+        with op.batch_alter_table("documents", schema=None) as batch_op:
+            batch_op.drop_constraint(
+                "fk_documents_current_revision_id_document_revisions",
+                type_="foreignkey",
+            )
+            batch_op.drop_index(batch_op.f("ix_documents_current_revision_id"))
+            batch_op.create_foreign_key(
+                "fk_documents_current_revision_id_document_revisions",
+                "document_revisions",
+                ["current_revision_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+
+        with op.batch_alter_table("document_revisions", schema=None) as batch_op:
+            batch_op.drop_constraint(
+                "fk_document_revisions_parent_revision_id_document_revisions",
+                type_="foreignkey",
+            )
+            batch_op.drop_constraint(
+                "fk_document_revisions_document_id_documents",
+                type_="foreignkey",
+            )
+            batch_op.drop_index("ix_document_revisions_parent_revision_id")
+            batch_op.drop_index("ix_document_revisions_document_created_id")
+            batch_op.create_foreign_key(
+                "fk_document_revisions_document_id_documents",
+                "documents",
+                ["document_id"],
+                ["id"],
+            )
+            batch_op.create_foreign_key(
+                "fk_document_revisions_parent_revision_id_document_revisions",
+                "document_revisions",
+                ["parent_revision_id"],
+                ["id"],
+                ondelete="SET NULL",
+            )
+        return
+
     with op.batch_alter_table("documents", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_documents_current_revision_id"))
 

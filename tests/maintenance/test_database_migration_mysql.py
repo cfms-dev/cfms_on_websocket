@@ -42,6 +42,75 @@ def test_unversioned_mysql_schema_is_rejected_without_stamping(backup_context) -
         mysql_engine.dispose()
 
 
+def test_document_lookup_indexes_round_trip_on_mysql(backup_context) -> None:
+    mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    _clear_mysql_database(mysql_engine)
+    config = Config(_PROJECT_ROOT / "src" / "alembic.ini")
+    scripts = _script_directory()
+    head = scripts.get_current_head()
+    assert head is not None
+    expected_indexes = {
+        "documents": {"ix_documents_current_revision_id"},
+        "document_revisions": {
+            "ix_document_revisions_document_created_id",
+            "ix_document_revisions_parent_revision_id",
+        },
+    }
+    expected_foreign_keys = {
+        "documents": {
+            ("current_revision_id",): (
+                "fk_documents_current_revision_id_document_revisions",
+                "SET NULL",
+            ),
+        },
+        "document_revisions": {
+            ("document_id",): (
+                "fk_document_revisions_document_id_documents",
+                None,
+            ),
+            ("parent_revision_id",): (
+                "fk_document_revisions_parent_revision_id_document_revisions",
+                "SET NULL",
+            ),
+        },
+    }
+    try:
+        backup_context.Base.metadata.create_all(mysql_engine)
+        with mysql_engine.begin() as connection:
+            MigrationContext.configure(connection).stamp(scripts, head)
+
+        config.set_main_option("sqlalchemy.url", os.environ["CFMS_TEST_MYSQL_URL"])
+        command.downgrade(config, "3c496a214a87")
+
+        with mysql_engine.connect() as connection:
+            inspector = inspect(connection)
+            for table_name, index_names in expected_indexes.items():
+                assert index_names.isdisjoint(
+                    index["name"] for index in inspector.get_indexes(table_name)
+                )
+            for table_name, expected in expected_foreign_keys.items():
+                actual = {
+                    tuple(foreign_key["constrained_columns"]): (
+                        foreign_key["name"],
+                        foreign_key["options"].get("ondelete"),
+                    )
+                    for foreign_key in inspector.get_foreign_keys(table_name)
+                }
+                assert expected.items() <= actual.items()
+
+        command.upgrade(config, "head")
+
+        with mysql_engine.connect() as connection:
+            inspector = inspect(connection)
+            for table_name, index_names in expected_indexes.items():
+                assert index_names <= {
+                    index["name"] for index in inspector.get_indexes(table_name)
+                }
+    finally:
+        _clear_mysql_database(mysql_engine)
+        mysql_engine.dispose()
+
+
 def test_system_schedule_revision_round_trips_on_mysql(backup_context) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
     _clear_mysql_database(mysql_engine)
