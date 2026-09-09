@@ -83,6 +83,8 @@ def synchronize_system_schedules(
         if registration.system_schedule is None:
             continue
         definition = registration.system_schedule()
+        if definition is None:
+            continue
         if definition.id in desired:
             raise ValueError(f"Duplicate system schedule ID {definition.id!r}")
         payload = registry.validate_payload(

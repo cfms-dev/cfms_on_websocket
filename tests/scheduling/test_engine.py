@@ -502,6 +502,31 @@ def test_system_schedule_is_created_updated_and_retired(monkeypatch):
         assert schedule.status == "deleted"
 
 
+def test_dynamic_system_schedule_is_retired_when_factory_returns_none(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    definition = SystemScheduleDefinition(
+        id="test.dynamic_cleanup",
+        payload={},
+        trigger_type="date",
+        trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
+        run_immediately=False,
+    )
+    registry = _system_registry(lambda: definition)
+
+    assert (
+        scheduling_reconciliation.synchronize_system_schedules(registry, now=100.0) == 1
+    )
+    registry = _system_registry(lambda: None)
+
+    assert (
+        scheduling_reconciliation.synchronize_system_schedules(registry, now=200.0) == 1
+    )
+    with factory() as session:
+        schedule = session.get(Schedule, "test.dynamic_cleanup")
+        assert schedule.enabled is False
+        assert schedule.status == "deleted"
+
+
 def test_unchanged_system_schedule_does_not_acquire_write_lock(monkeypatch):
     _session_factory(monkeypatch)
 

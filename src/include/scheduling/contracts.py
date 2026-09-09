@@ -58,7 +58,7 @@ class SystemScheduleDefinition:
             raise ValueError("System schedule IDs must contain 1 to 32 characters")
 
 
-type SystemScheduleFactory = Callable[[], SystemScheduleDefinition]
+type SystemScheduleFactory = Callable[[], SystemScheduleDefinition | None]
 
 
 @dataclass(frozen=True, slots=True)
