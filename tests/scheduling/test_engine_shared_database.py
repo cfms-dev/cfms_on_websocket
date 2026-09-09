@@ -111,7 +111,7 @@ def _claimed_execution(factory):
     )
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
     scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-    claim = scheduling_engine.claim_execution(
+    claim = scheduling_claims.claim_execution(
         generation,
         "original-worker",
         policy,
@@ -168,10 +168,10 @@ def test_completion_and_reclaim_preserve_one_lease_owner(
     generation, policy, claim = _claimed_execution(factory)
 
     operations = {
-        "completion": lambda: scheduling_engine.complete_execution(
+        "completion": lambda: scheduling_outcomes.complete_execution(
             claim, generation, {"completed": True}, now=161.0
         ),
-        "reclaim": lambda: scheduling_engine.claim_execution(
+        "reclaim": lambda: scheduling_claims.claim_execution(
             generation, "replacement-worker", policy, now=161.0
         ),
     }
@@ -216,7 +216,7 @@ def test_failure_and_reclaim_preserve_one_lease_owner(
     generation, policy, claim = _claimed_execution(factory)
 
     operations = {
-        "failure": lambda: scheduling_engine.fail_execution(
+        "failure": lambda: scheduling_outcomes.fail_execution(
             claim,
             generation,
             max_attempts=1,
@@ -225,7 +225,7 @@ def test_failure_and_reclaim_preserve_one_lease_owner(
             error="task failed",
             now=161.0,
         ),
-        "reclaim": lambda: scheduling_engine.claim_execution(
+        "reclaim": lambda: scheduling_claims.claim_execution(
             generation, "replacement-worker", policy, now=161.0
         ),
     }
@@ -282,7 +282,7 @@ def test_completion_and_deletion_serialize_without_rollback(
             )
 
     operations = {
-        "completion": lambda: scheduling_engine.complete_execution(
+        "completion": lambda: scheduling_outcomes.complete_execution(
             claim, generation, {"completed": True}, now=102.0
         ),
         "deletion": delete_claimed_schedule,
@@ -328,10 +328,10 @@ def test_completion_and_deleted_lease_cancellation_choose_one_terminal_state(
         )
 
     operations = {
-        "completion": lambda: scheduling_engine.complete_execution(
+        "completion": lambda: scheduling_outcomes.complete_execution(
             claim, generation, {"completed": True}, now=160.0
         ),
-        "cancellation": lambda: scheduling_engine.cancel_expired_deleted_executions(
+        "cancellation": lambda: scheduling_outcomes.cancel_expired_deleted_executions(
             policy.claim_batch_size, now=160.0
         ),
     }
