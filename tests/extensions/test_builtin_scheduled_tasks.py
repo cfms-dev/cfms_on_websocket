@@ -223,3 +223,76 @@ def test_core_schedule_history_cleanup_is_always_registered(monkeypatch):
     assert definition.id == registration.name
     assert definition.trigger_data == {"seconds": 3600}
     assert result.data == {"deleted_executions": 13}
+
+
+def test_core_lockdown_expiry_schedule_tracks_active_activation(monkeypatch):
+    from include.scheduling import tasks
+
+    registration = next(
+        item
+        for item in tasks.CORE_SCHEDULED_TASKS
+        if item.name == "core.lockdown_expiry"
+    )
+    monkeypatch.setattr(
+        tasks.lockdown_state_manager,
+        "get_scheduled_activation",
+        lambda: None,
+    )
+    assert registration.system_schedule() is None
+
+    monkeypatch.setattr(
+        tasks.lockdown_state_manager,
+        "get_scheduled_activation",
+        lambda: SimpleNamespace(
+            activation_id="execution-1",
+            expires_at=200.0,
+            observed_at=100.0,
+        ),
+    )
+    definition = registration.system_schedule()
+
+    assert definition.id == "core.lockdown_expiry"
+    assert definition.trigger_type == "date"
+    assert definition.trigger_data == {"run_at": "1970-01-01T00:03:20+00:00"}
+    assert definition.payload == {"activation_id": "execution-1"}
+    assert definition.run_immediately is False
+
+
+def test_core_lockdown_expiry_runs_immediately_when_overdue(monkeypatch):
+    from include.scheduling import tasks
+
+    registration = next(
+        item
+        for item in tasks.CORE_SCHEDULED_TASKS
+        if item.name == "core.lockdown_expiry"
+    )
+    monkeypatch.setattr(
+        tasks.lockdown_state_manager,
+        "get_scheduled_activation",
+        lambda: SimpleNamespace(
+            activation_id="execution-1",
+            expires_at=200.0,
+            observed_at=201.0,
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "expire_scheduled_lockdown",
+        lambda activation_id: (
+            SimpleNamespace(outcome="applied")
+            if activation_id == "execution-1"
+            else None
+        ),
+    )
+
+    definition = registration.system_schedule()
+    result = registration.execute(
+        object(),
+        registration.payload_model(activation_id="execution-1"),
+    )
+
+    assert definition.run_immediately is True
+    assert result.data == {
+        "activation_id": "execution-1",
+        "outcome": "applied",
+    }

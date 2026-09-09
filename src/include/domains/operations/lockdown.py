@@ -1,14 +1,19 @@
 __all__ = [
     "LockdownReason",
+    "ScheduledLockdownActivation",
     "LockdownState",
     "LockdownStateManager",
     "LockdownTransition",
+    "LockdownTransitionOutcome",
     "apply_lockdown",
+    "apply_scheduled_lockdown",
+    "expire_scheduled_lockdown",
     "lockdown_state_manager",
 ]
 
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Annotated, Any, Self, cast
 
 import orjson
@@ -18,6 +23,7 @@ from pydantic import (
     ConfigDict,
     Field,
     FiniteFloat,
+    StringConstraints,
     ValidationError,
     model_validator,
 )
@@ -26,11 +32,13 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import GLOBAL_BROADCAST_EVENT_CHANNEL
+from include.database.clock import database_now
 from include.database.models.files import FileTask, FileTaskStatus
 from include.database.session import Session
 from include.database.system_states import (
     StoredSystemState,
     create_system_state,
+    delete_system_state,
     read_system_state,
     update_system_state,
 )
@@ -45,6 +53,8 @@ logger = log.bind(name="lockdown")
 _LOCKDOWN_OWNER = "core"
 _LOCKDOWN_STATE_KEY = "lockdown"
 _LOCKDOWN_SCHEMA_VERSION = 1
+_LOCKDOWN_ACTIVATION_STATE_KEY = "lockdown_activation"
+_LOCKDOWN_ACTIVATION_SCHEMA_VERSION = 1
 _LOCKDOWN_CAS_MAX_ATTEMPTS = 8
 _LOCKDOWN_CAS_RETRY_BASE_SECONDS = 0.005
 _ACTIVE_FILE_TASK_STATUSES = (
@@ -98,18 +108,56 @@ class _LockdownPayload(_LockdownStateBase):
     ]
 
 
+class _LockdownActivationPayload(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        extra="forbid",
+    )
+
+    activation_id: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=128),
+    ]
+    expires_at: Annotated[FiniteFloat, Field(ge=0)]
+    lockdown_revision: Annotated[int, Field(gt=0)]
+
+
+class LockdownTransitionOutcome(StrEnum):
+    APPLIED = "applied"
+    UNCHANGED = "unchanged"
+    CONDITION_NOT_MET = "condition_not_met"
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledLockdownActivation:
+    activation_id: str
+    expires_at: float
+    observed_at: float
+
+
 @dataclass(frozen=True, slots=True)
 class LockdownTransition:
     previous_state: LockdownState
     state: LockdownState
-    applied: bool
+    outcome: LockdownTransitionOutcome
     cancelled_file_tasks: int = 0
+
+    @property
+    def applied(self) -> bool:
+        return self.outcome is LockdownTransitionOutcome.APPLIED
 
 
 @dataclass(frozen=True, slots=True)
 class _StoredLockdownState:
     state: LockdownState
     last_disabled_at: float
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredLockdownActivation:
+    payload: _LockdownActivationPayload
     revision: int
 
 
@@ -147,6 +195,44 @@ def _read_lockdown_state(
         raise RuntimeError("Invalid persisted lockdown state") from exc
 
 
+def _read_lockdown_activation(
+    session: OrmSession,
+) -> _StoredLockdownActivation | None:
+    try:
+        stored = read_system_state(
+            session,
+            _LOCKDOWN_OWNER,
+            _LOCKDOWN_ACTIVATION_STATE_KEY,
+        )
+        if stored is None:
+            return None
+        if stored.schema_version != _LOCKDOWN_ACTIVATION_SCHEMA_VERSION:
+            raise RuntimeError(
+                "Unsupported lockdown activation schema version: "
+                f"{stored.schema_version}"
+            )
+        return _StoredLockdownActivation(
+            payload=_LockdownActivationPayload.model_validate(stored.payload),
+            revision=stored.revision,
+        )
+    except ValidationError as exc:
+        raise RuntimeError("Invalid persisted lockdown activation") from exc
+
+
+def _valid_lockdown_activation(
+    state: _StoredLockdownState | None,
+    activation: _StoredLockdownActivation | None,
+) -> _LockdownActivationPayload | None:
+    if (
+        state is None
+        or not state.state.enabled
+        or activation is None
+        or activation.payload.lockdown_revision != state.revision
+    ):
+        return None
+    return activation.payload
+
+
 class LockdownStateManager:
     def get_state(self) -> LockdownState:
         with Session() as session:
@@ -159,6 +245,23 @@ class LockdownStateManager:
             stored = _read_lockdown_state(session)
 
         return 0.0 if stored is None else stored.last_disabled_at
+
+    def get_scheduled_activation(self) -> ScheduledLockdownActivation | None:
+        with Session() as session:
+            state = _read_lockdown_state(session)
+            activation = _valid_lockdown_activation(
+                state,
+                _read_lockdown_activation(session),
+            )
+            observed_at = database_now(session)
+
+        if activation is None:
+            return None
+        return ScheduledLockdownActivation(
+            activation_id=activation.activation_id,
+            expires_at=activation.expires_at,
+            observed_at=observed_at,
+        )
 
 
 lockdown_state_manager = LockdownStateManager()
@@ -202,15 +305,115 @@ def _cancel_pending_file_tasks(
     return task_ids, result.rowcount or 0
 
 
+class _LockdownCasConflict(RuntimeError):
+    pass
+
+
+def _persist_lockdown_state(
+    session: OrmSession,
+    current: _StoredLockdownState | None,
+    state: LockdownState,
+    last_disabled_at: float,
+) -> int:
+    payload = _LockdownPayload(
+        enabled=state.enabled,
+        reason=state.reason,
+        last_disabled_at=last_disabled_at,
+    ).model_dump(mode="json")
+    if current is None:
+        applied = create_system_state(
+            session,
+            _LOCKDOWN_OWNER,
+            _LOCKDOWN_STATE_KEY,
+            schema_version=_LOCKDOWN_SCHEMA_VERSION,
+            payload=payload,
+        )
+        revision = 1
+    else:
+        applied = update_system_state(
+            session,
+            _LOCKDOWN_OWNER,
+            _LOCKDOWN_STATE_KEY,
+            expected_revision=current.revision,
+            schema_version=_LOCKDOWN_SCHEMA_VERSION,
+            payload=payload,
+        )
+        revision = current.revision + 1
+    if not applied:
+        raise _LockdownCasConflict
+    return revision
+
+
+def _persist_lockdown_activation(
+    session: OrmSession,
+    current: _StoredLockdownActivation | None,
+    payload: _LockdownActivationPayload,
+) -> None:
+    values = payload.model_dump(mode="json")
+    if current is None:
+        applied = create_system_state(
+            session,
+            _LOCKDOWN_OWNER,
+            _LOCKDOWN_ACTIVATION_STATE_KEY,
+            schema_version=_LOCKDOWN_ACTIVATION_SCHEMA_VERSION,
+            payload=values,
+        )
+    else:
+        applied = update_system_state(
+            session,
+            _LOCKDOWN_OWNER,
+            _LOCKDOWN_ACTIVATION_STATE_KEY,
+            expected_revision=current.revision,
+            schema_version=_LOCKDOWN_ACTIVATION_SCHEMA_VERSION,
+            payload=values,
+        )
+    if not applied:
+        raise _LockdownCasConflict
+
+
+def _delete_lockdown_activation(
+    session: OrmSession,
+    current: _StoredLockdownActivation | None,
+) -> bool:
+    if current is None:
+        return False
+    if not delete_system_state(
+        session,
+        _LOCKDOWN_OWNER,
+        _LOCKDOWN_ACTIVATION_STATE_KEY,
+        expected_revision=current.revision,
+    ):
+        raise _LockdownCasConflict
+    return True
+
+
+def _retry_lockdown_cas(attempt: int) -> int:
+    attempt += 1
+    if attempt >= _LOCKDOWN_CAS_MAX_ATTEMPTS:
+        raise RuntimeError("Failed to apply lockdown after repeated concurrent updates")
+    time.sleep(_LOCKDOWN_CAS_RETRY_BASE_SECONDS * 2 ** (attempt - 1))
+    return attempt
+
+
+def _notify_schedule_change() -> None:
+    try:
+        ProviderManager().scheduling.notify_schedule_change()
+    except Exception:
+        logger.exception("Failed to notify scheduler of a lockdown state change")
+
+
 def apply_lockdown(
     status: bool,
     reason: str | None | _ReasonUnset = _REASON_UNSET,
     *,
     only_if_inactive: bool = False,
+    take_over_scheduled: bool = False,
 ) -> LockdownTransition:
     """Persist a lockdown transition and its database effects atomically."""
     if not status and only_if_inactive:
         raise ValueError("only_if_inactive is only valid when enabling lockdown")
+    if take_over_scheduled and (not status or not only_if_inactive):
+        raise ValueError("take_over_scheduled requires enabling with only_if_inactive")
     if not status and not isinstance(reason, _ReasonUnset):
         raise ValueError("A lockdown reason requires lockdown to be enabled")
 
@@ -219,91 +422,201 @@ def apply_lockdown(
     while True:
         task_ids: list[str] = []
         cancelled_file_tasks = 0
+        activation_changed = False
 
-        with Session.begin() as session:
-            current = _read_lockdown_state(session)
-            previous_state = LockdownState() if current is None else current.state
-
-            if (
-                status
-                and only_if_inactive
-                and current is not None
-                and current.state.enabled
-            ):
-                return LockdownTransition(
-                    previous_state=current.state,
-                    state=current.state,
-                    applied=False,
+        try:
+            with Session.begin() as session:
+                current = _read_lockdown_state(session)
+                activation_entry = _read_lockdown_activation(session)
+                current_activation = _valid_lockdown_activation(
+                    current,
+                    activation_entry,
                 )
+                previous_state = LockdownState() if current is None else current.state
 
-            current_reason = previous_state.reason
-            if not isinstance(reason, _ReasonUnset):
-                next_reason = reason
-            elif status and previous_state.enabled:
-                next_reason = current_reason
-            else:
-                next_reason = None
+                if status and only_if_inactive and previous_state.enabled:
+                    if take_over_scheduled and current_activation is not None:
+                        activation_changed = _delete_lockdown_activation(
+                            session,
+                            activation_entry,
+                        )
+                    else:
+                        return LockdownTransition(
+                            previous_state=previous_state,
+                            state=previous_state,
+                            outcome=LockdownTransitionOutcome.CONDITION_NOT_MET,
+                        )
+                    state = previous_state
+                    status_changed = False
+                else:
+                    current_reason = previous_state.reason
+                    if not isinstance(reason, _ReasonUnset):
+                        next_reason = reason
+                    elif status and previous_state.enabled:
+                        next_reason = current_reason
+                    else:
+                        next_reason = None
 
-            state = LockdownState(enabled=status, reason=next_reason)
+                    state = LockdownState(enabled=status, reason=next_reason)
 
-            if state == previous_state:
-                return LockdownTransition(
-                    previous_state=previous_state,
-                    state=state,
-                    applied=False,
-                )
+                    if state == previous_state:
+                        return LockdownTransition(
+                            previous_state=previous_state,
+                            state=state,
+                            outcome=LockdownTransitionOutcome.UNCHANGED,
+                        )
 
-            status_changed = state.enabled != previous_state.enabled
+                    status_changed = state.enabled != previous_state.enabled
 
-            last_disabled_at = (
-                time.time()
-                if status_changed and not status
-                else (0.0 if current is None else current.last_disabled_at)
-            )
+                    last_disabled_at = (
+                        time.time()
+                        if status_changed and not status
+                        else (0.0 if current is None else current.last_disabled_at)
+                    )
+                    _persist_lockdown_state(
+                        session,
+                        current,
+                        state,
+                        last_disabled_at,
+                    )
+                    activation_changed = _delete_lockdown_activation(
+                        session,
+                        activation_entry,
+                    )
 
-            payload = _LockdownPayload(
-                enabled=state.enabled,
-                reason=state.reason,
-                last_disabled_at=last_disabled_at,
-            ).model_dump(mode="json")
+                    if status_changed and status:
+                        task_ids, cancelled_file_tasks = _cancel_pending_file_tasks(
+                            session
+                        )
+        except _LockdownCasConflict:
+            attempt = _retry_lockdown_cas(attempt)
+            continue
 
-            if current is None:
-                applied = create_system_state(
-                    session,
-                    _LOCKDOWN_OWNER,
-                    _LOCKDOWN_STATE_KEY,
-                    schema_version=_LOCKDOWN_SCHEMA_VERSION,
-                    payload=payload,
-                )
-            else:
-                applied = update_system_state(
-                    session,
-                    _LOCKDOWN_OWNER,
-                    _LOCKDOWN_STATE_KEY,
-                    expected_revision=current.revision,
-                    schema_version=_LOCKDOWN_SCHEMA_VERSION,
-                    payload=payload,
-                )
-
-            if applied and status_changed and status:
-                task_ids, cancelled_file_tasks = _cancel_pending_file_tasks(session)
-
-        if applied:
+        if status_changed:
             publish_cancelled_file_tasks(task_ids)
             _publish_lockdown_state(state)
+        elif state != previous_state:
+            _publish_lockdown_state(state)
+        if activation_changed:
+            _notify_schedule_change()
 
-            return LockdownTransition(
-                previous_state=previous_state,
-                state=state,
-                applied=True,
-                cancelled_file_tasks=cancelled_file_tasks,
-            )
+        return LockdownTransition(
+            previous_state=previous_state,
+            state=state,
+            outcome=LockdownTransitionOutcome.APPLIED,
+            cancelled_file_tasks=cancelled_file_tasks,
+        )
 
-        attempt += 1
 
-        if attempt >= _LOCKDOWN_CAS_MAX_ATTEMPTS:
-            raise RuntimeError(
-                "Failed to apply lockdown after repeated concurrent updates"
-            )
+def apply_scheduled_lockdown(
+    activation_id: str,
+    expires_at: float,
+    reason: LockdownReason | None = None,
+) -> LockdownTransition:
+    """Enable lockdown for one scheduled occurrence if no lockdown is active."""
+    attempt = 0
+    while True:
+        task_ids: list[str] = []
+        try:
+            with Session.begin() as session:
+                current = _read_lockdown_state(session)
+                activation_entry = _read_lockdown_activation(session)
+                current_activation = _valid_lockdown_activation(
+                    current,
+                    activation_entry,
+                )
+                previous_state = LockdownState() if current is None else current.state
+                candidate = _LockdownActivationPayload(
+                    activation_id=activation_id,
+                    expires_at=expires_at,
+                    lockdown_revision=1,
+                )
+                if expires_at <= database_now(session):
+                    return LockdownTransition(
+                        previous_state=previous_state,
+                        state=previous_state,
+                        outcome=LockdownTransitionOutcome.CONDITION_NOT_MET,
+                    )
+                if previous_state.enabled:
+                    outcome = (
+                        LockdownTransitionOutcome.UNCHANGED
+                        if current_activation is not None
+                        and current_activation.activation_id == activation_id
+                        and current_activation.expires_at == expires_at
+                        else LockdownTransitionOutcome.CONDITION_NOT_MET
+                    )
+                    return LockdownTransition(
+                        previous_state=previous_state,
+                        state=previous_state,
+                        outcome=outcome,
+                    )
 
-        time.sleep(_LOCKDOWN_CAS_RETRY_BASE_SECONDS * 2 ** (attempt - 1))
+                state = LockdownState(enabled=True, reason=reason)
+                revision = _persist_lockdown_state(
+                    session,
+                    current,
+                    state,
+                    0.0 if current is None else current.last_disabled_at,
+                )
+                _persist_lockdown_activation(
+                    session,
+                    activation_entry,
+                    candidate.model_copy(update={"lockdown_revision": revision}),
+                )
+                task_ids, cancelled_file_tasks = _cancel_pending_file_tasks(session)
+        except _LockdownCasConflict:
+            attempt = _retry_lockdown_cas(attempt)
+            continue
+
+        publish_cancelled_file_tasks(task_ids)
+        _publish_lockdown_state(state)
+        _notify_schedule_change()
+        return LockdownTransition(
+            previous_state=previous_state,
+            state=state,
+            outcome=LockdownTransitionOutcome.APPLIED,
+            cancelled_file_tasks=cancelled_file_tasks,
+        )
+
+
+def expire_scheduled_lockdown(activation_id: str) -> LockdownTransition:
+    """Disable the due lockdown owned by one scheduled occurrence."""
+    attempt = 0
+    while True:
+        try:
+            with Session.begin() as session:
+                current = _read_lockdown_state(session)
+                activation_entry = _read_lockdown_activation(session)
+                activation = _valid_lockdown_activation(current, activation_entry)
+                previous_state = LockdownState() if current is None else current.state
+                current_time = database_now(session)
+                if (
+                    activation is None
+                    or activation.activation_id != activation_id
+                    or activation.expires_at > current_time
+                ):
+                    return LockdownTransition(
+                        previous_state=previous_state,
+                        state=previous_state,
+                        outcome=LockdownTransitionOutcome.CONDITION_NOT_MET,
+                    )
+
+                state = LockdownState()
+                _persist_lockdown_state(
+                    session,
+                    current,
+                    state,
+                    current_time,
+                )
+                _delete_lockdown_activation(session, activation_entry)
+        except _LockdownCasConflict:
+            attempt = _retry_lockdown_cas(attempt)
+            continue
+
+        _publish_lockdown_state(state)
+        _notify_schedule_change()
+        return LockdownTransition(
+            previous_state=previous_state,
+            state=state,
+            outcome=LockdownTransitionOutcome.APPLIED,
+        )

@@ -104,6 +104,7 @@ def test_collected_registry_contains_core_and_loaded_extension_tasks(monkeypatch
 
     registry = manager.collect_scheduled_tasks()
 
+    assert registry.get("core.lockdown_expiry") is not None
     assert registry.get("core.schedule_history_cleanup") is not None
     assert registry.get("extension.record") is not None
 

@@ -212,7 +212,11 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
 
     def fake_apply(*args, **kwargs):
         transitions.append((args, kwargs))
-        return SimpleNamespace(applied=True, cancelled_file_tasks=4)
+        return SimpleNamespace(
+            applied=True,
+            cancelled_file_tasks=4,
+            previous_state=SimpleNamespace(enabled=False),
+        )
 
     monkeypatch.setattr(extension, "apply_lockdown", fake_apply)
     monkeypatch.setattr(
@@ -231,10 +235,96 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
     assert transitions == [
         (
             (True, extension.DEFAULT_REASON),
-            {"only_if_inactive": True},
+            {"only_if_inactive": True, "take_over_scheduled": True},
         )
     ]
-    assert audits == [(policy, stats, 4)]
+    assert audits == [(policy, stats, 4, False)]
+
+
+def test_detector_ignores_an_existing_manual_lockdown(monkeypatch):
+    monkeypatch.setattr(
+        extension.lockdown_state_manager,
+        "get_state",
+        lambda: SimpleNamespace(enabled=True),
+    )
+    monkeypatch.setattr(
+        extension.lockdown_state_manager,
+        "get_scheduled_activation",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        extension,
+        "_collect_window_stats",
+        lambda *_args, **_kwargs: pytest.fail("unexpected detector query"),
+    )
+
+    extension.ext_post_request(
+        "login",
+        SimpleNamespace(data={}, remote_address="192.0.2.1"),
+        Result(code=401, target="alice"),
+        0.1,
+    )
+
+
+def test_detector_takes_over_an_existing_scheduled_lockdown(monkeypatch):
+    policy = extension.BruteForceLockdownPolicy(
+        failure_threshold=1,
+        distinct_account_threshold=1,
+        distinct_ip_threshold=1,
+    )
+    stats = extension.FailureWindowStats(1, 1, 1, 900, 1000)
+    transitions = []
+    audits = []
+    monkeypatch.setattr(
+        extension.lockdown_state_manager,
+        "get_state",
+        lambda: SimpleNamespace(enabled=True),
+    )
+    monkeypatch.setattr(
+        extension.lockdown_state_manager,
+        "get_scheduled_activation",
+        lambda: SimpleNamespace(activation_id="occurrence-1"),
+    )
+    monkeypatch.setattr(
+        extension.BruteForceLockdownPolicy,
+        "from_config",
+        lambda _config: policy,
+    )
+    monkeypatch.setattr(
+        extension,
+        "_collect_window_stats",
+        lambda *_args, **_kwargs: stats,
+    )
+
+    def fake_apply(*args, **kwargs):
+        transitions.append((args, kwargs))
+        return SimpleNamespace(
+            applied=True,
+            cancelled_file_tasks=0,
+            previous_state=SimpleNamespace(enabled=True),
+        )
+
+    monkeypatch.setattr(extension, "apply_lockdown", fake_apply)
+    monkeypatch.setattr(
+        extension,
+        "_audit_automatic_lockdown",
+        lambda *args: audits.append(args),
+    )
+
+    extension.ext_post_request(
+        "login",
+        SimpleNamespace(data={}, remote_address="192.0.2.1"),
+        Result(code=401, target="alice"),
+        0.1,
+    )
+
+    assert transitions == [
+        (
+            (True, extension.DEFAULT_REASON),
+            {"only_if_inactive": True, "take_over_scheduled": True},
+        )
+    ]
+    assert audits == [(policy, stats, 0, True)]
 
 
 def test_window_stats_exclude_failures_before_last_unlock(
@@ -270,11 +360,12 @@ def test_automatic_audit_contains_only_aggregate_details(monkeypatch):
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    extension._audit_automatic_lockdown(policy, stats, 2)
+    extension._audit_automatic_lockdown(policy, stats, 2, True)
 
     args, kwargs = calls[0]
     assert args == ("automatic_lockdown", 0)
     assert kwargs["data"]["failure_count"] == 50
     assert kwargs["data"]["distinct_accounts"] == 10
+    assert kwargs["data"]["scheduled_takeover"] is True
     assert "username" not in kwargs["data"]
     assert "ip_address" not in kwargs["data"]

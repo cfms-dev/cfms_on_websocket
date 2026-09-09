@@ -168,6 +168,7 @@ def _audit_automatic_lockdown(
     policy: BruteForceLockdownPolicy,
     stats: FailureWindowStats,
     cancelled_file_tasks: int,
+    scheduled_takeover: bool,
 ) -> None:
     log_audit(
         "automatic_lockdown",
@@ -184,6 +185,7 @@ def _audit_automatic_lockdown(
             "distinct_account_threshold": policy.distinct_account_threshold,
             "distinct_ip_threshold": policy.distinct_ip_threshold,
             "cancelled_file_tasks": cancelled_file_tasks,
+            "scheduled_takeover": scheduled_takeover,
         },
     )
 
@@ -208,7 +210,11 @@ def ext_post_request(
             return
 
         with _detection_lock:
-            if lockdown_state_manager.get_state().enabled:
+            state = lockdown_state_manager.get_state()
+            if (
+                state.enabled
+                and lockdown_state_manager.get_scheduled_activation() is None
+            ):
                 return
 
             from include.config.settings import global_config
@@ -227,6 +233,7 @@ def ext_post_request(
                 True,
                 policy.reason,
                 only_if_inactive=True,
+                take_over_scheduled=True,
             )
             if not transition.applied:
                 return
@@ -235,6 +242,7 @@ def ext_post_request(
                 policy,
                 stats,
                 transition.cancelled_file_tasks,
+                transition.previous_state.enabled,
             )
             logger.warning(
                 "Automatic lockdown activated after suspected credential-guessing "

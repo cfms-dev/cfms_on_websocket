@@ -17,7 +17,10 @@ from include.domains.operations import lockdown
 from include.domains.operations.handlers.system import RequestLockdownHandler
 from include.domains.operations.lockdown import (
     LockdownState,
+    LockdownTransitionOutcome,
     apply_lockdown,
+    apply_scheduled_lockdown,
+    expire_scheduled_lockdown,
     lockdown_state_manager,
 )
 
@@ -47,6 +50,7 @@ def lockdown_database(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(lockdown, "publish_cancelled_file_tasks", lambda _ids: None)
     monkeypatch.setattr(lockdown, "_publish_lockdown_state", lambda _state: None)
+    monkeypatch.setattr(lockdown, "_notify_schedule_change", lambda: None)
     yield sessions, database_path
     engine.dispose()
 
@@ -283,6 +287,98 @@ def test_enable_if_inactive_preserves_existing_reason(lockdown_database) -> None
     assert initial.state == LockdownState(enabled=True, reason="Automatic")
     assert existing.applied is False
     assert existing.state == initial.state
+
+
+def test_scheduled_lockdown_expires_only_after_its_deadline(
+    monkeypatch, lockdown_database
+) -> None:
+    now = 100.0
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: now)
+
+    activated = apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
+
+    assert activated.outcome is LockdownTransitionOutcome.APPLIED
+    assert lockdown_state_manager.get_scheduled_activation() == (
+        lockdown.ScheduledLockdownActivation(
+            activation_id="execution-1",
+            expires_at=200.0,
+            observed_at=100.0,
+        )
+    )
+    assert (
+        expire_scheduled_lockdown("execution-1").outcome
+        is LockdownTransitionOutcome.CONDITION_NOT_MET
+    )
+
+    now = 200.0
+    expired = expire_scheduled_lockdown("execution-1")
+
+    assert expired.outcome is LockdownTransitionOutcome.APPLIED
+    assert expired.state == LockdownState()
+    assert lockdown_state_manager.get_scheduled_activation() is None
+    assert lockdown_state_manager.get_last_disabled_at() == 200.0
+
+
+def test_scheduled_lockdown_cannot_replace_or_expire_another_activation(
+    monkeypatch, lockdown_database
+) -> None:
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    apply_scheduled_lockdown("execution-1", 200.0, "First")
+
+    competing = apply_scheduled_lockdown("execution-2", 300.0, "Second")
+    wrong_expiry = expire_scheduled_lockdown("execution-2")
+
+    assert competing.outcome is LockdownTransitionOutcome.CONDITION_NOT_MET
+    assert wrong_expiry.outcome is LockdownTransitionOutcome.CONDITION_NOT_MET
+    assert lockdown_state_manager.get_state() == LockdownState(
+        enabled=True,
+        reason="First",
+    )
+
+
+def test_manual_reason_change_takes_over_scheduled_lockdown(
+    monkeypatch, lockdown_database
+) -> None:
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
+
+    unchanged = apply_lockdown(True, "Maintenance")
+    assert unchanged.outcome is LockdownTransitionOutcome.UNCHANGED
+    assert lockdown_state_manager.get_scheduled_activation() is not None
+
+    changed = apply_lockdown(True, "Emergency maintenance")
+
+    assert changed.outcome is LockdownTransitionOutcome.APPLIED
+    assert lockdown_state_manager.get_scheduled_activation() is None
+    assert (
+        expire_scheduled_lockdown("execution-1").outcome
+        is LockdownTransitionOutcome.CONDITION_NOT_MET
+    )
+
+
+def test_protective_lockdown_takes_over_without_replacing_public_reason(
+    monkeypatch, lockdown_database
+) -> None:
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
+
+    transition = apply_lockdown(
+        True,
+        "Automatic security lockdown",
+        only_if_inactive=True,
+        take_over_scheduled=True,
+    )
+
+    assert transition.outcome is LockdownTransitionOutcome.APPLIED
+    assert (
+        transition.previous_state
+        == transition.state
+        == LockdownState(
+            enabled=True,
+            reason="Maintenance",
+        )
+    )
+    assert lockdown_state_manager.get_scheduled_activation() is None
 
 
 def test_lockdown_cas_retries_are_bounded(monkeypatch, lockdown_database) -> None:
