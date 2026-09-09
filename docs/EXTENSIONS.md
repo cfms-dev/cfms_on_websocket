@@ -208,12 +208,15 @@ types only. User schedule definitions are created through the management API and
 no extension may persist an arbitrary import path.
 
 Tasks that are intrinsic server maintenance rather than operator-created jobs may
-declare a `SystemScheduleDefinition` and set `user_schedulable=False`. The
+declare a `SystemScheduleDefinition` and set `user_schedulable=False`. A system
+schedule factory may return `None` when durable state says no schedule is currently
+needed; reconciliation then retires any previously persisted instance. The
 scheduling runtime reconciles those definitions, while the management API hides
 both their task types and schedule rows. A system schedule must be safely
-repeatable under the same at-least-once execution contract. Server features that
-need periodic execution should register a system schedule instead of implementing
-an independent polling worker.
+repeatable under the same at-least-once execution contract and must recheck any
+state-dependent precondition when it executes. Server features that need periodic
+or durable state-dependent execution should register a system schedule instead of
+implementing an independent polling worker.
 
 When request data fails validation, the server returns `400` with every safe
 Pydantic error under `data.errors`:
@@ -404,14 +407,55 @@ counted. Lockdown begins when the failure threshold is reached and either the
 distinct-account or distinct-IP threshold is reached in the same rolling window.
 
 Automatic lockdown never replaces an existing manual lockdown reason and does
-not expire automatically. An administrator must disable it through the existing
+not expire automatically. It may take ownership from an active scheduled window,
+while preserving that window's public reason, so the earlier deadline cannot
+release a security lockdown. An administrator must disable it through the existing
 `lockdown` action. Doing so starts a fresh detection window. The public reason is
-generic; aggregate trigger counts and thresholds are recorded under the
+generic for a newly activated automatic lockdown; aggregate trigger counts,
+thresholds, and whether scheduled ownership was taken over are recorded under the
 `automatic_lockdown` audit action without account or IP lists.
 
 The lockdown status, public reason, and last disable timestamp are stored in the
 database. A normal or abnormal server restart therefore restores the previous
 locked or unlocked state without replaying transition side effects.
+
+## Scheduled lockdown windows
+
+Enable the optional `scheduled_lockdown` extension together with the scheduling
+management API to create fixed-duration lockdown windows:
+
+```toml
+[extensions]
+enabled = ["scheduling", "scheduled_lockdown"]
+```
+
+Create a normal `date`, `interval`, or `cron` schedule whose task is
+`scheduled_lockdown.window`, contract version is `1`, and payload is:
+
+```json
+{
+  "duration_seconds": 3600,
+  "reason": "Scheduled maintenance"
+}
+```
+
+`duration_seconds` is a positive whole number. `reason` is optional and uses the
+normal lockdown reason constraints. Creating or updating the schedule requires
+both `manage_schedules` and `apply_lockdown`.
+
+Each occurrence owns only the lockdown it activated. Its expiration is measured
+as elapsed seconds from the occurrence's scheduled time, so daylight-saving clock
+changes do not alter the duration. If another lockdown is already active, the
+occurrence reports `condition_not_met` and does not replace it. A manual reason
+change or a security detector taking over the active lockdown removes scheduled
+ownership, so the old deadline cannot unlock the replacement. Sending the same
+reason again is an idempotent no-op and preserves the deadline.
+
+Expiration is a hidden core system task derived from durable lockdown activation
+state. It remains available after `scheduled_lockdown` is disabled, allowing a
+window that already started to end safely after a restart or extension change.
+Disabling the extension prevents its task registration from starting new windows;
+it does not delete user-created schedule rows.
 
 ## OIDC migration
 

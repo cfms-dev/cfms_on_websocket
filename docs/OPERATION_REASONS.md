@@ -28,7 +28,10 @@ reason-change audit payload or repeat operational side effects.
 `manage_user_status` and `lockdown` reject a `reason` field when activating an
 incompatible state (`status: "active"` and `status: false`, respectively).
 Changing only a lockdown reason does not cancel file tasks. Changing only a
-banned-subnet reason does not refresh the active subnet guard.
+banned-subnet reason does not refresh the active subnet guard. When a lockdown was
+started by a scheduled window, changing its reason is also an explicit manual
+takeover: the window's automatic expiration is removed. Repeating the identical
+reason remains a no-op and preserves that expiration.
 
 ## Audit data
 

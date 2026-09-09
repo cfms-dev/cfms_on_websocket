@@ -7,11 +7,11 @@ the six WebSocket query and configuration actions and its extension flag; disabl
 it does not pause or delete system schedules or previously persisted user schedules.
 
 The core and built-in extensions register hidden system schedules for execution
-history, expired permissions, abandoned uploads, authentication throttle records,
-and document creation/download risk state. The scheduler creates and reconciles
-these schedules from current configuration. System schedules have no user owner,
-are not returned by the management API, and cannot be created, changed, or deleted
-through that API.
+history, scheduled-lockdown expiration, expired permissions, abandoned uploads,
+authentication throttle records, and document creation/download risk state. The
+scheduler creates and reconciles these schedules from current state and
+configuration. System schedules have no user owner, are not returned by the
+management API, and cannot be created, changed, or deleted through that API.
 
 Every Provider performs a complete reconciliation before starting its scheduler or
 workers, so an invalid system definition fails server startup without leaving a
@@ -117,13 +117,20 @@ payloads use a strict Pydantic model. Arbitrary import paths are never persisted
 executed.
 
 An internal task may set `user_schedulable=False` and provide a
-`system_schedule` factory returning `SystemScheduleDefinition`. The active
-scheduler treats that definition as desired state, preserves the interval anchor,
-and updates the persisted schedule when its configuration changes. An immediate
-execution requested by the definition is queued separately from the trigger's next
-run, so reconciliation does not shift the anchored cadence. Removing the
-registration disables its system schedule. Do not use this mechanism for
-event-driven queues such as file deduplication.
+`system_schedule` factory returning `SystemScheduleDefinition | None`. The active
+scheduler treats a definition as desired state, preserves the interval anchor, and
+updates the persisted schedule when its configuration changes. Returning `None`
+means that no instance of that system schedule is currently desired, so a
+previously persisted instance is retired. This supports state-dependent deadlines
+without creating a second scheduler: for example, `core.lockdown_expiry` exists
+only while a scheduled lockdown activation owns an expiration time.
+
+An immediate execution requested by a definition is queued separately from the
+trigger's next run, so reconciliation does not shift an anchored cadence. Removing
+the registration also disables its system schedule. Factories must derive desired
+state from durable authoritative data, and task execution must still recheck its
+condition because state can change after reconciliation. Do not use this mechanism
+for event-driven queues such as file deduplication.
 
 User-configurable tasks must declare `required_permission`. Pure system tasks may
 omit it because they are never offered to users. A persisted user schedule remains
