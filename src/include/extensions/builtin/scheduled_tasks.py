@@ -1,3 +1,5 @@
+"""Hidden system schedules for built-in cleanup and risk-control maintenance."""
+
 from pydantic import BaseModel, ConfigDict
 
 from include.config.validation import AuthThrottlePolicy, DocumentUploadPolicy
@@ -22,10 +24,14 @@ _UPLOAD_CLEANUP_BATCH_SIZE = 256
 
 
 class _EmptyPayload(BaseModel):
+    """Reject payload data for system tasks configured entirely by server policy."""
+
     model_config = ConfigDict(extra="forbid")
 
 
 def _interval_schedule(identifier: str, seconds: int) -> SystemScheduleDefinition:
+    """Build an immediate anchored interval definition for a hidden task."""
+
     return SystemScheduleDefinition(
         id=identifier,
         payload={},
@@ -35,6 +41,8 @@ def _interval_schedule(identifier: str, seconds: int) -> SystemScheduleDefinitio
 
 
 def _upload_cleanup_schedule() -> SystemScheduleDefinition:
+    """Follow the configured abandoned-upload cleanup interval."""
+
     return _interval_schedule(
         "builtin.upload_cleanup",
         DocumentUploadPolicy.from_config().cleanup_interval_seconds,
@@ -42,6 +50,8 @@ def _upload_cleanup_schedule() -> SystemScheduleDefinition:
 
 
 def _creation_risk_cleanup_schedule() -> SystemScheduleDefinition:
+    """Follow the document policy's cleanup interval for creation risk state."""
+
     return _interval_schedule(
         "builtin.creation_risk_cleanup",
         DocumentUploadPolicy.from_config().cleanup_interval_seconds,
@@ -52,6 +62,8 @@ def _run_upload_cleanup(
     _context: ScheduledTaskContext,
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
+    """Reclaim one bounded batch of abandoned uploads and report cleanup counts."""
+
     with Session() as session:
         current_time = database_now(session)
     result = reclaim_abandoned_uploads(
@@ -73,6 +85,8 @@ def _run_auth_throttle_cleanup(
     _context: ScheduledTaskContext,
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
+    """Purge expired authentication throttle records using database time."""
+
     with Session() as session:
         current_time = database_now(session)
     result = purge_expired_auth_throttle_records(
@@ -92,6 +106,8 @@ def _run_creation_risk_cleanup(
     _context: ScheduledTaskContext,
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
+    """Remove expired document-creation risk state in one transaction."""
+
     with Session.begin() as session:
         result = cleanup_document_creation_risk_state(
             session,
@@ -106,6 +122,8 @@ def _run_download_risk_cleanup(
     _context: ScheduledTaskContext,
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
+    """Remove expired document-download risk state in one transaction."""
+
     with Session.begin() as session:
         result = cleanup_document_download_risk_state(
             session,

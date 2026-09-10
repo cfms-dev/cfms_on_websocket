@@ -1,3 +1,9 @@
+"""Authenticated WebSocket management actions for user-owned schedules.
+
+This extension exposes configuration only.  The scheduling core and previously
+persisted schedules continue to run when these handlers are not enabled.
+"""
+
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, StringConstraints
@@ -48,6 +54,8 @@ ScheduleRevision = Annotated[JsonInteger, Field(ge=1)]
 
 
 class _TriggerRequest(RequestDataModel):
+    """External trigger shape accepted by create and update actions."""
+
     type: Literal["cron", "date", "interval"]
     data: dict[str, Any]
     timezone: Annotated[
@@ -56,6 +64,8 @@ class _TriggerRequest(RequestDataModel):
 
 
 class _CreateScheduleRequest(RequestDataModel):
+    """Validated input for creating one user-managed schedule."""
+
     task_name: TaskName
     payload: dict[str, Any]
     trigger: _TriggerRequest
@@ -63,16 +73,22 @@ class _CreateScheduleRequest(RequestDataModel):
 
 
 class _ScheduleIdRequest(RequestDataModel):
+    """Validated lookup key for a user-visible schedule."""
+
     id: ScheduleId
 
 
 class _ListSchedulesRequest(RequestDataModel):
+    """Cursor pagination and logical-deletion options for schedule listing."""
+
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
     include_deleted: bool = False
 
 
 class _UpdateScheduleRequest(RequestDataModel):
+    """Optimistic partial update requiring the caller's observed revision."""
+
     id: ScheduleId
     revision: ScheduleRevision
     task_name: Omittable[TaskName] = REQUEST_UNSET
@@ -82,11 +98,15 @@ class _UpdateScheduleRequest(RequestDataModel):
 
 
 class _DeleteScheduleRequest(RequestDataModel):
+    """Optimistic logical deletion of a user-managed schedule."""
+
     id: ScheduleId
     revision: ScheduleRevision
 
 
 def _provider_error(handler: ConnectionHandler, username: str) -> Result | None:
+    """Return a safe 503 response when the configured runtime is degraded."""
+
     status = ProviderManager().scheduling.status()
     if status.available:
         return None
@@ -99,6 +119,8 @@ def _provider_error(handler: ConnectionHandler, username: str) -> Result | None:
 
 
 def _permissions(username: str, session: OrmSession | None = None) -> set[Permissions]:
+    """Read effective permissions, optionally inside the mutation transaction."""
+
     if session is not None:
         return User.get_existing(session, username).all_permissions
     with Session() as session:
@@ -106,6 +128,8 @@ def _permissions(username: str, session: OrmSession | None = None) -> set[Permis
 
 
 def _deny(handler: ConnectionHandler, username: str) -> Result:
+    """Emit the uniform scheduling permission-denied response."""
+
     handler.conclude_request(403, {}, "Permission denied")
     return Result(code=403, username=username)
 
@@ -113,6 +137,8 @@ def _deny(handler: ConnectionHandler, username: str) -> Result:
 def _task_permission_allowed(
     permissions: set[Permissions], task_name: str, registry
 ) -> bool:
+    """Check that a task is user-visible and the principal may schedule it."""
+
     registration = registry.get(task_name)
     return (
         registration is not None
@@ -122,10 +148,14 @@ def _task_permission_allowed(
 
 
 class RequestListScheduledTaskTypesHandler(RequestHandler):
+    """List task contracts the authenticated principal is allowed to schedule."""
+
     request_model = EmptyRequestDataModel
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
+        """Filter task registrations by view and task-specific permissions."""
+
         if error := _provider_error(handler, handler.username):
             return error
         permissions = _permissions(handler.username)
@@ -149,11 +179,15 @@ class RequestListScheduledTaskTypesHandler(RequestHandler):
 
 
 class RequestCreateScheduleHandler(RequestHandler):
+    """Validate, authorize, and persist a new user-managed schedule."""
+
     request_model = _CreateScheduleRequest
     require_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
+        """Create a schedule transactionally, then wake the active Provider."""
+
         if error := _provider_error(handler, handler.username):
             return error
         permissions = _permissions(handler.username)
@@ -193,10 +227,14 @@ class RequestCreateScheduleHandler(RequestHandler):
 
 
 class RequestGetScheduleHandler(RequestHandler):
+    """Return one non-deleted, non-system schedule by ID."""
+
     request_model = _ScheduleIdRequest
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
+        """Hide deleted and system-managed rows from direct lookup."""
+
         if error := _provider_error(handler, handler.username):
             return error
         if Permissions.VIEW_SCHEDULES not in _permissions(handler.username):
@@ -217,10 +255,14 @@ class RequestGetScheduleHandler(RequestHandler):
 
 
 class RequestListSchedulesHandler(RequestHandler):
+    """List user-managed schedules with signed cursor pagination."""
+
     request_model = _ListSchedulesRequest
     require_auth = True
 
     def handle(self, handler: ConnectionHandler):
+        """Return one descending page without exposing system-managed rows."""
+
         if error := _provider_error(handler, handler.username):
             return error
         if Permissions.VIEW_SCHEDULES not in _permissions(handler.username):
@@ -277,11 +319,15 @@ class RequestListSchedulesHandler(RequestHandler):
 
 
 class RequestUpdateScheduleHandler(RequestHandler):
+    """Apply an authorized optimistic update to an idle user schedule."""
+
     request_model = _UpdateScheduleRequest
     require_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
+        """Authorize against locked current state and apply supplied fields."""
+
         if error := _provider_error(handler, handler.username):
             return error
         registry = collect_scheduled_tasks()
@@ -345,11 +391,15 @@ class RequestUpdateScheduleHandler(RequestHandler):
 
 
 class RequestDeleteScheduleHandler(RequestHandler):
+    """Logically delete a user schedule without interrupting running work."""
+
     request_model = _DeleteScheduleRequest
     require_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
+        """Retire a user schedule at the expected revision and wake the Provider."""
+
         if error := _provider_error(handler, handler.username):
             return error
         if Permissions.MANAGE_SCHEDULES not in _permissions(handler.username):

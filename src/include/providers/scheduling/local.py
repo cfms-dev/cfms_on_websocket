@@ -1,3 +1,5 @@
+"""Single-process scheduling Provider backed by the application database."""
+
 import secrets
 import threading
 import time
@@ -15,10 +17,19 @@ from include.scheduling.runner import run_claimed_execution
 
 
 class LocalSchedulingProvider(SchedulingProvider):
+    """Embed one due scanner and a fixed worker pool in the CFMS process.
+
+    The database remains durable and authoritative.  The in-process wake event
+    only reduces latency after a schedule change; periodic polling still provides
+    recovery when a notification is missed.
+    """
+
     _registry: ScheduledTaskRegistry
     _generation: int
 
     def __init__(self, policy: SchedulingPolicy):
+        """Initialize lifecycle state without starting background threads."""
+
         self._policy = policy
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -29,6 +40,13 @@ class LocalSchedulingProvider(SchedulingProvider):
         self._worker_errors: dict[str, str] = {}
 
     def start(self, registry: ScheduledTaskRegistry) -> None:
+        """Reconcile definitions and start the local scheduler and worker threads.
+
+        Startup validates all system definitions before any thread is launched.
+        A second call is idempotent while the same run still has live threads, but
+        restarting is rejected until every thread from a shutdown has exited.
+        """
+
         with self._state_lock:
             if self._threads:
                 if any(thread.is_alive() for thread in self._threads):
@@ -77,6 +95,8 @@ class LocalSchedulingProvider(SchedulingProvider):
                 raise
 
     def shutdown(self) -> None:
+        """Signal all local threads and join them within the shutdown grace period."""
+
         with self._state_lock:
             threads = tuple(self._threads)
             if not threads:
@@ -99,11 +119,15 @@ class LocalSchedulingProvider(SchedulingProvider):
             )
 
     def notify_schedule_change(self) -> None:
+        """Wake sleeping local threads so new database state is observed promptly."""
+
         with self._state_lock:
             wake = self._wake
         wake.set()
 
     def status(self) -> SchedulingProviderStatus:
+        """Report unavailable when any scheduler or worker thread has degraded."""
+
         with self._state_lock:
             alive = tuple(thread for thread in self._threads if thread.is_alive())
             stopping = bool(alive) and self._stop.is_set()
@@ -131,6 +155,8 @@ class LocalSchedulingProvider(SchedulingProvider):
         stop: threading.Event,
         wake: threading.Event,
     ) -> None:
+        """Reconcile system definitions, retire deleted work, and enqueue due work."""
+
         while not stop.is_set():
             try:
                 synchronize_system_schedules(registry)
@@ -159,6 +185,8 @@ class LocalSchedulingProvider(SchedulingProvider):
         stop: threading.Event,
         wake: threading.Event,
     ) -> None:
+        """Continuously claim and synchronously execute one database task at a time."""
+
         lease_owner = secrets.token_hex(32)
         while not stop.is_set():
             try:

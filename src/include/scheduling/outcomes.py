@@ -1,3 +1,5 @@
+"""Lease-checked execution completion, retry, cancellation, and retention."""
+
 from typing import cast
 
 from sqlalchemy import CursorResult, delete, select, update

@@ -1,3 +1,5 @@
+"""Supported public API for extension-owned scheduled task registrations."""
+
 from include.scheduling.contracts import (
     ScheduledTaskContext,
     ScheduledTaskRegistration,

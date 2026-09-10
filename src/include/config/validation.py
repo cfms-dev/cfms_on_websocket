@@ -512,6 +512,13 @@ class S3StoragePolicy(_ConfigPolicy):
 
 @dataclass(frozen=True)
 class SchedulingPolicy(_ConfigPolicy):
+    """Validated timing, concurrency, retention, and cluster scheduling settings.
+
+    Lease refresh must precede lease expiry.  ``redis_namespace`` is required only
+    for the Redis Provider and isolates leadership, notifications, broker keys,
+    and its task queue from other deployments sharing the same Redis database.
+    """
+
     _SOURCE = _PolicySource((_Section("scheduling"),))
 
     worker_threads: PositiveInt = 4

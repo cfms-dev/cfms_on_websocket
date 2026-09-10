@@ -1,3 +1,5 @@
+"""Creation and stable identity of individual scheduled occurrences."""
+
 import hashlib
 
 from include.database.models.scheduling import Schedule, ScheduleExecution
@@ -16,7 +18,12 @@ def create_execution(
     generation: int,
     current_time: float,
 ) -> ScheduleExecution:
-    """Create an execution snapshot and reserve its schedule's active slot."""
+    """Create an execution snapshot and reserve its schedule's active slot.
+
+    Task name, contract version, and payload are copied now so future schedule
+    edits cannot change the meaning of already queued work.  The caller owns the
+    surrounding transaction.
+    """
     item = ScheduleExecution(
         id=execution_id(schedule.id, scheduled_for),
         schedule_id=schedule.id,

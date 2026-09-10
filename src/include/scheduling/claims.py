@@ -1,3 +1,5 @@
+"""Atomic execution claiming, cluster delivery recovery, and lease renewal."""
+
 from typing import cast
 
 from sqlalchemy import CursorResult, or_, select, update
@@ -254,6 +256,12 @@ def mark_dispatched(
     *,
     now: float | None = None,
 ) -> bool:
+    """Mark a cluster execution sent if its observed attempt is still current.
+
+    Returning ``False`` means another transition won and the caller must not
+    overwrite the newer dispatch state.
+    """
+
     with Session() as session, session.begin():
         current_time = database_now(session) if now is None else now
         marked = cast(
@@ -280,6 +288,13 @@ def refresh_execution_lease(
     *,
     now: float | None = None,
 ) -> bool:
+    """Extend a running execution lease only for its current owner.
+
+    The database clock is read after acquiring the execution lock so lock wait
+    time cannot consume the newly issued lease.  ``False`` indicates lost
+    ownership or a terminal transition.
+    """
+
     with Session() as session, session.begin():
         criteria = (
             ScheduleExecution.id == execution_id,

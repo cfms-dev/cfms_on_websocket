@@ -1,3 +1,10 @@
+"""Cluster scheduling Provider using Redis for leadership and task delivery.
+
+Redis reduces coordination latency and transports execution IDs.  The shared
+application database remains authoritative for schedules, Provider generation,
+execution claims, leases, and outcomes.
+"""
+
 import secrets
 import threading
 import time
@@ -39,16 +46,22 @@ return 0
 
 
 def _worker_threads(worker: Worker) -> tuple[threading.Thread, ...]:
+    """Return all Dramatiq worker and consumer threads used for health checks."""
+
     return (*worker.workers, *worker.consumers.values())
 
 
 def _worker_has_live_threads(worker: Worker | None) -> bool:
+    """Return whether any thread from a current or stopping worker remains alive."""
+
     return worker is not None and any(
         thread.is_alive() for thread in _worker_threads(worker)
     )
 
 
 def _worker_is_running(worker: Worker | None, expected_worker_threads: int) -> bool:
+    """Return whether the complete configured Dramatiq worker pool is alive."""
+
     if (
         worker is None
         or len(worker.workers) != expected_worker_threads
@@ -59,11 +72,20 @@ def _worker_is_running(worker: Worker | None, expected_worker_threads: int) -> b
 
 
 class RedisSchedulingProvider(SchedulingProvider):
+    """Coordinate one scheduler leader and distributed workers across CFMS nodes.
+
+    Every node is a scheduler candidate and owns a Dramatiq worker pool.  A
+    namespaced Redis lease elects one due scanner, while database generation and
+    execution leases reject stale or duplicate broker deliveries.
+    """
+
     _broker: RedisBroker | None
     _registry: ScheduledTaskRegistry
     _generation: int
 
     def __init__(self, redis_config: Mapping[str, Any], policy: SchedulingPolicy):
+        """Build namespaced Redis resources without starting cluster workers."""
+
         if policy.redis_namespace is None:
             raise ValueError("Redis scheduling requires a deployment namespace")
         self._policy = policy
@@ -93,9 +115,18 @@ class RedisSchedulingProvider(SchedulingProvider):
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]):
+        """Build the Provider from the validated Redis and scheduling sections."""
+
         return cls(config["redis"], SchedulingPolicy.from_config(config))
 
     def start(self, registry: ScheduledTaskRegistry) -> None:
+        """Initialize generation state, reconcile, and start embedded cluster work.
+
+        System definitions are validated before the coordinator or worker pool is
+        started.  Redis connectivity is checked afterward and may leave the
+        Provider running but degraded so it can recover without server fallback.
+        """
+
         with self._state_lock:
             if self._started:
                 return
@@ -160,6 +191,8 @@ class RedisSchedulingProvider(SchedulingProvider):
             logger.warning("Starting with the Redis scheduling provider degraded")
 
     def shutdown(self) -> None:
+        """Stop the coordinator, Dramatiq workers, broker, and Redis client."""
+
         with self._state_lock:
             if self._closed and self._scheduler_thread is None and self._worker is None:
                 return
@@ -208,6 +241,8 @@ class RedisSchedulingProvider(SchedulingProvider):
             )
 
     def notify_schedule_change(self) -> None:
+        """Publish a best-effort wake-up; SQL polling remains authoritative."""
+
         try:
             self._client.publish(self._notify_channel, "1")
             with self._state_lock:
@@ -218,6 +253,8 @@ class RedisSchedulingProvider(SchedulingProvider):
             logger.warning("Failed to notify Redis scheduler of a schedule change")
 
     def status(self) -> SchedulingProviderStatus:
+        """Combine coordinator, worker-pool, reconciliation, and Redis health."""
+
         with self._state_lock:
             started = self._started
             scheduler_thread = self._scheduler_thread
@@ -258,6 +295,8 @@ class RedisSchedulingProvider(SchedulingProvider):
         )
 
     def _create_client(self):
+        """Create the namespaced Provider's short-timeout Redis control client."""
+
         return redis.Redis(
             **self._redis_config,
             decode_responses=True,
@@ -267,6 +306,8 @@ class RedisSchedulingProvider(SchedulingProvider):
         )
 
     def _ping(self) -> None:
+        """Refresh the Redis health component, re-raising connection failures."""
+
         try:
             self._client.ping()
         except redis.RedisError as exc:
@@ -277,6 +318,8 @@ class RedisSchedulingProvider(SchedulingProvider):
             self._redis_error = None
 
     def _ensure_actor(self, registry: ScheduledTaskRegistry):
+        """Create the namespaced broker and execution-ID actor once per run."""
+
         if self._actor is not None:
             return self._actor
         self._registry = registry
@@ -319,6 +362,8 @@ class RedisSchedulingProvider(SchedulingProvider):
         )
 
     def _dispatch_pending(self, generation: int) -> None:
+        """Send one bounded batch of database-visible executions to Dramatiq."""
+
         assert self._actor is not None
         for dispatch in pending_dispatches(
             generation,

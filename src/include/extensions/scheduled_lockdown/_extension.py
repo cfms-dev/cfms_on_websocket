@@ -1,3 +1,5 @@
+"""User-schedulable fixed-duration lockdown window task."""
+
 from pydantic import BaseModel, ConfigDict
 
 from include.domains.access.permissions import Permissions
@@ -15,6 +17,8 @@ from include.types import PositiveInt
 
 
 class ScheduledLockdownWindowPayload(BaseModel):
+    """Strict persisted contract for one scheduled lockdown occurrence."""
+
     model_config = ConfigDict(strict=True, extra="forbid")
 
     duration_seconds: PositiveInt
@@ -25,6 +29,13 @@ def run_scheduled_lockdown_window(
     context: ScheduledTaskContext,
     payload: ScheduledLockdownWindowPayload,
 ) -> ScheduledTaskResult:
+    """Apply a lockdown owned by this occurrence until its scheduled deadline.
+
+    The deterministic execution ID identifies the activation, making retrying the
+    same occurrence safe.  Duration is added to ``scheduled_for`` so queue delay
+    and daylight-saving transitions do not extend the maintenance window.
+    """
+
     expires_at = context.scheduled_for + payload.duration_seconds
     transition = apply_scheduled_lockdown(
         context.execution_id,
@@ -52,4 +63,6 @@ scheduled_lockdown_window_task = ScheduledTaskRegistration(
 
 @hookimpl
 def ext_register_scheduled_tasks():
+    """Register the extension's operator-configurable lockdown task type."""
+
     return (scheduled_lockdown_window_task,)

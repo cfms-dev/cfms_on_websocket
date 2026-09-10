@@ -1,3 +1,5 @@
+"""Validation and advancement rules for persisted schedule triggers."""
+
 import datetime as dt
 from dataclasses import dataclass
 from typing import Any
@@ -10,16 +12,20 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 
 class TriggerValidationError(ValueError):
-    pass
+    """Raised when external trigger data cannot form a supported schedule."""
 
 
 @dataclass(frozen=True, slots=True)
 class TriggerAdvance:
+    """Latest eligible occurrence and the first occurrence still in the future."""
+
     latest_due_at: float | None
     next_run_at: float | None
 
 
 def _aware_datetime(value: object, field_name: str) -> dt.datetime:
+    """Parse an external ISO 8601 value and require an explicit UTC offset."""
+
     if not isinstance(value, str):
         raise TriggerValidationError(f"{field_name} must be an ISO 8601 string")
     try:
@@ -36,6 +42,13 @@ def _aware_datetime(value: object, field_name: str) -> dt.datetime:
 def build_trigger(
     trigger_type: str, trigger_data: dict[str, Any], timezone: str
 ) -> BaseTrigger:
+    """Build a supported APScheduler trigger from persisted protocol data.
+
+    Cron expressions use the five-field crontab form.  Date and interval anchors
+    must be ISO 8601 strings with explicit UTC offsets; ``timezone`` must be an
+    IANA zone name.
+    """
+
     try:
         timezone_info = ZoneInfo(timezone)
     except ZoneInfoNotFoundError as exc:
@@ -77,6 +90,8 @@ def build_trigger(
 
 
 def first_run_at(trigger: BaseTrigger, now: float) -> float | None:
+    """Return the first UTC Unix fire time using ``now`` as scheduler reference."""
+
     next_fire = trigger.get_next_fire_time(None, dt.datetime.fromtimestamp(now, dt.UTC))
     return None if next_fire is None else next_fire.timestamp()
 

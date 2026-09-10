@@ -1,3 +1,9 @@
+"""Transactional commands for user-managed schedule aggregates.
+
+Every function receiving a SQLAlchemy session participates in the caller's
+transaction.  It never commits, rolls back, closes, or replaces that session.
+"""
+
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, select, update
@@ -10,11 +16,11 @@ from include.scheduling.triggers import build_trigger, first_run_at
 
 
 class ScheduleNotFoundError(LookupError):
-    pass
+    """Raised when a requested mutable schedule does not exist or was deleted."""
 
 
 class ScheduleConflictError(RuntimeError):
-    pass
+    """Raised when optimistic concurrency or active execution blocks a mutation."""
 
 
 def lock_schedule(session: OrmSession, schedule_id: str) -> Schedule | None:
@@ -256,6 +262,12 @@ def delete_schedule(
 def schedule_response(
     schedule: Schedule, registry: ScheduledTaskRegistry
 ) -> dict[str, Any]:
+    """Serialize a schedule and report whether its executable contract is loaded.
+
+    ``task_available`` is false when the owning extension is absent or its current
+    contract version differs from the version stored on the schedule.
+    """
+
     registration = registry.get(schedule.task_name)
     return {
         "id": schedule.id,

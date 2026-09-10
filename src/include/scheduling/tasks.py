@@ -1,3 +1,9 @@
+"""Always-available core system task registrations.
+
+Feature-owned maintenance tasks belong in their extensions; this module contains
+only scheduling's own history cleanup and the core lockdown-expiry deadline.
+"""
+
 import datetime as dt
 
 from pydantic import BaseModel, ConfigDict
@@ -17,16 +23,22 @@ from include.scheduling.outcomes import purge_execution_history
 
 
 class _EmptyPayload(BaseModel):
+    """Strict empty contract shared by core tasks without runtime parameters."""
+
     model_config = ConfigDict(extra="forbid")
 
 
 class _LockdownExpiryPayload(BaseModel):
+    """Identify the scheduled activation this deadline is allowed to release."""
+
     model_config = ConfigDict(extra="forbid")
 
     activation_id: str
 
 
 def _schedule_history_cleanup_schedule() -> SystemScheduleDefinition:
+    """Declare the hourly bounded cleanup for terminal execution history."""
+
     return SystemScheduleDefinition(
         id="core.schedule_history_cleanup",
         payload={},
@@ -39,11 +51,15 @@ def _run_schedule_history_cleanup(
     _context: ScheduledTaskContext,
     _payload: _EmptyPayload,
 ) -> ScheduledTaskResult:
+    """Delete one policy-bounded batch of expired terminal executions."""
+
     deleted = purge_execution_history(SchedulingPolicy.from_config())
     return ScheduledTaskResult(data={"deleted_executions": deleted})
 
 
 def _lockdown_expiry_schedule() -> SystemScheduleDefinition | None:
+    """Reflect the current durable scheduled-lockdown deadline, if one exists."""
+
     activation = lockdown_state_manager.get_scheduled_activation()
     if activation is None:
         return None
@@ -65,6 +81,8 @@ def _run_lockdown_expiry(
     _context: ScheduledTaskContext,
     payload: _LockdownExpiryPayload,
 ) -> ScheduledTaskResult:
+    """Expire only the activation identified by the reconciled payload."""
+
     transition = expire_scheduled_lockdown(payload.activation_id)
     return ScheduledTaskResult(
         data={

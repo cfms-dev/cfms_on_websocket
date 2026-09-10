@@ -1,3 +1,5 @@
+"""Execute a claimed task while maintaining its database lease and audit trail."""
+
 import threading
 
 import orjson
@@ -17,7 +19,13 @@ def run_claimed_execution(
     registry: ScheduledTaskRegistry,
     policy: SchedulingPolicy,
 ) -> None:
-    """Run a claimed task while renewing its lease and persist its outcome."""
+    """Run a claimed task while renewing its lease and persist its outcome.
+
+    Registration and payload are revalidated at the worker boundary.  The lease
+    heartbeat proves ownership for the eventual terminal update, but losing that
+    lease cannot forcibly stop arbitrary task code; task implementations therefore
+    remain responsible for at-least-once idempotency.
+    """
     registration = registry.get(claim.task_name)
     if (
         registration is None
@@ -49,6 +57,8 @@ def run_claimed_execution(
     heartbeat_stop = threading.Event()
 
     def refresh_lease() -> None:
+        """Renew this claim until execution finishes or ownership is lost."""
+
         while not heartbeat_stop.wait(policy.lease_refresh_seconds):
             try:
                 refreshed = refresh_execution_lease(claim.id, claim.lease_owner, policy)

@@ -1,3 +1,5 @@
+"""Durable schedule definitions, execution attempts, and Provider generation."""
+
 import secrets
 import time
 from typing import Any
@@ -21,6 +23,14 @@ from include.database.session import Base
 
 
 class Schedule(Base):
+    """Persistent aggregate describing when one registered task type should run.
+
+    ``active_execution_id`` is the aggregate's single execution slot.  While that
+    slot is occupied, newer due occurrences coalesce into
+    ``pending_scheduled_for``.  ``revision`` provides optimistic concurrency for
+    management operations, and deletion is logical so running work can finish.
+    """
+
     __tablename__ = "schedules"
     __table_args__ = (
         CheckConstraint("revision > 0", name="ck_schedules_revision_positive"),
@@ -69,6 +79,14 @@ class Schedule(Base):
 
 
 class ScheduleExecution(Base):
+    """Immutable task snapshot plus mutable lease and outcome for one occurrence.
+
+    The unique ``(schedule_id, scheduled_for)`` pair and deterministic primary key
+    prevent duplicate occurrences.  ``state`` tracks execution lifecycle, while
+    ``dispatch_state`` tracks Redis broker delivery independently.  A worker may
+    persist an outcome only while it owns the current renewable lease.
+    """
+
     __tablename__ = "schedule_executions"
     __table_args__ = (
         UniqueConstraint(
@@ -121,6 +139,12 @@ class ScheduleExecution(Base):
 
 
 class SchedulingRuntimeState(Base):
+    """Singleton identifying the active Provider generation for this database.
+
+    Switching Provider mode or Redis namespace increments ``generation`` so stale
+    cluster messages cannot execute work created by an earlier runtime.
+    """
+
     __tablename__ = "scheduling_runtime_state"
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_scheduling_runtime_state_singleton"),

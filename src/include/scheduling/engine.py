@@ -1,3 +1,5 @@
+"""Provider-neutral runtime generation and due-occurrence creation."""
+
 from typing import cast
 
 from sqlalchemy import CursorResult, and_, or_, select, update
@@ -29,6 +31,8 @@ def _build_runtime_state_upsert(
     current_time: float,
     redis_namespace: str | None = None,
 ):
+    """Build the dialect-specific insert-if-absent for the singleton runtime row."""
+
     values = {
         "id": 1,
         "provider": provider,
@@ -133,7 +137,11 @@ def _advance_schedule_if_current(
     schedule: Schedule,
     **values,
 ) -> bool:
-    """Advance a schedule only if its observed aggregate state is unchanged."""
+    """Advance a schedule only if its observed aggregate state is unchanged.
+
+    The compare-and-update protects against concurrent API mutations and other
+    scheduler candidates after the advisory due shortlist was read.
+    """
     advanced = cast(
         CursorResult,
         session.execute(

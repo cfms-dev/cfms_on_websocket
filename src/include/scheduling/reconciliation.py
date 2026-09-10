@@ -1,3 +1,5 @@
+"""Reconcile registered system schedule definitions into durable desired state."""
+
 import datetime as dt
 from typing import Any
 
@@ -26,6 +28,13 @@ def _system_schedule_values(
     schedule: Schedule | None,
     current_time: float,
 ) -> tuple[dict[str, Any], float | None, float | None]:
+    """Validate a system definition and calculate its persisted scheduling state.
+
+    A generated interval anchor is reused from the existing row so configuration
+    changes do not shift the established cadence.  Immediate work is represented
+    separately by ``pending_scheduled_for``.
+    """
+
     trigger_data = dict(configured_trigger_data)
     if definition.trigger_type == "interval" and "start_at" not in trigger_data:
         if (
@@ -61,6 +70,8 @@ def _system_schedule_values(
 
 
 def _matches_system_schedule(schedule: Schedule, values: dict[str, Any]) -> bool:
+    """Return whether a persisted system schedule already matches desired state."""
+
     return (
         all(getattr(schedule, name) == value for name, value in values.items())
         and schedule.enabled

@@ -26,30 +26,48 @@ class Provider(ABC):
 
 @dataclass(frozen=True, slots=True)
 class SchedulingProviderStatus:
+    """Safe health snapshot returned to scheduling management handlers.
+
+    ``mode`` identifies the configured Provider.  ``detail`` contains only a
+    coarse lifecycle or exception-class reason suitable for an API health gate.
+    """
+
     available: bool
     mode: str
     detail: str | None = None
 
 
 class SchedulingProvider(Provider):
-    """Runtime boundary for schedule coordination and task delivery."""
+    """Runtime boundary for schedule coordination and task delivery.
+
+    Implementations own their scheduler and worker lifecycles but use the shared
+    database engine for durable occurrences, claims, leases, and outcomes.
+    """
 
     identifier: ClassVar[str] = "scheduling"
 
     @abstractmethod
     def start(self, registry: Any) -> None:
+        """Validate durable state, reconcile system schedules, and start workers."""
+
         pass
 
     @abstractmethod
     def shutdown(self) -> None:
+        """Request shutdown and wait up to the configured graceful deadline."""
+
         pass
 
     @abstractmethod
     def notify_schedule_change(self) -> None:
+        """Best-effort hint that the authoritative database state has changed."""
+
         pass
 
     @abstractmethod
     def status(self) -> SchedulingProviderStatus:
+        """Return management-facing availability without exposing credentials."""
+
         pass
 
 
