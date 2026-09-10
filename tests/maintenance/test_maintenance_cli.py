@@ -418,6 +418,60 @@ def test_command_rejects_unrelated_workdir(tmp_path):
     assert "Unable to locate a CFMS server root" in result.stdout + result.stderr
 
 
+def test_deployment_commands_remove_redundant_confirmation_options(tmp_path):
+    upgrade_help = _run_maintain(tmp_path, ["deployment", "upgrade", "--help"])
+    downgrade_help = _run_maintain(tmp_path, ["deployment", "downgrade", "--help"])
+    resume_help = _run_maintain(tmp_path, ["deployment", "resume", "--help"])
+    upgrade_output = _normalize_cli_output(upgrade_help.stdout + upgrade_help.stderr)
+    downgrade_output = _normalize_cli_output(
+        downgrade_help.stdout + downgrade_help.stderr
+    )
+    resume_output = _normalize_cli_output(resume_help.stdout + resume_help.stderr)
+
+    assert "--backup-confirmed" not in upgrade_output
+    assert "--backup-confirmed" not in downgrade_output
+    assert "--database-restored" not in resume_output
+    assert "--yes" in upgrade_output
+    assert "--yes" in downgrade_output
+    assert "--sha256" in upgrade_output
+    assert "--checksums" in upgrade_output
+
+
+def test_deployment_upgrade_warns_only_without_external_digest(tmp_path):
+    without_digest = _run_maintain(
+        tmp_path,
+        [
+            "deployment",
+            "upgrade",
+            "release.zip",
+            "--deployment-root",
+            str(tmp_path),
+            "--yes",
+        ],
+        check=False,
+    )
+    with_digest = _run_maintain(
+        tmp_path,
+        [
+            "deployment",
+            "upgrade",
+            "release.zip",
+            "--deployment-root",
+            str(tmp_path),
+            "--sha256",
+            "a" * 64,
+            "--yes",
+        ],
+        check=False,
+    )
+
+    warning = "external release package SHA-256 verification is disabled"
+    assert warning in _normalize_cli_output(
+        without_digest.stdout + without_digest.stderr
+    )
+    assert warning not in _normalize_cli_output(with_digest.stdout + with_digest.stderr)
+
+
 def test_backup_import_requires_exactly_one_key_source(tmp_path):
     result = _run_maintain(
         tmp_path,

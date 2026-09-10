@@ -48,6 +48,8 @@ def _write_release(
     marker: str,
     *,
     managed_extensions: tuple[str, ...] = ("builtin",),
+    with_migrations: bool = False,
+    migration: tuple[str, str] | None = None,
 ) -> deployment._Release:
     files = {
         "pyproject.toml": (
@@ -64,6 +66,38 @@ def _write_release(
         path = root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding="utf-8")
+    if with_migrations:
+        shutil.copy2(PROJECT_ROOT / "src" / "alembic.ini", root / "src")
+        shutil.copytree(
+            PROJECT_ROOT / "src" / "alembic",
+            root / "src" / "alembic",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
+        shutil.copy2(
+            PROJECT_ROOT / "src" / "config.toml.sample",
+            root / "src" / "config.toml.sample",
+        )
+    if migration is not None:
+        revision, down_revision = migration
+        migration_path = root / "src" / "alembic" / "versions" / f"{revision}.py"
+        migration_path.write_text(
+            "\n".join(
+                (
+                    f'revision = "{revision}"',
+                    f'down_revision = "{down_revision}"',
+                    "branch_labels = None",
+                    "depends_on = None",
+                    "",
+                    "def upgrade():",
+                    "    pass",
+                    "",
+                    "def downgrade():",
+                    "    pass",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
     for identifier in managed_extensions:
         _write_extension(root, identifier, identifier, f"# {marker} {identifier}\n")
 
@@ -122,13 +156,11 @@ def test_repository_deployment_rejects_release_switching(
             tmp_path / "release.zip",
             root / "src",
             expected_sha256="a" * 64,
-            backup_confirmed=True,
         )
     with pytest.raises(MaintenanceOperationError, match="source repository checkouts"):
         deployment.downgrade_deployment(
             "stored-release",
             root / "src",
-            backup_confirmed=True,
         )
 
     assert not (root / "src" / ".maintenance").exists()
@@ -156,13 +188,11 @@ def test_manifestless_deployment_is_rejected_before_writes(
                 tmp_path / "release.zip",
                 root,
                 expected_sha256="a" * 64,
-                backup_confirmed=True,
             )
         else:
             deployment.downgrade_deployment(
                 "stored-release",
                 root,
-                backup_confirmed=True,
             )
 
     assert main.read_text(encoding="utf-8") == "# pre-manifest release\n"
@@ -220,6 +250,58 @@ def test_stage_rejects_path_traversal_before_writing_outside_root(
     assert not (tmp_path / "escape").exists()
 
 
+def test_stage_allows_missing_external_digest_but_still_checks_manifest(
+    tmp_path: Path,
+) -> None:
+    release_root = tmp_path / "cfms-on-websocket-1.0.0"
+    _write_release(release_root, "1.0.0", "release")
+    package = tmp_path / "release.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        for path in release_root.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(tmp_path).as_posix())
+
+    staged, package_digest, _ = deployment._stage_release(
+        package,
+        tmp_path / "deployment",
+        expected_sha256=None,
+        checksums_path=None,
+    )
+
+    assert staged.version == "1.0.0"
+    assert package_digest == hashlib.sha256(package.read_bytes()).hexdigest()
+
+    (release_root / "src" / "main.py").write_text("tampered\n", encoding="utf-8")
+    tampered_package = tmp_path / "tampered.zip"
+    with zipfile.ZipFile(tampered_package, "w") as archive:
+        for path in release_root.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(tmp_path).as_posix())
+
+    with pytest.raises(MaintenanceOperationError, match="failed SHA-256"):
+        deployment._stage_release(
+            tampered_package,
+            tmp_path / "deployment",
+            expected_sha256=None,
+            checksums_path=None,
+        )
+
+
+def test_stage_rejects_multiple_external_digest_sources(tmp_path: Path) -> None:
+    package = tmp_path / "release.zip"
+    package.write_bytes(b"release")
+    checksums = tmp_path / "SHA256SUMS.txt"
+    checksums.write_text(f"{'a' * 64}  {package.name}\n", encoding="utf-8")
+
+    with pytest.raises(MaintenanceOperationError, match="at most one"):
+        deployment._stage_release(
+            package,
+            tmp_path / "deployment",
+            expected_sha256="a" * 64,
+            checksums_path=checksums,
+        )
+
+
 def test_upgrade_and_downgrade_preserve_flat_persistent_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -239,6 +321,8 @@ def test_upgrade_and_downgrade_preserve_flat_persistent_state(
         lambda *args, **kwargs: (staged_target, "a" * 64, stage),
     )
     monkeypatch.setattr(deployment, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(deployment, "_preflight_upgrade_database", lambda *args: None)
+    monkeypatch.setattr(deployment, "_preflight_downgrade_database", lambda *args: None)
     monkeypatch.setattr(deployment, "_upgrade_database", lambda *args: None)
     monkeypatch.setattr(deployment, "_downgrade_database", lambda *args: None)
     monkeypatch.setattr(
@@ -249,7 +333,6 @@ def test_upgrade_and_downgrade_preserve_flat_persistent_state(
         package,
         root,
         expected_sha256="a" * 64,
-        backup_confirmed=True,
     )
 
     assert upgraded.active_version == "1.1.0"
@@ -280,7 +363,6 @@ def test_upgrade_and_downgrade_preserve_flat_persistent_state(
     downgraded = deployment.downgrade_deployment(
         source.release_id[:12],
         root,
-        backup_confirmed=True,
     )
 
     assert downgraded.active_release_id == source.release_id
@@ -298,7 +380,7 @@ def test_upgrade_and_downgrade_preserve_flat_persistent_state(
     }
 
 
-def test_upgrade_requires_operator_backup_confirmation(
+def test_upgrade_allows_missing_external_package_digest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -312,16 +394,122 @@ def test_upgrade_requires_operator_backup_confirmation(
         "_stage_release",
         lambda *args, **kwargs: (staged_target, "a" * 64, stage),
     )
+    monkeypatch.setattr(deployment, "_preflight_upgrade_database", lambda *args: None)
+    monkeypatch.setattr(deployment, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(deployment, "_upgrade_database", lambda *args: None)
+    monkeypatch.setattr(
+        deployment, "sync_config_template", lambda *args, **kwargs: None
+    )
 
-    with pytest.raises(MaintenanceOperationError, match="--backup-confirmed"):
-        deployment.upgrade_deployment(
-            tmp_path / "release.zip",
-            root,
-            expected_sha256="a" * 64,
-        )
+    result = deployment.upgrade_deployment(tmp_path / "release.zip", root)
+
+    assert result.active_release_id == staged_target.release_id
+    assert result.package_sha256 == "a" * 64
 
 
-def test_failed_migration_requires_database_restore_before_resume(
+def test_upgrade_preflight_rejects_unversioned_database_before_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _write_release(root, "1.0.0", "old", with_migrations=True)
+    shutil.copy2(
+        PROJECT_ROOT / "src" / "config.toml.sample",
+        root / "src" / "config.toml",
+    )
+    engine = deployment._database_engine(root)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE legacy_state (id INTEGER)")
+    finally:
+        engine.dispose()
+
+    staged_target = _write_release(
+        tmp_path / "target",
+        "1.1.0",
+        "new",
+        with_migrations=True,
+    )
+    stage = root / "src" / ".maintenance" / "staging" / "stage"
+    stage.mkdir(parents=True)
+    monkeypatch.setattr(
+        deployment,
+        "_stage_release",
+        lambda *args, **kwargs: (staged_target, "a" * 64, stage),
+    )
+    original_manifest = (root / "release-manifest.json").read_bytes()
+
+    with pytest.raises(
+        MaintenanceOperationError,
+        match="verify that its schema matches the active release",
+    ):
+        deployment.upgrade_deployment(tmp_path / "release.zip", root)
+
+    assert deployment._active_release(root).release_id == source.release_id
+    assert (root / "release-manifest.json").read_bytes() == original_manifest
+    assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
+    assert not (root / "src" / ".maintenance" / "transaction.json").exists()
+    assert not (root / "src" / ".maintenance" / "settings.json").exists()
+    assert not (root / "src" / ".maintenance" / "versions").exists()
+    assert not stage.exists()
+
+
+def test_upgrade_uses_stored_source_scripts_after_activating_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _write_release(root, "1.0.0", "old", with_migrations=True)
+    shutil.copy2(
+        PROJECT_ROOT / "src" / "config.toml.sample",
+        root / "src" / "config.toml",
+    )
+    engine = deployment._database_engine(root)
+    try:
+        with deployment._suppress_bytecode_writes(), engine.begin() as connection:
+            _, source_scripts, source_head = deployment._alembic(source)
+            MigrationContext.configure(connection).stamp(source_scripts, source_head)
+    finally:
+        engine.dispose()
+
+    target_revision = "deployment_full_upgrade_head"
+    staged_target = _write_release(
+        tmp_path / "target",
+        "1.1.0",
+        "new",
+        with_migrations=True,
+        migration=(target_revision, source_head),
+    )
+    stage = root / "src" / ".maintenance" / "staging" / "stage"
+    stage.mkdir(parents=True)
+    monkeypatch.setattr(
+        deployment,
+        "_stage_release",
+        lambda *args, **kwargs: (staged_target, "a" * 64, stage),
+    )
+    monkeypatch.setattr(deployment, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(
+        deployment, "sync_config_template", lambda *args, **kwargs: None
+    )
+
+    result = deployment.upgrade_deployment(tmp_path / "release.zip", root)
+
+    assert result.active_release_id == staged_target.release_id
+    engine = deployment._database_engine(root)
+    try:
+        with engine.connect() as connection:
+            assert deployment._current_revision(connection) == target_revision
+    finally:
+        engine.dispose()
+    versions_root = root / "src" / ".maintenance" / "versions"
+    assert not tuple(versions_root.rglob("*.pyc"))
+    assert (
+        deployment.inspect_deployment(root).active_release_id
+        == result.active_release_id
+    )
+
+
+def test_failed_migration_resume_reconciles_to_restored_database_revision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -336,6 +524,7 @@ def test_failed_migration_requires_database_restore_before_resume(
         lambda *args, **kwargs: (staged_target, "a" * 64, stage),
     )
     monkeypatch.setattr(deployment, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(deployment, "_preflight_upgrade_database", lambda *args: None)
     monkeypatch.setattr(
         deployment, "sync_config_template", lambda *args, **kwargs: None
     )
@@ -350,15 +539,12 @@ def test_failed_migration_requires_database_restore_before_resume(
             tmp_path / "release.zip",
             root,
             expected_sha256="a" * 64,
-            backup_confirmed=True,
         )
 
     transaction_path = root / "src" / ".maintenance" / "transaction.json"
     assert json.loads(transaction_path.read_text(encoding="utf-8"))["phase"] == (
         "database-recovery-required"
     )
-    with pytest.raises(MaintenanceOperationError, match="--database-restored"):
-        deployment.resume_deployment(root)
 
     class _ConnectionContext:
         def __enter__(self):
@@ -375,7 +561,6 @@ def test_failed_migration_requires_database_restore_before_resume(
             pass
 
     monkeypatch.setattr(deployment, "_database_engine", lambda *args: _Engine())
-    monkeypatch.setattr(deployment, "_current_revision", lambda *args: "source-head")
     monkeypatch.setattr(
         deployment,
         "_alembic",
@@ -385,12 +570,40 @@ def test_failed_migration_requires_database_restore_before_resume(
             "source-head" if release.release_id == source.release_id else "target-head",
         ),
     )
+    monkeypatch.setattr(deployment, "_current_revision", lambda *args: "other-head")
 
-    resumed = deployment.resume_deployment(root, database_restored=True)
+    with pytest.raises(MaintenanceOperationError, match="matches neither"):
+        deployment.resume_deployment(root)
+
+    assert transaction_path.exists()
+
+    monkeypatch.setattr(deployment, "_current_revision", lambda *args: "source-head")
+
+    resumed = deployment.resume_deployment(root)
 
     assert resumed.active_release_id == source.release_id
     assert not transaction_path.exists()
     assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
+
+
+def test_status_removes_stored_bytecode_but_rejects_other_extra_files(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "deployment"
+    active = _prepare_deployment(root)
+    snapshot = deployment._snapshot_release(root, active)
+    cache = snapshot / "src" / "alembic" / "__pycache__"
+    cache.mkdir(parents=True)
+    (cache / "env.cpython-314.pyc").write_bytes(b"generated")
+
+    status = deployment.inspect_deployment(root)
+
+    assert status.active_release_id == active.release_id
+    assert not cache.exists()
+
+    (snapshot / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+    with pytest.raises(MaintenanceOperationError, match="do not match its manifest"):
+        deployment.inspect_deployment(root)
 
 
 def test_resume_rejects_concurrent_runtime_owner(tmp_path: Path) -> None:
@@ -419,7 +632,9 @@ def _prepare_database_releases(
         (release_root / "src").mkdir(parents=True)
         shutil.copy2(PROJECT_ROOT / "src" / "alembic.ini", release_root / "src")
         shutil.copytree(
-            PROJECT_ROOT / "src" / "alembic", release_root / "src" / "alembic"
+            PROJECT_ROOT / "src" / "alembic",
+            release_root / "src" / "alembic",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
         )
 
     source_scripts = ScriptDirectory(str(source_root / "src" / "alembic"))
@@ -482,7 +697,9 @@ def test_database_upgrade_and_downgrade_require_versioned_database(
     finally:
         engine.dispose()
 
+    deployment._preflight_upgrade_database(project_root, source, target)
     deployment._upgrade_database(project_root, source, target)
+    assert not tuple(target.root.rglob("*.pyc"))
     engine = deployment._database_engine(project_root)
     try:
         with engine.connect() as connection:
@@ -493,7 +710,12 @@ def test_database_upgrade_and_downgrade_require_versioned_database(
     finally:
         engine.dispose()
 
+    for cache in source.root.rglob("__pycache__"):
+        shutil.rmtree(cache)
+    deployment._preflight_downgrade_database(project_root, target, source)
     deployment._downgrade_database(project_root, target, source)
+    assert not tuple(source.root.rglob("*.pyc"))
+    assert not tuple(target.root.rglob("*.pyc"))
     engine = deployment._database_engine(project_root)
     try:
         with engine.connect() as connection:

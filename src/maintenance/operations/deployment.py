@@ -6,8 +6,11 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -182,11 +185,13 @@ def _expected_digest(
     package_path: Path,
     expected_sha256: str | None,
     checksums_path: str | Path | None,
-) -> str:
-    if (expected_sha256 is None) == (checksums_path is None):
+) -> str | None:
+    if expected_sha256 is not None and checksums_path is not None:
         raise MaintenanceOperationError(
-            "Choose exactly one package digest source: --sha256 or --checksums"
+            "Choose at most one package digest source: --sha256 or --checksums"
         )
+    if expected_sha256 is None and checksums_path is None:
+        return None
     if expected_sha256 is not None:
         if _SHA256_PATTERN(expected_sha256) is None:
             raise MaintenanceOperationError(
@@ -376,12 +381,18 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
     ):
         raise MaintenanceOperationError("Release manifest metadata is invalid")
     for relative_path, digest in expected_files.items():
+        if not isinstance(relative_path, str):
+            raise MaintenanceOperationError(
+                f"Release manifest contains an invalid path or digest: {relative_path!r}"
+            )
+        path_parts = _archive_parts(relative_path)
         if (
-            not isinstance(relative_path, str)
-            or not _archive_parts(relative_path)
+            not path_parts
             or not isinstance(digest, str)
             or _SHA256_PATTERN(digest) is None
             or relative_path.startswith(_OPERATOR_OWNED_PREFIXES)
+            or "__pycache__" in path_parts
+            or PurePosixPath(relative_path).suffix in {".pyc", ".pyo"}
         ):
             raise MaintenanceOperationError(
                 f"Release manifest contains an invalid path or digest: {relative_path!r}"
@@ -446,7 +457,7 @@ def _stage_release(
         raise MaintenanceOperationError("Release package exceeds the 64 MiB limit")
     expected = _expected_digest(package_path, expected_sha256, checksums_path)
     actual = _hash_file(package_path)
-    if actual != expected:
+    if expected is not None and actual != expected:
         raise MaintenanceOperationError(
             f"Release package SHA-256 mismatch: expected {expected}, got {actual}"
         )
@@ -489,11 +500,22 @@ def _version_root(project_root: Path, release_id: str) -> Path:
     return _maintenance_root(project_root) / "versions" / release_id
 
 
+def _verified_stored_release(root: Path) -> _Release:
+    for cache_path in sorted(root.rglob("__pycache__"), reverse=True):
+        try:
+            shutil.rmtree(cache_path)
+        except OSError as exc:
+            raise MaintenanceOperationError(
+                f"Unable to remove generated Python bytecode cache {cache_path}: {exc}"
+            ) from exc
+    return _release_from_tree(root, exact=True)
+
+
 def _snapshot_release(project_root: Path, release: _Release) -> Path:
     version_root = _version_root(project_root, release.release_id)
     snapshot = version_root / "release"
     if snapshot.exists():
-        existing = _release_from_tree(snapshot, exact=True)
+        existing = _verified_stored_release(snapshot)
         if existing.release_id != release.release_id:
             raise MaintenanceOperationError(
                 f"Stored release does not match its directory: {version_root}"
@@ -633,7 +655,7 @@ def _stored_release(project_root: Path, release_id: str) -> _Release:
         raise MaintenanceOperationError(f"Stored release not found: {release_id}")
     if len(matches) != 1:
         raise MaintenanceOperationError(f"Release ID prefix is ambiguous: {release_id}")
-    return _release_from_tree(matches[0] / "release", exact=True)
+    return _verified_stored_release(matches[0] / "release")
 
 
 def _run(command_line: list[str], *, cwd: Path) -> None:
@@ -695,6 +717,16 @@ def _sync_environment(project_root: Path, settings: DeploymentSettings) -> None:
         )
 
 
+@contextmanager
+def _suppress_bytecode_writes() -> Iterator[None]:
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        yield
+    finally:
+        sys.dont_write_bytecode = previous
+
+
 def _alembic(release: _Release, connection=None) -> tuple[Config, ScriptDirectory, str]:
     config = Config(str(release.root / "src" / "alembic.ini"))
     config.set_main_option("script_location", str(release.root / "src" / "alembic"))
@@ -745,26 +777,77 @@ def _is_ancestor(scripts: ScriptDirectory, lower: str, upper: str) -> bool:
         return False
 
 
+def _require_source_revision(connection, source_head: str) -> None:
+    current = _current_revision(connection)
+    if current is None:
+        raise MaintenanceOperationError(
+            "Database has no Alembic revision; verify that its schema matches "
+            f"the active release, then stamp it at {source_head} before switching "
+            "releases"
+        )
+    if current != source_head:
+        raise MaintenanceOperationError(
+            f"Database revision is {current}; active release expects {source_head}"
+        )
+
+
+def _preflight_upgrade_database(
+    project_root: Path,
+    source: _Release,
+    target: _Release,
+) -> None:
+    engine = _database_engine(project_root)
+    try:
+        with _suppress_bytecode_writes(), engine.connect() as connection:
+            _, target_scripts, target_head = _alembic(target)
+            _, _, source_head = _alembic(source)
+            if not _is_ancestor(target_scripts, source_head, target_head):
+                raise MaintenanceOperationError(
+                    f"Target Alembic head {target_head} does not descend from {source_head}"
+                )
+            _require_source_revision(connection, source_head)
+    except (CommandError, OSError, SQLAlchemyError) as exc:
+        raise MaintenanceOperationError(
+            f"Database upgrade preflight failed: {exc}"
+        ) from exc
+    finally:
+        engine.dispose()
+
+
+def _preflight_downgrade_database(
+    project_root: Path,
+    source: _Release,
+    target: _Release,
+) -> None:
+    engine = _database_engine(project_root)
+    try:
+        with _suppress_bytecode_writes(), engine.connect() as connection:
+            _, source_scripts, source_head = _alembic(source)
+            _, _, target_head = _alembic(target)
+            if not _is_ancestor(source_scripts, target_head, source_head):
+                raise MaintenanceOperationError(
+                    f"Target Alembic head {target_head} is not reachable from {source_head}"
+                )
+            _require_source_revision(connection, source_head)
+    except (CommandError, OSError, SQLAlchemyError) as exc:
+        raise MaintenanceOperationError(
+            f"Database downgrade preflight failed: {exc}"
+        ) from exc
+    finally:
+        engine.dispose()
+
+
 def _upgrade_database(project_root: Path, source: _Release, target: _Release) -> None:
     engine = _database_engine(project_root)
     try:
-        with engine.begin() as connection:
+        with _suppress_bytecode_writes(), engine.begin() as connection:
             target_config, target_scripts, target_head = _alembic(target, connection)
             _, _, source_head = _alembic(source)
             if not _is_ancestor(target_scripts, source_head, target_head):
                 raise MaintenanceOperationError(
                     f"Target Alembic head {target_head} does not descend from {source_head}"
                 )
-            current = _current_revision(connection)
-            if current is None:
-                raise MaintenanceOperationError(
-                    "Database has no Alembic revision; initialize it with "
-                    "maintain database upgrade before switching releases"
-                )
-            if current != source_head:
-                raise MaintenanceOperationError(
-                    f"Database revision is {current}; active release expects {source_head}"
-                )
+            _require_source_revision(connection, source_head)
             if source_head != target_head:
                 command.upgrade(target_config, target_head)
             if _current_revision(connection) != target_head:
@@ -780,19 +863,14 @@ def _upgrade_database(project_root: Path, source: _Release, target: _Release) ->
 def _downgrade_database(project_root: Path, source: _Release, target: _Release) -> None:
     engine = _database_engine(project_root)
     try:
-        with engine.begin() as connection:
+        with _suppress_bytecode_writes(), engine.begin() as connection:
             source_config, source_scripts, source_head = _alembic(source, connection)
             _, _, target_head = _alembic(target)
             if not _is_ancestor(source_scripts, target_head, source_head):
                 raise MaintenanceOperationError(
                     f"Target Alembic head {target_head} is not reachable from {source_head}"
                 )
-            current = _current_revision(connection)
-            if current != source_head:
-                raise MaintenanceOperationError(
-                    f"Database revision is {current or 'unversioned'}; "
-                    f"active release expects {source_head}"
-                )
+            _require_source_revision(connection, source_head)
             if source_head != target_head:
                 command.downgrade(source_config, target_head)
             if _current_revision(connection) != target_head:
@@ -885,7 +963,6 @@ def upgrade_deployment(
     *,
     expected_sha256: str | None = None,
     checksums_path: str | Path | None = None,
-    backup_confirmed: bool = False,
     extras: tuple[str, ...] | None = None,
     requirements_lock: str | Path | None = None,
 ) -> DeploymentResult:
@@ -915,10 +992,7 @@ def upgrade_deployment(
             raise MaintenanceOperationError(
                 "Use deployment downgrade to activate an older stored release"
             )
-        if not backup_confirmed:
-            raise MaintenanceOperationError(
-                "Confirm an external database checkpoint with --backup-confirmed"
-            )
+        _preflight_upgrade_database(project_root, source, staged)
 
         settings = _load_settings(project_root)
         if extras is not None:
@@ -936,7 +1010,8 @@ def upgrade_deployment(
 
         snapshot = _snapshot_release(project_root, staged)
         target = _release_from_tree(snapshot, exact=True)
-        _snapshot_release(project_root, source)
+        source_snapshot = _snapshot_release(project_root, source)
+        source = _verified_stored_release(source_snapshot)
         _snapshot_state(project_root, source)
         _write_transaction(
             project_root,
@@ -991,8 +1066,6 @@ def upgrade_deployment(
 def downgrade_deployment(
     release_id: str,
     deployment_root: str | Path,
-    *,
-    backup_confirmed: bool = False,
 ) -> DeploymentResult:
     project_root = _project_root(deployment_root)
     if _transaction_path(project_root).exists():
@@ -1007,15 +1080,12 @@ def downgrade_deployment(
         target = _stored_release(project_root, release_id)
         if target.release_id == source.release_id:
             raise MaintenanceOperationError("The selected release is already active")
-        if not backup_confirmed:
-            raise MaintenanceOperationError(
-                "Confirm an external database checkpoint with --backup-confirmed"
-            )
         target_state = _version_root(project_root, target.release_id) / "state"
         if not (target_state / "config.toml").is_file():
             raise MaintenanceOperationError(
                 f"Stored release has no compatible configuration snapshot: {target.release_id}"
             )
+        _preflight_downgrade_database(project_root, source, target)
         _snapshot_release(project_root, source)
         _snapshot_state(project_root, source)
         _write_transaction(
@@ -1064,8 +1134,6 @@ def downgrade_deployment(
 
 def resume_deployment(
     deployment_root: str | Path,
-    *,
-    database_restored: bool = False,
 ) -> DeploymentResult:
     project_root = _project_root(deployment_root)
     try:
@@ -1080,19 +1148,13 @@ def resume_deployment(
         source = _stored_release(project_root, transaction["from_release"])
         target = _stored_release(project_root, transaction["to_release"])
         phase = transaction["phase"]
-        if phase in {"database-migration", "database-recovery-required"} and (
-            not database_restored
-        ):
-            raise MaintenanceOperationError(
-                "Restore the external database checkpoint, then pass --database-restored"
-            )
         if phase in {"activation", "database-migration", "database-recovery-required"}:
             engine = _database_engine(project_root)
             try:
-                with engine.connect() as connection:
+                with _suppress_bytecode_writes(), engine.connect() as connection:
                     revision = _current_revision(connection)
-                _, _, source_head = _alembic(source)
-                _, _, target_head = _alembic(target)
+                    _, _, source_head = _alembic(source)
+                    _, _, target_head = _alembic(target)
             finally:
                 engine.dispose()
             if revision == source_head:
@@ -1128,7 +1190,7 @@ def inspect_deployment(deployment_root: str | Path) -> DeploymentResult:
         for path in sorted(versions_root.iterdir()):
             if not path.is_dir() or _SHA256_PATTERN(path.name) is None:
                 continue
-            release = _release_from_tree(path / "release", exact=True)
+            release = _verified_stored_release(path / "release")
             versions.append(
                 DeploymentVersion(
                     release.release_id,

@@ -503,8 +503,8 @@ def _deployment_digest_options(
     sha256: str | None,
     checksums: Path | None,
 ) -> tuple[str | None, Path | None]:
-    if (sha256 is None) == (checksums is None):
-        raise typer.BadParameter("Choose exactly one of --sha256 or --checksums.")
+    if sha256 is not None and checksums is not None:
+        raise typer.BadParameter("Choose at most one of --sha256 or --checksums.")
     return sha256, checksums
 
 
@@ -534,13 +534,6 @@ def upgrade_deployment(
     ] = None,
     sha256: Annotated[str | None, typer.Option("--sha256")] = None,
     checksums: Annotated[Path | None, typer.Option("--checksums")] = None,
-    backup_confirmed: Annotated[
-        bool,
-        typer.Option(
-            "--backup-confirmed",
-            help="Confirm that an external restorable database checkpoint exists.",
-        ),
-    ] = False,
     extra: Annotated[
         list[str] | None,
         typer.Option("--extra", help="Core optional dependency; may be repeated."),
@@ -558,10 +551,16 @@ def upgrade_deployment(
     """Stage, migrate, and atomically activate a newer local release."""
     _configure_logging(verbose)
     digest, checksum_file = _deployment_digest_options(sha256, checksums)
+    if digest is None and checksum_file is None:
+        error_console.print(
+            "Warning: external release package SHA-256 verification is disabled; "
+            "the embedded release manifest will still be verified.",
+            style="yellow",
+        )
     resolved_root = _resolve_deployment_root(deployment_root)
     _confirm_or_abort(
-        "The server must be stopped and an external database checkpoint must exist. "
-        "Upgrade this deployment?",
+        "The server must be stopped. Ensure that a tested, restorable database "
+        "checkpoint exists. Upgrade this deployment?",
         yes,
     )
     result = _run(
@@ -570,7 +569,6 @@ def upgrade_deployment(
             resolved_root,
             expected_sha256=digest,
             checksums_path=checksum_file,
-            backup_confirmed=backup_confirmed,
             extras=tuple(extra) if extra is not None else None,
             requirements_lock=requirements_lock,
         ),
@@ -606,28 +604,20 @@ def downgrade_deployment(
         Path | None,
         typer.Option("--deployment-root", help="Flat release project directory."),
     ] = None,
-    backup_confirmed: Annotated[
-        bool,
-        typer.Option(
-            "--backup-confirmed",
-            help="Confirm that an external restorable database checkpoint exists.",
-        ),
-    ] = False,
     yes: Annotated[bool, typer.Option("--yes")] = False,
     verbose: VerboseOption = False,
 ) -> None:
     """Downgrade the database and restore a stored release."""
     _configure_logging(verbose)
     _confirm_or_abort(
-        "The server must be stopped and an external database checkpoint must exist. "
-        "Downgrade this deployment?",
+        "The server must be stopped. Ensure that a tested, restorable database "
+        "checkpoint exists. Downgrade this deployment?",
         yes,
     )
     result = _run(
         lambda: operations.downgrade_deployment(
             release_id,
             _resolve_deployment_root(deployment_root),
-            backup_confirmed=backup_confirmed,
         ),
         status="Downgrading CFMS deployment...",
     )
@@ -640,13 +630,6 @@ def resume_deployment(
         Path | None,
         typer.Option("--deployment-root", help="Flat release project directory."),
     ] = None,
-    database_restored: Annotated[
-        bool,
-        typer.Option(
-            "--database-restored",
-            help="Confirm that the external database checkpoint was restored.",
-        ),
-    ] = False,
     verbose: VerboseOption = False,
 ) -> None:
     """Finish or roll back an interrupted deployment transaction."""
@@ -655,7 +638,6 @@ def resume_deployment(
         _run(
             lambda: operations.resume_deployment(
                 _resolve_deployment_root(deployment_root),
-                database_restored=database_restored,
             ),
             status="Recovering CFMS deployment...",
         )

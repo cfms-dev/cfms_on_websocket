@@ -74,7 +74,9 @@ intended.
 Release tags publish source deployment bundles in both ZIP and tar.gz formats.
 The deployment host must provide Python 3.14 or newer and
 [uv](https://docs.astral.sh/uv/). Each archive contains an internal file manifest;
-the deployment command also requires `SHA256SUMS.txt` or an expected SHA-256.
+the deployment command can additionally verify `SHA256SUMS.txt` or an expected
+SHA-256. Omitting both emits a warning but does not disable the archive's internal
+manifest and per-file digest validation.
 Versioned deployment begins with the first release that publishes this manifest.
 The commands reject older flat deployments without it; manifest format validation
 and Alembic revision ancestry, rather than a hard-coded semantic version, determine
@@ -100,13 +102,13 @@ uv run --project /srv/cfms --no-dev python /srv/cfms/src/main.py  # DO NOT use `
 
 Stop CFMS and create a tested, restorable database checkpoint before every
 version switch. The maintenance tool deliberately does not create this backup;
-`--backup-confirmed` records the operator's confirmation. Repeat `--extra` when
-the new release needs optional core dependencies:
+the system administrator remains responsible for verifying it. Repeat `--extra`
+when the new release needs optional core dependencies:
 
 ```bash
 uv run --project /srv/cfms --no-dev maintain deployment upgrade \
   cfms-on-websocket-X.Y.Z.tar.gz --checksums SHA256SUMS.txt \
-  --backup-confirmed --extra cluster --yes
+  --extra cluster --yes
 ```
 
 Each verified manifest has a release ID equal to the SHA-256 of its exact
@@ -124,21 +126,24 @@ production data and can never be owned or overwritten by a release package.
 
 The database revision is derived directly from each release's Alembic scripts.
 Before a switch, the database must already carry the active release's Alembic head;
-unversioned databases are rejected. A downgrade is allowed only when Alembic can
-reach the selected stored release:
+the command checks this before replacing active release files. Unversioned databases
+are rejected without being stamped automatically; verify the existing schema and
+stamp it against the still-active release before retrying. A downgrade is allowed
+only when Alembic can reach the selected stored release:
 
 ```bash
 uv run --project /srv/cfms --no-dev maintain deployment status
 uv run --project /srv/cfms --no-dev maintain deployment downgrade \
-  <release-id-or-prefix> --backup-confirmed --yes
+  <release-id-or-prefix> --yes
 ```
 
 If a migration fails, normal startup is blocked by the transaction marker. Restore
-the external database checkpoint, then finish recovery explicitly:
+the external database checkpoint, then finish recovery explicitly. `resume` checks
+the actual database revision and reconciles the active files only when it matches
+one of the transaction endpoints:
 
 ```bash
-uv run --project /srv/cfms --no-dev maintain deployment resume \
-  --database-restored
+uv run --project /srv/cfms --no-dev maintain deployment resume
 ```
 
 Third-party Python dependencies may be supplied as an operator-maintained,
