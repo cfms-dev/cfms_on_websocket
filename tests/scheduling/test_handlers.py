@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from pydantic import BaseModel
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session as OrmSession
@@ -7,13 +8,23 @@ from sqlalchemy.orm import sessionmaker
 
 from include.database.models.scheduling import Schedule, ScheduleExecution
 from include.domains.access.permissions import Permissions
-from include.extensions.scheduling import handlers
+from include.domains.scheduling import handlers
 from include.providers.base import SchedulingProviderStatus
 from include.scheduling import ScheduledTaskRegistration, ScheduledTaskRegistry
 
 
 class _Payload(BaseModel):
     value: int
+
+
+_CORE_HANDLERS = {
+    "list_scheduled_task_types": handlers.RequestListScheduledTaskTypesHandler,
+    "create_schedule": handlers.RequestCreateScheduleHandler,
+    "get_schedule": handlers.RequestGetScheduleHandler,
+    "list_schedules": handlers.RequestListSchedulesHandler,
+    "update_schedule": handlers.RequestUpdateScheduleHandler,
+    "delete_schedule": handlers.RequestDeleteScheduleHandler,
+}
 
 
 class _Connection:
@@ -75,8 +86,43 @@ def _context(monkeypatch, permissions):
     return notifications
 
 
-def test_create_schedule_requires_management_and_task_permissions(monkeypatch):
-    _context(monkeypatch, {Permissions.MANAGE_SCHEDULES})
+def test_core_router_exposes_all_scheduling_management_handlers():
+    from include.transport.router import available_functions
+
+    assert {
+        action: available_functions[action] for action in _CORE_HANDLERS
+    } == _CORE_HANDLERS
+
+
+@pytest.mark.parametrize(
+    ("handler_type", "data"),
+    [
+        (handlers.RequestListScheduledTaskTypesHandler, {}),
+        (handlers.RequestGetScheduleHandler, {"id": "missing"}),
+        (handlers.RequestListSchedulesHandler, {}),
+    ],
+)
+def test_read_actions_require_view_schedules(monkeypatch, handler_type, data):
+    _context(monkeypatch, set())
+    connection = _Connection(data)
+
+    result = handler_type().handle(connection)
+
+    assert result.code == 403
+    assert connection.response == (403, {}, "Permission denied")
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        {Permissions.MANAGE_SCHEDULES},
+        {Permissions.MANAGE_SYSTEM},
+    ],
+)
+def test_create_schedule_requires_management_and_task_permissions(
+    monkeypatch, permissions
+):
+    _context(monkeypatch, permissions)
     connection = _Connection(
         {
             "task_name": "test.record",
@@ -93,6 +139,29 @@ def test_create_schedule_requires_management_and_task_permissions(monkeypatch):
 
     assert result.code == 403
     assert connection.response[0] == 403
+
+
+def test_create_schedule_rejects_system_task_types(monkeypatch):
+    _context(
+        monkeypatch,
+        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+    )
+    connection = _Connection(
+        {
+            "task_name": "test.system_cleanup",
+            "payload": {"value": 1},
+            "trigger": {
+                "type": "date",
+                "data": {"run_at": "2026-01-01T00:00:00+00:00"},
+                "timezone": "UTC",
+            },
+        }
+    )
+
+    result = handlers.RequestCreateScheduleHandler().handle(connection)
+
+    assert result.code == 403
+    assert connection.response == (403, {}, "Permission denied")
 
 
 def test_create_schedule_persists_and_notifies_provider(monkeypatch):
@@ -284,7 +353,10 @@ def test_update_schedule_persists_and_notifies_provider(monkeypatch):
     assert notifications == [True]
 
 
-def test_scheduling_api_returns_503_when_provider_is_degraded(monkeypatch):
+@pytest.mark.parametrize("handler_type", _CORE_HANDLERS.values())
+def test_scheduling_api_returns_503_when_provider_is_degraded(
+    monkeypatch, handler_type
+):
     provider = SimpleNamespace(
         status=lambda: SchedulingProviderStatus(False, "redis", "unreachable")
     )
@@ -293,10 +365,14 @@ def test_scheduling_api_returns_503_when_provider_is_degraded(monkeypatch):
     )
     connection = _Connection({})
 
-    result = handlers.RequestListScheduledTaskTypesHandler().handle(connection)
+    result = handler_type().handle(connection)
 
     assert result.code == 503
-    assert connection.response[0] == 503
+    assert connection.response == (
+        503,
+        {"provider": "redis", "status": "degraded"},
+        "Scheduling provider is unavailable",
+    )
 
 
 def test_system_tasks_and_schedules_are_hidden_from_management_api(monkeypatch):
@@ -335,3 +411,59 @@ def test_system_tasks_and_schedules_are_hidden_from_management_api(monkeypatch):
 
     assert result.code == 0
     assert schedules.response[1]["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("handler_type", "data"),
+    [
+        (handlers.RequestGetScheduleHandler, {"id": "test.system_cleanup"}),
+        (
+            handlers.RequestUpdateScheduleHandler,
+            {"id": "test.system_cleanup", "revision": 1, "enabled": False},
+        ),
+        (
+            handlers.RequestDeleteScheduleHandler,
+            {"id": "test.system_cleanup", "revision": 1},
+        ),
+    ],
+)
+def test_system_schedules_cannot_be_managed(monkeypatch, handler_type, data):
+    notifications = _context(
+        monkeypatch,
+        {
+            Permissions.VIEW_SCHEDULES,
+            Permissions.MANAGE_SCHEDULES,
+            Permissions.MANAGE_SYSTEM,
+        },
+    )
+    with handlers.Session() as session, session.begin():
+        session.add(
+            Schedule(
+                id="test.system_cleanup",
+                task_name="test.system_cleanup",
+                task_contract_version=1,
+                payload={"value": 1},
+                trigger_type="interval",
+                trigger_data={
+                    "seconds": 60,
+                    "start_at": "2026-01-01T00:00:00+00:00",
+                },
+                timezone="UTC",
+                system_managed=True,
+                next_run_at=100.0,
+                created_by=None,
+                updated_by=None,
+            )
+        )
+    connection = _Connection(data)
+
+    result = handler_type().handle(connection)
+
+    assert result.code == 404
+    assert connection.response == (404, {}, "Schedule not found")
+    assert notifications == []
+    with handlers.Session() as session:
+        schedule = session.get(Schedule, "test.system_cleanup")
+        assert schedule.status == "active"
+        assert schedule.enabled is True
+        assert schedule.revision == 1

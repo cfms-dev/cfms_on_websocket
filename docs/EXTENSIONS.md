@@ -164,6 +164,12 @@ registered class must inherit `RequestHandler` and define `request_model` as a
 fails fast when an extension still exposes a legacy `schema` dictionary; there
 is no JSON Schema fallback for handler request data.
 
+Extension handler mappings are applied after the core mapping and may replace an
+action with the same name. `ext_unregister_handlers()` is applied afterward and
+may remove either a core or extension action. Registration conflicts between
+multiple extensions have no stable winner, so extensions should use owner-scoped
+action names unless deliberately replacing an existing action.
+
 ```python
 from include.extensions.manager import hookimpl
 from include.transport.request_handler import (
@@ -200,12 +206,12 @@ validation, `ConnectionHandler.data` remains the original JSON dictionary, so
 existing handler and hook code may continue to use dictionary operations.
 
 Extensions that own trusted scheduled task types register them through
-`ext_register_scheduled_tasks()`. The scheduling core is always active; enabling
-the `scheduling` extension only exposes its authenticated management actions. Task
-names, payload contracts, authorization, and at-least-once requirements are
-documented in [SCHEDULING.md](SCHEDULING.md). This hook registers executable task
-types only. User schedule definitions are created through the management API and
-no extension may persist an arbitrary import path.
+`ext_register_scheduled_tasks()`. The scheduling runtime and authenticated
+management actions are always part of the core. Task names, payload contracts,
+authorization, and at-least-once requirements are documented in
+[SCHEDULING.md](SCHEDULING.md). This hook registers executable task types only.
+User schedule definitions are created through the management API and no extension
+may persist an arbitrary import path.
 
 Tasks that are intrinsic server maintenance rather than operator-created jobs may
 declare a `SystemScheduleDefinition` and set `user_schedulable=False`. A system
@@ -421,12 +427,12 @@ locked or unlocked state without replaying transition side effects.
 
 ## Scheduled lockdown windows
 
-Enable the optional `scheduled_lockdown` extension together with the scheduling
-management API to create fixed-duration lockdown windows:
+Enable the optional `scheduled_lockdown` extension to register fixed-duration
+lockdown windows as a schedulable task type:
 
 ```toml
 [extensions]
-enabled = ["scheduling", "scheduled_lockdown"]
+enabled = ["scheduled_lockdown"]
 ```
 
 Create a normal `date`, `interval`, or `cron` schedule whose task is

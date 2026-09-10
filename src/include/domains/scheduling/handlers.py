@@ -1,8 +1,4 @@
-"""Authenticated WebSocket management actions for user-owned schedules.
-
-This extension exposes configuration only.  The scheduling core and previously
-persisted schedules continue to run when these handlers are not enabled.
-"""
+"""WebSocket management actions for the core scheduled-task domain."""
 
 from typing import Annotated, Any, Literal
 
@@ -430,13 +426,3 @@ class RequestDeleteScheduleHandler(RequestHandler):
             target=handler.data["id"],
             username=handler.username,
         )
-
-
-HANDLERS = {
-    "list_scheduled_task_types": RequestListScheduledTaskTypesHandler,
-    "create_schedule": RequestCreateScheduleHandler,
-    "get_schedule": RequestGetScheduleHandler,
-    "list_schedules": RequestListSchedulesHandler,
-    "update_schedule": RequestUpdateScheduleHandler,
-    "delete_schedule": RequestDeleteScheduleHandler,
-}

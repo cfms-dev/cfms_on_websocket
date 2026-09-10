@@ -374,8 +374,18 @@ def test_bundled_extension_catalog_is_valid():
         "http_api",
         "oidc_sso",
         "scheduled_lockdown",
-        "scheduling",
     }
+
+
+def test_retired_scheduling_extension_cannot_be_selected():
+    extension_root = Path(extension_manager.__file__).parent
+    discovered = extension_manager.discover_extensions(extension_root)
+
+    with pytest.raises(
+        extension_manager.ExtensionDiscoveryError,
+        match="Configured extensions were not found: scheduling",
+    ):
+        extension_manager.resolve_extension_selection(discovered, ["scheduling"])
 
 
 def test_builtin_extension_manifest_matches_core_version():

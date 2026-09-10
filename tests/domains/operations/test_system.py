@@ -84,7 +84,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 26,
+            "protocol_version": 27,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {
@@ -131,6 +131,7 @@ class TestSystemManagement:
             "version": CORE_VERSION.original,
         }
         assert isinstance(diagnostics["extension_flags"], list)
+        assert "scheduling" not in diagnostics["extension_flags"]
         assert diagnostics["lockdown"] == {"enabled": False, "reason": None}
 
         forbidden_keys = {

@@ -30,7 +30,7 @@ response is returned before the diagnostics permission check.
   "server": {
     "server_name": "CFMS WebSocket Server",
     "core_version": "0.5.0.260812_alpha",
-    "protocol_version": 24,
+    "protocol_version": 27,
     "debug_configured": false
   },
   "runtime": {
@@ -71,7 +71,7 @@ Component versions are limited to the core allowlist. APScheduler is always
 included. Redis, Boto3, the MySQL connector, or Dramatiq is added only when its
 corresponding backend is configured; Dramatiq appears only for the Redis scheduling
 Provider. `scheduling` reports the core runtime state independently of whether the
-management extension is enabled.
+optional task-type extensions are enabled.
 Extension entries describe modules that completed registration, in load order.
 
 The response never includes filesystem paths, hostnames, IP addresses, ports,

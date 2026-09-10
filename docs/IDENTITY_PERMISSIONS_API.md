@@ -44,8 +44,7 @@ maintain permission purge-expired --yes
 Expired-entry cleanup always runs as the system-managed
 `builtin.permission_cleanup` interval task. Its interval is reconciled from
 `identity.permission_retention.cleanup_interval_seconds` and it is not exposed as
-an operator-editable schedule. Disabling the scheduling management extension does
-not affect this task.
+an operator-editable schedule.
 
 ## Write actions
 

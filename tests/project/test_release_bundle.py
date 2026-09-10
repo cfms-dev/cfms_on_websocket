@@ -114,7 +114,6 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
         "http_api",
         "oidc_sso",
         "scheduled_lockdown",
-        "scheduling",
     ]
     assert "release-manifest.json" not in manifest["files"]
     assert not any(

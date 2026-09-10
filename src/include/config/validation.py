@@ -124,6 +124,11 @@ def get_enabled_extensions(config: _ConfigSource) -> tuple[str, ...]:
             raise ConfigValidationError(
                 "extensions.enabled must not contain 'builtin'; it is always enabled"
             )
+        if identifier == "scheduling":
+            raise ConfigValidationError(
+                "extensions.enabled must not contain 'scheduling'; scheduling "
+                "management APIs are part of the server core"
+            )
         if identifier in seen:
             raise ConfigValidationError(
                 f"extensions.enabled contains duplicate identifier {identifier!r}"

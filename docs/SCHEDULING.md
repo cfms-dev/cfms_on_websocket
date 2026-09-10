@@ -1,10 +1,8 @@
 # Scheduled-task infrastructure
 
 Durable scheduling is always-on core infrastructure. Core code and trusted
-extensions register task types, and the configured scheduling Provider starts
-whether or not the `scheduling` extension is enabled. The extension controls only
-the six WebSocket query and configuration actions and its extension flag; disabling
-it does not pause or delete system schedules or previously persisted user schedules.
+extensions register task types, and the configured scheduling Provider and six
+WebSocket management actions are always available as part of the server core.
 
 The core and built-in extensions register hidden system schedules for execution
 history, scheduled-lockdown expiration, expired permissions, abandoned uploads,
@@ -24,10 +22,6 @@ For a single server process without Redis, the normal core installation is
 sufficient:
 
 ```toml
-[extensions]
-# Optional: expose the scheduling management API.
-enabled = ["scheduling"]
-
 [provider]
 scheduling = "local"
 ```
@@ -134,9 +128,9 @@ for event-driven queues such as file deduplication.
 
 User-configurable tasks must declare `required_permission`. Pure system tasks may
 omit it because they are never offered to users. A persisted user schedule remains
-active while the management extension is disabled; if its owning extension is not
-loaded or its contract version no longer matches, execution reports registration
-unavailable under the normal contract rules.
+active across server restarts; if its owning extension is not loaded or its contract
+version no longer matches, execution reports registration unavailable under the
+normal contract rules.
 
 ```python
 from pydantic import BaseModel
@@ -210,7 +204,8 @@ exists.
 
 ## WebSocket management actions
 
-Protocol version 26 adds:
+Protocol version 27 makes these actions unconditional core APIs and removes the
+former `scheduling` extension flag:
 
 - `list_scheduled_task_types`
 - `create_schedule`
@@ -219,10 +214,12 @@ Protocol version 26 adds:
 - `update_schedule`
 - `delete_schedule`
 
-These actions are registered only when the `scheduling` extension is enabled. They
-expose only user-managed schedules and task types. System-managed
-maintenance remains observable through execution logs and audit records rather
-than through mutable schedule resources.
+Configurations that still list `scheduling` in `extensions.enabled` are rejected;
+remove that identifier before starting this version. Clients must require protocol
+version 27 before relying on unconditional availability. The actions expose only
+user-managed schedules and task types. System-managed maintenance remains
+observable through execution logs and audit records rather than through mutable
+schedule resources.
 
 Reading requires `view_schedules`. Mutations require `manage_schedules`; creation and
 updates also require the permission declared by the selected task type. Updates and

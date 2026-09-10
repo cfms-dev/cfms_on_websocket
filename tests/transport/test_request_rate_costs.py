@@ -76,6 +76,12 @@ EXPECTED_CORE_ACTION_COSTS = {
     "view_access_entries": 3,
     "lockdown": 10,
     "view_audit_logs": 3,
+    "list_scheduled_task_types": 1,
+    "create_schedule": 3,
+    "get_schedule": 1,
+    "list_schedules": 1,
+    "update_schedule": 3,
+    "delete_schedule": 3,
     "upload_user_key": 2,
     "get_user_key": 1,
     "delete_user_key": 2,
@@ -161,7 +167,7 @@ def test_all_known_costs_fit_default_request_buckets():
         *EXPECTED_EXTRA_HANDLER_COSTS.values(),
     )
 
-    assert len(all_costs) == 80
+    assert len(all_costs) == 86
     assert set(all_costs) == {1, 2, 3, 5, 10, 20}
     assert all(0 < cost <= capacity for cost in all_costs)
 

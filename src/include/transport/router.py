@@ -97,6 +97,14 @@ from include.domains.operations.handlers.system import (
     RequestViewAuditLogsHandler,
 )
 from include.domains.operations.lockdown import lockdown_state_manager
+from include.domains.scheduling.handlers import (
+    RequestCreateScheduleHandler,
+    RequestDeleteScheduleHandler,
+    RequestGetScheduleHandler,
+    RequestListScheduledTaskTypesHandler,
+    RequestListSchedulesHandler,
+    RequestUpdateScheduleHandler,
+)
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.replay import nonce_store
 from include.domains.security.guards.request_rate_control import check_request_rate
@@ -208,6 +216,13 @@ available_functions: dict[str, type[RequestHandler]] = {
     # System
     "lockdown": RequestLockdownHandler,
     "view_audit_logs": RequestViewAuditLogsHandler,
+    # Scheduling
+    "list_scheduled_task_types": RequestListScheduledTaskTypesHandler,
+    "create_schedule": RequestCreateScheduleHandler,
+    "get_schedule": RequestGetScheduleHandler,
+    "list_schedules": RequestListSchedulesHandler,
+    "update_schedule": RequestUpdateScheduleHandler,
+    "delete_schedule": RequestDeleteScheduleHandler,
     # Keyring
     "upload_user_key": RequestUploadUserKeyHandler,
     "get_user_key": RequestGetUserKeyHandler,

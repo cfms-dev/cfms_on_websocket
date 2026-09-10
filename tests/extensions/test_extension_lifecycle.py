@@ -235,21 +235,47 @@ def test_builtin_registers_all_system_tasks(builtin_extension):
     }
 
 
-def test_scheduling_extension_only_exposes_management_interfaces():
-    from include.extensions.scheduling import _extension
+def test_extension_handler_overrides_and_unregistration_keep_existing_order(
+    monkeypatch, protected_test_config
+):
+    monkeypatch.chdir(Path(__file__).parents[2] / "src")
+    import main as server_main
 
-    assert set(_extension.ext_register_handlers()) == {
-        "list_scheduled_task_types",
-        "create_schedule",
-        "get_schedule",
-        "list_schedules",
-        "update_schedule",
-        "delete_schedule",
-    }
-    assert _extension.ext_register_extension_flags() == {"scheduling"}
-    assert not hasattr(_extension, "ext_on_startup")
-    assert not hasattr(_extension, "ext_on_shutdown")
-    assert not hasattr(_extension, "ext_register_scheduled_tasks")
+    core_list_handler = server_main.available_functions["list_schedules"]
+    replacement_handler = server_main.available_functions["get_schedule"]
+    hook = SimpleNamespace(
+        ext_register_handlers=lambda: [
+            {
+                "list_schedules": replacement_handler,
+                "extension_action": core_list_handler,
+            }
+        ],
+        ext_unregister_handlers=lambda: [{"get_schedule", "extension_action"}],
+        ext_register_whitelisted_actions=lambda: [],
+    )
+    monkeypatch.setattr(
+        server_main,
+        "available_functions",
+        dict(server_main.available_functions),
+    )
+    monkeypatch.setattr(server_main, "whitelisted_functions", [])
+    monkeypatch.setattr(server_main, "pm", SimpleNamespace(hook=hook))
+    monkeypatch.setattr(
+        server_main,
+        "validate_request_handler_models",
+        lambda _handlers: None,
+    )
+    monkeypatch.setattr(
+        server_main,
+        "validate_handler_rate_limit_costs",
+        lambda _handlers: (),
+    )
+
+    server_main.prepare_handlers()
+
+    assert server_main.available_functions["list_schedules"] is replacement_handler
+    assert "get_schedule" not in server_main.available_functions
+    assert "extension_action" not in server_main.available_functions
 
 
 def test_builtin_startup_failure_cleans_worker_and_server_state(

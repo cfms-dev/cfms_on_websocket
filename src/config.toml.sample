@@ -1,39 +1,6 @@
 # Enable debug mode for verbose logging and additional debugging features
 debug = false
 
-[extensions]
-# Extension identifiers to load, in registration order. Changes require a restart.
-# Add "scheduling" only to expose schedule query and configuration actions.
-# Add both "scheduling" and "scheduled_lockdown" to configure lockdown windows.
-enabled = []
-
-# Automatically enter lockdown after a service-wide burst of failed local
-# password or TOTP authentication attempts.
-[extensions.brute_force_lockdown]
-window_seconds = 600
-failure_threshold = 50
-distinct_account_threshold = 10
-distinct_ip_threshold = 10
-reason = "Automatic security lockdown: suspected credential-guessing attack detected."
-
-# Optional HTTPS API framework for extension-owned APIRouter registrations.
-# Install with `uv sync --extra ext_http_api` and add "http_api" to enabled.
-# All settings in this table require a server restart to take effect.
-[extensions.http_api]
-host = "localhost"
-port = 5105
-# Omit both values to reuse server.ssl_certfile and server.ssl_keyfile.
-# ssl_certfile = "./content/ssl/http-cert.pem"
-# ssl_keyfile = "./content/ssl/http-key.pem"
-max_concurrency = 64  # Exact number of simultaneous HTTP connections admitted.
-max_request_body_bytes = 1048576  # Hard raw-body limit, including streamed bodies.
-request_header_timeout_seconds = 10.0  # Total time to receive complete headers.
-request_body_timeout_seconds = 30.0  # Total time to receive the complete body.
-startup_timeout_seconds = 10.0
-shutdown_timeout_seconds = 10.0
-cors_allowed_origins = []  # Browser origins only: scheme://host[:port], without a trailing slash.
-docs_enabled = false
-
 [server]
 # Name of the server
 name = "CFMS WebSocket Server"
@@ -133,21 +100,6 @@ state_retention_seconds = 600
 # Optional positive integer costs keyed by request action. Unlisted actions use
 # calibrated handler defaults in the 1, 2, 3, 5, 10, and 20 cost tiers. Values
 # here override those defaults. See docs/REQUEST_RATE_CONTROL.md for the matrix.
-
-[sso.oidc]
-# Issuer URL of the OpenID Provider, without a trailing slash.
-issuer = ""
-# OAuth/OIDC client credentials registered with the provider.
-client_id = ""
-client_secret = ""
-# Redirect URI registered with the provider and used by the client.
-redirect_uri = ""
-# Claim used to map the external identity to a CFMS username.
-username_claim = "preferred_username"
-# Automatically create local users when the mapped username does not exist.
-auto_provision = false
-# Groups assigned to auto-provisioned users.
-default_groups = ["user"]
 
 [identity.permission_retention]
 # Expired direct-user and group permission entries remain visible for this many days.
@@ -313,3 +265,50 @@ region_name = ""
 addressing_style = "auto"
 # Number of reusable HTTP connections; defaults to server admission capacity
 max_pool_connections = 64
+
+[extensions]
+# Extension identifiers to load, in registration order. Changes require a restart.
+# Add "scheduled_lockdown" to configure lockdown windows.
+enabled = []
+
+# Automatically enter lockdown after a service-wide burst of failed local
+# password or TOTP authentication attempts.
+[extensions.brute_force_lockdown]
+window_seconds = 600
+failure_threshold = 50
+distinct_account_threshold = 10
+distinct_ip_threshold = 10
+reason = "Automatic security lockdown: suspected credential-guessing attack detected."
+
+# Optional HTTPS API framework for extension-owned APIRouter registrations.
+# Install with `uv sync --extra ext_http_api` and add "http_api" to enabled.
+# All settings in this table require a server restart to take effect.
+[extensions.http_api]
+host = "localhost"
+port = 5105
+# Omit both values to reuse server.ssl_certfile and server.ssl_keyfile.
+# ssl_certfile = "./content/ssl/http-cert.pem"
+# ssl_keyfile = "./content/ssl/http-key.pem"
+max_concurrency = 64  # Exact number of simultaneous HTTP connections admitted.
+max_request_body_bytes = 1048576  # Hard raw-body limit, including streamed bodies.
+request_header_timeout_seconds = 10.0  # Total time to receive complete headers.
+request_body_timeout_seconds = 30.0  # Total time to receive the complete body.
+startup_timeout_seconds = 10.0
+shutdown_timeout_seconds = 10.0
+cors_allowed_origins = []  # Browser origins only: scheme://host[:port], without a trailing slash.
+docs_enabled = false
+
+[sso.oidc]
+# Issuer URL of the OpenID Provider, without a trailing slash.
+issuer = ""
+# OAuth/OIDC client credentials registered with the provider.
+client_id = ""
+client_secret = ""
+# Redirect URI registered with the provider and used by the client.
+redirect_uri = ""
+# Claim used to map the external identity to a CFMS username.
+username_claim = "preferred_username"
+# Automatically create local users when the mapped username does not exist.
+auto_provision = false
+# Groups assigned to auto-provisioned users.
+default_groups = ["user"]

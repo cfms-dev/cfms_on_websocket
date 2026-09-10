@@ -25,8 +25,9 @@ class TestServerBasics:
         for field in required_fields:
             assert field in data
         assert "version" not in data
-        assert data["protocol_version"] == 26
+        assert data["protocol_version"] == 27
         assert isinstance(data["extension_flags"], list)
+        assert "scheduling" not in data["extension_flags"]
         assert data["lockdown"] is False
         assert data["lockdown_reason"] is None
 

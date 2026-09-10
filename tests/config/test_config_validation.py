@@ -90,6 +90,7 @@ def test_enabled_extensions_preserve_configuration_order():
         (["core"], "valid extension identifiers"),
         (["sample_ext", "sample_ext"], "duplicate identifier"),
         (["builtin"], "always enabled"),
+        (["scheduling"], "management APIs are part of the server core"),
     ],
 )
 def test_invalid_enabled_extensions_are_rejected(value, message):

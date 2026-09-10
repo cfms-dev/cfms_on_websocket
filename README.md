@@ -56,9 +56,9 @@ uv sync --extra cluster --extra ext-scheduling-cluster --extra postgresql
 ```
 
 Durable scheduling is always part of the server core, and the embedded local
-Provider needs no extra dependencies. Enable the `scheduling` extension only to
-expose its WebSocket management actions. Distributed Redis coordination and
-Dramatiq task execution requires `ext-scheduling-cluster`; every Redis-backed
+Provider needs no extra dependencies. Its WebSocket management actions are also
+always available. Distributed Redis coordination and Dramatiq task execution
+require `ext-scheduling-cluster`; every Redis-backed
 server instance embeds its own scheduler candidate and worker pool. See
 [docs/SCHEDULING.md](docs/SCHEDULING.md) for deployment and task-registration
 contracts.
