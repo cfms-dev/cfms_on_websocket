@@ -463,7 +463,7 @@ window that already started to end safely after a restart or extension change.
 Disabling the extension prevents its task registration from starting new windows;
 it does not delete user-created schedule rows.
 
-## OIDC migration
+## OIDC configuration and migration
 
 OIDC activation is now controlled exclusively by the `oidc_sso` identifier. Remove
 the old `sso.oidc.enabled` key, install its optional dependencies, and enable it:
@@ -476,7 +476,7 @@ uv sync --extra ext_oidc_sso
 [extensions]
 enabled = ["oidc_sso"]
 
-[sso.oidc]
+[extensions.oidc_sso]
 issuer = "https://issuer.example"
 client_id = "cfms-client"
 client_secret = ""
@@ -485,3 +485,7 @@ username_claim = "preferred_username"
 auto_provision = false
 default_groups = ["user"]
 ```
+
+Configurations from older releases can be migrated from `[sso.oidc]` to
+`[extensions.oidc_sso]` with `maintain config sync-template`. If both tables are
+present, values already stored under `[extensions.oidc_sso]` take precedence.

@@ -31,6 +31,12 @@ def _prepare_src(tmp_path: Path, current, template=None) -> Path:
     return src_dir
 
 
+def _move_oidc_config_to_legacy_section(current, *, enabled):
+    oidc = current["extensions"].pop("oidc_sso")
+    oidc["enabled"] = enabled
+    current["sso"] = {"oidc": oidc}
+
+
 def test_sync_adds_template_settings_preserves_values_and_is_idempotent(
     monkeypatch, tmp_path
 ):
@@ -74,7 +80,11 @@ def test_sync_applies_all_known_legacy_migrations(monkeypatch, tmp_path):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     current["database"]["db_name"] = "legacy_database"
     del current["database"]["name"]
-    current["sso"]["oidc"]["enabled"] = True
+    _move_oidc_config_to_legacy_section(current, enabled=True)
+    current["sso"]["oidc"]["issuer"] = "https://issuer.example"
+    current["sso"]["oidc"]["client_id"] = "legacy-client"
+    current["sso"]["oidc"]["client_secret"] = "legacy-secret"
+    current["sso"]["oidc"]["redirect_uri"] = "https://client.example/callback"
     current["extensions"]["enabled"] = []
     current["document"]["allow_name_duplicate"] = True
     upload = current["document"]["upload"]
@@ -96,7 +106,12 @@ def test_sync_applies_all_known_legacy_migrations(monkeypatch, tmp_path):
     assert synchronized["database"]["name"] == "legacy_database"
     assert "db_name" not in synchronized["database"]
     assert synchronized["extensions"]["enabled"] == ["oidc_sso"]
-    assert "enabled" not in synchronized["sso"]["oidc"]
+    assert synchronized["extensions"]["oidc_sso"]["issuer"] == (
+        "https://issuer.example"
+    )
+    assert synchronized["extensions"]["oidc_sso"]["client_id"] == "legacy-client"
+    assert synchronized["extensions"]["oidc_sso"]["client_secret"] == ("legacy-secret")
+    assert "sso" not in synchronized
     risk_control = synchronized["document"]["upload"]["creation_risk_control"]
     assert risk_control["refill_period_seconds"] == 300
     assert risk_control["account_refill_tokens"] == 50
@@ -115,7 +130,10 @@ def test_sync_keeps_new_targets_and_warns_for_unconvertible_values(
     current = tomlkit.parse(_SAMPLE_SOURCE)
     current["database"]["db_name"] = "legacy_database"
     current["database"]["name"] = "current_database"
-    current["sso"]["oidc"]["enabled"] = "true"
+    _move_oidc_config_to_legacy_section(current, enabled="true")
+    current["sso"]["oidc"]["issuer"] = "https://legacy.example"
+    current["sso"]["oidc"]["client_id"] = "legacy-client"
+    current["extensions"]["oidc_sso"] = {"issuer": "https://new.example"}
     current["security"]["passwd_must_contain"] = [["AB"]]
     current["document"]["upload"]["creation_rate_per_user"] = 0
     src_dir = _prepare_src(tmp_path, current)
@@ -126,6 +144,9 @@ def test_sync_keeps_new_targets_and_warns_for_unconvertible_values(
 
     assert synchronized["database"]["name"] == "current_database"
     assert synchronized["extensions"]["enabled"] == []
+    assert synchronized["extensions"]["oidc_sso"]["issuer"] == ("https://new.example")
+    assert synchronized["extensions"]["oidc_sso"]["client_id"] == "legacy-client"
+    assert "sso" not in synchronized
     assert (
         synchronized["security"]["passwd_rules"] == current["security"]["passwd_rules"]
     )
@@ -138,6 +159,23 @@ def test_sync_keeps_new_targets_and_warns_for_unconvertible_values(
         ]
     )
     assert len(result.warnings) == 3
+
+
+def test_sync_preserves_other_settings_beside_legacy_oidc(monkeypatch, tmp_path):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    _move_oidc_config_to_legacy_section(current, enabled=False)
+    current["sso"]["saml"] = {"metadata_url": "https://idp.example/metadata"}
+    src_dir = _prepare_src(tmp_path, current)
+    monkeypatch.chdir(src_dir)
+
+    result = sync_config_template()
+    synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
+
+    assert "oidc" not in synchronized["sso"]
+    assert synchronized["sso"]["saml"]["metadata_url"] == (
+        "https://idp.example/metadata"
+    )
+    assert result.preserved_paths == ("sso.saml",)
 
 
 def test_sync_removes_selected_unknown_paths_and_can_prune(monkeypatch, tmp_path):

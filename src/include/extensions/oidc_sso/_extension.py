@@ -63,8 +63,8 @@ def _as_plain(value: Any) -> Any:
 
 
 def _get_oidc_config() -> dict[str, Any]:
-    sso_cfg = _as_plain(global_config.get("sso", {})) or {}
-    oidc_cfg = _as_plain(sso_cfg.get("oidc", {})) or {}
+    extensions_cfg = _as_plain(global_config.get("extensions", {})) or {}
+    oidc_cfg = _as_plain(extensions_cfg.get("oidc_sso", {})) or {}
 
     issuer = str(oidc_cfg.get("issuer", "")).rstrip("/")
     client_id = str(oidc_cfg.get("client_id", ""))

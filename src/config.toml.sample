@@ -298,7 +298,9 @@ shutdown_timeout_seconds = 10.0
 cors_allowed_origins = []  # Browser origins only: scheme://host[:port], without a trailing slash.
 docs_enabled = false
 
-[sso.oidc]
+# Optional OpenID Connect single sign-on.
+# Install with `uv sync --extra ext_oidc_sso` and add "oidc_sso" to enabled.
+[extensions.oidc_sso]
 # Issuer URL of the OpenID Provider, without a trailing slash.
 issuer = ""
 # OAuth/OIDC client credentials registered with the provider.

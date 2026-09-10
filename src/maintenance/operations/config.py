@@ -26,7 +26,7 @@ _LEGACY_PATHS = frozenset(
         "document.upload.creation_rate_per_user",
         "document.upload.creation_rate_window_seconds",
         "security.passwd_must_contain",
-        "sso.oidc.enabled",
+        "sso.oidc",
     }
 )
 
@@ -209,13 +209,16 @@ def _find_unknown_roots(
     for key, current_value in current.items():
         path = (*prefix, str(key))
         dotted_path = ".".join(path)
+        current_is_table = isinstance(current_value, Mapping)
         if dotted_path in _LEGACY_PATHS:
             continue
         if key not in template:
+            if current_is_table and _has_legacy_descendant(dotted_path):
+                unknown.extend(_find_unknown_roots(current_value, {}, path))
+                continue
             unknown.append(dotted_path)
             continue
         template_value = template[key]
-        current_is_table = isinstance(current_value, Mapping)
         template_is_table = isinstance(template_value, Mapping)
         if current_is_table != template_is_table:
             raise MaintenanceOperationError(
@@ -236,13 +239,24 @@ def _overlay_current_values(
     for key, current_value in current.items():
         path = (*prefix, str(key))
         dotted_path = ".".join(path)
+        current_is_table = isinstance(current_value, Mapping)
         if dotted_path in _LEGACY_PATHS or dotted_path in removed_unknown_paths:
             continue
         if key not in candidate:
+            if current_is_table and _has_legacy_descendant(dotted_path):
+                nested_candidate = tomlkit.table()
+                _overlay_current_values(
+                    current_value,
+                    nested_candidate,
+                    prefix=path,
+                    removed_unknown_paths=removed_unknown_paths,
+                )
+                if nested_candidate:
+                    candidate.add(key, nested_candidate)
+                continue
             candidate.add(key, copy.deepcopy(current_value))
             continue
         candidate_value = candidate[key]
-        current_is_table = isinstance(current_value, Mapping)
         candidate_is_table = isinstance(candidate_value, Mapping)
         if current_is_table:
             _overlay_current_values(
@@ -283,6 +297,11 @@ def _leaf_paths(value: Any, prefix: tuple[str, ...]) -> list[str]:
     return paths or [".".join(prefix)]
 
 
+def _has_legacy_descendant(dotted_path: str) -> bool:
+    prefix = f"{dotted_path}."
+    return any(path.startswith(prefix) for path in _LEGACY_PATHS)
+
+
 def _apply_legacy_migrations(
     current: Mapping[str, Any], candidate: Any
 ) -> tuple[list[str], set[str], list[str]]:
@@ -298,14 +317,37 @@ def _apply_legacy_migrations(
             migrated_targets.add(target)
         migrations.append("database.db_name -> database.name")
 
-    old_oidc_enabled = _get_path(current, "sso.oidc.enabled")
-    if old_oidc_enabled is not _MISSING:
-        target = "extensions.enabled"
-        if isinstance(old_oidc_enabled, bool):
-            enabled_extensions = _get_path(candidate, target)
-            if enabled_extensions is _MISSING:
+    old_oidc = _get_path(current, "sso.oidc")
+    if old_oidc is not _MISSING:
+        target = "extensions.oidc_sso"
+        if isinstance(old_oidc, Mapping):
+            target_section = _get_path(candidate, target)
+            if not isinstance(target_section, Mapping):
                 raise MaintenanceOperationError(
                     f"Configuration template is missing migration target {target}"
+                )
+            for key, value in old_oidc.items():
+                target_path = f"{target}.{key}"
+                if key == "enabled" or _has_path(current, target_path):
+                    continue
+                target_section[key] = copy.deepcopy(value)
+                migrated_targets.add(target_path)
+
+            old_oidc_enabled = old_oidc.get("enabled", _MISSING)
+        else:
+            old_oidc_enabled = _MISSING
+            warnings.append(
+                "sso.oidc is not a table; extensions.oidc_sso uses its current "
+                "or template value"
+            )
+
+        enabled_target = "extensions.enabled"
+        if isinstance(old_oidc_enabled, bool):
+            enabled_extensions = _get_path(candidate, enabled_target)
+            if enabled_extensions is _MISSING:
+                raise MaintenanceOperationError(
+                    "Configuration template is missing migration target "
+                    f"{enabled_target}"
                 )
             if (
                 old_oidc_enabled
@@ -313,14 +355,14 @@ def _apply_legacy_migrations(
                 and "oidc_sso" not in enabled_extensions
             ):
                 enabled_extensions.append("oidc_sso")
-        else:
+        elif old_oidc_enabled is not _MISSING:
             warnings.append(
                 "sso.oidc.enabled is not a boolean; extensions.enabled keeps its "
                 "current or template value"
             )
-        if not _has_path(current, target):
-            migrated_targets.add(target)
-        migrations.append("sso.oidc.enabled -> extensions.enabled")
+        if old_oidc_enabled is not _MISSING and not _has_path(current, enabled_target):
+            migrated_targets.add(enabled_target)
+        migrations.append("sso.oidc -> extensions.oidc_sso + extensions.enabled")
 
     legacy_rate_paths = {
         "document.upload.creation_rate_window_seconds": (
