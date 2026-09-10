@@ -82,6 +82,19 @@ The commands reject older flat deployments without it; manifest format validatio
 and Alembic revision ancestry, rather than a hard-coded semantic version, determine
 whether two releases can be switched.
 
+Release-bundle deployments can check the official GitHub Releases feed while the
+server is running. This read-only command reports the current and latest stable
+versions without downloading or changing the deployment:
+
+```bash
+uv run --project /srv/cfms --no-dev maintain deployment check
+```
+
+Online checks use anonymous access to the public
+`cfms-dev/cfms_on_websocket` repository and are therefore subject to GitHub's
+unauthenticated API rate limit. They do not support prereleases, alternate
+repositories, authentication tokens, or source checkouts.
+
 Extract the first release directly into the final deployment directory. Keep the
 original flat project layout (`pyproject.toml`, `src/main.py`, `src/content`, and
 `src/include`), then initialize the environment and database:
@@ -110,6 +123,22 @@ uv run --project /srv/cfms --no-dev maintain deployment upgrade \
   cfms-on-websocket-X.Y.Z.tar.gz --checksums SHA256SUMS.txt \
   --extra cluster --yes
 ```
+
+To download and activate the latest stable official release instead, stop CFMS,
+create and test the same external database checkpoint, and run:
+
+```bash
+uv run --project /srv/cfms --no-dev maintain deployment update \
+  --extra cluster --yes
+```
+
+Online update downloads the release ZIP and `SHA256SUMS.txt` over HTTPS. It
+requires both assets' GitHub SHA-256 digests, verifies the package against the
+checksum file, and then applies the same manifest validation, snapshots,
+dependency synchronization, database migration, and recovery transaction as the
+local `upgrade` command. If the latest release is the same version or older, the
+command exits successfully without modifying the deployment. It does not stop or
+restart the server and does not create the required database checkpoint.
 
 Each verified manifest has a release ID equal to the SHA-256 of its exact
 `release-manifest.json` bytes, so builds with the same semantic version can coexist.

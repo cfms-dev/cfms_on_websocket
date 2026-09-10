@@ -38,6 +38,12 @@ from maintenance.operations.deployment import (
     resume_deployment,
     upgrade_deployment,
 )
+from maintenance.operations.deployment_online import (
+    OnlineDeploymentStatus,
+    OnlineDeploymentUpdateResult,
+    inspect_online_deployment,
+    update_online_deployment,
+)
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.extensions import (
     ExtensionCatalogInspection,
@@ -81,6 +87,8 @@ __all__ = [
     "ExtensionChangeResult",
     "ExtensionRecord",
     "MaintenanceOperationError",
+    "OnlineDeploymentStatus",
+    "OnlineDeploymentUpdateResult",
     "PasswordResetResult",
     "PepperFillResult",
     "PermissionPurgeResult",
@@ -97,6 +105,7 @@ __all__ = [
     "inspect_audit_entries",
     "inspect_config_template",
     "inspect_deployment",
+    "inspect_online_deployment",
     "inspect_expired_permissions",
     "inspect_extension",
     "inspect_extensions",
@@ -114,4 +123,5 @@ __all__ = [
     "uninstall_extension",
     "upgrade_extension",
     "upgrade_deployment",
+    "update_online_deployment",
 ]

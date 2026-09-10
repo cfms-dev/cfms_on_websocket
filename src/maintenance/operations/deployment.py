@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -1051,6 +1052,13 @@ def upgrade_deployment(
         if Version(staged.version) < Version(source.version):
             raise MaintenanceOperationError(
                 "Use deployment downgrade to activate an older stored release"
+            )
+        requires_python = SpecifierSet(staged.manifest["requires_python"])
+        current_python = Version(platform.python_version())
+        if current_python not in requires_python:
+            raise MaintenanceOperationError(
+                f"Target release requires Python {requires_python}; "
+                f"the maintenance process uses {current_python}"
             )
         _preflight_upgrade_database(project_root, source, staged)
 

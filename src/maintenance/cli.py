@@ -90,7 +90,7 @@ database_app = typer.Typer(
     no_args_is_help=True,
 )
 deployment_app = typer.Typer(
-    help="Upgrade, downgrade, inspect, and prune packaged CFMS deployments.",
+    help="Check, update, downgrade, inspect, and prune packaged CFMS deployments.",
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
@@ -521,6 +521,27 @@ def _print_deployment_prune_result(
         _print_deployment_versions("Pruned Releases", result.removed_versions)
 
 
+def _print_online_deployment_status(
+    result: operations.OnlineDeploymentStatus,
+) -> None:
+    table = Table(title="CFMS Online Update", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Root", str(result.deployment_root))
+    table.add_row("Current version", result.current_version)
+    table.add_row("Latest version", result.latest_version)
+    if result.update_available:
+        update_status = "Available"
+    elif result.current_version == result.latest_version:
+        update_status = "Up to date"
+    else:
+        update_status = "Current version is newer"
+    table.add_row("Update", update_status)
+    table.add_row("Published", result.published_at.isoformat())
+    table.add_row("Release", result.release_url)
+    console.print(table)
+
+
 def _deployment_digest_options(
     sha256: str | None,
     checksums: Path | None,
@@ -614,6 +635,65 @@ def deployment_status(
             )
         )
     )
+
+
+@deployment_app.command("check")
+def check_deployment_update(
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Stable deployment directory."),
+    ] = None,
+) -> None:
+    """Check the latest official release without changing the deployment."""
+    _print_online_deployment_status(
+        _run(
+            lambda: operations.inspect_online_deployment(
+                _resolve_deployment_root(deployment_root)
+            ),
+            status="Checking for CFMS updates...",
+        )
+    )
+
+
+@deployment_app.command("update")
+def update_deployment(
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Stable deployment directory."),
+    ] = None,
+    extra: Annotated[
+        list[str] | None,
+        typer.Option("--extra", help="Core optional dependency; may be repeated."),
+    ] = None,
+    requirements_lock: Annotated[
+        Path | None,
+        typer.Option(
+            "--requirements-lock",
+            help="Hash-locked requirements for third-party extensions.",
+        ),
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    verbose: VerboseOption = False,
+) -> None:
+    """Download and activate the latest official release when newer."""
+    _configure_logging(verbose)
+    resolved_root = _resolve_deployment_root(deployment_root)
+    _confirm_or_abort(
+        "The server must be stopped. Ensure that a tested, restorable database "
+        "checkpoint exists. Check for and install the latest official release?",
+        yes,
+    )
+    result = _run(
+        lambda: operations.update_online_deployment(
+            resolved_root,
+            extras=tuple(extra) if extra is not None else None,
+            requirements_lock=requirements_lock,
+        ),
+        status="Updating CFMS deployment...",
+    )
+    _print_online_deployment_status(result.status)
+    if result.deployment is not None:
+        _print_deployment_result(result.deployment)
 
 
 @deployment_app.command("prune")
