@@ -58,7 +58,8 @@ uv run maintain --help
 ```
 
 More detailed guides are available for
-[extensions](docs/EXTENSIONS.md) and
+[extensions](docs/EXTENSIONS.md),
+[audit log queries](docs/AUDIT_LOG_API.md), and
 [audit log maintenance](docs/AUDIT_LOG_MAINTENANCE.md).
 
 ## Development

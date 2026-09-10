@@ -332,21 +332,86 @@ class TestSystemManagement:
             )
 
     @pytest.mark.asyncio
-    async def test_audit_logs(self, authenticated_client: CFMSTestClient):
-        # Do some actions to ensure audit logs exist
-        await authenticated_client.create_directory(
-            f"AuditLogFolder_{int(time.time())}"
+    async def test_audit_log_action_filters(self, authenticated_client: CFMSTestClient):
+        assert_success(
+            await authenticated_client.create_directory(
+                f"AuditLogFolder_{time.time_ns()}"
+            )
+        )
+        assert_success(await authenticated_client.diagnostics())
+
+        create_entries = assert_success(
+            await authenticated_client.view_audit_logs(filters=["create_directory"])
+        )["items"]
+        assert create_entries
+        assert {entry["action"] for entry in create_entries} == {"create_directory"}
+
+        selected_entries = assert_success(
+            await authenticated_client.view_audit_logs(
+                filters=["create_directory", "diagnostics"]
+            )
+        )["items"]
+        assert {entry["action"] for entry in selected_entries} == {
+            "create_directory",
+            "diagnostics",
+        }
+
+        unfiltered_entries = assert_success(
+            await authenticated_client.view_audit_logs()
+        )["items"]
+        empty_filter_entries = assert_success(
+            await authenticated_client.view_audit_logs(filters=[])
+        )["items"]
+        assert any(
+            entry["action"] == "create_directory" for entry in unfiltered_entries
+        )
+        assert any(
+            entry["action"] == "create_directory" for entry in empty_filter_entries
         )
 
-        # View audit logs
-        logs_resp = await authenticated_client.view_audit_logs(page_size=10)
-        logs_data = assert_success(logs_resp)
+        unknown_action_page = assert_success(
+            await authenticated_client.view_audit_logs(
+                filters=["unknown_audit_action_for_test"]
+            )
+        )
+        assert unknown_action_page["items"] == []
+        assert unknown_action_page["has_more"] is False
+        assert unknown_action_page["next_cursor"] is None
 
-        assert "items" in logs_data
-        assert isinstance(logs_data["items"], list)
+    @pytest.mark.asyncio
+    async def test_audit_log_cursor_is_bound_to_action_filters(
+        self, authenticated_client: CFMSTestClient
+    ):
+        assert_success(await authenticated_client.diagnostics())
+        assert_success(await authenticated_client.diagnostics())
 
-        if len(logs_data["items"]) > 0:
-            first_log = logs_data["items"][0]
-            assert "action" in first_log
-            assert "username" in first_log
-            assert "logged_time" in first_log
+        first_page = assert_success(
+            await authenticated_client.view_audit_logs(
+                page_size=1,
+                filters=["diagnostics", "create_directory"],
+            )
+        )
+        assert first_page["next_cursor"] is not None
+
+        reordered_filter_page = assert_success(
+            await authenticated_client.view_audit_logs(
+                page_size=1,
+                cursor=first_page["next_cursor"],
+                filters=["create_directory", "diagnostics"],
+            )
+        )
+        assert len(reordered_filter_page["items"]) == 1
+
+        changed_filter_response = await authenticated_client.view_audit_logs(
+            page_size=1,
+            cursor=first_page["next_cursor"],
+            filters=["diagnostics"],
+        )
+        assert_error(changed_filter_response, 400)
+
+    @pytest.mark.asyncio
+    async def test_audit_logs_require_dedicated_permission(
+        self, low_privilege_client: CFMSTestClient
+    ):
+        response = await low_privilege_client.view_audit_logs(filters=["diagnostics"])
+        assert_error(response, 403)

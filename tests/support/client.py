@@ -1575,7 +1575,11 @@ class CFMSTestClient:
         cursor: str | None = None,
         filters: list[str] | None = None,
     ) -> dict[str, Any]:
-        """View system audit logs."""
+        """View system audit logs, optionally filtered by exact action values.
+
+        Values in ``filters`` are combined with OR. Omitting the argument or
+        passing an empty list returns entries for every action.
+        """
         data: dict[str, Any] = {}
         if page_size is not None:
             data["page_size"] = page_size
