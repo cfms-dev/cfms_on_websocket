@@ -7,6 +7,17 @@ This workflow runs the pytest test suite automatically when:
 - A pull request is opened or updated
 - A release needs tests for a commit without an existing test run
 
+Pushes and pull requests do not start this workflow when every changed file is
+Markdown, is under `docs/`, `changelog.d/`, `.codex/`, or `.vscode/`, or is the
+root `.gitignore`. A change to any other file starts the full workflow, including
+when documentation and source changes are mixed. Calls from `release.yml` are
+never path-filtered.
+
+Do not make this path-filtered workflow a required status check: GitHub leaves a
+required check pending when its workflow is skipped by path filtering. If a
+required test check is introduced, replace the event-level filter with a
+lightweight required job and conditionally skip only the expensive test jobs.
+
 ### What it does:
 1. Sets up a Python 3.14 environment
 2. Installs project dependencies and test requirements

@@ -6,8 +6,22 @@ permissions:
 on:
   push:
     branches: [ "**" ]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "changelog.d/**"
+      - ".codex/**"
+      - ".vscode/**"
+      - ".gitignore"
   pull_request:
     branches: [ "**" ]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "changelog.d/**"
+      - ".codex/**"
+      - ".vscode/**"
+      - ".gitignore"
   workflow_call:
 
 jobs:
