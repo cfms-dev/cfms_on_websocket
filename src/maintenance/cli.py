@@ -90,7 +90,7 @@ database_app = typer.Typer(
     no_args_is_help=True,
 )
 deployment_app = typer.Typer(
-    help="Upgrade, downgrade, and inspect packaged CFMS deployments.",
+    help="Upgrade, downgrade, inspect, and prune packaged CFMS deployments.",
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
@@ -486,17 +486,39 @@ def _print_deployment_result(result: operations.DeploymentResult) -> None:
         table.add_row("Package SHA-256", result.package_sha256)
     console.print(table)
     if result.versions:
-        versions = Table(title="Stored Releases")
-        versions.add_column("Version", style="cyan")
-        versions.add_column("Release ID", style="green")
-        versions.add_column("Active")
-        for release in result.versions:
-            versions.add_row(
-                release.version,
-                release.release_id,
-                "Yes" if release.active else "No",
-            )
-        console.print(versions)
+        _print_deployment_versions("Stored Releases", result.versions)
+
+
+def _print_deployment_versions(
+    title: str,
+    versions: tuple[operations.DeploymentVersion, ...],
+) -> None:
+    table = Table(title=title)
+    table.add_column("Version", style="cyan")
+    table.add_column("Release ID", style="green")
+    table.add_column("Active")
+    for release in versions:
+        table.add_row(
+            release.version,
+            release.release_id,
+            "Yes" if release.active else "No",
+        )
+    console.print(table)
+
+
+def _print_deployment_prune_result(
+    result: operations.DeploymentPruneResult,
+) -> None:
+    table = Table(title="CFMS Deployment Prune", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Root", str(result.deployment_root))
+    table.add_row("Active version", result.active_version)
+    table.add_row("Active release ID", result.active_release_id)
+    table.add_row("Removed releases", str(len(result.removed_versions)))
+    console.print(table)
+    if result.removed_versions:
+        _print_deployment_versions("Pruned Releases", result.removed_versions)
 
 
 def _deployment_digest_options(
@@ -592,6 +614,48 @@ def deployment_status(
             )
         )
     )
+
+
+@deployment_app.command("prune")
+def prune_deployment(
+    deployment_root: Annotated[
+        Path | None,
+        typer.Option("--deployment-root", help="Flat release project directory."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show inactive releases without deleting them."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip confirmation before permanent deletion."),
+    ] = False,
+) -> None:
+    """Permanently remove every inactive stored release."""
+    resolved_root = _resolve_deployment_root(deployment_root)
+    inspection = _run(lambda: operations.inspect_deployment(resolved_root))
+    candidates = tuple(version for version in inspection.versions if not version.active)
+    if candidates:
+        _print_deployment_versions("Stored Releases to Prune", candidates)
+    else:
+        _print_success("No inactive stored releases are eligible for pruning.")
+        return
+    if dry_run:
+        return
+
+    _confirm_or_abort(
+        "The server must be stopped. Permanently delete these stored releases, "
+        "including their code, configuration, and third-party extension snapshots?",
+        yes,
+    )
+    result = _run(
+        lambda: operations.prune_deployment(
+            resolved_root,
+            expected_release_ids=tuple(version.release_id for version in candidates),
+        ),
+        status="Pruning inactive stored releases...",
+    )
+    _print_deployment_prune_result(result)
 
 
 @deployment_app.command("downgrade")

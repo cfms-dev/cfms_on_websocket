@@ -137,6 +137,20 @@ uv run --project /srv/cfms --no-dev maintain deployment downgrade \
   <release-id-or-prefix> --yes
 ```
 
+To reclaim space after confirming that older rollback points are no longer needed,
+preview and then remove every inactive stored release:
+
+```bash
+uv run --project /srv/cfms --no-dev maintain deployment prune --dry-run
+uv run --project /srv/cfms --no-dev maintain deployment prune --yes
+```
+
+Pruning preserves the active release and its stored copy, but permanently removes
+the selected releases' code, configuration, and third-party extension snapshots.
+Those releases can no longer be selected by `deployment downgrade`. Stop the server
+before pruning; the command does not change the database, `.venv`, deployment
+settings, dependency locks, or persistent content.
+
 If a migration fails, normal startup is blocked by the transaction marker. Restore
 the external database checkpoint, then finish recovery explicitly. `resume` checks
 the actual database revision and reconciles the active files only when it matches

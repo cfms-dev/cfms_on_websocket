@@ -78,6 +78,14 @@ class DeploymentResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DeploymentPruneResult:
+    deployment_root: Path
+    active_version: str
+    active_release_id: str
+    removed_versions: tuple[DeploymentVersion, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _Release:
     root: Path
     manifest: dict[str, Any]
@@ -509,6 +517,58 @@ def _verified_stored_release(root: Path) -> _Release:
                 f"Unable to remove generated Python bytecode cache {cache_path}: {exc}"
             ) from exc
     return _release_from_tree(root, exact=True)
+
+
+def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
+    versions_root = _maintenance_root(project_root) / "versions"
+    if versions_root.is_symlink() or versions_root.is_junction():
+        raise MaintenanceOperationError(
+            f"Stored release root is not a regular directory: {versions_root}"
+        )
+    if not versions_root.exists():
+        return ()
+    if not versions_root.is_dir():
+        raise MaintenanceOperationError(
+            f"Stored release root is not a regular directory: {versions_root}"
+        )
+    try:
+        resolved_versions_root = versions_root.resolve(strict=True)
+        resolved_versions_root.relative_to(project_root)
+    except (OSError, ValueError) as exc:
+        raise MaintenanceOperationError(
+            f"Stored release root escapes the deployment: {versions_root}"
+        ) from exc
+    try:
+        stored_paths = sorted(versions_root.iterdir())
+    except OSError as exc:
+        raise MaintenanceOperationError(
+            f"Unable to inspect stored release root {versions_root}: {exc}"
+        ) from exc
+
+    releases = []
+    for path in stored_paths:
+        if _SHA256_PATTERN(path.name) is None:
+            continue
+        if not path.is_dir() or path.is_symlink() or path.is_junction():
+            raise MaintenanceOperationError(
+                f"Stored release path is not a regular directory: {path}"
+            )
+        try:
+            if path.resolve(strict=True).parent != resolved_versions_root:
+                raise MaintenanceOperationError(
+                    f"Stored release path escapes its version root: {path}"
+                )
+        except OSError as exc:
+            raise MaintenanceOperationError(
+                f"Unable to resolve stored release path {path}: {exc}"
+            ) from exc
+        release = _verified_stored_release(path / "release")
+        if path.name != release.release_id:
+            raise MaintenanceOperationError(
+                f"Stored release does not match its directory: {path}"
+            )
+        releases.append((path, release))
+    return tuple(releases)
 
 
 def _snapshot_release(project_root: Path, release: _Release) -> Path:
@@ -1181,23 +1241,81 @@ def resume_deployment(
         lock.release()
 
 
+def prune_deployment(
+    deployment_root: str | Path,
+    *,
+    expected_release_ids: tuple[str, ...],
+) -> DeploymentPruneResult:
+    project_root = _project_root(deployment_root)
+    normalized_ids = tuple(
+        sorted(release_id.lower() for release_id in expected_release_ids)
+    )
+    if any(
+        _SHA256_PATTERN(release_id) is None for release_id in expected_release_ids
+    ) or len(normalized_ids) != len(set(normalized_ids)):
+        raise MaintenanceOperationError(
+            "Expected releases must be unique, full SHA-256 release IDs"
+        )
+    try:
+        lock = server_runtime_lock(project_root / "src").acquire()
+    except RuntimeLockError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+    try:
+        transaction_path = _transaction_path(project_root)
+        if transaction_path.exists():
+            raise MaintenanceOperationError(
+                "Resume the unfinished deployment transaction first: "
+                f"{transaction_path}"
+            )
+        active = _active_release(project_root)
+        if active.release_id in normalized_ids:
+            raise MaintenanceOperationError("The active release cannot be pruned")
+        stored_releases = _stored_releases(project_root)
+        candidates = tuple(
+            (path, release)
+            for path, release in stored_releases
+            if release.release_id != active.release_id
+        )
+        actual_ids = tuple(sorted(release.release_id for _, release in candidates))
+        if actual_ids != normalized_ids:
+            raise MaintenanceOperationError(
+                "Stored releases changed after the prune preview; inspect and retry"
+            )
+
+        removed = []
+        for path, release in candidates:
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                raise MaintenanceOperationError(
+                    f"Unable to remove stored release {release.release_id} after "
+                    f"pruning {len(removed)} release(s): {exc}"
+                ) from exc
+            removed.append(
+                DeploymentVersion(release.release_id, release.version, False)
+            )
+        return DeploymentPruneResult(
+            project_root,
+            active.version,
+            active.release_id,
+            tuple(removed),
+        )
+    finally:
+        lock.release()
+
+
 def inspect_deployment(deployment_root: str | Path) -> DeploymentResult:
     project_root = _project_root(deployment_root)
     active = _active_release(project_root)
     versions = []
-    versions_root = _maintenance_root(project_root) / "versions"
-    if versions_root.is_dir():
-        for path in sorted(versions_root.iterdir()):
-            if not path.is_dir() or _SHA256_PATTERN(path.name) is None:
-                continue
-            release = _verified_stored_release(path / "release")
-            versions.append(
-                DeploymentVersion(
-                    release.release_id,
-                    release.version,
-                    release.release_id == active.release_id,
-                )
+    for _, release in _stored_releases(project_root):
+        versions.append(
+            DeploymentVersion(
+                release.release_id,
+                release.version,
+                release.release_id == active.release_id,
             )
+        )
     if not any(version.active for version in versions):
         versions.append(DeploymentVersion(active.release_id, active.version, True))
     return DeploymentResult(

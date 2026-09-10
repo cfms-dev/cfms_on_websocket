@@ -421,11 +421,13 @@ def test_command_rejects_unrelated_workdir(tmp_path):
 def test_deployment_commands_remove_redundant_confirmation_options(tmp_path):
     upgrade_help = _run_maintain(tmp_path, ["deployment", "upgrade", "--help"])
     downgrade_help = _run_maintain(tmp_path, ["deployment", "downgrade", "--help"])
+    prune_help = _run_maintain(tmp_path, ["deployment", "prune", "--help"])
     resume_help = _run_maintain(tmp_path, ["deployment", "resume", "--help"])
     upgrade_output = _normalize_cli_output(upgrade_help.stdout + upgrade_help.stderr)
     downgrade_output = _normalize_cli_output(
         downgrade_help.stdout + downgrade_help.stderr
     )
+    prune_output = _normalize_cli_output(prune_help.stdout + prune_help.stderr)
     resume_output = _normalize_cli_output(resume_help.stdout + resume_help.stderr)
 
     assert "--backup-confirmed" not in upgrade_output
@@ -435,6 +437,8 @@ def test_deployment_commands_remove_redundant_confirmation_options(tmp_path):
     assert "--yes" in downgrade_output
     assert "--sha256" in upgrade_output
     assert "--checksums" in upgrade_output
+    assert "--dry-run" in prune_output
+    assert "--yes" in prune_output
 
 
 def test_deployment_upgrade_warns_only_without_external_digest(tmp_path):

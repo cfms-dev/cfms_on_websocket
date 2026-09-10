@@ -29,10 +29,12 @@ from maintenance.operations.database import (
     upgrade_database,
 )
 from maintenance.operations.deployment import (
+    DeploymentPruneResult,
     DeploymentResult,
     DeploymentVersion,
     downgrade_deployment,
     inspect_deployment,
+    prune_deployment,
     resume_deployment,
     upgrade_deployment,
 )
@@ -72,6 +74,7 @@ __all__ = [
     "ConfigSyncResult",
     "ConfigTemplateInspection",
     "DatabaseMigrationResult",
+    "DeploymentPruneResult",
     "DeploymentResult",
     "DeploymentVersion",
     "ExtensionCatalogInspection",
@@ -100,6 +103,7 @@ __all__ = [
     "install_extension",
     "downgrade_deployment",
     "migrate_database",
+    "prune_deployment",
     "upgrade_database",
     "purge_audit_entries",
     "purge_expired_permissions",
