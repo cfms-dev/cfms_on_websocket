@@ -185,23 +185,31 @@ def test_runtime_state_initialization_is_atomic_on_shared_database(
         database.dispose()
 
 
-def _schedule(factory, next_run_at=100.0):
+def _schedule(
+    factory,
+    next_run_at=100.0,
+    *,
+    task_name="test.record",
+    payload=None,
+    system_managed=False,
+):
     with factory() as session, session.begin():
         session.add(
             Schedule(
                 id="schedule-1",
-                task_name="test.record",
+                task_name=task_name,
                 task_contract_version=1,
-                payload={"value": 7},
+                payload={"value": 7} if payload is None else payload,
                 trigger_type="interval",
                 trigger_data={
                     "seconds": 60,
                     "start_at": "1970-01-01T00:01:40+00:00",
                 },
                 timezone="UTC",
+                system_managed=system_managed,
                 next_run_at=next_run_at,
-                created_by="admin",
-                updated_by="admin",
+                created_by=None if system_managed else "admin",
+                updated_by=None if system_managed else "admin",
             )
         )
 
@@ -240,7 +248,10 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
                 payload_model=_Payload,
                 execute=lambda context, payload: (
                     calls.append((context.execution_id, payload.value))
-                    or ScheduledTaskResult(data={"recorded": payload.value})
+                    or ScheduledTaskResult(
+                        data={"recorded": payload.value},
+                        audit_success=False,
+                    )
                 ),
                 required_permission=Permissions.MANAGE_SYSTEM,
                 max_attempts=1,
@@ -266,6 +277,118 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
         assert calls == [(execution.id, 7)]
         assert audits[0][0:2] == ("scheduled_task_execute", 0)
         assert audits[0][2]["data"]["execution_id"] == execution.id
+
+
+@pytest.mark.parametrize(
+    ("task_result", "expected_result", "expected_audit_count"),
+    [
+        (None, {}, 1),
+        (
+            ScheduledTaskResult(data={"deleted": 0}, audit_success=False),
+            {"deleted": 0},
+            0,
+        ),
+    ],
+)
+def test_system_execution_can_suppress_only_its_success_audit(
+    monkeypatch,
+    task_result,
+    expected_result,
+    expected_audit_count,
+):
+    factory = _session_factory(monkeypatch)
+    _schedule(
+        factory,
+        task_name="test.system_cleanup",
+        payload={},
+        system_managed=True,
+    )
+    policy = SchedulingPolicy(misfire_grace_seconds=300)
+    audits = []
+    monkeypatch.setattr(
+        scheduling_runner,
+        "log_audit",
+        lambda action, result, **values: audits.append((action, result, values)),
+    )
+    registry = ScheduledTaskRegistry(
+        [
+            ScheduledTaskRegistration(
+                name="test.system_cleanup",
+                contract_version=1,
+                payload_model=_EmptyPayload,
+                execute=lambda _context, _payload: task_result,
+                max_attempts=1,
+                user_schedulable=False,
+            )
+        ]
+    )
+
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    assert scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0) == 1
+    claim = scheduling_claims.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+
+    monkeypatch.setattr(scheduling_outcomes, "database_now", lambda _session: 100.0)
+    scheduling_runner.run_claimed_execution(claim, generation, registry, policy)
+
+    with factory() as session:
+        execution = session.scalar(select(ScheduleExecution))
+        assert execution.state == "succeeded"
+        assert execution.result == expected_result
+    assert len(audits) == expected_audit_count
+
+
+def test_system_execution_failure_is_always_audited(monkeypatch):
+    factory = _session_factory(monkeypatch)
+    _schedule(
+        factory,
+        task_name="test.system_cleanup",
+        payload={},
+        system_managed=True,
+    )
+    policy = SchedulingPolicy(misfire_grace_seconds=300)
+    audits = []
+
+    def fail(_context, _payload):
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(
+        scheduling_runner,
+        "log_audit",
+        lambda action, result, **values: audits.append((action, result, values)),
+    )
+    monkeypatch.setattr(
+        scheduling_runner,
+        "logger",
+        SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+    )
+    registry = ScheduledTaskRegistry(
+        [
+            ScheduledTaskRegistration(
+                name="test.system_cleanup",
+                contract_version=1,
+                payload_model=_EmptyPayload,
+                execute=fail,
+                max_attempts=1,
+                user_schedulable=False,
+            )
+        ]
+    )
+
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_claims.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+
+    monkeypatch.setattr(scheduling_outcomes, "database_now", lambda _session: 100.0)
+    scheduling_runner.run_claimed_execution(claim, generation, registry, policy)
+
+    with factory() as session:
+        execution = session.scalar(select(ScheduleExecution))
+        assert execution.state == "failed"
+        assert execution.error == "RuntimeError"
+    assert audits[0][0:2] == ("scheduled_task_execute", 500)
+    assert audits[0][2]["data"]["execution_id"] == claim.id
 
 
 def test_execution_logs_when_lease_refresh_is_lost(monkeypatch):

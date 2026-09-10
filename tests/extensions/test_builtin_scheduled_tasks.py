@@ -37,6 +37,17 @@ def test_permission_cleanup_is_registered_as_a_system_interval_task(monkeypatch)
     assert definition.trigger_type == "interval"
     assert definition.trigger_data == {"seconds": 180}
     assert result.data == {"user_entries": 2, "group_entries": 3}
+    assert result.audit_success is True
+
+    monkeypatch.setattr(
+        permission_cleanup,
+        "cleanup_expired_permission_entries",
+        lambda _policy: PermissionEntryCounts(),
+    )
+    assert (
+        registration.execute(object(), registration.payload_model()).audit_success
+        is False
+    )
 
 
 def test_builtin_system_task_intervals_follow_their_policies(monkeypatch):
@@ -146,11 +157,11 @@ def test_builtin_system_tasks_return_cleanup_counts(monkeypatch):
     }
 
     results = {
-        name: registration.execute(object(), registration.payload_model()).data
+        name: registration.execute(object(), registration.payload_model())
         for name, registration in registrations.items()
     }
 
-    assert results == {
+    assert {name: result.data for name, result in results.items()} == {
         "builtin.upload_cleanup": {
             "matched_tasks": 256,
             "expired_tasks": 2,
@@ -166,6 +177,65 @@ def test_builtin_system_tasks_return_cleanup_counts(monkeypatch):
         "builtin.creation_risk_cleanup": {"ip_accounts": 9, "buckets": 10},
         "builtin.download_risk_cleanup": {"ip_accounts": 11, "buckets": 12},
     }
+    assert all(result.audit_success for result in results.values())
+
+
+def test_builtin_system_tasks_suppress_empty_cleanup_audits(monkeypatch):
+    from include.extensions.builtin import scheduled_tasks
+
+    session = object()
+
+    class SessionFactory:
+        def __call__(self):
+            return nullcontext(session)
+
+        def begin(self):
+            return nullcontext(session)
+
+    monkeypatch.setattr(scheduled_tasks, "Session", SessionFactory())
+    monkeypatch.setattr(scheduled_tasks, "database_now", lambda _session: 123.0)
+    monkeypatch.setattr(
+        scheduled_tasks,
+        "reclaim_abandoned_uploads",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            matched_tasks=0,
+            expired_tasks=0,
+            removed_revisions=0,
+            removed_documents=0,
+            storage_cleanup_failures=0,
+        ),
+    )
+    monkeypatch.setattr(
+        scheduled_tasks.AuthThrottlePolicy,
+        "from_config",
+        classmethod(lambda _cls: object()),
+    )
+    monkeypatch.setattr(
+        scheduled_tasks,
+        "purge_expired_auth_throttle_records",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            account_records=0,
+            login_records=0,
+            traffic_records=0,
+        ),
+    )
+    monkeypatch.setattr(
+        scheduled_tasks,
+        "cleanup_document_creation_risk_state",
+        lambda *_args, **_kwargs: SimpleNamespace(ip_accounts=0, buckets=0),
+    )
+    monkeypatch.setattr(
+        scheduled_tasks,
+        "cleanup_document_download_risk_state",
+        lambda *_args, **_kwargs: SimpleNamespace(ip_accounts=0, buckets=0),
+    )
+
+    results = [
+        registration.execute(object(), registration.payload_model())
+        for registration in scheduled_tasks.BUILTIN_SCHEDULED_TASKS
+    ]
+
+    assert all(result.audit_success is False for result in results)
 
 
 def test_permission_cleanup_uses_database_clock(monkeypatch):
@@ -223,6 +293,13 @@ def test_core_schedule_history_cleanup_is_always_registered(monkeypatch):
     assert definition.id == registration.name
     assert definition.trigger_data == {"seconds": 3600}
     assert result.data == {"deleted_executions": 13}
+    assert result.audit_success is True
+
+    monkeypatch.setattr(tasks, "purge_execution_history", lambda _policy: 0)
+    assert (
+        registration.execute(object(), registration.payload_model()).audit_success
+        is False
+    )
 
 
 def test_core_lockdown_expiry_schedule_tracks_active_activation(monkeypatch):

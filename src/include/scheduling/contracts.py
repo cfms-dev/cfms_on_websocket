@@ -59,10 +59,15 @@ class ScheduledTaskContext:
 
 @dataclass(frozen=True, slots=True)
 class ScheduledTaskResult:
-    """Optional JSON-serializable result and audit target returned by a task."""
+    """Optional JSON-serializable result and success-audit decision.
+
+    ``audit_success=False`` is honored only for system task registrations. User-
+    schedulable tasks and all failed attempts remain auditable.
+    """
 
     target: str | None = None
     data: dict[str, Any] = field(default_factory=dict)
+    audit_success: bool = True
 
 
 type ScheduledTaskCallable[PayloadT: BaseModel] = Callable[

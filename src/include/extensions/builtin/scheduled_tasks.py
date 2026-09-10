@@ -77,7 +77,16 @@ def _run_upload_cleanup(
             "removed_revisions": result.removed_revisions,
             "removed_documents": result.removed_documents,
             "storage_cleanup_failures": result.storage_cleanup_failures,
-        }
+        },
+        audit_success=any(
+            (
+                result.matched_tasks,
+                result.expired_tasks,
+                result.removed_revisions,
+                result.removed_documents,
+                result.storage_cleanup_failures,
+            )
+        ),
     )
 
 
@@ -98,7 +107,10 @@ def _run_auth_throttle_cleanup(
             "account_records": result.account_records,
             "login_records": result.login_records,
             "traffic_records": result.traffic_records,
-        }
+        },
+        audit_success=any(
+            (result.account_records, result.login_records, result.traffic_records)
+        ),
     )
 
 
@@ -114,7 +126,8 @@ def _run_creation_risk_cleanup(
             now=database_now(session),
         )
     return ScheduledTaskResult(
-        data={"ip_accounts": result.ip_accounts, "buckets": result.buckets}
+        data={"ip_accounts": result.ip_accounts, "buckets": result.buckets},
+        audit_success=bool(result.ip_accounts or result.buckets),
     )
 
 
@@ -130,7 +143,8 @@ def _run_download_risk_cleanup(
             now=database_now(session),
         )
     return ScheduledTaskResult(
-        data={"ip_accounts": result.ip_accounts, "buckets": result.buckets}
+        data={"ip_accounts": result.ip_accounts, "buckets": result.buckets},
+        audit_success=bool(result.ip_accounts or result.buckets),
     )
 
 

@@ -224,6 +224,12 @@ state-dependent precondition when it executes. Server features that need periodi
 or durable state-dependent execution should register a system schedule instead of
 implementing an independent polling worker.
 
+System tasks may return `ScheduledTaskResult(audit_success=False)` to omit the
+successful audit entry for an execution with no meaningful work. The execution
+result remains durable and any failed attempt is still audited. The runtime ignores
+this setting for user-schedulable tasks, whose successful executions are always
+audited.
+
 When request data fails validation, the server returns `400` with every safe
 Pydantic error under `data.errors`:
 

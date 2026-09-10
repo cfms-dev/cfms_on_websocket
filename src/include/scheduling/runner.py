@@ -95,7 +95,9 @@ def run_claimed_execution(
         # mutable result objects before storing or auditing them.
         result_data = orjson.loads(orjson.dumps(result_data))
         completed = complete_execution(claim, generation, result_data)
-        if completed:
+        if completed and (
+            registration.user_schedulable or result is None or result.audit_success
+        ):
             try:
                 log_audit(
                     "scheduled_task_execute",

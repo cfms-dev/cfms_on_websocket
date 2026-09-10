@@ -54,7 +54,10 @@ def _run_schedule_history_cleanup(
     """Delete one policy-bounded batch of expired terminal executions."""
 
     deleted = purge_execution_history(SchedulingPolicy.from_config())
-    return ScheduledTaskResult(data={"deleted_executions": deleted})
+    return ScheduledTaskResult(
+        data={"deleted_executions": deleted},
+        audit_success=deleted > 0,
+    )
 
 
 def _lockdown_expiry_schedule() -> SystemScheduleDefinition | None:

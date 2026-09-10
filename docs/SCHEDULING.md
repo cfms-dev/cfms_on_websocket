@@ -168,6 +168,13 @@ the database records success, so every task must make repeated use of the same
 user who created the schedule. Authorization is checked when a schedule is created,
 updated, or re-enabled.
 
+`ScheduledTaskResult.audit_success` defaults to `true`. A system task registered
+with `user_schedulable=false` may set it to `false` for an execution that should not
+produce a successful `scheduled_task_execute` audit entry. This does not suppress
+the durable execution result, and failures are always audited. User-schedulable
+tasks are always audited regardless of the returned value. Built-in cleanup tasks
+use this facility only when they complete without finding any work.
+
 ## Trigger and execution semantics
 
 - `cron` accepts a standard five-field crontab expression and an IANA timezone.
@@ -218,8 +225,9 @@ Configurations that still list `scheduling` in `extensions.enabled` are rejected
 remove that identifier before starting this version. Clients must require protocol
 version 27 before relying on unconditional availability. The actions expose only
 user-managed schedules and task types. System-managed maintenance remains
-observable through execution logs and audit records rather than through mutable
-schedule resources.
+observable through execution history, failure audits, and successful audit records
+when the task reports meaningful work, rather than through mutable schedule
+resources.
 
 Reading requires `view_schedules`. Mutations require `manage_schedules`; creation and
 updates also require the permission declared by the selected task type. Updates and

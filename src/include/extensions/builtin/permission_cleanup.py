@@ -66,7 +66,8 @@ def run_scheduled_permission_cleanup(
         data={
             "user_entries": result.user_entries,
             "group_entries": result.group_entries,
-        }
+        },
+        audit_success=result.total > 0,
     )
 
 
