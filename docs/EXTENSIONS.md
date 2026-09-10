@@ -273,7 +273,7 @@ The optional `http_api` extension runs a single-worker FastAPI application on a
 separate HTTPS port in the CFMS process. Install its dependencies and enable it:
 
 ```bash
-uv sync --extra ext_http_api
+uv sync --extra ext-http-api
 ```
 
 ```toml
@@ -469,7 +469,7 @@ OIDC activation is now controlled exclusively by the `oidc_sso` identifier. Remo
 the old `sso.oidc.enabled` key, install its optional dependencies, and enable it:
 
 ```bash
-uv sync --extra ext_oidc_sso
+uv sync --extra ext-oidc-sso
 ```
 
 ```toml

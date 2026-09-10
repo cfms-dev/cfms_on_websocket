@@ -42,11 +42,11 @@ mysql = [
 postgresql = [
     "psycopg2-binary>=2.9.12",
 ]
-ext_oidc_sso = [
+ext-oidc-sso = [
     "authlib>=1.7.2",
     "requests>=2.34.2",
 ]
-ext_http_api = [
+ext-http-api = [
     "fastapi>=0.141.1",
     "uvicorn>=0.52.4",
 ]

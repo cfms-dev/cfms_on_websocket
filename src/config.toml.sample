@@ -281,7 +281,7 @@ distinct_ip_threshold = 10
 reason = "Automatic security lockdown: suspected credential-guessing attack detected."
 
 # Optional HTTPS API framework for extension-owned APIRouter registrations.
-# Install with `uv sync --extra ext_http_api` and add "http_api" to enabled.
+# Install with `uv sync --extra ext-http-api` and add "http_api" to enabled.
 # All settings in this table require a server restart to take effect.
 [extensions.http_api]
 host = "localhost"
@@ -299,7 +299,7 @@ cors_allowed_origins = []  # Browser origins only: scheme://host[:port], without
 docs_enabled = false
 
 # Optional OpenID Connect single sign-on.
-# Install with `uv sync --extra ext_oidc_sso` and add "oidc_sso" to enabled.
+# Install with `uv sync --extra ext-oidc-sso` and add "oidc_sso" to enabled.
 [extensions.oidc_sso]
 # Issuer URL of the OpenID Provider, without a trailing slash.
 issuer = ""
