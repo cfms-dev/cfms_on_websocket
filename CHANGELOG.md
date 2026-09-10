@@ -9,9 +9,39 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.8.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.9.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.9.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.9.0) - 2026-09-10
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.8.0...v0.9.0)</small>
+
+### Security
+
+- Bound HTTP request-header and request-body reads so slow clients cannot hold every concurrency slot indefinitely.
+- Enforce subnet admission and request-body limits before handling HTTP CORS preflight requests while preserving CORS headers on boundary errors.
+
+### Added
+
+- Added an optional `scheduled_lockdown` task for recurring or one-time, fixed-duration lockdown windows. The scheduling core now supports state-dependent system schedules whose factories can retire their persisted schedule by returning `None`.
+
+### Changed
+
+- Add document revision and current-revision indexes to keep listing and reference lookups efficient as databases grow.
+- Move OIDC SSO settings from `[sso.oidc]` to the extension-owned `[extensions.oidc_sso]` table, with automatic migration through configuration template synchronization.
+- Skip the test workflow for changes limited to documentation and local collaboration configuration while retaining full tests for source, dependency, and mixed changes.
+- The WebSocket load harness now supports safe remote credentials, verified TLS, repeatable mixed workloads, fixed arrival-rate scheduling with dropped-iteration reporting, and per-action metrics.
+- The six scheduled-task management actions now belong to the server core and are always available. The obsolete `scheduling` extension and capability flag were removed, old configurations that enable it are rejected, and the protocol version is now 27.
+
+### Fixed
+
+- Emit each generated changelog entry as one physical Markdown line so GitHub uses the full available page width instead of preserving narrow fixed-width wrapping.
+- Keep the HTTP API shutdown timeout fixed to the policy snapshot used to start the active server.
+- Make managed load tests disable verbose SQL logging by default and update the query-plan diagnostics for the current node schema.
+- Reject equivalent parameterized HTTP routes and static routes made unreachable by an earlier dynamic route.
+- Validate and normalize configured HTTP API CORS origins to the browser header form used for exact matching.
+
 
 ## [v0.8.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.8.0) - 2026-09-07
 
