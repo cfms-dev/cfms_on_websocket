@@ -9,9 +9,18 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.9.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.9.1...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.9.1](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.9.1) - 2026-09-10
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.9.0...v0.9.1)</small>
+
+### Changed
+
+- Make external release checksums optional, remove redundant deployment confirmation flags, reject incompatible database revisions before activating new files, and recover stored releases polluted by generated Python bytecode caches.
+
 
 ## [v0.9.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.9.0) - 2026-09-10
 
