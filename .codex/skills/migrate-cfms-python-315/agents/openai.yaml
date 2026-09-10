@@ -1,0 +1,4 @@
+interface:
+  display_name: "CFMS Python 3.15 Migration"
+  short_description: "Prepare and execute the CFMS Python 3.15 cutover"
+  default_prompt: "Use $migrate-cfms-python-315 to assess and perform the CFMS migration to Python 3.15."

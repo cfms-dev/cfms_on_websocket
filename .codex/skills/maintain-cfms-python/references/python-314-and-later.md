@@ -15,8 +15,8 @@
 The live repository is authoritative. At the time this reference was written:
 
 - `requires-python = ">=3.14"` and `.python-version` is `3.14`.
-- The workspace interpreter is CPython 3.14.6.
-- Python 3.15.0b4 is a prerelease; final 3.15.0 is scheduled for October 2026.
+- The workspace interpreter observed on 2026-09-10 was CPython 3.14.7.
+- Python 3.15.0rc2 is the final planned release candidate; final 3.15.0 is scheduled for 2026-10-01.
 
 Write production syntax and APIs for Python 3.14 until the declared floor is intentionally raised. A newer local interpreter is not permission to use its features. When considering a floor change, check every dependency, deployment platform, CI job, operator workflow, and migration path first.
 
@@ -122,9 +122,9 @@ Do not blanket-upgrade adjacent code. Existing top-level compression imports, fo
 
 ## Python 3.15 preview boundary
 
-As of 2026-07-28, Python 3.15 is at beta 4 and its docs are explicitly draft. Lazy imports, `frozendict`, the `sentinel` built-in, comprehension unpacking, TypedDict extra items, UTF-8 default encoding, and other 3.15 features are useful for future planning only. Do not use them in production while the floor is 3.14.
+As of 2026-09-10, Python 3.15.0rc2 is the final planned release candidate; final 3.15.0 is scheduled for 2026-10-01. The ABI is frozen, but the release remains a preview that Python does not recommend for production. Lazy imports, `frozendict`, the `sentinel` built-in, comprehension unpacking, TypedDict extra items, UTF-8 default encoding, and other 3.15 features remain planning-only while this repository's floor is 3.14.
 
-Use 3.15 prereleases only as a separate compatibility lane to discover warnings and removals. Do not regenerate the lockfile or rewrite code under 3.15 unless the task explicitly includes forward compatibility and dependency support is verified.
+Use 3.15 prereleases only as a separate compatibility lane to discover warnings and removals. Do not regenerate the lockfile or rewrite production code under 3.15 unless the task explicitly includes forward compatibility. For readiness work or a deliberate floor change that drops 3.14, use the repository's `migrate-cfms-python-315` skill and verify current dependency/wheel support before acting.
 
 ## Primary sources
 
