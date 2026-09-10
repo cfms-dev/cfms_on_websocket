@@ -200,8 +200,11 @@ def apply_access_rules(
     """
     set_access_rules(target, new_access_rules, inherit_parent)
     session = object_session(target)
-    if session is not None:
-        session.flush()
+
+    if session is None:
+        raise RuntimeError("target must be attached to a session")
+
+    session.flush()
 
     for access_type in new_access_rules:
         if not check_access_requirements(session, user, target, access_type):

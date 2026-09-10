@@ -41,6 +41,8 @@ def check_access_requirements(
     if recursive is None:
         recursive = global_config["access"]["enable_access_recursive_check"]
 
+    assert recursive is not None, "Recursive check must be explicitly set or configured"
+
     now = time.time()
     if isinstance(target, Document):
         folders, oae_by_target = load_document_access_context(

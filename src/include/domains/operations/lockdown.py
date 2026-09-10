@@ -1,10 +1,10 @@
 __all__ = [
     "LockdownReason",
-    "ScheduledLockdownActivation",
     "LockdownState",
     "LockdownStateManager",
     "LockdownTransition",
     "LockdownTransitionOutcome",
+    "ScheduledLockdownActivation",
     "apply_lockdown",
     "apply_scheduled_lockdown",
     "expire_scheduled_lockdown",

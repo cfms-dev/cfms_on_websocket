@@ -181,6 +181,40 @@ class TestDocumentOperations:
         assert_error(response, 400)
 
     @pytest.mark.asyncio
+    async def test_create_document_name_conflict_reports_visible_winner(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+    ):
+        title = f"Create Conflict {secrets.token_hex(4)}"
+        existing_document = await document_factory(title, upload_file=None)
+
+        response = await authenticated_client.create_document(title)
+
+        error = assert_error(response, 409)
+        assert error["data"]["duplicate_id"] == existing_document["document_id"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_access_rules_roll_back_document_creation(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+    ):
+        title = f"Invalid Access Rules {secrets.token_hex(4)}"
+
+        response = await authenticated_client.send_request(
+            "create_document",
+            {
+                "title": title,
+                "access_rules": {"read": None},
+            },
+        )
+
+        assert_error(response, 400)
+        created_document = await document_factory(title, upload_file=None)
+        assert created_document["title"] == title
+
+    @pytest.mark.asyncio
     async def test_create_multiple_documents(
         self, authenticated_client: CFMSTestClient, document_factory
     ):

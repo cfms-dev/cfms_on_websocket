@@ -429,6 +429,138 @@ class RequestGetDocumentHandler(RequestHandler):
         )
 
 
+def _create_document_in_transaction(
+    session: ORMSession,
+    username: str,
+    remote_address: str,
+    folder_id: str,
+    title: str,
+    access_rules: dict[str, Any],
+    inherit_parent: bool,
+) -> tuple[int, dict[str, Any], str, Result]:
+    result_data = {"title": title}
+
+    with risk_control_transaction(session):
+        user = User.get_existing(session, username)
+        if Permissions.CREATE_DOCUMENT not in user.all_permissions:
+            return (
+                403,
+                {},
+                smsg.PERMISSION_DENIED,
+                Result(
+                    code=403,
+                    target=folder_id,
+                    data=result_data,
+                    username=username,
+                ),
+            )
+
+        _folder, error_code, error_message = get_target_folder_and_check_write(
+            session,
+            user,
+            folder_id,
+            Permissions.SUPER_CREATE_DOCUMENT,
+        )
+        if error_code != 0:
+            return (
+                error_code,
+                {},
+                error_message,
+                Result(
+                    code=error_code,
+                    target=folder_id,
+                    data=result_data,
+                    username=username,
+                ),
+            )
+
+        limit_decision = check_document_creation_limits(
+            session,
+            user.username,
+            remote_address,
+            account_created_at=user.created_time,
+            bypass_rate_limit=(
+                Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT in user.all_permissions
+            ),
+        )
+        if not limit_decision.allowed:
+            response_data = {
+                "scope": limit_decision.scope,
+                "limit": limit_decision.limit,
+                "retry_after_seconds": limit_decision.retry_after_seconds,
+            }
+            return (
+                429,
+                response_data,
+                "Document creation limit exceeded. Please try again later.",
+                Result(
+                    code=429,
+                    target=folder_id,
+                    data={**result_data, **response_data},
+                    username=username,
+                ),
+            )
+
+        today = datetime.datetime.now(datetime.UTC).date()
+        new_file = File(
+            id=secrets.token_hex(32),
+            path=(f"content/files/{today.year}/{today.month}/{secrets.token_hex(32)}"),
+        )
+        new_document = Document(
+            id=secrets.token_hex(32),
+            title=title,
+            folder_id=folder_id,
+        )
+        new_document.metadata_record = DocumentMetadata(
+            creator_username=user.username,
+            last_modified_by_username=user.username,
+        )
+        new_revision = DocumentRevision(file_id=new_file.id)
+        new_document.revisions.append(new_revision)
+        session.add_all((new_file, new_document, new_revision))
+
+        with node_name_mutation(session, folder_id, title):
+            if not apply_access_rules(
+                new_document,
+                access_rules,
+                user,
+                inherit_parent,
+            ):
+                session.rollback()
+                return (
+                    403,
+                    {},
+                    smsg.ACCESS_DENIED,
+                    Result(
+                        code=403,
+                        target=folder_id,
+                        data=result_data,
+                        username=username,
+                    ),
+                )
+
+            new_document.current_revision = new_revision
+            task_data = create_file_task(
+                session,
+                new_file,
+                transfer_mode=TransferMode.UPLOAD,
+            )
+            return (
+                200,
+                {
+                    "document_id": new_document.id,
+                    "task_data": task_data,
+                },
+                "Task successfully created",
+                Result(
+                    code=0,
+                    target=folder_id,
+                    data=result_data,
+                    username=username,
+                ),
+            )
+
+
 class RequestCreateDocumentHandler(RequestHandler):
     """Handles the "create_document" action."""
 
@@ -449,117 +581,36 @@ class RequestCreateDocumentHandler(RequestHandler):
 
         try_reclaim_abandoned_uploads(folder_id=folder_id, title=title)
 
-        conflict_response: tuple[dict, str] | None = None
+        outcome: tuple[int, dict[str, Any], str, Result] | None = None
+        conflict_response: tuple[dict[str, Any], str] | None = None
         with Session() as session:
             try:
-                with risk_control_transaction(session):
-                    user = User.get_existing(session, handler.username)
-
-                    if Permissions.CREATE_DOCUMENT not in user.all_permissions:
-                        response_code = result_code = 403
-                        response_data = {}
-                        result_data = {"title": title}
-                        message = smsg.PERMISSION_DENIED
-                    else:
-                        _folder, err_code, err_msg = get_target_folder_and_check_write(
-                            session,
-                            user,
-                            folder_id,
-                            Permissions.SUPER_CREATE_DOCUMENT,
-                        )
-                        if err_code != 0:
-                            response_code = result_code = err_code
-                            response_data = {}
-                            result_data = {"title": title}
-                            message = err_msg
-                        else:
-                            limit_decision = check_document_creation_limits(
-                                session,
-                                user.username,
-                                handler.remote_address,
-                                account_created_at=user.created_time,
-                                bypass_rate_limit=(
-                                    Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT
-                                    in user.all_permissions
-                                ),
-                            )
-                            if not limit_decision.allowed:
-                                response_code = result_code = 429
-                                response_data = {
-                                    "scope": limit_decision.scope,
-                                    "limit": limit_decision.limit,
-                                    "retry_after_seconds": (
-                                        limit_decision.retry_after_seconds
-                                    ),
-                                }
-                                result_data = {"title": title, **response_data}
-                                message = (
-                                    "Document creation limit exceeded. "
-                                    "Please try again later."
-                                )
-                            else:
-                                today = datetime.datetime.now(datetime.UTC).date()
-                                file_id = secrets.token_hex(32)
-                                real_filename = secrets.token_hex(32)
-
-                                new_file = File(
-                                    id=file_id,
-                                    path=(
-                                        f"content/files/{today.year}/"
-                                        f"{today.month}/{real_filename}"
-                                    ),
-                                )
-                                new_document = Document(
-                                    id=secrets.token_hex(32),
-                                    title=title,
-                                    folder_id=folder_id,
-                                )
-                                new_document.metadata_record = DocumentMetadata(
-                                    creator_username=user.username,
-                                    last_modified_by_username=user.username,
-                                )
-                                new_revision = DocumentRevision(file_id=new_file.id)
-                                new_document.revisions.append(new_revision)
-                                session.add(new_file)
-                                session.add(new_document)
-                                session.add(new_revision)
-
-                                with node_name_mutation(session, folder_id, title):
-                                    if not apply_access_rules(
-                                        new_document,
-                                        access_rules,
-                                        user,
-                                        inherit_parent,
-                                    ):
-                                        session.rollback()
-                                        response_code = result_code = 403
-                                        response_data = {}
-                                        result_data = {"title": title}
-                                        message = smsg.ACCESS_DENIED
-                                    else:
-                                        new_document.current_revision = new_revision
-                                        task_data = create_file_task(
-                                            session,
-                                            new_file,
-                                            transfer_mode=TransferMode.UPLOAD,
-                                        )
-                                        response_code = 200
-                                        result_code = 0
-                                        response_data = {
-                                            "document_id": new_document.id,
-                                            "task_data": task_data,
-                                        }
-                                        result_data = {"title": title}
-                                        message = "Task successfully created"
+                outcome = _create_document_in_transaction(
+                    session,
+                    handler.username,
+                    handler.remote_address,
+                    folder_id,
+                    title,
+                    access_rules,
+                    inherit_parent,
+                )
             except NodeNameConflictError:
+                user = User.get_existing(session, handler.username)
                 conflict_response = describe_node_name_conflict(
                     session, user, folder_id, title
                 )
             except (ValueError, jsonschema.ValidationError) as exc:
-                response_code = result_code = 400
-                response_data = {}
-                result_data = {"title": title}
-                message = f"Set access rules failed: {exc!s}"
+                outcome = (
+                    400,
+                    {},
+                    f"Set access rules failed: {exc!s}",
+                    Result(
+                        code=400,
+                        target=folder_id,
+                        data={"title": title},
+                        username=handler.username,
+                    ),
+                )
 
         if conflict_response is not None:
             payload, message = conflict_response
@@ -571,13 +622,10 @@ class RequestCreateDocumentHandler(RequestHandler):
                 result_data={"title": title},
             )
 
+        assert outcome is not None, "Document creation must produce an outcome"
+        response_code, response_data, message, result = outcome
         handler.conclude_request(response_code, response_data, message)
-        return Result(
-            code=result_code,
-            target=folder_id,
-            data=result_data,
-            username=handler.username,
-        )
+        return result
 
 
 class RequestUploadDocumentHandler(RequestHandler):

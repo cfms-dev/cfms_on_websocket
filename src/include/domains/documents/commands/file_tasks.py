@@ -103,6 +103,7 @@ def plan_upload_file_task(
         and not metadata_matches
         and not restart
     ):
+        assert claimed.upload_file_size is not None
         raise UploadMetadataConflict(
             file_size=claimed.upload_file_size,
             sha256=claimed.upload_sha256,
