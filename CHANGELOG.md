@@ -9,9 +9,24 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.9.1...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.10.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.10.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.10.0) - 2026-09-11
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.9.1...v0.10.0)</small>
+
+### Added
+
+- Add `maintain deployment check` and `maintain deployment update` for discovering, downloading, and verifying the latest stable official GitHub release before using the existing release-switch transaction.
+- Add `maintain deployment prune` to preview and permanently remove inactive stored releases while preserving the active rollback point.
+- Add independent scheduled lockdown enable and guarded disable tasks while protecting automatic security lockdowns from scheduled release.
+
+### Changed
+
+- System-managed cleanup tasks no longer add successful audit entries when they complete without finding any work, while their execution history and all failure audits remain available.
+
 
 ## [v0.9.1](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.9.1) - 2026-09-10
 

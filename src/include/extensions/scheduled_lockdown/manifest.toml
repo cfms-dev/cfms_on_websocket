@@ -10,4 +10,4 @@ description = "Adds user-managed scheduled transitions and windows for the core 
 homepage = "https://github.com/cfms-dev/cfms_on_websocket"
 
 [compatibility]
-minimum_server_version = "0.9.1"
+minimum_server_version = "0.10.0"
