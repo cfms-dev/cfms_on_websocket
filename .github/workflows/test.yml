@@ -130,7 +130,7 @@ jobs:
         uv run --locked pytest tests/scheduling/test_engine_shared_database.py -q
         uv run --locked pytest tests/domains/documents/test_upload_cleanup_mysql.py -q
         uv run --locked pytest tests/domains/documents/test_rate_limits_mysql.py -q
-        uv run --locked pytest tests/maintenance/test_database_migration_mysql.py -q
+        uv run --locked pytest tests/maintenance/database/test_mysql.py -q
       timeout-minutes: 10
 
   postgresql-scheduling-concurrency:
