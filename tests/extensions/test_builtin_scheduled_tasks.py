@@ -334,6 +334,17 @@ def test_core_lockdown_expiry_schedule_tracks_active_activation(monkeypatch):
     assert definition.payload == {"activation_id": "execution-1"}
     assert definition.run_immediately is False
 
+    monkeypatch.setattr(
+        tasks.lockdown_state_manager,
+        "get_scheduled_activation",
+        lambda: SimpleNamespace(
+            activation_id="execution-2",
+            expires_at=None,
+            observed_at=100.0,
+        ),
+    )
+    assert registration.system_schedule() is None
+
 
 def test_core_lockdown_expiry_runs_immediately_when_overdue(monkeypatch):
     from include.scheduling import tasks

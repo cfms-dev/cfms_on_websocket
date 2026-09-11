@@ -3,6 +3,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import orjson
 import pytest
@@ -16,10 +17,13 @@ from include.database.models.operations import SystemStateEntry
 from include.domains.operations import lockdown
 from include.domains.operations.handlers.system import RequestLockdownHandler
 from include.domains.operations.lockdown import (
+    LockdownSource,
     LockdownState,
     LockdownTransitionOutcome,
+    apply_automatic_lockdown,
     apply_lockdown,
     apply_scheduled_lockdown,
+    disable_scheduled_lockdown,
     expire_scheduled_lockdown,
     lockdown_state_manager,
 )
@@ -211,10 +215,11 @@ def test_lockdown_payload_shape_is_stable(lockdown_database) -> None:
         entry = session.get(SystemStateEntry, ("core", "lockdown"))
 
     assert entry is not None
-    assert entry.schema_version == 1
+    assert entry.schema_version == 2
     assert entry.payload == {
         "enabled": True,
         "reason": "Maintenance",
+        "source": "manual",
         "last_disabled_at": 0.0,
     }
 
@@ -222,19 +227,58 @@ def test_lockdown_payload_shape_is_stable(lockdown_database) -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        [True, None, 0.0],
+        [True, None, "manual", 0.0],
         {"enabled": True, "reason": None},
         {"enabled": True, "last_disabled_at": 0.0},
         {
             "enabled": True,
             "reason": None,
+            "source": "manual",
             "last_disabled_at": 0.0,
             "unknown": True,
         },
-        {"enabled": 1, "reason": None, "last_disabled_at": 0.0},
-        {"enabled": False, "reason": "Invalid", "last_disabled_at": 0.0},
-        {"enabled": True, "reason": None, "last_disabled_at": -1.0},
-        {"enabled": True, "reason": None, "last_disabled_at": float("inf")},
+        {
+            "enabled": 1,
+            "reason": None,
+            "source": "manual",
+            "last_disabled_at": 0.0,
+        },
+        {
+            "enabled": False,
+            "reason": "Invalid",
+            "source": None,
+            "last_disabled_at": 0.0,
+        },
+        {
+            "enabled": True,
+            "reason": None,
+            "source": None,
+            "last_disabled_at": 0.0,
+        },
+        {
+            "enabled": False,
+            "reason": None,
+            "source": "manual",
+            "last_disabled_at": 0.0,
+        },
+        {
+            "enabled": True,
+            "reason": None,
+            "source": "unknown",
+            "last_disabled_at": 0.0,
+        },
+        {
+            "enabled": True,
+            "reason": None,
+            "source": "manual",
+            "last_disabled_at": -1.0,
+        },
+        {
+            "enabled": True,
+            "reason": None,
+            "source": "manual",
+            "last_disabled_at": float("inf"),
+        },
     ],
 )
 def test_invalid_persisted_lockdown_payload_is_rejected(
@@ -246,7 +290,7 @@ def test_invalid_persisted_lockdown_payload_is_rejected(
             SystemStateEntry(
                 owner="core",
                 state_key="lockdown",
-                schema_version=1,
+                schema_version=2,
                 revision=1,
                 payload=payload,
                 updated_at=1.0,
@@ -264,7 +308,7 @@ def test_unknown_lockdown_schema_version_is_rejected(lockdown_database) -> None:
             SystemStateEntry(
                 owner="core",
                 state_key="lockdown",
-                schema_version=2,
+                schema_version=3,
                 revision=1,
                 payload={
                     "enabled": True,
@@ -287,6 +331,68 @@ def test_enable_if_inactive_preserves_existing_reason(lockdown_database) -> None
     assert initial.state == LockdownState(enabled=True, reason="Automatic")
     assert existing.applied is False
     assert existing.state == initial.state
+
+
+def test_legacy_lockdown_source_is_inferred_conservatively(lockdown_database) -> None:
+    sessions, _database_path = lockdown_database
+    with sessions.begin() as session:
+        session.add(
+            SystemStateEntry(
+                owner="core",
+                state_key="lockdown",
+                schema_version=1,
+                revision=1,
+                payload={
+                    "enabled": True,
+                    "reason": "Legacy",
+                    "last_disabled_at": 0.0,
+                },
+                updated_at=1.0,
+            )
+        )
+
+    assert lockdown_state_manager.get_source() is LockdownSource.UNKNOWN
+    assert (
+        disable_scheduled_lockdown().outcome
+        is LockdownTransitionOutcome.CONDITION_NOT_MET
+    )
+
+
+def test_legacy_scheduled_activation_is_inferred_as_scheduled(
+    lockdown_database,
+) -> None:
+    sessions, _database_path = lockdown_database
+    with sessions.begin() as session:
+        session.add_all(
+            [
+                SystemStateEntry(
+                    owner="core",
+                    state_key="lockdown",
+                    schema_version=1,
+                    revision=2,
+                    payload={
+                        "enabled": True,
+                        "reason": "Legacy window",
+                        "last_disabled_at": 0.0,
+                    },
+                    updated_at=1.0,
+                ),
+                SystemStateEntry(
+                    owner="core",
+                    state_key="lockdown_activation",
+                    schema_version=1,
+                    revision=1,
+                    payload={
+                        "activation_id": "legacy-execution",
+                        "expires_at": 200.0,
+                        "lockdown_revision": 2,
+                    },
+                    updated_at=1.0,
+                ),
+            ]
+        )
+
+    assert lockdown_state_manager.get_source() is LockdownSource.SCHEDULED
 
 
 def test_scheduled_lockdown_expires_only_after_its_deadline(
@@ -317,6 +423,84 @@ def test_scheduled_lockdown_expires_only_after_its_deadline(
     assert expired.state == LockdownState()
     assert lockdown_state_manager.get_scheduled_activation() is None
     assert lockdown_state_manager.get_last_disabled_at() == 200.0
+
+
+def test_scheduled_lockdown_without_deadline_keeps_owned_activation(
+    monkeypatch, lockdown_database
+) -> None:
+    sessions, _database_path = lockdown_database
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+
+    activated = apply_scheduled_lockdown("execution-1", None, "Maintenance")
+    repeated = apply_scheduled_lockdown("execution-1", None, "Maintenance")
+
+    assert activated.outcome is LockdownTransitionOutcome.APPLIED
+    assert repeated.outcome is LockdownTransitionOutcome.UNCHANGED
+    assert lockdown_state_manager.get_source() is LockdownSource.SCHEDULED
+    assert lockdown_state_manager.get_scheduled_activation() == (
+        lockdown.ScheduledLockdownActivation(
+            activation_id="execution-1",
+            expires_at=None,
+            observed_at=100.0,
+        )
+    )
+    assert (
+        expire_scheduled_lockdown("execution-1").outcome
+        is LockdownTransitionOutcome.CONDITION_NOT_MET
+    )
+    with sessions() as session:
+        activation = session.get(
+            SystemStateEntry,
+            ("core", "lockdown_activation"),
+        )
+    assert activation.schema_version == 2
+    assert activation.payload["expires_at"] is None
+
+
+def test_inconsistent_scheduled_source_is_treated_as_unknown(
+    lockdown_database,
+) -> None:
+    sessions, _database_path = lockdown_database
+    apply_scheduled_lockdown("execution-1", None, "Maintenance")
+    with sessions.begin() as session:
+        session.delete(
+            session.get(
+                SystemStateEntry,
+                ("core", "lockdown_activation"),
+            )
+        )
+
+    assert lockdown_state_manager.get_source() is LockdownSource.UNKNOWN
+    assert (
+        disable_scheduled_lockdown().outcome
+        is LockdownTransitionOutcome.CONDITION_NOT_MET
+    )
+
+
+def test_scheduled_disable_applies_only_to_releasable_sources(
+    monkeypatch, lockdown_database
+) -> None:
+    now = 100.0
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: now)
+
+    assert disable_scheduled_lockdown().outcome is LockdownTransitionOutcome.UNCHANGED
+
+    apply_lockdown(True, "Manual")
+    manual = disable_scheduled_lockdown()
+    assert manual.outcome is LockdownTransitionOutcome.APPLIED
+    assert manual.previous_source is LockdownSource.MANUAL
+
+    apply_scheduled_lockdown("execution-1", 200.0, "Window")
+    scheduled = disable_scheduled_lockdown()
+    assert scheduled.outcome is LockdownTransitionOutcome.APPLIED
+    assert scheduled.previous_source is LockdownSource.SCHEDULED
+    assert lockdown_state_manager.get_scheduled_activation() is None
+
+    apply_automatic_lockdown("Automatic")
+    automatic = disable_scheduled_lockdown()
+    assert automatic.outcome is LockdownTransitionOutcome.CONDITION_NOT_MET
+    assert automatic.source is LockdownSource.AUTOMATIC
+    assert lockdown_state_manager.get_state().enabled is True
 
 
 def test_scheduled_lockdown_cannot_replace_or_expire_another_activation(
@@ -356,18 +540,14 @@ def test_manual_reason_change_takes_over_scheduled_lockdown(
     )
 
 
+@pytest.mark.parametrize("expires_at", [None, 200.0])
 def test_protective_lockdown_takes_over_without_replacing_public_reason(
-    monkeypatch, lockdown_database
+    monkeypatch, lockdown_database, expires_at
 ) -> None:
     monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
-    apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
+    apply_scheduled_lockdown("execution-1", expires_at, "Maintenance")
 
-    transition = apply_lockdown(
-        True,
-        "Automatic security lockdown",
-        only_if_inactive=True,
-        take_over_scheduled=True,
-    )
+    transition = apply_automatic_lockdown("Automatic security lockdown")
 
     assert transition.outcome is LockdownTransitionOutcome.APPLIED
     assert (
@@ -378,7 +558,66 @@ def test_protective_lockdown_takes_over_without_replacing_public_reason(
             reason="Maintenance",
         )
     )
+    assert transition.previous_source is LockdownSource.SCHEDULED
+    assert transition.source is LockdownSource.AUTOMATIC
     assert lockdown_state_manager.get_scheduled_activation() is None
+
+
+def test_automatic_lockdown_takes_over_manual_source(lockdown_database) -> None:
+    apply_lockdown(True, "Operator maintenance")
+
+    transition = apply_automatic_lockdown("Automatic security lockdown")
+
+    assert transition.outcome is LockdownTransitionOutcome.APPLIED
+    assert transition.previous_source is LockdownSource.MANUAL
+    assert transition.source is LockdownSource.AUTOMATIC
+    assert transition.state == LockdownState(
+        enabled=True,
+        reason="Operator maintenance",
+    )
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+
+
+def test_reason_change_does_not_release_automatic_protection(
+    lockdown_database,
+) -> None:
+    apply_automatic_lockdown("Automatic security lockdown")
+
+    changed = apply_lockdown(True, "Investigating security incident")
+    scheduled_disable = disable_scheduled_lockdown()
+
+    assert changed.outcome is LockdownTransitionOutcome.APPLIED
+    assert changed.source is LockdownSource.AUTOMATIC
+    assert scheduled_disable.outcome is LockdownTransitionOutcome.CONDITION_NOT_MET
+    assert lockdown_state_manager.get_state() == LockdownState(
+        enabled=True,
+        reason="Investigating security incident",
+    )
+
+
+def test_automatic_takeover_wins_race_with_scheduled_disable(
+    lockdown_database,
+) -> None:
+    apply_lockdown(True, "Operator maintenance")
+    barrier = Barrier(2)
+
+    def run_after_barrier(operation):
+        barrier.wait()
+        return operation()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                run_after_barrier,
+                lambda: apply_automatic_lockdown("Automatic security lockdown"),
+            ),
+            executor.submit(run_after_barrier, disable_scheduled_lockdown),
+        ]
+        for future in futures:
+            future.result()
+
+    assert lockdown_state_manager.get_state().enabled is True
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
 
 
 def test_lockdown_cas_retries_are_bounded(monkeypatch, lockdown_database) -> None:

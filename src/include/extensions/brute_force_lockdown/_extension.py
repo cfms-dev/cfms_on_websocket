@@ -21,7 +21,8 @@ from include.database.session import Session
 from include.domains.operations.commands.audit import log_audit
 from include.domains.operations.lockdown import (
     LockdownReason,
-    apply_lockdown,
+    LockdownSource,
+    apply_automatic_lockdown,
     lockdown_state_manager,
 )
 from include.extensions.manager import hookimpl
@@ -168,7 +169,7 @@ def _audit_automatic_lockdown(
     policy: BruteForceLockdownPolicy,
     stats: FailureWindowStats,
     cancelled_file_tasks: int,
-    scheduled_takeover: bool,
+    previous_source: LockdownSource | None,
 ) -> None:
     log_audit(
         "automatic_lockdown",
@@ -185,7 +186,8 @@ def _audit_automatic_lockdown(
             "distinct_account_threshold": policy.distinct_account_threshold,
             "distinct_ip_threshold": policy.distinct_ip_threshold,
             "cancelled_file_tasks": cancelled_file_tasks,
-            "scheduled_takeover": scheduled_takeover,
+            "scheduled_takeover": previous_source is LockdownSource.SCHEDULED,
+            "previous_lockdown_source": previous_source,
         },
     )
 
@@ -210,11 +212,8 @@ def ext_post_request(
             return
 
         with _detection_lock:
-            state = lockdown_state_manager.get_state()
-            if (
-                state.enabled
-                and lockdown_state_manager.get_scheduled_activation() is None
-            ):
+            source = lockdown_state_manager.get_source()
+            if source in (LockdownSource.AUTOMATIC, LockdownSource.UNKNOWN):
                 return
 
             from include.config.settings import global_config
@@ -229,12 +228,7 @@ def ext_post_request(
             if stats is None or not stats.reaches(policy):
                 return
 
-            transition = apply_lockdown(
-                True,
-                policy.reason,
-                only_if_inactive=True,
-                take_over_scheduled=True,
-            )
+            transition = apply_automatic_lockdown(policy.reason)
             if not transition.applied:
                 return
 
@@ -242,7 +236,7 @@ def ext_post_request(
                 policy,
                 stats,
                 transition.cancelled_file_tasks,
-                transition.previous_state.enabled,
+                transition.previous_source,
             )
             logger.warning(
                 "Automatic lockdown activated after suspected credential-guessing "

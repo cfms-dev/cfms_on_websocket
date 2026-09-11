@@ -268,7 +268,7 @@ max_pool_connections = 64
 
 [extensions]
 # Extension identifiers to load, in registration order. Changes require a restart.
-# Add "scheduled_lockdown" to configure lockdown windows.
+# Add "scheduled_lockdown" to schedule lockdown transitions or windows.
 enabled = []
 
 # Automatically enter lockdown after a service-wide burst of failed local

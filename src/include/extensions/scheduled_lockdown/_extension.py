@@ -1,4 +1,4 @@
-"""User-schedulable fixed-duration lockdown window task."""
+"""User-schedulable lockdown transitions and fixed-duration windows."""
 
 from pydantic import BaseModel, ConfigDict
 
@@ -6,6 +6,7 @@ from include.domains.access.permissions import Permissions
 from include.domains.operations.lockdown import (
     LockdownReason,
     apply_scheduled_lockdown,
+    disable_scheduled_lockdown,
 )
 from include.extensions.manager import hookimpl
 from include.scheduling import (
@@ -23,6 +24,20 @@ class ScheduledLockdownWindowPayload(BaseModel):
 
     duration_seconds: PositiveInt
     reason: LockdownReason | None = None
+
+
+class ScheduledLockdownEnablePayload(BaseModel):
+    """Strict contract for enabling lockdown without an automatic deadline."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    reason: LockdownReason | None = None
+
+
+class ScheduledLockdownDisablePayload(BaseModel):
+    """Strict empty contract for a guarded scheduled disable operation."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
 
 
 def run_scheduled_lockdown_window(
@@ -52,6 +67,36 @@ def run_scheduled_lockdown_window(
     )
 
 
+def run_scheduled_lockdown_enable(
+    context: ScheduledTaskContext,
+    payload: ScheduledLockdownEnablePayload,
+) -> ScheduledTaskResult:
+    """Enable lockdown for this occurrence without scheduling an expiry."""
+
+    transition = apply_scheduled_lockdown(
+        context.execution_id,
+        None,
+        payload.reason,
+    )
+    return ScheduledTaskResult(
+        data={
+            "activation_id": context.execution_id,
+            "outcome": transition.outcome,
+            "cancelled_file_tasks": transition.cancelled_file_tasks,
+        }
+    )
+
+
+def run_scheduled_lockdown_disable(
+    _context: ScheduledTaskContext,
+    _payload: ScheduledLockdownDisablePayload,
+) -> ScheduledTaskResult:
+    """Disable only a manual or schedule-owned active lockdown."""
+
+    transition = disable_scheduled_lockdown()
+    return ScheduledTaskResult(data={"outcome": transition.outcome})
+
+
 scheduled_lockdown_window_task = ScheduledTaskRegistration(
     name="scheduled_lockdown.window",
     contract_version=1,
@@ -60,9 +105,29 @@ scheduled_lockdown_window_task = ScheduledTaskRegistration(
     required_permission=Permissions.APPLY_LOCKDOWN,
 )
 
+scheduled_lockdown_enable_task = ScheduledTaskRegistration(
+    name="scheduled_lockdown.enable",
+    contract_version=1,
+    payload_model=ScheduledLockdownEnablePayload,
+    execute=run_scheduled_lockdown_enable,
+    required_permission=Permissions.APPLY_LOCKDOWN,
+)
+
+scheduled_lockdown_disable_task = ScheduledTaskRegistration(
+    name="scheduled_lockdown.disable",
+    contract_version=1,
+    payload_model=ScheduledLockdownDisablePayload,
+    execute=run_scheduled_lockdown_disable,
+    required_permission=Permissions.APPLY_LOCKDOWN,
+)
+
 
 @hookimpl
 def ext_register_scheduled_tasks():
-    """Register the extension's operator-configurable lockdown task type."""
+    """Register the extension's operator-configurable lockdown task types."""
 
-    return (scheduled_lockdown_window_task,)
+    return (
+        scheduled_lockdown_window_task,
+        scheduled_lockdown_enable_task,
+        scheduled_lockdown_disable_task,
+    )

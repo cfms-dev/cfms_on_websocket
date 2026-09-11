@@ -64,7 +64,7 @@ def _lockdown_expiry_schedule() -> SystemScheduleDefinition | None:
     """Reflect the current durable scheduled-lockdown deadline, if one exists."""
 
     activation = lockdown_state_manager.get_scheduled_activation()
-    if activation is None:
+    if activation is None or activation.expires_at is None:
         return None
     return SystemScheduleDefinition(
         id="core.lockdown_expiry",
