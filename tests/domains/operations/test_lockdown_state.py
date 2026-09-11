@@ -3,7 +3,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Event
 
 import orjson
 import pytest
@@ -605,26 +605,40 @@ def test_reason_change_does_not_release_automatic_protection(
 
 
 def test_automatic_takeover_wins_race_with_scheduled_disable(
+    monkeypatch,
     lockdown_database,
 ) -> None:
     apply_lockdown(True, "Operator maintenance")
-    barrier = Barrier(2)
+    disable_reached_write = Event()
+    allow_disable_retry = Event()
+    persist_lockdown_state = lockdown._persist_lockdown_state
+    disable_conflicted = False
 
-    def run_after_barrier(operation):
-        barrier.wait()
-        return operation()
+    def persist_with_controlled_conflict(session, current, state, source, disabled_at):
+        nonlocal disable_conflicted
+        if not state.enabled and not disable_conflicted:
+            disable_conflicted = True
+            disable_reached_write.set()
+            assert allow_disable_retry.wait(timeout=5)
+            raise lockdown._LockdownCasConflict
+        return persist_lockdown_state(session, current, state, source, disabled_at)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(
-                run_after_barrier,
-                lambda: apply_automatic_lockdown("Automatic security lockdown"),
-            ),
-            executor.submit(run_after_barrier, disable_scheduled_lockdown),
-        ]
-        for future in futures:
-            future.result()
+    monkeypatch.setattr(
+        lockdown,
+        "_persist_lockdown_state",
+        persist_with_controlled_conflict,
+    )
 
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        disable_future = executor.submit(disable_scheduled_lockdown)
+        assert disable_reached_write.wait(timeout=5)
+
+        automatic = apply_automatic_lockdown("Automatic security lockdown")
+        allow_disable_retry.set()
+        scheduled_disable = disable_future.result(timeout=5)
+
+    assert automatic.outcome is LockdownTransitionOutcome.APPLIED
+    assert scheduled_disable.outcome is LockdownTransitionOutcome.CONDITION_NOT_MET
     assert lockdown_state_manager.get_state().enabled is True
     assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
 
