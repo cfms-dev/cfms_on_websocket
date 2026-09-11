@@ -418,31 +418,33 @@ second factor, throttled requests, unknown usernames, and OIDC actions are not
 counted. Lockdown begins when the failure threshold is reached and either the
 distinct-account or distinct-IP threshold is reached in the same rolling window.
 
-Automatic lockdown never replaces an existing manual lockdown reason and does
-not expire automatically. It may take ownership from an active scheduled window,
-while preserving that window's public reason, so the earlier deadline cannot
-release a security lockdown. An administrator must disable it through the existing
-`lockdown` action. Doing so starts a fresh detection window. The public reason is
-generic for a newly activated automatic lockdown; aggregate trigger counts,
-thresholds, and whether scheduled ownership was taken over are recorded under the
-`automatic_lockdown` audit action without account or IP lists.
+Automatic lockdown never replaces the public reason of an existing lockdown and
+does not expire automatically. Once the threshold is reached, it takes protected
+ownership from an active manual or scheduled lockdown so a later scheduled disable
+or window deadline cannot release a security lockdown. An administrator must
+disable it through the existing `lockdown` action. Doing so starts a fresh detection
+window. The public reason is generic for a newly activated automatic lockdown;
+aggregate trigger counts, thresholds, the previous lockdown source, and whether
+scheduled ownership was taken over are recorded under the `automatic_lockdown`
+audit action without account or IP lists.
 
-The lockdown status, public reason, and last disable timestamp are stored in the
-database. A normal or abnormal server restart therefore restores the previous
-locked or unlocked state without replaying transition side effects.
+The lockdown status, public reason, internal source, scheduled ownership, and last
+disable timestamp are stored in the database. A normal or abnormal server restart
+therefore restores the previous locked or unlocked state without replaying
+transition side effects.
 
-## Scheduled lockdown windows
+## Scheduled lockdown transitions and windows
 
-Enable the optional `scheduled_lockdown` extension to register fixed-duration
-lockdown windows as a schedulable task type:
+Enable the optional `scheduled_lockdown` extension to register independent
+lockdown transitions and fixed-duration windows as schedulable task types:
 
 ```toml
 [extensions]
 enabled = ["scheduled_lockdown"]
 ```
 
-Create a normal `date`, `interval`, or `cron` schedule whose task is
-`scheduled_lockdown.window`, contract version is `1`, and payload is:
+All three task types use contract version `1`. To create a fixed-duration window,
+use `scheduled_lockdown.window` with this payload:
 
 ```json
 {
@@ -455,19 +457,41 @@ Create a normal `date`, `interval`, or `cron` schedule whose task is
 normal lockdown reason constraints. Creating or updating the schedule requires
 both `manage_schedules` and `apply_lockdown`.
 
-Each occurrence owns only the lockdown it activated. Its expiration is measured
-as elapsed seconds from the occurrence's scheduled time, so daylight-saving clock
-changes do not alter the duration. If another lockdown is already active, the
-occurrence reports `condition_not_met` and does not replace it. A manual reason
-change or a security detector taking over the active lockdown removes scheduled
-ownership, so the old deadline cannot unlock the replacement. Sending the same
-reason again is an idempotent no-op and preserves the deadline.
+To enable lockdown without an automatic deadline, use
+`scheduled_lockdown.enable` with an optional reason:
 
-Expiration is a hidden core system task derived from durable lockdown activation
-state. It remains available after `scheduled_lockdown` is disabled, allowing a
+```json
+{
+  "reason": "Scheduled maintenance"
+}
+```
+
+To disable a current manual or scheduled lockdown, use
+`scheduled_lockdown.disable` with an empty payload:
+
+```json
+{}
+```
+
+An enable occurrence does not replace any active lockdown. A disable occurrence
+does nothing when the current lockdown is automatic or has unknown legacy
+ownership. Administrators can still explicitly disable any lockdown through the
+normal `lockdown` action.
+
+Each enable or window occurrence owns only the lockdown it activated. A window's
+expiration is measured as elapsed seconds from the occurrence's scheduled time,
+so daylight-saving clock changes do not alter the duration. If another lockdown is
+already active, the occurrence reports `condition_not_met` and does not replace it.
+A manual reason change or a security detector taking over the active lockdown
+removes scheduled ownership, so the old deadline cannot unlock the replacement.
+Sending the same reason again is an idempotent no-op and preserves ownership.
+
+Window expiration is a hidden core system task derived from durable lockdown
+activation state. An enable-only activation has no corresponding expiration. The
+system task remains available after `scheduled_lockdown` is disabled, allowing a
 window that already started to end safely after a restart or extension change.
-Disabling the extension prevents its task registration from starting new windows;
-it does not delete user-created schedule rows.
+Disabling the extension prevents its task registrations from starting new
+transitions or windows; it does not delete user-created schedule rows.
 
 ## OIDC configuration and migration
 

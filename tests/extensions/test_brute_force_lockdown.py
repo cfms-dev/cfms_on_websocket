@@ -9,6 +9,7 @@ from include.config.validation import ConfigValidationError
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Base
+from include.domains.operations.lockdown import LockdownSource
 from include.extensions.brute_force_lockdown import _extension as extension
 from include.transport.request_handler import Result
 
@@ -196,8 +197,8 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
 
     monkeypatch.setattr(
         extension.lockdown_state_manager,
-        "get_state",
-        lambda: SimpleNamespace(enabled=False),
+        "get_source",
+        lambda: None,
     )
     monkeypatch.setattr(
         extension.BruteForceLockdownPolicy,
@@ -215,10 +216,10 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
         return SimpleNamespace(
             applied=True,
             cancelled_file_tasks=4,
-            previous_state=SimpleNamespace(enabled=False),
+            previous_source=None,
         )
 
-    monkeypatch.setattr(extension, "apply_lockdown", fake_apply)
+    monkeypatch.setattr(extension, "apply_automatic_lockdown", fake_apply)
     monkeypatch.setattr(
         extension,
         "_audit_automatic_lockdown",
@@ -232,25 +233,19 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
         0.1,
     )
 
-    assert transitions == [
-        (
-            (True, extension.DEFAULT_REASON),
-            {"only_if_inactive": True, "take_over_scheduled": True},
-        )
-    ]
-    assert audits == [(policy, stats, 4, False)]
+    assert transitions == [((extension.DEFAULT_REASON,), {})]
+    assert audits == [(policy, stats, 4, None)]
 
 
-def test_detector_ignores_an_existing_manual_lockdown(monkeypatch):
+@pytest.mark.parametrize(
+    "source",
+    [LockdownSource.AUTOMATIC, LockdownSource.UNKNOWN],
+)
+def test_detector_ignores_an_existing_protected_lockdown(monkeypatch, source):
     monkeypatch.setattr(
         extension.lockdown_state_manager,
-        "get_state",
-        lambda: SimpleNamespace(enabled=True),
-    )
-    monkeypatch.setattr(
-        extension.lockdown_state_manager,
-        "get_scheduled_activation",
-        lambda: None,
+        "get_source",
+        lambda: source,
     )
     monkeypatch.setattr(
         extension,
@@ -266,7 +261,11 @@ def test_detector_ignores_an_existing_manual_lockdown(monkeypatch):
     )
 
 
-def test_detector_takes_over_an_existing_scheduled_lockdown(monkeypatch):
+@pytest.mark.parametrize(
+    "source",
+    [LockdownSource.MANUAL, LockdownSource.SCHEDULED],
+)
+def test_detector_takes_over_an_existing_releasable_lockdown(monkeypatch, source):
     policy = extension.BruteForceLockdownPolicy(
         failure_threshold=1,
         distinct_account_threshold=1,
@@ -277,13 +276,8 @@ def test_detector_takes_over_an_existing_scheduled_lockdown(monkeypatch):
     audits = []
     monkeypatch.setattr(
         extension.lockdown_state_manager,
-        "get_state",
-        lambda: SimpleNamespace(enabled=True),
-    )
-    monkeypatch.setattr(
-        extension.lockdown_state_manager,
-        "get_scheduled_activation",
-        lambda: SimpleNamespace(activation_id="occurrence-1"),
+        "get_source",
+        lambda: source,
     )
     monkeypatch.setattr(
         extension.BruteForceLockdownPolicy,
@@ -301,10 +295,10 @@ def test_detector_takes_over_an_existing_scheduled_lockdown(monkeypatch):
         return SimpleNamespace(
             applied=True,
             cancelled_file_tasks=0,
-            previous_state=SimpleNamespace(enabled=True),
+            previous_source=source,
         )
 
-    monkeypatch.setattr(extension, "apply_lockdown", fake_apply)
+    monkeypatch.setattr(extension, "apply_automatic_lockdown", fake_apply)
     monkeypatch.setattr(
         extension,
         "_audit_automatic_lockdown",
@@ -318,13 +312,8 @@ def test_detector_takes_over_an_existing_scheduled_lockdown(monkeypatch):
         0.1,
     )
 
-    assert transitions == [
-        (
-            (True, extension.DEFAULT_REASON),
-            {"only_if_inactive": True, "take_over_scheduled": True},
-        )
-    ]
-    assert audits == [(policy, stats, 0, True)]
+    assert transitions == [((extension.DEFAULT_REASON,), {})]
+    assert audits == [(policy, stats, 0, source)]
 
 
 def test_window_stats_exclude_failures_before_last_unlock(
@@ -360,12 +349,18 @@ def test_automatic_audit_contains_only_aggregate_details(monkeypatch):
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    extension._audit_automatic_lockdown(policy, stats, 2, True)
+    extension._audit_automatic_lockdown(
+        policy,
+        stats,
+        2,
+        LockdownSource.SCHEDULED,
+    )
 
     args, kwargs = calls[0]
     assert args == ("automatic_lockdown", 0)
     assert kwargs["data"]["failure_count"] == 50
     assert kwargs["data"]["distinct_accounts"] == 10
     assert kwargs["data"]["scheduled_takeover"] is True
+    assert kwargs["data"]["previous_lockdown_source"] == "scheduled"
     assert "username" not in kwargs["data"]
     assert "ip_address" not in kwargs["data"]

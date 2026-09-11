@@ -119,7 +119,8 @@ def _permissions(username: str, session: OrmSession | None = None) -> set[Permis
 
     if session is not None:
         return User.get_existing(session, username).all_permissions
-    with Session() as session:
+
+    with Session() as session:  # noqa: PLR1704
         return User.get_existing(session, username).all_permissions
 
 
