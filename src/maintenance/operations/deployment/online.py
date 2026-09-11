@@ -12,7 +12,16 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from packaging.version import Version
 
-from maintenance.operations import deployment
+from maintenance.operations.deployment.constants import MAX_PACKAGE_BYTES
+from maintenance.operations.deployment.lifecycle import (
+    DeploymentResult,
+    upgrade_deployment,
+)
+from maintenance.operations.deployment.repository import (
+    _active_release,
+    _maintenance_root,
+    _project_root,
+)
 from maintenance.operations.exceptions import MaintenanceOperationError
 
 GITHUB_LATEST_RELEASE_URL = (
@@ -42,7 +51,7 @@ class OnlineDeploymentStatus:
 @dataclass(frozen=True, slots=True)
 class OnlineDeploymentUpdateResult:
     status: OnlineDeploymentStatus
-    deployment: deployment.DeploymentResult | None
+    deployment: DeploymentResult | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,7 +273,7 @@ def _fetch_latest_release() -> _OnlineRelease:
             assets,
             name=package_name,
             version=version,
-            maximum=deployment.MAX_PACKAGE_BYTES,
+            maximum=MAX_PACKAGE_BYTES,
         ),
         _asset(
             assets,
@@ -289,8 +298,8 @@ def _status(
 
 
 def inspect_online_deployment(deployment_root: str | Path) -> OnlineDeploymentStatus:
-    project_root = deployment._project_root(deployment_root)
-    active = deployment._active_release(project_root)
+    project_root = _project_root(deployment_root)
+    active = _active_release(project_root)
     return _status(project_root, active.version, _fetch_latest_release())
 
 
@@ -359,14 +368,14 @@ def update_online_deployment(
     extras: tuple[str, ...] | None = None,
     requirements_lock: str | Path | None = None,
 ) -> OnlineDeploymentUpdateResult:
-    project_root = deployment._project_root(deployment_root)
-    active = deployment._active_release(project_root)
+    project_root = _project_root(deployment_root)
+    active = _active_release(project_root)
     release = _fetch_latest_release()
     status = _status(project_root, active.version, release)
     if not status.update_available:
         return OnlineDeploymentUpdateResult(status, None)
 
-    staging_root = deployment._maintenance_root(project_root) / "staging"
+    staging_root = _maintenance_root(project_root) / "staging"
     staging_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="online-", dir=staging_root) as temporary:
         temporary_root = Path(temporary)
@@ -380,7 +389,7 @@ def update_online_deployment(
         package_digest = _download_asset(
             release.package,
             package_path,
-            maximum=deployment.MAX_PACKAGE_BYTES,
+            maximum=MAX_PACKAGE_BYTES,
         )
         expected_digest = _checksum_for(
             checksum_path.read_bytes(), release.package.name
@@ -389,7 +398,7 @@ def update_online_deployment(
             raise MaintenanceOperationError(
                 "GitHub release package digest does not match SHA256SUMS.txt"
             )
-        result = deployment.upgrade_deployment(
+        result = upgrade_deployment(
             package_path,
             project_root,
             expected_sha256=expected_digest,

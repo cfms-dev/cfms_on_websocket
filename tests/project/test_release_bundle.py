@@ -95,7 +95,8 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
         "src/config.toml.sample",
         "src/content/hello",
         "src/include/extensions/builtin/manifest.toml",
-        "src/maintenance/cli.py",
+        "src/maintenance/cli/__init__.py",
+        "src/maintenance/cli/app.py",
     } <= relative_members
     assert any(
         member.startswith("src/content/ssl/client/")
