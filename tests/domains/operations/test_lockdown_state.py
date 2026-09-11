@@ -14,12 +14,12 @@ from sqlalchemy.orm import sessionmaker
 
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.operations import SystemStateEntry
-from include.domains.operations import lockdown
 from include.domains.operations.handlers.system import RequestLockdownHandler
 from include.domains.operations.lockdown import (
     LockdownSource,
     LockdownState,
     LockdownTransitionOutcome,
+    ScheduledLockdownActivation,
     apply_automatic_lockdown,
     apply_lockdown,
     apply_scheduled_lockdown,
@@ -27,6 +27,8 @@ from include.domains.operations.lockdown import (
     expire_scheduled_lockdown,
     lockdown_state_manager,
 )
+from include.domains.operations.lockdown import commands as lockdown
+from include.domains.operations.lockdown import state as lockdown_state
 
 _REAL_CANCEL_PENDING_FILE_TASKS = lockdown._cancel_pending_file_tasks
 
@@ -49,6 +51,7 @@ def lockdown_database(monkeypatch, tmp_path):
     )
     sessions = sessionmaker(bind=engine)
     monkeypatch.setattr(lockdown, "Session", sessions)
+    monkeypatch.setattr(lockdown_state, "Session", sessions)
     monkeypatch.setattr(
         lockdown, "_cancel_pending_file_tasks", lambda _session: ([], 0)
     )
@@ -74,7 +77,7 @@ def test_lockdown_reason_is_replaced_and_persisted(lockdown_database) -> None:
     sessions.kw["bind"].dispose()
     reopened_engine = create_engine(f"sqlite:///{database_path}")
     reopened_sessions = sessionmaker(bind=reopened_engine)
-    lockdown.Session = reopened_sessions
+    lockdown_state.Session = reopened_sessions
     try:
         assert lockdown_state_manager.get_state() == LockdownState(enabled=True)
     finally:
@@ -400,12 +403,13 @@ def test_scheduled_lockdown_expires_only_after_its_deadline(
 ) -> None:
     now = 100.0
     monkeypatch.setattr(lockdown, "database_now", lambda _session: now)
+    monkeypatch.setattr(lockdown_state, "database_now", lambda _session: now)
 
     activated = apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
 
     assert activated.outcome is LockdownTransitionOutcome.APPLIED
     assert lockdown_state_manager.get_scheduled_activation() == (
-        lockdown.ScheduledLockdownActivation(
+        ScheduledLockdownActivation(
             activation_id="execution-1",
             expires_at=200.0,
             observed_at=100.0,
@@ -430,6 +434,7 @@ def test_scheduled_lockdown_without_deadline_keeps_owned_activation(
 ) -> None:
     sessions, _database_path = lockdown_database
     monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    monkeypatch.setattr(lockdown_state, "database_now", lambda _session: 100.0)
 
     activated = apply_scheduled_lockdown("execution-1", None, "Maintenance")
     repeated = apply_scheduled_lockdown("execution-1", None, "Maintenance")
@@ -438,7 +443,7 @@ def test_scheduled_lockdown_without_deadline_keeps_owned_activation(
     assert repeated.outcome is LockdownTransitionOutcome.UNCHANGED
     assert lockdown_state_manager.get_source() is LockdownSource.SCHEDULED
     assert lockdown_state_manager.get_scheduled_activation() == (
-        lockdown.ScheduledLockdownActivation(
+        ScheduledLockdownActivation(
             activation_id="execution-1",
             expires_at=None,
             observed_at=100.0,
@@ -482,6 +487,7 @@ def test_scheduled_disable_applies_only_to_releasable_sources(
 ) -> None:
     now = 100.0
     monkeypatch.setattr(lockdown, "database_now", lambda _session: now)
+    monkeypatch.setattr(lockdown_state, "database_now", lambda _session: now)
 
     assert disable_scheduled_lockdown().outcome is LockdownTransitionOutcome.UNCHANGED
 
@@ -507,6 +513,7 @@ def test_scheduled_lockdown_cannot_replace_or_expire_another_activation(
     monkeypatch, lockdown_database
 ) -> None:
     monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    monkeypatch.setattr(lockdown_state, "database_now", lambda _session: 100.0)
     apply_scheduled_lockdown("execution-1", 200.0, "First")
 
     competing = apply_scheduled_lockdown("execution-2", 300.0, "Second")
@@ -524,6 +531,7 @@ def test_manual_reason_change_takes_over_scheduled_lockdown(
     monkeypatch, lockdown_database
 ) -> None:
     monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    monkeypatch.setattr(lockdown_state, "database_now", lambda _session: 100.0)
     apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
 
     unchanged = apply_lockdown(True, "Maintenance")
@@ -545,6 +553,7 @@ def test_protective_lockdown_takes_over_without_replacing_public_reason(
     monkeypatch, lockdown_database, expires_at
 ) -> None:
     monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    monkeypatch.setattr(lockdown_state, "database_now", lambda _session: 100.0)
     apply_scheduled_lockdown("execution-1", expires_at, "Maintenance")
 
     transition = apply_automatic_lockdown("Automatic security lockdown")
@@ -628,7 +637,7 @@ def test_lockdown_cas_retries_are_bounded(monkeypatch, lockdown_database) -> Non
         attempts.append(True)
         return False
 
-    monkeypatch.setattr(lockdown, "create_system_state", lose_revision_race)
+    monkeypatch.setattr(lockdown_state, "create_system_state", lose_revision_race)
     monkeypatch.setattr(lockdown.time, "sleep", delays.append)
 
     with pytest.raises(
