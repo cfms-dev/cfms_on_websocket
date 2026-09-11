@@ -9,7 +9,7 @@ from maintenance.operations.config import (
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _SAMPLE_SOURCE = (_PROJECT_ROOT / "src" / "config.toml.sample").read_text(
     encoding="utf-8"
 )

@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, inspect, text
 
 import include.database.models  # noqa: F401
 from include.database.session import Base
-from maintenance.database_schema import (
+from maintenance.operations.database.schema import (
     DatabaseSchemaError,
     upgrade_database_schema,
 )

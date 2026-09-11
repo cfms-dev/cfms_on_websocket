@@ -8,11 +8,14 @@ from sqlalchemy import create_engine, insert, inspect, select, text
 
 from alembic import command
 from include.database.engine import create_database_engine
-from maintenance.database_migration import migrate_database
-from maintenance.database_schema import DatabaseSchemaError, upgrade_database_schema
-from maintenance.database_tables import APPLICATION_TABLE_NAMES
-from tests.maintenance.test_backup_format_compatibility import _seed_source
-from tests.maintenance.test_database_migration import (
+from maintenance.operations.database.migration import migrate_database
+from maintenance.operations.database.schema import (
+    DatabaseSchemaError,
+    upgrade_database_schema,
+)
+from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
+from tests.maintenance.backup.roundtrip_support import _seed_source
+from tests.maintenance.database.test_migration import (
     _script_directory,
     _seed_runtime_tables,
 )
@@ -22,7 +25,7 @@ pytestmark = pytest.mark.skipif(
     reason="CFMS_TEST_MYSQL_URL is required for MySQL migration integration tests",
 )
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_unversioned_mysql_schema_is_rejected_without_stamping(backup_context) -> None:

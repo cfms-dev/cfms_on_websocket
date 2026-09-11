@@ -24,7 +24,7 @@ def test_database_migration_cli_reports_verified_result(monkeypatch, tmp_path) -
         )
 
     monkeypatch.setattr(
-        "maintenance.cli.operations.migrate_database",
+        "maintenance.cli.database.operations.migrate_database",
         migrate_database,
     )
     monkeypatch.chdir(tmp_path)

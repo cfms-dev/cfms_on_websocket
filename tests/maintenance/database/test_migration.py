@@ -20,25 +20,23 @@ from sqlalchemy import (
 from sqlalchemy.dialects import mysql
 
 from include.database.engine import create_database_engine
-from maintenance.database_migration import (
+from maintenance.operations.database.commands import (
+    _activate_target_database,
+    _load_target_database_config,
+)
+from maintenance.operations.database.migration import (
     DatabaseMigrationError,
     _table_signature,
     _validate_mysql_version,
     migrate_database,
     transfer_database_contents,
 )
-from maintenance.database_tables import APPLICATION_TABLE_NAMES
-from maintenance.operations.database import (
-    _activate_target_database,
-    _load_target_database_config,
-)
+from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
 from maintenance.operations.exceptions import MaintenanceOperationError
-from tests.maintenance.test_backup_format_compatibility import (
-    _new_database,
-    _seed_source,
-)
+from tests.maintenance.backup.roundtrip_support import _seed_source
+from tests.maintenance.backup.support import _new_database
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _script_directory() -> ScriptDirectory:
@@ -181,7 +179,7 @@ def test_transfer_cleans_target_when_verification_fails(
     tmp_path,
     monkeypatch,
 ) -> None:
-    from maintenance import database_migration
+    from maintenance.operations.database import migration as database_migration
 
     base = backup_context.Base
     source_engine, _source_session = _new_database(base, tmp_path / "source.db")

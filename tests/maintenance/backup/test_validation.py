@@ -4,12 +4,12 @@ import pytest
 import tomlkit
 from sqlalchemy import insert
 
-from tests.maintenance.test_backup_format_compatibility import (
+from .roundtrip_support import _seed_source
+from .support import (
     _dump_backup_tables,
     _new_database,
     _read_jsonl,
     _RootedStorage,
-    _seed_source,
     _write_config,
     _write_jsonl,
 )
@@ -94,7 +94,7 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
 def test_banned_subnet_export_includes_only_referenced_comments(
     backup_context, tmp_path
 ):
-    from maintenance.backup.core import _stage_backup_payload
+    from maintenance.backup.export import _stage_backup_payload
 
     base = backup_context.Base
     source_engine, source_session = _new_database(base, tmp_path / "source.db")
@@ -136,7 +136,8 @@ def test_banned_subnet_export_includes_only_referenced_comments(
 
 
 def test_legacy_banned_subnet_reason_restores_as_comment(backup_context, tmp_path):
-    from maintenance.backup.core import BACKUP_FORMAT_VERSION, _restore_database
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
     target_engine, target_session = _new_database(base, tmp_path / "target.db")
