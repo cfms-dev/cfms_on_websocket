@@ -70,7 +70,9 @@ class _RequestBodyLimitMiddleware:
             return
         if content_length is not None and int(content_length) > self.max_bytes:
             response = JSONResponse(
-                {"detail": "Request body too large"}, status_code=413
+                {"detail": "Request body too large"},
+                status_code=413,
+                headers={"Connection": "close"},
             )
             await response(scope, receive, send)
             return
@@ -105,7 +107,9 @@ class _RequestBodyLimitMiddleware:
 
         if too_large:
             response = JSONResponse(
-                {"detail": "Request body too large"}, status_code=413
+                {"detail": "Request body too large"},
+                status_code=413,
+                headers={"Connection": "close"},
             )
             await response(scope, receive, send)
             return
@@ -149,7 +153,11 @@ class _SecurityBoundaryMiddleware:
             not client_address
             or not LoginGuard.evaluate_subnet_access(client_address).allowed
         ):
-            response = JSONResponse({"detail": "Forbidden"}, status_code=403)
+            response = JSONResponse(
+                {"detail": "Forbidden"},
+                status_code=403,
+                headers={"Connection": "close"},
+            )
             await response(scope, receive, send)
             return
 

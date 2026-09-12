@@ -308,6 +308,8 @@ UI are disabled by default. When enabled, the schema and UI are available at
 `/api/v1/openapi.json` and `/api/v1/docs`. `/healthz` is always available and
 does not disclose versions or enabled extensions. `max_concurrency` is the exact
 number of simultaneous HTTP connections admitted before overload responses begin.
+Subnet admission failures and request-body limit failures close the connection so
+that an unread request body cannot continue occupying an admitted connection.
 Each `cors_allowed_origins` entry must use the browser Origin form
 `scheme://host[:port]`, without credentials, a path (including a trailing slash),
 query, fragment, or surrounding whitespace. HTTP(S) scheme and host casing,

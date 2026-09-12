@@ -615,6 +615,7 @@ async def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
         )
 
     assert oversized.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+    assert oversized.headers["Connection"] == "close"
     assert failure.status_code == 500
     assert failure.headers["Access-Control-Allow-Origin"] == "https://ui.example"
     payload = failure.json()
@@ -662,6 +663,7 @@ async def test_body_limit_counts_chunked_body_before_endpoint_runs(
 
     assert accepted.status_code == 200
     assert rejected.status_code == 413
+    assert rejected.headers["Connection"] == "close"
     assert calls == 1
 
 
@@ -746,6 +748,7 @@ async def test_banned_client_is_rejected(monkeypatch, http_api_modules):
 
     assert response.status_code == 403
     assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
+    assert response.headers["Connection"] == "close"
     assert disallowed_origin.status_code == 403
     assert "Access-Control-Allow-Origin" not in disallowed_origin.headers
 
@@ -1054,6 +1057,116 @@ def _reserve_ipv4_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         return listener.getsockname()[1]
+
+
+@pytest.mark.parametrize(
+    ("request_bytes", "expected_status", "expected_body", "subnet_allowed"),
+    [
+        pytest.param(
+            b"POST /healthz HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\n",
+            413,
+            b'{"detail":"Request body too large"}',
+            True,
+            id="declared-body-too-large",
+        ),
+        pytest.param(
+            b"POST /healthz HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"\r\n"
+            b"5\r\n12345\r\n",
+            413,
+            b'{"detail":"Request body too large"}',
+            True,
+            id="streamed-body-too-large",
+        ),
+        pytest.param(
+            b"POST /healthz HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\n",
+            403,
+            b'{"detail":"Forbidden"}',
+            False,
+            id="subnet-forbidden",
+        ),
+    ],
+)
+def test_real_tls_early_rejection_closes_unread_body_and_releases_concurrency(
+    monkeypatch,
+    http_api_modules,
+    tmp_path,
+    request_bytes,
+    expected_status,
+    expected_body,
+    subnet_allowed,
+):
+    modules = http_api_modules
+    cert_path, key_path = _write_self_signed_certificate(tmp_path)
+    port = _reserve_ipv4_port()
+    monkeypatch.setattr(
+        modules.runtime,
+        "global_config",
+        {
+            "server": {
+                "ssl_certfile": str(cert_path),
+                "ssl_keyfile": str(key_path),
+            },
+            "security": {"require_client_cert": False},
+        },
+    )
+    monkeypatch.setattr(
+        modules.application.LoginGuard,
+        "evaluate_subnet_access",
+        classmethod(lambda _cls, _address: SimpleNamespace(allowed=subnet_allowed)),
+    )
+    _install_http_plugins(monkeypatch, modules, [])
+    policy = modules.config.HttpApiPolicy(
+        host="127.0.0.1",
+        port=port,
+        ssl_certfile=str(cert_path),
+        ssl_keyfile=str(key_path),
+        max_concurrency=1,
+        max_request_body_bytes=4,
+        startup_timeout_seconds=5.0,
+        shutdown_timeout_seconds=5.0,
+    )
+    app = modules.application.build_http_application(policy)
+    client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    client_context.check_hostname = False
+    client_context.verify_mode = ssl.CERT_NONE
+    runtime = modules.runtime.HttpApiRuntime()
+
+    runtime.start(app, policy)
+    try:
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5.0) as connection,
+            client_context.wrap_socket(
+                connection, server_hostname="localhost"
+            ) as rejected_connection,
+        ):
+            rejected_connection.settimeout(2.0)
+            rejected_connection.sendall(request_bytes)
+            response_bytes = bytearray()
+            while expected_body not in response_bytes:
+                chunk = rejected_connection.recv(4096)
+                assert chunk
+                response_bytes.extend(chunk)
+
+            assert f"HTTP/1.1 {expected_status} ".encode() in response_bytes
+            assert b"connection: close\r\n" in response_bytes.lower()
+            disconnected = False
+            try:
+                rejected_connection.sendall(b"1")
+            except OSError:
+                disconnected = True
+            else:
+                disconnected = rejected_connection.recv(1) == b""
+            assert disconnected
+
+        _allow_all_subnets(monkeypatch, modules.application)
+        with httpx.Client(verify=False, trust_env=False, timeout=5.0) as client:
+            recovered = client.get(f"https://127.0.0.1:{port}/healthz")
+        assert recovered.status_code == 200
+    finally:
+        runtime.shutdown()
 
 
 def test_real_tls_listener_reclaims_slow_headers_and_releases_port(
