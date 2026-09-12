@@ -359,13 +359,15 @@ def ext_register_http_routers() -> tuple[HttpRouterRegistration, ...]:
 ```
 
 Every router must declare a non-empty sub-prefix. The framework prepends
-`/api/v1`, rejects same-method routes with equivalent path matchers, rejects
-static routes shadowed by an earlier dynamic route, and verifies that each owner
-is a loaded extension. Parameter names do not distinguish otherwise equivalent
-route templates. Registering a router never creates a WebSocket action. Use the
-exported authentication, permission, shared rate-limit, client address, and audit
-helpers explicitly for each endpoint; public endpoints that accept anonymous
-traffic should still opt into IP rate limiting.
+`/api/v1` and rejects same-method routes with equivalent path matchers. It also
+rejects static routes shadowed by an earlier dynamic route and dynamic routes
+fully contained by an earlier route according to the built-in `path`, `str`,
+`float`, `int`, and `uuid` converter relationships. Parameter names do not
+distinguish otherwise equivalent route templates. Each owner must be a loaded
+extension. Registering a router never creates a WebSocket action. Use the exported
+authentication, permission, shared rate-limit, client address, and audit helpers
+explicitly for each endpoint; public endpoints that accept anonymous traffic
+should still opt into IP rate limiting.
 
 Bearer authentication uses an unverified username only to locate the database
 row, then calls the user's complete token validator before building an immutable

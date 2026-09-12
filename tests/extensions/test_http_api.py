@@ -284,6 +284,7 @@ async def test_docs_use_fixed_api_paths_when_enabled(monkeypatch, http_api_modul
     async with _http_client(app, client=("127.0.0.1", 5000)) as client:
         assert (await client.get("/api/v1/openapi.json")).status_code == 200
         assert (await client.get("/api/v1/docs")).status_code == 200
+        assert (await client.head("/api/v1/docs")).status_code == 200
 
 
 @pytest.mark.parametrize("invalid_router", [object(), APIRouter()])
@@ -394,6 +395,44 @@ def test_equivalent_custom_converter_regex_fails_startup(monkeypatch, http_api_m
 
     with pytest.raises(ValueError, match="Duplicate HTTP route GET"):
         modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+
+@pytest.mark.parametrize(
+    ("first_path", "second_path"),
+    [
+        ("/{value}", "/{value:int}"),
+        ("/{value}", "/{value:float}"),
+        ("/{value}", "/{value:uuid}"),
+        ("/{value:path}", "/{value}"),
+        ("/{value:float}", "/{value:int}"),
+    ],
+)
+def test_broader_dynamic_route_cannot_shadow_later_dynamic_route(
+    monkeypatch, http_api_modules, first_path, second_path
+):
+    modules = http_api_modules
+    broad = APIRouter(prefix="/users")
+    narrow = APIRouter(prefix="/users")
+    broad.get(first_path)(lambda: None)
+    narrow.get(second_path)(lambda: None)
+    registrations = (
+        modules.contracts.HttpRouterRegistration("broad", broad),
+        modules.contracts.HttpRouterRegistration("narrow", narrow),
+    )
+    _install_http_plugins(
+        monkeypatch,
+        modules,
+        [("broad", (registrations[0],)), ("narrow", (registrations[1],))],
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        modules.application.build_http_application(modules.config.HttpApiPolicy())
+
+    message = str(exc_info.value)
+    assert f"Shadowed HTTP route GET /api/v1/users{second_path}" in message
+    assert f"/api/v1/users{first_path}" in message
+    assert "'broad'" in message
+    assert "'narrow'" in message
 
 
 def test_dynamic_route_cannot_shadow_later_static_route_across_extensions(
@@ -556,14 +595,17 @@ async def test_equivalent_route_patterns_with_different_methods_are_allowed(
         }
 
 
-def test_router_cannot_replace_enabled_docs(monkeypatch, http_api_modules):
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_router_cannot_replace_enabled_docs(monkeypatch, http_api_modules, method):
     modules = http_api_modules
     router = APIRouter(prefix="/docs")
-    router.get("")(lambda: None)
+    router.add_api_route("", lambda: None, methods=[method])
     registration = modules.contracts.HttpRouterRegistration("consumer", router)
     _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
 
-    with pytest.raises(ValueError, match="Duplicate HTTP route GET /api/v1/docs"):
+    with pytest.raises(
+        ValueError, match=rf"Duplicate HTTP route {method} /api/v1/docs"
+    ):
         modules.application.build_http_application(
             modules.config.HttpApiPolicy(docs_enabled=True)
         )
