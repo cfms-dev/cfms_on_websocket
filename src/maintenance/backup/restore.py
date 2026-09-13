@@ -244,7 +244,7 @@ def _restore_files(
             detail=storage_path,
             completed_units=file_index,
             total_units=len(file_entries),
-            verbose_only=True,
+            detail_task=True,
         )
         source_path = _safe_payload_path(extract_dir, str(entry["archive_path"]))
         if not source_path.is_file():
@@ -281,6 +281,21 @@ def _restore_database(
 ) -> None:
     tables = _backup_tables()
     table_names = _manifest_table_names(manifest)
+    total_row_count = sum(
+        table_manifest["rows"] for table_manifest in manifest["tables"].values()
+    )
+    restored_row_count = 0
+    _emit_progress(
+        progress_reporter,
+        phase="restore_database_rows",
+        message="Restoring database rows",
+        current_step=7,
+        total_steps=IMPORT_PROGRESS_STEPS,
+        completed_units=restored_row_count,
+        total_units=total_row_count,
+        detail_task=True,
+        details_only=False,
+    )
     legacy_access_rule_rows = _load_legacy_access_rule_rows(extract_dir, manifest)
     compiled_rule_set_id_by_node = _build_missing_compiled_rule_set_mapping(
         extract_dir, manifest
@@ -303,6 +318,22 @@ def _restore_database(
             deferred_updates,
             legacy_node_namespace,
         )
+        restored_row_count += sum(
+            manifest["tables"][table_name]["rows"]
+            for table_name in restored_node_tables
+        )
+        _emit_progress(
+            progress_reporter,
+            phase="restore_database_rows",
+            message="Restoring database rows",
+            current_step=7,
+            total_steps=IMPORT_PROGRESS_STEPS,
+            completed_units=restored_row_count,
+            total_units=total_row_count,
+            detail_task=True,
+            details_only=False,
+            refresh=False,
+        )
         for table_index, table_name in enumerate(table_names, start=1):
             if table_name in restored_node_tables:
                 continue
@@ -321,7 +352,7 @@ def _restore_database(
                 detail=table_name,
                 completed_units=table_index,
                 total_units=len(table_names),
-                verbose_only=True,
+                detail_task=True,
             )
             table = tables[table_name]
             if table_name == "compiled_access_rules" and compiled_rule_set_id_by_node:
@@ -344,7 +375,7 @@ def _restore_database(
             else:
                 row_batches = _iter_table_row_batches(extract_dir, manifest, table)
 
-            restored_row_count = 0
+            restored_table_row_count = 0
             deferred_columns = set(DEFERRED_COLUMNS.get(table_name, ()))
             for rows in row_batches:
                 if table_name == "banned_subnets" and legacy_banned_subnet_reasons:
@@ -373,11 +404,25 @@ def _restore_database(
                         raise BackupFormatError(
                             "Backup contains active sibling nodes with duplicate names"
                         ) from exc
+                restored_table_row_count += len(rows)
                 restored_row_count += len(rows)
+                _emit_progress(
+                    progress_reporter,
+                    phase="restore_database_rows",
+                    message="Restoring database rows",
+                    current_step=7,
+                    total_steps=IMPORT_PROGRESS_STEPS,
+                    detail=table_name,
+                    completed_units=restored_row_count,
+                    total_units=total_row_count,
+                    detail_task=True,
+                    details_only=False,
+                    refresh=False,
+                )
             LOGGER.debug(
                 "Restored table %s with %d row(s)",
                 table_name,
-                restored_row_count,
+                restored_table_row_count,
             )
 
         for table_name, pk_name, column_names in DEFERRED_UPDATE_ORDER:
@@ -402,7 +447,23 @@ def _restore_database(
             "tables", {}
         ):
             _restore_legacy_access_rules(session, legacy_access_rule_rows)
+            restored_row_count += sum(
+                manifest["tables"][table_name]["rows"]
+                for table_name in legacy_access_rule_rows
+            )
             LOGGER.debug("Converted legacy JSON access rules during database restore")
+
+        _emit_progress(
+            progress_reporter,
+            phase="restore_database_rows",
+            message="Restoring database rows",
+            current_step=7,
+            total_steps=IMPORT_PROGRESS_STEPS,
+            completed_units=restored_row_count,
+            total_units=total_row_count,
+            detail_task=True,
+            details_only=False,
+        )
 
 
 def _restore_config_keys(

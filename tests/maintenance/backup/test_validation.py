@@ -10,6 +10,7 @@ from .support import (
     _new_database,
     _read_jsonl,
     _RootedStorage,
+    _test_progress,
     _write_config,
     _write_jsonl,
 )
@@ -186,8 +187,12 @@ def test_legacy_banned_subnet_reason_restores_as_comment(backup_context, tmp_pat
     )
 
 
-def test_database_restore_bounds_audit_insert_batches(backup_context, tmp_path):
+def test_database_restore_bounds_batches_and_reports_row_progress(
+    backup_context,
+    tmp_path,
+):
     from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.progress import _BackupProgressReporter
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
@@ -216,11 +221,25 @@ def test_database_restore_bounds_audit_insert_batches(backup_context, tmp_path):
         if statement.startswith("INSERT INTO audit_entries"):
             insert_batch_sizes.append(len(parameters) if executemany else 1)
 
-    _restore_database(extract_dir, manifest, target_session)
+    with _test_progress() as progress:
+        _restore_database(
+            extract_dir,
+            manifest,
+            target_session,
+            progress_reporter=_BackupProgressReporter(
+                progress,
+                show_details=False,
+            ),
+        )
 
     assert sum(insert_batch_sizes) == row_count
     assert len(insert_batch_sizes) > 1
     assert max(insert_batch_sizes) <= 1000
+    row_progress = next(
+        task for task in progress.tasks if task.description == "Restoring database rows"
+    )
+    assert row_progress.completed == row_count
+    assert row_progress.total == row_count
     with target_engine.connect() as connection:
         restored_count = connection.scalar(
             select(func.count()).select_from(base.metadata.tables["audit_entries"])

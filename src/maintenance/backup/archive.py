@@ -205,7 +205,7 @@ def _add_staged_file(
         detail=archive_path,
         completed_units=member_index,
         total_units=total_members,
-        verbose_only=True,
+        detail_task=True,
     )
     info = tarfile.TarInfo(archive_path)
     info.size = stat_result.st_size

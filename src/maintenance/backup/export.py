@@ -270,7 +270,7 @@ def _export_tables(
                 detail=table_name,
                 completed_units=table_index,
                 total_units=len(table_names),
-                verbose_only=True,
+                detail_task=True,
             )
             table = metadata_tables[table_name]
             stored_columns = [
@@ -377,7 +377,7 @@ def _export_files(
             detail=f"{file_id}: {storage_path}",
             completed_units=file_index,
             total_units=len(file_rows),
-            verbose_only=True,
+            detail_task=True,
         )
 
         if not storage_provider.exists(storage_path):

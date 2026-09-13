@@ -49,8 +49,10 @@ class _BackupProgressReporter:
         detail: str | None = None,
         completed_units: int | None = None,
         total_units: int | None = None,
+        details_only: bool = True,
+        refresh: bool = True,
     ) -> None:
-        if self.progress is None or not self.show_details:
+        if self.progress is None or (details_only and not self.show_details):
             return
 
         description = _format_progress_description(message, detail)
@@ -68,7 +70,7 @@ class _BackupProgressReporter:
             total=total_units,
             completed=completed_units,
             description=description,
-            refresh=True,
+            refresh=refresh,
         )
 
 
@@ -82,17 +84,21 @@ def _emit_progress(
     detail: str | None = None,
     completed_units: int | None = None,
     total_units: int | None = None,
-    verbose_only: bool = False,
+    detail_task: bool = False,
+    details_only: bool = True,
+    refresh: bool = True,
 ) -> None:
     if progress_reporter is None:
         return
-    if verbose_only:
+    if detail_task:
         progress_reporter.update_detail(
             phase=phase,
             message=message,
             detail=detail,
             completed_units=completed_units,
             total_units=total_units,
+            details_only=details_only,
+            refresh=refresh,
         )
         return
     progress_reporter.update_overall(
