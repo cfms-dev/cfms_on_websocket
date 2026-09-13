@@ -62,6 +62,16 @@ def _atomic_copy(source: Path, target: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _atomic_copytree(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp-{secrets.token_hex(8)}")
+    try:
+        shutil.copytree(source, temporary)
+        os.rename(temporary, target)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def _read_limited_bytes(path: Path, *, maximum: int, description: str) -> bytes:
     try:
         with path.open("rb") as input_file:
@@ -461,9 +471,11 @@ def _copy_release_to_active(project_root: Path, release: _Release) -> None:
             raise MaintenanceOperationError(
                 f"New release conflicts with an operator-owned path: {target}"
             )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    shutil.copy2(release.root / "release-manifest.json", project_root)
+        _atomic_copy(source, target)
+    _atomic_copy(
+        release.root / "release-manifest.json",
+        project_root / "release-manifest.json",
+    )
 
 
 def _copy_state_extensions(project_root: Path, release: _Release) -> None:
@@ -489,7 +501,7 @@ def _copy_state_extensions(project_root: Path, release: _Release) -> None:
             raise MaintenanceOperationError(
                 f"Third-party extension directory conflicts with target: {target}"
             )
-        shutil.copytree(extension.directory, target)
+        _atomic_copytree(extension.directory, target)
     _discover(project_root)
 
 

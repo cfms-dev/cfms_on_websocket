@@ -1,4 +1,7 @@
 import datetime as dt
+import hashlib
+import io
+import tarfile
 
 import pytest
 
@@ -42,6 +45,90 @@ def test_comment_digest_backup_rejects_invalid_hex(backup_context) -> None:
 
     with pytest.raises(backup_context.BackupFormatError):
         _decode_row({"content_digest": "not-a-digest"}, comments)
+
+
+def test_file_digest_verification_accepts_valid_uppercase_hex(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.archive import _verify_file_digest
+
+    contents = b"backup payload"
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(contents)
+    entry = {
+        "file_id": "file-1",
+        "storage_path": "content/files/file-1.bin",
+        "archive_path": "files/00000000.bin",
+        "size": len(contents),
+        "sha256": hashlib.sha256(contents).hexdigest().upper(),
+    }
+    manifest = {
+        "format_version": backup_context.backup_core.BACKUP_FORMAT_VERSION,
+        "tables": {
+            table_name: {"rows": 0}
+            for table_name in backup_context.backup_core.BACKUP_TABLE_NAMES
+        },
+        "files": [entry],
+        "configuration": {},
+    }
+
+    backup_context.backup_core._validate_manifest(manifest)
+    _verify_file_digest(payload, entry)
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ("C:escape.bin", "content/file.bin:stream", r"content\escape.bin"),
+)
+def test_storage_paths_reject_windows_drive_ads_and_separators(
+    backup_context,
+    unsafe_path,
+) -> None:
+    from maintenance.backup.archive import _validate_storage_path
+
+    with pytest.raises(backup_context.BackupFormatError, match="Unsafe storage path"):
+        _validate_storage_path(unsafe_path)
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ("files/C:escape.bin", "files/data.bin:stream", r"files\escape.bin"),
+)
+def test_archive_paths_reject_windows_drive_ads_and_separators(
+    backup_context,
+    tmp_path,
+    unsafe_path,
+) -> None:
+    from maintenance.backup.archive import _safe_payload_path
+
+    with pytest.raises(backup_context.BackupFormatError, match="Unsafe archive path"):
+        _safe_payload_path(tmp_path, unsafe_path)
+
+
+def test_backup_extraction_rejects_uncompressed_size_limit(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from maintenance.backup import archive as backup_archive
+
+    source = tmp_path / "payload.tar.xz"
+    directory = tarfile.TarInfo("tables/")
+    directory.type = tarfile.DIRTYPE
+    member = tarfile.TarInfo("tables/audit_entries.jsonl")
+    member.size = 5
+    with tarfile.open(source, "w:xz") as archive:
+        archive.addfile(directory)
+        archive.addfile(member, io.BytesIO(b"12345"))
+    target = tmp_path / "extracted"
+    target.mkdir()
+    monkeypatch.setattr(backup_archive, "MAX_BACKUP_UNCOMPRESSED_BYTES", 4)
+
+    with pytest.raises(backup_context.BackupFormatError, match="uncompressed size"):
+        backup_archive._safe_extract_tar_xz(source, target)
+
+    assert not (target / "tables" / "audit_entries.jsonl").exists()
 
 
 def test_backup_key_uses_human_readable_format(backup_context):

@@ -484,3 +484,98 @@ def test_state_snapshot_restores_previous_state_when_replacement_fails(
     assert not any(
         path.name.startswith(".state-old-") for path in state.parent.iterdir()
     )
+
+
+def test_upgrade_restores_source_when_atomic_release_copy_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _prepare_deployment(root)
+    staged_target = _write_release(tmp_path / "target", "1.1.0", "new")
+    stage = root / "src" / ".maintenance" / "staging" / "stage"
+    stage.mkdir(parents=True)
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_stage_release",
+        lambda *args, **kwargs: (staged_target, "a" * 64, stage),
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle, "_preflight_upgrade_database", lambda *args: None
+    )
+    monkeypatch.setattr(deployment_lifecycle, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(
+        deployment_lifecycle, "sync_config_template", lambda *args, **kwargs: None
+    )
+    real_atomic_copy = deployment_repository._atomic_copy
+    failed = False
+
+    def fail_target_main_copy(copy_source: Path, target: Path) -> None:
+        nonlocal failed
+        if (
+            target == root / "src" / "main.py"
+            and copy_source.read_text(encoding="utf-8") == "# new\n"
+            and not failed
+        ):
+            failed = True
+            raise OSError("simulated release copy failure")
+        real_atomic_copy(copy_source, target)
+
+    monkeypatch.setattr(deployment_repository, "_atomic_copy", fail_target_main_copy)
+
+    with pytest.raises(OSError, match="simulated release copy failure"):
+        deployment.upgrade_deployment(tmp_path / "release.zip", root)
+
+    assert deployment_repository._active_release(root).release_id == source.release_id
+    assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
+    assert not (root / "src" / ".maintenance" / "transaction.json").exists()
+
+
+def test_upgrade_restores_source_when_atomic_extension_copy_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _prepare_deployment(root)
+    staged_target = _write_release(tmp_path / "target", "1.1.0", "new")
+    stage = root / "src" / ".maintenance" / "staging" / "stage"
+    stage.mkdir(parents=True)
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_stage_release",
+        lambda *args, **kwargs: (staged_target, "a" * 64, stage),
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle, "_preflight_upgrade_database", lambda *args: None
+    )
+    monkeypatch.setattr(deployment_lifecycle, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(
+        deployment_lifecycle, "sync_config_template", lambda *args, **kwargs: None
+    )
+    real_atomic_copytree = deployment_repository._atomic_copytree
+    failed = False
+
+    def fail_custom_extension_copy(copy_source: Path, target: Path) -> None:
+        nonlocal failed
+        if target.name == "custom-dir" and not failed:
+            failed = True
+            raise OSError("simulated extension copy failure")
+        real_atomic_copytree(copy_source, target)
+
+    monkeypatch.setattr(
+        deployment_repository,
+        "_atomic_copytree",
+        fail_custom_extension_copy,
+    )
+
+    with pytest.raises(OSError, match="simulated extension copy failure"):
+        deployment.upgrade_deployment(tmp_path / "release.zip", root)
+
+    assert deployment_repository._active_release(root).release_id == source.release_id
+    assert (
+        root / "src" / "include" / "extensions" / "custom-dir" / "_extension.py"
+    ).read_text(encoding="utf-8") == "# original custom\n"
+    assert not any(
+        path.name.startswith(".custom-dir.tmp-")
+        for path in (root / "src" / "include" / "extensions").iterdir()
+    )

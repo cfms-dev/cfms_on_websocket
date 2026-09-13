@@ -3,10 +3,9 @@ import hashlib
 import logging
 import lzma
 import os
-import shutil
 import tarfile
 from collections.abc import Sequence
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import orjson
@@ -15,6 +14,7 @@ from include.providers.base import StorageProvider
 from maintenance.backup.constants import (
     BACKUP_FORMAT_VERSION,
     MAX_BACKUP_FILES,
+    MAX_BACKUP_UNCOMPRESSED_BYTES,
     MAX_MANIFEST_BYTES,
 )
 from maintenance.backup.models import (
@@ -125,7 +125,7 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         ):
             raise BackupFormatError("Backup manifest contains an invalid file entry")
         _validate_storage_path(storage_path)
-        archive_parts = PurePosixPath(archive_path).parts
+        archive_parts = _archive_path_parts(archive_path)
         if len(archive_parts) != 2 or archive_parts[0] != "files":
             raise BackupFormatError(
                 f"Unsafe file archive path in backup: {archive_path!r}"
@@ -176,6 +176,8 @@ def _safe_extract_tar_xz(source_path: Path, target_dir: Path) -> None:
         tarfile.open(fileobj=compressed, mode="r|") as tar,
     ):
         member_count = 0
+        declared_size = 0
+        extracted_size = 0
         extracted_paths: set[Path] = set()
         for member in tar:
             member_count += 1
@@ -195,22 +197,29 @@ def _safe_extract_tar_xz(source_path: Path, target_dir: Path) -> None:
                 raise BackupFormatError(
                     f"Unsupported archive member type: {member.name}"
                 )
+            declared_size += member.size
+            if declared_size > MAX_BACKUP_UNCOMPRESSED_BYTES:
+                raise BackupFormatError(
+                    "Backup archive exceeds the uncompressed size limit"
+                )
             target_path.parent.mkdir(parents=True, exist_ok=True)
             extracted = tar.extractfile(member)
             if extracted is None:
                 raise BackupFormatError(f"Unable to read archive member: {member.name}")
             with extracted, target_path.open("wb") as target:
-                shutil.copyfileobj(extracted, target, length=1024 * 1024)
+                while chunk := extracted.read(1024 * 1024):
+                    extracted_size += len(chunk)
+                    if extracted_size > MAX_BACKUP_UNCOMPRESSED_BYTES:
+                        raise BackupFormatError(
+                            "Backup archive exceeds the uncompressed size limit"
+                        )
+                    target.write(chunk)
     LOGGER.debug("Compressed payload extracted to %s", target_dir)
 
 
 def _safe_payload_path(root: Path, archive_path: str) -> Path:
-    pure_path = PurePosixPath(archive_path)
-    if pure_path.is_absolute() or any(
-        part in ("", ".", "..") for part in pure_path.parts
-    ):
-        raise BackupFormatError(f"Unsafe archive path: {archive_path}")
-    target = root.joinpath(*pure_path.parts)
+    parts = _archive_path_parts(archive_path)
+    target = root.joinpath(*parts)
     resolved_root = root.resolve()
     resolved_target = target.resolve(strict=False)
     if not resolved_target.is_relative_to(resolved_root):
@@ -218,11 +227,39 @@ def _safe_payload_path(root: Path, archive_path: str) -> Path:
     return target
 
 
+def _archive_path_parts(archive_path: str) -> tuple[str, ...]:
+    if (
+        not archive_path
+        or "\\" in archive_path
+        or "\x00" in archive_path
+        or PureWindowsPath(archive_path).drive
+        or PurePosixPath(archive_path).is_absolute()
+    ):
+        raise BackupFormatError(f"Unsafe archive path: {archive_path}")
+    parts = archive_path.removesuffix("/").split("/")
+    if any(
+        part in ("", ".", "..") or ":" in part or part.endswith((" ", "."))
+        for part in parts
+    ):
+        raise BackupFormatError(f"Unsafe archive path: {archive_path}")
+    return tuple(parts)
+
+
 def _validate_storage_path(path: str) -> None:
-    if not path or os.path.isabs(path):
+    if (
+        not path
+        or "\\" in path
+        or "\x00" in path
+        or os.path.isabs(path)
+        or PureWindowsPath(path).drive
+        or PurePosixPath(path).is_absolute()
+    ):
         raise BackupFormatError(f"Unsafe storage path in backup: {path!r}")
-    parts = Path(path).parts
-    if any(part in ("..", "") for part in parts):
+    parts = path.split("/")
+    if any(
+        part in ("", ".", "..") or ":" in part or part.endswith((" ", "."))
+        for part in parts
+    ):
         raise BackupFormatError(f"Unsafe storage path in backup: {path!r}")
 
 
@@ -235,7 +272,7 @@ def _verify_file_digest(path: Path, entry: dict[str, Any]) -> None:
         while chunk := f.read(1024 * 1024):
             sha256.update(chunk)
             size += len(chunk)
-    if size != expected_size or sha256.hexdigest() != expected_sha256:
+    if size != expected_size or sha256.hexdigest() != expected_sha256.lower():
         raise BackupIntegrityError(
             f"File payload failed verification for {entry['storage_path']}"
         )

@@ -25,6 +25,7 @@ from maintenance.backup.constants import (
     BACKUP_FORMAT_VERSION,
     GCM_NONCE_BYTES,
     MAX_BACKUP_FILES,
+    MAX_JSONL_ROW_BYTES,
 )
 from maintenance.backup.format import (
     _encode_bytes,
@@ -352,7 +353,13 @@ def _export_tables(
                             column.name,
                             value,
                         )
-                    f.write(orjson.dumps(encoded, option=orjson.OPT_SORT_KEYS))
+                    encoded_row = orjson.dumps(encoded, option=orjson.OPT_SORT_KEYS)
+                    if len(encoded_row) > MAX_JSONL_ROW_BYTES:
+                        raise BackupIntegrityError(
+                            f"Database row in table {table_name!r} exceeds the "
+                            f"{MAX_JSONL_ROW_BYTES}-byte backup limit"
+                        )
+                    f.write(encoded_row)
                     f.write(b"\n")
                     row_count += 1
 

@@ -614,3 +614,39 @@ def test_restore_rejects_oversized_json_row_before_parsing(
             )
             == 0
         )
+
+
+def test_export_rejects_json_row_larger_than_restore_limit(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from maintenance.backup import export as backup_export
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    with source_engine.begin() as connection:
+        connection.execute(
+            insert(base.metadata.tables["audit_entries"]),
+            {
+                "id": "oversized-audit",
+                "action": "export-limit",
+                "username": None,
+                "target": None,
+                "data": {"payload": "too large"},
+                "result": 200,
+                "remote_address": None,
+                "logged_time": 0.0,
+            },
+        )
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    monkeypatch.setattr(backup_export, "MAX_JSONL_ROW_BYTES", 16)
+    selection = backup_context.BackupExportSelection.from_component_values(["audit"])
+
+    with pytest.raises(backup_context.BackupIntegrityError, match="backup limit"):
+        backup_export._export_tables(
+            staging_dir,
+            source_session,
+            selection=selection,
+        )
