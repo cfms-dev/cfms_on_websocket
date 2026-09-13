@@ -455,6 +455,42 @@ def test_status_removes_stored_bytecode_but_rejects_other_extra_files(
         deployment.inspect_deployment(root)
 
 
+def test_status_rejects_extra_empty_directory_in_stored_release(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "deployment"
+    active = _prepare_deployment(root)
+    snapshot = deployment_repository._snapshot_release(root, active)
+    (snapshot / "unexpected").mkdir()
+
+    with pytest.raises(MaintenanceOperationError, match="do not match its manifest"):
+        deployment.inspect_deployment(root)
+
+
+def test_load_settings_translates_invalid_utf8(tmp_path: Path) -> None:
+    settings = tmp_path / "src" / ".maintenance" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_bytes(b"\xff")
+
+    with pytest.raises(MaintenanceOperationError, match="Unable to read"):
+        deployment_repository._load_settings(tmp_path)
+
+
+def test_state_snapshot_enforces_extension_tree_member_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    active = _prepare_deployment(root)
+    deployment_repository._snapshot_release(root, active)
+    custom = root / "src" / "include" / "extensions" / "custom-dir"
+    (custom / "asset.txt").write_text("asset\n", encoding="utf-8")
+    monkeypatch.setattr(extension_packages, "MAX_ARCHIVE_MEMBERS", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2 members"):
+        deployment_repository._snapshot_state(root, active)
+
+
 def test_state_snapshot_restores_previous_state_when_replacement_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

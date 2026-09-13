@@ -4,6 +4,7 @@ import tomlkit
 import maintenance.operations.extensions as extension_operations
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.extensions import lifecycle as extension_lifecycle
+from maintenance.operations.extensions import packages as extension_packages
 
 from .support import _enabled, _prepare_src, _write_installed_extension, _write_package
 
@@ -201,4 +202,17 @@ def test_builtin_is_immutable_and_stale_transactions_block_mutations(
     stale.mkdir()
     assert extension_operations.inspect_extensions().extensions
     with pytest.raises(MaintenanceOperationError, match="manual review"):
+        extension_operations.enable_extension("builtin")
+
+
+def test_mutation_enforces_root_limit_before_collecting_transaction_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    _, root = _prepare_src(tmp_path, monkeypatch)
+    for index in range(3):
+        (root / f".cfms-extension-stage-{index}").mkdir()
+    monkeypatch.setattr(extension_packages, "MAX_INSTALLED_EXTENSIONS", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2 entries"):
         extension_operations.enable_extension("builtin")

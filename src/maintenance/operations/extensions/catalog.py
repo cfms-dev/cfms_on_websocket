@@ -46,6 +46,10 @@ def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
             f"Extension directory not found: {paths.EXTENSION_ROOT}"
         )
     if mutating:
+        try:
+            _validate_extension_root_size(paths.EXTENSION_ROOT)
+        except OSError as exc:
+            raise MaintenanceOperationError(str(exc)) from exc
         artifacts = sorted(
             path
             for path in paths.EXTENSION_ROOT.iterdir()

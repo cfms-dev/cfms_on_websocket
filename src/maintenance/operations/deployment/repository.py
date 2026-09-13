@@ -24,7 +24,10 @@ from maintenance.operations.deployment.constants import (
 )
 from maintenance.operations.deployment.models import DeploymentSettings, _Release
 from maintenance.operations.exceptions import MaintenanceOperationError
-from maintenance.operations.extensions.packages import _validate_extension_root_size
+from maintenance.operations.extensions.packages import (
+    _validate_extension_root_size,
+    _validate_extension_tree,
+)
 
 
 def _hash_file(path: Path) -> str:
@@ -66,7 +69,9 @@ def _atomic_copytree(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.tmp-{secrets.token_hex(8)}")
     try:
-        shutil.copytree(source, temporary)
+        _validate_extension_tree(source)
+        shutil.copytree(source, temporary, symlinks=True)
+        _validate_extension_tree(temporary)
         os.rename(temporary, target)
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -144,7 +149,7 @@ def _load_settings(project_root: Path) -> DeploymentSettings:
             format_version=data["format_version"],
             extras=tuple(data.get("extras", ())),
         )
-    except (KeyError, OSError, TypeError, json.JSONDecodeError) as exc:
+    except (KeyError, OSError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
         raise MaintenanceOperationError(f"Unable to read {path}: {exc}") from exc
     if settings.format_version != 1 or any(
         not isinstance(extra, str) or not extra for extra in settings.extras
@@ -234,8 +239,21 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
     return manifest
 
 
+def _release_directories(expected_files: dict[str, Any]) -> set[str]:
+    return {
+        parent.as_posix()
+        for relative_path in expected_files
+        for parent in PurePosixPath(relative_path).parents
+        if parent != PurePosixPath(".")
+    }
+
+
 def _release_from_tree(root: Path, *, exact: bool) -> _Release:
     manifest_path = root / "release-manifest.json"
+    if manifest_path.is_symlink() or manifest_path.is_junction():
+        raise MaintenanceOperationError(
+            f"Release manifest is not a regular file: {manifest_path}"
+        )
     contents = _read_limited_bytes(
         manifest_path,
         maximum=MAX_MANIFEST_BYTES,
@@ -243,26 +261,48 @@ def _release_from_tree(root: Path, *, exact: bool) -> _Release:
     )
     manifest = _parse_manifest(contents)
     expected_files = manifest["files"]
-    for relative_path, expected in expected_files.items():
-        path = root / Path(relative_path)
-        if not path.is_file() or _hash_file(path) != expected.lower():
-            raise MaintenanceOperationError(
-                f"Release file failed SHA-256 verification: {relative_path}"
-            )
     if exact:
+        expected_directories = _release_directories(expected_files)
         remaining = set(expected_files)
-        for path in root.rglob("*"):
-            if not path.is_file() or path == manifest_path:
-                continue
-            relative_path = path.relative_to(root).as_posix()
-            if relative_path not in remaining:
-                raise MaintenanceOperationError(
-                    "Release archive contents do not match its manifest"
-                )
-            remaining.remove(relative_path)
+        pending = [root]
+        while pending:
+            directory = pending.pop()
+            for path in directory.iterdir():
+                if path.is_symlink() or path.is_junction():
+                    raise MaintenanceOperationError(
+                        "Release archive contents do not match its manifest"
+                    )
+                if path == manifest_path:
+                    continue
+                relative_path = path.relative_to(root).as_posix()
+                if path.is_dir():
+                    if relative_path not in expected_directories:
+                        raise MaintenanceOperationError(
+                            "Release archive contents do not match its manifest"
+                        )
+                    pending.append(path)
+                    continue
+                if not path.is_file() or relative_path not in remaining:
+                    raise MaintenanceOperationError(
+                        "Release archive contents do not match its manifest"
+                    )
+                remaining.remove(relative_path)
         if remaining:
             raise MaintenanceOperationError(
                 "Release archive contents do not match its manifest"
+            )
+    for relative_path, expected in expected_files.items():
+        path = root / Path(relative_path)
+        current = path
+        while current != root:
+            if current.is_symlink() or current.is_junction():
+                raise MaintenanceOperationError(
+                    f"Release file is not a regular file: {relative_path}"
+                )
+            current = current.parent
+        if not path.is_file() or _hash_file(path) != expected.lower():
+            raise MaintenanceOperationError(
+                f"Release file failed SHA-256 verification: {relative_path}"
             )
     return _Release(
         root,
@@ -286,7 +326,43 @@ def _version_root(project_root: Path, release_id: str) -> Path:
 
 
 def _verified_stored_release(root: Path) -> _Release:
-    for cache_path in root.rglob("__pycache__"):
+    release = _release_from_tree(root, exact=False)
+    expected_directories = _release_directories(release.manifest["files"])
+    maximum_entries = (
+        len(release.manifest["files"])
+        + len(expected_directories)
+        + MAX_ARCHIVE_MEMBERS
+        + 1
+    )
+    entry_count = 0
+    cache_paths = []
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for path in directory.iterdir():
+            entry_count += 1
+            if entry_count > maximum_entries:
+                raise MaintenanceOperationError(
+                    f"Stored release contains more than {maximum_entries} entries: "
+                    f"{root}"
+                )
+            if path.is_symlink() or path.is_junction():
+                raise MaintenanceOperationError(
+                    f"Stored release contains a filesystem link: {path}"
+                )
+            if path.is_dir():
+                pending.append(path)
+                if path.name == "__pycache__":
+                    cache_paths.append(path)
+            elif not path.is_file():
+                raise MaintenanceOperationError(
+                    f"Stored release contains an unsupported filesystem entry: {path}"
+                )
+    for cache_path in sorted(
+        cache_paths,
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
         if not cache_path.exists():
             continue
         try:
@@ -295,6 +371,16 @@ def _verified_stored_release(root: Path) -> _Release:
             raise MaintenanceOperationError(
                 f"Unable to remove generated Python bytecode cache {cache_path}: {exc}"
             ) from exc
+        parent = cache_path.parent
+        while (
+            parent != root
+            and parent.relative_to(root).as_posix() not in expected_directories
+        ):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
     return _release_from_tree(root, exact=True)
 
 
@@ -414,9 +500,13 @@ def _snapshot_state(project_root: Path, release: _Release) -> None:
         shutil.copy2(config_path, temporary / "config.toml")
         for identifier, extension in _discover(project_root).items():
             if identifier not in release.managed_extensions:
+                _validate_extension_tree(extension.directory)
                 shutil.copytree(
-                    extension.directory, extensions / extension.directory.name
+                    extension.directory,
+                    extensions / extension.directory.name,
+                    symlinks=True,
                 )
+                _validate_extension_tree(extensions / extension.directory.name)
         old = version_root / f".state-old-{secrets.token_hex(8)}"
         moved_old_state = False
         try:

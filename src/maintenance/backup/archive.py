@@ -46,6 +46,18 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         raise BackupFormatError("Backup manifest tables must be an object")
     if not isinstance(files, list):
         raise BackupFormatError("Backup manifest files must be an array")
+    configuration = manifest.get("configuration", {})
+    if not isinstance(configuration, dict):
+        raise BackupFormatError("Backup manifest contains invalid configuration")
+    for section_name, key_name in (
+        ("security", "pepper"),
+        ("server", "secret_key"),
+    ):
+        section = configuration.get(section_name, {})
+        if not isinstance(section, dict) or (
+            key_name in section and not isinstance(section[key_name], str)
+        ):
+            raise BackupFormatError("Backup manifest contains invalid configuration")
     if len(files) > MAX_BACKUP_FILES:
         raise BackupFormatError(
             f"Backup contains more than {MAX_BACKUP_FILES} file entries"

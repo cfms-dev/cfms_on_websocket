@@ -26,6 +26,10 @@ _ALLOWED_COMPRESSIONS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 
 
 def _validate_extension_root_size(root: Path) -> None:
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
+        raise MaintenanceOperationError(
+            f"Extension root is not a regular directory: {root}"
+        )
     entry_count = 0
     for path in root.iterdir():
         entry_count += 1
@@ -43,6 +47,47 @@ def _validate_extension_root_size(root: Path) -> None:
             raise MaintenanceOperationError(
                 f"Extension manifest exceeds the 1 MiB limit: {manifest_path}"
             )
+
+
+def _validate_extension_tree(root: Path) -> None:
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
+        raise MaintenanceOperationError(f"Extension is not a regular directory: {root}")
+    file_count = 0
+    directory_count = 0
+    total_size = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for path in directory.iterdir():
+            if path.is_symlink() or path.is_junction():
+                raise MaintenanceOperationError(
+                    f"Extension contains a filesystem link: {path}"
+                )
+            if path.is_dir():
+                directory_count += 1
+                if directory_count > MAX_ARCHIVE_MEMBERS:
+                    raise MaintenanceOperationError(
+                        f"Extension contains more than {MAX_ARCHIVE_MEMBERS} members: "
+                        f"{root}"
+                    )
+                pending.append(path)
+                continue
+            if not path.is_file():
+                raise MaintenanceOperationError(
+                    f"Extension contains an unsupported filesystem entry: {path}"
+                )
+            file_count += 1
+            if file_count > MAX_ARCHIVE_MEMBERS:
+                raise MaintenanceOperationError(
+                    f"Extension contains more than {MAX_ARCHIVE_MEMBERS} members: "
+                    f"{root}"
+                )
+            total_size += path.stat().st_size
+            if total_size > MAX_UNCOMPRESSED_BYTES:
+                raise MaintenanceOperationError(
+                    f"Extension exceeds the {MAX_UNCOMPRESSED_BYTES}-byte size limit: "
+                    f"{root}"
+                )
 
 
 def _hash_file(path: Path) -> str:

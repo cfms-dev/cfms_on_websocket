@@ -674,6 +674,38 @@ def test_manifest_rejects_duplicate_file_ids(backup_context) -> None:
         _validate_manifest(manifest)
 
 
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        [],
+        {"security": []},
+        {"server": []},
+        {"security": {"pepper": 1}},
+        {"server": {"secret_key": False}},
+    ],
+)
+def test_manifest_rejects_invalid_configuration_shape(
+    backup_context,
+    configuration,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["audit"],
+        "tables": {"audit_entries": {"rows": 0}},
+        "files": [],
+        "configuration": configuration,
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid configuration",
+    ):
+        _validate_manifest(manifest)
+
+
 def test_restore_rejects_oversized_json_row_before_parsing(
     backup_context,
     tmp_path,
