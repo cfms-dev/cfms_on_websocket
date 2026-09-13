@@ -754,6 +754,35 @@ def test_manifest_rejects_invalid_configuration_shape(
         _validate_manifest(manifest)
 
 
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        {"security": {"pepper": "restored"}},
+        {"server": {"secret_key": "restored"}},
+    ],
+)
+def test_manifest_rejects_incomplete_configuration(
+    backup_context,
+    configuration,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": configuration,
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid configuration",
+    ):
+        _validate_manifest(manifest)
+
+
 def test_manifest_rejects_tables_outside_component_selection(backup_context) -> None:
     from maintenance.backup.archive import _validate_manifest
     from maintenance.backup.format import BACKUP_FORMAT_VERSION
@@ -763,7 +792,10 @@ def test_manifest_rejects_tables_outside_component_selection(backup_context) -> 
         "components": ["configuration"],
         "tables": {"audit_entries": {"rows": 0}},
         "files": [],
-        "configuration": {"security": {"pepper": "restored"}},
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
     }
 
     with pytest.raises(

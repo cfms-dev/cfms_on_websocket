@@ -89,7 +89,12 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
     if table.name == "banned_subnets":
         created_at = row.get("created_at")
         if isinstance(created_at, str):
-            parsed_created_at = dt.datetime.fromisoformat(created_at)
+            try:
+                parsed_created_at = dt.datetime.fromisoformat(created_at)
+            except ValueError as exc:
+                raise BackupFormatError(
+                    "Invalid datetime for banned_subnets.created_at"
+                ) from exc
             if parsed_created_at.tzinfo is None:
                 parsed_created_at = parsed_created_at.replace(tzinfo=dt.UTC)
             created_at = parsed_created_at.timestamp()
@@ -108,7 +113,12 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
             continue
         value = row[column.name]
         if value is not None and isinstance(column.type, DateTime):
-            value = dt.datetime.fromisoformat(value)
+            try:
+                value = dt.datetime.fromisoformat(value)
+            except (TypeError, ValueError) as exc:
+                raise BackupFormatError(
+                    f"Invalid datetime for {table.name}.{column.name}"
+                ) from exc
         if (
             value is not None
             and table.name == "comments"

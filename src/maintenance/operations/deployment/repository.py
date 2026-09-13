@@ -227,7 +227,7 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
             not path_parts
             or not isinstance(digest, str)
             or _SHA256_PATTERN(digest) is None
-            or relative_path.startswith(_OPERATOR_OWNED_PREFIXES)
+            or relative_path.casefold().startswith(_OPERATOR_OWNED_PREFIXES)
             or "__pycache__" in path_parts
             or PurePosixPath(relative_path).suffix in {".pyc", ".pyo"}
         ):

@@ -627,8 +627,8 @@ def _restore_config_keys(
     if "server" not in doc:
         doc["server"] = tomlkit.table()
 
-    doc["security"]["pepper"] = security.get("pepper", "")
-    doc["server"]["secret_key"] = server.get("secret_key", "")
+    doc["security"]["pepper"] = security["pepper"]
+    doc["server"]["secret_key"] = server["secret_key"]
     _write_file_atomically(path, tomlkit.dumps(doc).encode())
     LOGGER.debug("Configuration keys restored in %s", path)
 

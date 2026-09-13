@@ -75,7 +75,11 @@ def decode_backup_key(value: str) -> bytes:
         raise ValueError("Backup key cannot be empty")
     padding = "=" * (-len(normalized) % 4)
     try:
-        decoded = base64.urlsafe_b64decode(normalized + padding)
+        decoded = base64.b64decode(
+            normalized + padding,
+            altchars=b"-_",
+            validate=True,
+        )
         if len(decoded) == 32:
             return decoded
     except (binascii.Error, ValueError) as exc:

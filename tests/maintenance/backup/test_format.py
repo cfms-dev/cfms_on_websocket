@@ -161,6 +161,42 @@ def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context)
     assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
 
 
+def test_backup_key_decoder_rejects_invalid_legacy_base64url(backup_context):
+    legacy_key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+
+    with pytest.raises(ValueError, match="valid base64url"):
+        backup_context.decode_backup_key(f"{legacy_key}!!!!")
+
+
+def test_backup_header_rejects_coercible_field_types(backup_context) -> None:
+    from maintenance.backup.models import BackupHeader
+
+    with pytest.raises(backup_context.BackupFormatError, match="field types"):
+        BackupHeader.from_mapping(
+            {
+                "format_version": True,
+                "created_at": "2026-09-13T00:00:00+00:00",
+                "core_version": "0.10.1",
+                "compression": "xz",
+                "encryption": "AES-256-GCM",
+                "nonce": "AAECAwQFBgcICQoL",
+            }
+        )
+
+
+def test_backup_row_rejects_invalid_datetime_as_format_error(
+    backup_context,
+) -> None:
+    from sqlalchemy import Column, DateTime, MetaData, Table
+
+    from maintenance.backup.rows import _decode_row
+
+    table = Table("example", MetaData(), Column("created_at", DateTime()))
+
+    with pytest.raises(backup_context.BackupFormatError, match="datetime"):
+        _decode_row({"created_at": "not-a-datetime"}, table)
+
+
 @pytest.mark.parametrize("nonce", ("a", "AAAAAAAAAAAAAAAA!"))
 def test_backup_header_rejects_malformed_base64_nonce(
     backup_context,

@@ -100,6 +100,7 @@ def test_release_id_is_manifest_digest_and_distinguishes_same_version(
     "operator_path",
     [
         "src/.maintenance/transaction.json",
+        "src/.MAINTENANCE/transaction.json",
         "src/content/files/production.dat",
         "src/content/logs/server.log",
     ],

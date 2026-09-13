@@ -55,9 +55,9 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         ("security", "pepper"),
         ("server", "secret_key"),
     ):
-        section = configuration.get(section_name, {})
-        if not isinstance(section, dict) or (
-            key_name in section and not isinstance(section[key_name], str)
+        section = configuration.get(section_name)
+        if configuration and (
+            not isinstance(section, dict) or not isinstance(section.get(key_name), str)
         ):
             raise BackupFormatError("Backup manifest contains invalid configuration")
     if len(files) > MAX_BACKUP_FILES:
