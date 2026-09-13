@@ -9,9 +9,28 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.10.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.10.1...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.10.1](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.10.1) - 2026-09-13
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.10.0...v0.10.1)</small>
+
+### Security
+
+- Close HTTP connections after rejecting a request for a forbidden subnet or an oversized body, preventing unread request data from retaining concurrency slots.
+
+### Added
+
+- Show completed and total database row counts while importing backups, with progress updates aligned to bounded insert batches to avoid significant overhead.
+
+### Fixed
+
+- Maintenance backup and deployment workflows now bound in-memory work, stream large datasets, and roll back partial filesystem state when an operation fails.
+- Reject HTTP extension routes that are unreachable behind broader dynamic routes, and reserve both GET and HEAD methods for enabled API documentation endpoints.
+- Stream backup table rows into bounded database insert batches to prevent large audit-log restores from exhausting memory when using MySQL.
+
 
 ## [v0.10.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.10.0) - 2026-09-11
 

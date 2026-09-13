@@ -27,7 +27,7 @@ __all__ = [
 
 from include.config.version import Version
 
-CORE_VERSION = Version("0.10.0")
+CORE_VERSION = Version("0.10.1")
 PROTOCOL_VERSION = 27
 
 # Event bus channels
