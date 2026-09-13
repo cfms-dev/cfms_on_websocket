@@ -722,6 +722,40 @@ def test_manifest_rejects_duplicate_file_ids(backup_context) -> None:
         _validate_manifest(manifest)
 
 
+def test_manifest_rejects_case_colliding_file_paths(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 2}, "users": {"rows": 0}},
+        "files": [
+            {
+                "file_id": "first",
+                "storage_path": "content/files/Payload.bin",
+                "archive_path": "files/00000000.bin",
+                "size": 1,
+                "sha256": "0" * 64,
+            },
+            {
+                "file_id": "second",
+                "storage_path": "content/files/payload.bin",
+                "archive_path": "files/00000001.bin",
+                "size": 1,
+                "sha256": "1" * 64,
+            },
+        ],
+        "configuration": {},
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="duplicate file paths",
+    ):
+        _validate_manifest(manifest)
+
+
 @pytest.mark.parametrize(
     "configuration",
     [

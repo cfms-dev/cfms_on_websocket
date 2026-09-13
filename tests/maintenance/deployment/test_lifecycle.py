@@ -476,6 +476,44 @@ def test_load_settings_translates_invalid_utf8(tmp_path: Path) -> None:
         deployment_repository._load_settings(tmp_path)
 
 
+def test_load_settings_rejects_non_array_extras(tmp_path: Path) -> None:
+    settings = tmp_path / "src" / ".maintenance" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps({"format_version": 1, "extras": "cluster"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="Invalid deployment settings"):
+        deployment_repository._load_settings(tmp_path)
+
+
+def test_load_settings_rejects_boolean_format_version(tmp_path: Path) -> None:
+    settings = tmp_path / "src" / ".maintenance" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps({"format_version": True, "extras": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="Invalid deployment settings"):
+        deployment_repository._load_settings(tmp_path)
+
+
+def test_stored_release_root_enforces_total_entry_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    versions = tmp_path / "src" / ".maintenance" / "versions"
+    versions.mkdir(parents=True)
+    for index in range(3):
+        (versions / f"unexpected-{index}").mkdir()
+    monkeypatch.setattr(deployment_repository, "MAX_STORED_RELEASES", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2"):
+        deployment_repository._stored_releases(tmp_path)
+
+
 def test_state_snapshot_enforces_extension_tree_member_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

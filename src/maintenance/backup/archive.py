@@ -193,11 +193,16 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             )
         if file_id in file_ids:
             raise BackupFormatError("Backup manifest contains duplicate file IDs")
-        if storage_path in storage_paths or archive_path in archive_paths:
+        normalized_storage_path = storage_path.casefold()
+        normalized_archive_path = archive_path.casefold()
+        if (
+            normalized_storage_path in storage_paths
+            or normalized_archive_path in archive_paths
+        ):
             raise BackupFormatError("Backup manifest contains duplicate file paths")
         file_ids.add(file_id)
-        storage_paths.add(storage_path)
-        archive_paths.add(archive_path)
+        storage_paths.add(normalized_storage_path)
+        archive_paths.add(normalized_archive_path)
     if missing_components:
         raise BackupFormatError(
             "Backup payload does not match the selected components: "

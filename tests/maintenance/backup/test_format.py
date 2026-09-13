@@ -219,6 +219,30 @@ def test_backup_header_rejects_malformed_base64_nonce(
 
 
 @pytest.mark.parametrize(
+    "created_at",
+    ("not-a-time", "2026-09-13T00:00:00"),
+)
+def test_backup_header_rejects_invalid_created_at(
+    backup_context,
+    created_at,
+) -> None:
+    from maintenance.backup.format import _validate_header
+    from maintenance.backup.models import BackupHeader
+
+    header = BackupHeader(
+        format_version=backup_context.backup_core.BACKUP_FORMAT_VERSION,
+        created_at=created_at,
+        core_version="0.10.1",
+        compression="xz",
+        encryption="AES-256-GCM",
+        nonce="AAECAwQFBgcICQoL",
+    )
+
+    with pytest.raises(backup_context.BackupFormatError, match="created_at"):
+        _validate_header(header)
+
+
+@pytest.mark.parametrize(
     "layout",
     ("current", "previous_compiled", "legacy_access_rules"),
 )

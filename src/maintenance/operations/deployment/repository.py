@@ -145,14 +145,18 @@ def _load_settings(project_root: Path) -> DeploymentSettings:
                 description="deployment settings",
             )
         )
-        settings = DeploymentSettings(
-            format_version=data["format_version"],
-            extras=tuple(data.get("extras", ())),
-        )
+        format_version = data["format_version"]
+        extras = data.get("extras", [])
     except (KeyError, OSError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
         raise MaintenanceOperationError(f"Unable to read {path}: {exc}") from exc
-    if settings.format_version != 1 or any(
-        not isinstance(extra, str) or not extra for extra in settings.extras
+    if not isinstance(extras, list):
+        raise MaintenanceOperationError(f"Invalid deployment settings: {path}")
+    settings = DeploymentSettings(format_version, tuple(extras))
+    if (
+        isinstance(settings.format_version, bool)
+        or not isinstance(settings.format_version, int)
+        or settings.format_version != 1
+        or any(not isinstance(extra, str) or not extra for extra in settings.extras)
     ):
         raise MaintenanceOperationError(f"Invalid deployment settings: {path}")
     return settings
@@ -412,15 +416,17 @@ def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
         ) from exc
     try:
         stored_paths = []
+        entry_count = 0
         for path in versions_root.iterdir():
+            entry_count += 1
+            if entry_count > MAX_STORED_RELEASES:
+                raise MaintenanceOperationError(
+                    f"Deployment contains more than {MAX_STORED_RELEASES} "
+                    "stored release entries"
+                )
             if _SHA256_PATTERN(path.name) is None:
                 continue
             stored_paths.append(path)
-            if len(stored_paths) > MAX_STORED_RELEASES:
-                raise MaintenanceOperationError(
-                    f"Deployment contains more than {MAX_STORED_RELEASES} "
-                    "stored releases"
-                )
         stored_paths.sort()
     except MaintenanceOperationError:
         raise

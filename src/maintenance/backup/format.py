@@ -299,6 +299,12 @@ def _validate_header(header: BackupHeader) -> None:
         raise BackupFormatError(
             f"Unsupported backup format version: {header.format_version}"
         )
+    try:
+        created_at = dt.datetime.fromisoformat(header.created_at)
+    except (TypeError, ValueError) as exc:
+        raise BackupFormatError("Backup header created_at is invalid") from exc
+    if created_at.tzinfo is None:
+        raise BackupFormatError("Backup header created_at is invalid")
     if header.compression != "xz":
         raise BackupFormatError(f"Unsupported compression: {header.compression}")
     if header.encryption != "AES-256-GCM":
