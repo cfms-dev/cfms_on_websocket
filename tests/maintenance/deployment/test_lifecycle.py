@@ -514,6 +514,36 @@ def test_stored_release_root_enforces_total_entry_limit(
         deployment_repository._stored_releases(tmp_path)
 
 
+def test_release_tree_enforces_total_file_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_root = tmp_path / "release"
+    _write_release(release_root, "1.0.0", "release")
+    monkeypatch.setattr(deployment_repository, "MAX_UNCOMPRESSED_BYTES", 1)
+
+    with pytest.raises(MaintenanceOperationError, match="uncompressed size limit"):
+        deployment_repository._release_from_tree(release_root, exact=True)
+
+
+def test_release_snapshot_rejects_linked_version_root(tmp_path: Path) -> None:
+    project_root = tmp_path / "deployment"
+    release = _write_release(tmp_path / "source", "1.0.0", "source")
+    external_root = tmp_path / "external-version"
+    shutil.copytree(release.root, external_root / "release")
+    versions_root = project_root / "src" / ".maintenance" / "versions"
+    versions_root.mkdir(parents=True)
+    (versions_root / release.release_id).symlink_to(
+        external_root,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="not a regular directory"):
+        deployment_repository._snapshot_release(project_root, release)
+
+    assert not (external_root / "state").exists()
+
+
 def test_state_snapshot_enforces_extension_tree_member_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

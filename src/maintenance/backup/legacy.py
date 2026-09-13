@@ -115,5 +115,6 @@ def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:
             raise BackupFormatError(
                 "Legacy access rule rule_data is not valid JSON"
             ) from exc
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
+        if isinstance(parsed, dict):
+            return parsed
+    raise BackupFormatError("Legacy access rule rule_data must be a JSON object")

@@ -32,7 +32,7 @@ def test_comment_digest_backup_representation(backup_context) -> None:
     comments = backup_context.Base.metadata.tables["comments"]
 
     encoded = _serialize_table_value("comments", "content_digest", digest)
-    decoded = _decode_row({"content_digest": encoded}, comments)
+    decoded = _decode_row({"comment_id": 1, "content_digest": encoded}, comments)
 
     assert encoded == digest.hex()
     assert decoded["content_digest"] == digest
@@ -44,7 +44,7 @@ def test_comment_digest_backup_rejects_invalid_hex(backup_context) -> None:
     comments = backup_context.Base.metadata.tables["comments"]
 
     with pytest.raises(backup_context.BackupFormatError):
-        _decode_row({"content_digest": "not-a-digest"}, comments)
+        _decode_row({"comment_id": 1, "content_digest": "not-a-digest"}, comments)
 
 
 def test_backup_row_rejects_unknown_columns(backup_context) -> None:
@@ -54,6 +54,18 @@ def test_backup_row_rejects_unknown_columns(backup_context) -> None:
 
     with pytest.raises(backup_context.BackupFormatError, match="unknown columns"):
         _decode_row({"id": "audit-1", "result_code": 200}, audit_entries)
+
+
+def test_backup_row_rejects_missing_primary_key(backup_context) -> None:
+    from maintenance.backup.rows import _decode_row
+
+    group_permissions = backup_context.Base.metadata.tables["group_permissions"]
+
+    with pytest.raises(backup_context.BackupFormatError, match="primary key"):
+        _decode_row(
+            {"group_name": "sysop", "permission": "read"},
+            group_permissions,
+        )
 
 
 def test_file_digest_verification_accepts_valid_uppercase_hex(

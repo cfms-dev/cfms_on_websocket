@@ -100,6 +100,13 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             f"Backup table set contains unsupported tables: {sorted(unknown_tables)}"
         )
     if (
+        table_names & compiled_access_rule_tables
+        and table_names & legacy_access_rule_tables
+    ):
+        raise BackupFormatError(
+            "Backup table set mixes compiled and legacy access rule representations"
+        )
+    if (
         "components" not in manifest
         and compatible_table_names != expected
         and compatible_table_names != previous_compiled_expected

@@ -946,6 +946,31 @@ def test_manifest_rejects_missing_tables_for_selected_components(
         _validate_manifest(manifest)
 
 
+def test_manifest_rejects_mixed_access_rule_representations(
+    backup_context,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["documents"],
+        "tables": {
+            "folders": {"rows": 0},
+            "compiled_access_rules": {"rows": 0},
+            "folder_access_rules": {"rows": 0},
+        },
+        "files": [],
+        "configuration": {},
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="mixes compiled and legacy access rule",
+    ):
+        _validate_manifest(manifest)
+
+
 def test_restore_files_rejects_manifest_entry_without_matching_database_row(
     backup_context,
     tmp_path,

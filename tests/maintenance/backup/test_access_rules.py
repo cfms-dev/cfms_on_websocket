@@ -17,6 +17,17 @@ def test_legacy_rule_data_rejects_malformed_embedded_json(backup_context) -> Non
         _coerce_legacy_rule_data("{")
 
 
+@pytest.mark.parametrize("rule_data", (None, 1, [], '["read"]'))
+def test_legacy_rule_data_rejects_non_object_values(
+    backup_context,
+    rule_data,
+) -> None:
+    from maintenance.backup.legacy import _coerce_legacy_rule_data
+
+    with pytest.raises(backup_context.BackupFormatError, match="JSON object"):
+        _coerce_legacy_rule_data(rule_data)
+
+
 def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
     backup_context, tmp_path
 ):

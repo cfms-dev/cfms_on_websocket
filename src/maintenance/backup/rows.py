@@ -103,6 +103,16 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
             f"Backup row for {table.name!r} contains unknown columns: "
             f"{sorted(unknown_columns)}"
         )
+    missing_primary_keys = [
+        column.name
+        for column in table.primary_key.columns
+        if column.name not in row or row[column.name] is None
+    ]
+    if missing_primary_keys:
+        raise BackupFormatError(
+            f"Backup row for {table.name!r} is missing primary key values: "
+            f"{missing_primary_keys}"
+        )
     if table.name == "banned_subnets":
         created_at = row.get("created_at")
         if isinstance(created_at, str):

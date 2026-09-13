@@ -21,6 +21,7 @@ from maintenance.operations.deployment.constants import (
     MAX_MANIFEST_BYTES,
     MAX_STATE_BYTES,
     MAX_STORED_RELEASES,
+    MAX_UNCOMPRESSED_BYTES,
 )
 from maintenance.operations.deployment.models import DeploymentSettings, _Release
 from maintenance.operations.exceptions import MaintenanceOperationError
@@ -303,6 +304,7 @@ def _release_from_tree(root: Path, *, exact: bool) -> _Release:
             raise MaintenanceOperationError(
                 "Release archive contents do not match its manifest"
             )
+    total_size = len(contents)
     for relative_path, expected in expected_files.items():
         path = root / Path(relative_path)
         current = path
@@ -312,7 +314,16 @@ def _release_from_tree(root: Path, *, exact: bool) -> _Release:
                     f"Release file is not a regular file: {relative_path}"
                 )
             current = current.parent
-        if not path.is_file() or _hash_file(path) != expected.lower():
+        if not path.is_file():
+            raise MaintenanceOperationError(
+                f"Release file failed SHA-256 verification: {relative_path}"
+            )
+        total_size += path.stat().st_size
+        if total_size > MAX_UNCOMPRESSED_BYTES:
+            raise MaintenanceOperationError(
+                "Release tree exceeds the uncompressed size limit"
+            )
+        if _hash_file(path) != expected.lower():
             raise MaintenanceOperationError(
                 f"Release file failed SHA-256 verification: {relative_path}"
             )
@@ -461,7 +472,49 @@ def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
 
 
 def _snapshot_release(project_root: Path, release: _Release) -> Path:
-    version_root = _version_root(project_root, release.release_id)
+    versions_root = _maintenance_root(project_root) / "versions"
+    maintenance_root = versions_root.parent
+    if (
+        maintenance_root.is_symlink()
+        or maintenance_root.is_junction()
+        or (maintenance_root.exists() and not maintenance_root.is_dir())
+    ):
+        raise MaintenanceOperationError(
+            "Deployment maintenance root is not a regular directory: "
+            f"{maintenance_root}"
+        )
+    maintenance_root.mkdir(parents=True, exist_ok=True)
+    if not maintenance_root.is_dir() or not maintenance_root.resolve().is_relative_to(
+        project_root.resolve()
+    ):
+        raise MaintenanceOperationError(
+            f"Deployment maintenance root escapes the deployment: {maintenance_root}"
+        )
+    if (
+        versions_root.is_symlink()
+        or versions_root.is_junction()
+        or (versions_root.exists() and not versions_root.is_dir())
+    ):
+        raise MaintenanceOperationError(
+            f"Stored release root is not a regular directory: {versions_root}"
+        )
+    versions_root.mkdir(exist_ok=True)
+    version_root = versions_root / release.release_id
+    if (
+        version_root.is_symlink()
+        or version_root.is_junction()
+        or (version_root.exists() and not version_root.is_dir())
+    ):
+        raise MaintenanceOperationError(
+            f"Stored release path is not a regular directory: {version_root}"
+        )
+    if (
+        version_root.exists()
+        and version_root.resolve().parent != versions_root.resolve()
+    ):
+        raise MaintenanceOperationError(
+            f"Stored release path escapes its version root: {version_root}"
+        )
     snapshot = version_root / "release"
     if snapshot.exists():
         existing = _verified_stored_release(snapshot)
