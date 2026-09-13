@@ -9,5 +9,16 @@
       "suggestion": 0
     },
     "scope": "sampled commit c4199805f603961b4afdc82e799a23a246da2094; stopped after five findings"
+  },
+  {
+    "date": "2026-09-13",
+    "mode": "PR Review",
+    "score": 75,
+    "findings": {
+      "critical": 0,
+      "warning": 5,
+      "suggestion": 0
+    },
+    "scope": "second sampled pass of commit c4199805f603961b4afdc82e799a23a246da2094; stopped after five new findings"
   }
 ]

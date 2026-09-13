@@ -184,3 +184,27 @@ def test_package_enforces_digest_size_and_member_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(extension_packages, "MAX_UNCOMPRESSED_BYTES", 3)
     with pytest.raises(MaintenanceOperationError, match="uncompressed limit"):
         extension_operations.install_extension(package, write=False)
+
+
+def test_extension_root_limit_counts_non_directory_entries(tmp_path, monkeypatch):
+    root = tmp_path / "extensions"
+    root.mkdir()
+    for index in range(3):
+        (root / f"entry-{index}.txt").write_text("entry", encoding="utf-8")
+    monkeypatch.setattr(extension_packages, "MAX_INSTALLED_EXTENSIONS", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2 entries"):
+        extension_packages._validate_extension_root_size(root)
+
+
+def test_extension_root_rejects_oversized_installed_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    manifest = tmp_path / "extensions" / "sample_ext" / "manifest.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_bytes(b"x" * 17)
+    monkeypatch.setattr(extension_packages, "MAX_EXTENSION_MANIFEST_BYTES", 16)
+
+    with pytest.raises(MaintenanceOperationError, match="manifest exceeds"):
+        extension_packages._validate_extension_root_size(manifest.parents[1])

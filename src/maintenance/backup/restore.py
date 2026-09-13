@@ -221,14 +221,18 @@ def import_backup(
             )
             _cleanup_restored_files(storage, written_paths)
             if finalization_started:
-                try:
-                    if config_snapshot is not None:
-                        _restore_file_snapshot(config_file, config_snapshot)
-                    _restore_file_snapshot(init_file, init_snapshot)
-                except OSError:
-                    LOGGER.exception(
-                        "Unable to roll back backup import configuration or init marker"
-                    )
+                snapshots = []
+                if config_snapshot is not None:
+                    snapshots.append((config_file, config_snapshot))
+                snapshots.append((init_file, init_snapshot))
+                for path, snapshot in snapshots:
+                    try:
+                        _restore_file_snapshot(path, snapshot)
+                    except OSError:
+                        LOGGER.exception(
+                            "Unable to roll back backup import target %s",
+                            path,
+                        )
             raise
 
     _emit_progress(

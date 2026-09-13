@@ -104,6 +104,7 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             raise BackupFormatError(f"Excluded table {excluded!r} is present")
     storage_paths: set[str] = set()
     archive_paths: set[str] = set()
+    file_ids: set[str] = set()
     for entry in files:
         if not isinstance(entry, dict):
             raise BackupFormatError("Backup manifest contains an invalid file entry")
@@ -130,8 +131,11 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             raise BackupFormatError(
                 f"Unsafe file archive path in backup: {archive_path!r}"
             )
+        if file_id in file_ids:
+            raise BackupFormatError("Backup manifest contains duplicate file IDs")
         if storage_path in storage_paths or archive_path in archive_paths:
             raise BackupFormatError("Backup manifest contains duplicate file paths")
+        file_ids.add(file_id)
         storage_paths.add(storage_path)
         archive_paths.add(archive_path)
     LOGGER.debug(

@@ -183,6 +183,8 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
         manifest = json.loads(contents)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise MaintenanceOperationError("Release manifest is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise MaintenanceOperationError("Release manifest metadata is invalid")
     version = manifest.get("version")
     managed_extensions = manifest.get("managed_extensions")
     expected_files = manifest.get("files")

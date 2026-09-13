@@ -582,6 +582,97 @@ def test_import_rolls_back_database_files_and_config_when_finalization_fails(
     assert not init_path.exists()
 
 
+def test_import_attempts_init_rollback_when_config_rollback_fails(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+):
+    from maintenance.backup import restore as backup_restore
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_storage = tmp_path / "source-storage"
+    target_storage = tmp_path / "target-storage"
+    source_storage.mkdir()
+    target_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    backup_path = tmp_path / "backup.conf"
+    key_text = backup_context.export_backup(
+        backup_path,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+    init_path = tmp_path / "init"
+    init_path.write_bytes(b"original init\n")
+
+    def fail_after_finalization(*args, finalize=None, **kwargs):
+        assert finalize is not None
+        finalize()
+        raise RuntimeError("simulated post-finalization failure")
+
+    real_restore_snapshot = backup_restore._restore_file_snapshot
+
+    def fail_config_rollback(path: Path, snapshot) -> None:
+        if path == target_config:
+            raise OSError("simulated config rollback failure")
+        real_restore_snapshot(path, snapshot)
+
+    monkeypatch.setattr(backup_restore, "_restore_database", fail_after_finalization)
+    monkeypatch.setattr(
+        backup_restore,
+        "_restore_file_snapshot",
+        fail_config_rollback,
+    )
+
+    with pytest.raises(RuntimeError, match="post-finalization failure"):
+        backup_context.import_backup(
+            backup_path,
+            key_text,
+            session_factory=target_session,
+            db_engine=target_engine,
+            storage_provider=_RootedStorage(target_storage),
+            config_path=target_config,
+            init_path=init_path,
+        )
+
+    assert init_path.read_bytes() == b"original init\n"
+
+
+def test_manifest_rejects_duplicate_file_ids(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 1}},
+        "files": [
+            {
+                "file_id": "duplicate",
+                "storage_path": "content/files/first.bin",
+                "archive_path": "files/00000000.bin",
+                "size": 1,
+                "sha256": "0" * 64,
+            },
+            {
+                "file_id": "duplicate",
+                "storage_path": "content/files/second.bin",
+                "archive_path": "files/00000001.bin",
+                "size": 1,
+                "sha256": "1" * 64,
+            },
+        ],
+        "configuration": {},
+    }
+
+    with pytest.raises(backup_context.BackupFormatError, match="duplicate file IDs"):
+        _validate_manifest(manifest)
+
+
 def test_restore_rejects_oversized_json_row_before_parsing(
     backup_context,
     tmp_path,

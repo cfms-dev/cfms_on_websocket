@@ -26,15 +26,23 @@ _ALLOWED_COMPRESSIONS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 
 
 def _validate_extension_root_size(root: Path) -> None:
-    directory_count = 0
+    entry_count = 0
     for path in root.iterdir():
-        if path.is_dir():
-            directory_count += 1
-            if directory_count > MAX_INSTALLED_EXTENSIONS:
-                raise MaintenanceOperationError(
-                    f"Extension root contains more than {MAX_INSTALLED_EXTENSIONS} "
-                    "directories"
-                )
+        entry_count += 1
+        if entry_count > MAX_INSTALLED_EXTENSIONS:
+            raise MaintenanceOperationError(
+                f"Extension root contains more than {MAX_INSTALLED_EXTENSIONS} entries"
+            )
+        if path.name.startswith(("_", ".")) or not path.is_dir():
+            continue
+        manifest_path = path / "manifest.toml"
+        if (
+            manifest_path.is_file()
+            and manifest_path.stat().st_size > MAX_EXTENSION_MANIFEST_BYTES
+        ):
+            raise MaintenanceOperationError(
+                f"Extension manifest exceeds the 1 MiB limit: {manifest_path}"
+            )
 
 
 def _hash_file(path: Path) -> str:
