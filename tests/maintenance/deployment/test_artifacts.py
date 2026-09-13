@@ -1,5 +1,6 @@
 import hashlib
 import json
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -184,3 +185,41 @@ def test_stage_rejects_multiple_external_digest_sources(tmp_path: Path) -> None:
             expected_sha256="a" * 64,
             checksums_path=checksums,
         )
+
+
+def test_zip_member_limit_is_checked_before_opening_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = tmp_path / "release.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("release/first", b"")
+        archive.writestr("release/second", b"")
+
+    monkeypatch.setattr(deployment_artifacts, "MAX_ARCHIVE_MEMBERS", 1)
+    monkeypatch.setattr(
+        deployment_artifacts.zipfile,
+        "ZipFile",
+        lambda *args, **kwargs: pytest.fail("ZipFile opened before count validation"),
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="more than 1 members"):
+        deployment_artifacts._extract_zip(package, tmp_path / "stage")
+
+
+def test_stage_streams_tar_release(tmp_path: Path) -> None:
+    release_root = tmp_path / "cfms-on-websocket-1.0.0"
+    _write_release(release_root, "1.0.0", "release")
+    package = tmp_path / "release.tar.gz"
+    with tarfile.open(package, "w:gz") as archive:
+        archive.add(release_root, arcname=release_root.name)
+
+    staged, package_digest, _ = deployment_artifacts._stage_release(
+        package,
+        tmp_path / "deployment",
+        expected_sha256=None,
+        checksums_path=None,
+    )
+
+    assert staged.version == "1.0.0"
+    assert package_digest == hashlib.sha256(package.read_bytes()).hexdigest()

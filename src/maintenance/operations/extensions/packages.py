@@ -11,6 +11,7 @@ from include.extensions.manager import (
     ExtensionManifestError,
     parse_extension_manifest,
 )
+from maintenance.operations.archive import validate_zip_member_count
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.extensions.models import ExtensionPackageInspection
 
@@ -166,6 +167,11 @@ def _extract_package(
 
     stage = Path(tempfile.mkdtemp(prefix=".cfms-extension-stage-", dir=extension_root))
     try:
+        validate_zip_member_count(
+            resolved_package,
+            maximum=MAX_ARCHIVE_MEMBERS,
+            description="extension package",
+        )
         with zipfile.ZipFile(resolved_package) as archive:
             validated, _ = _validate_archive_members(archive.infolist())
             actual_total = 0

@@ -5,6 +5,7 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+from maintenance.operations.archive import validate_zip_member_count
 from maintenance.operations.deployment.constants import (
     _ALLOWED_ZIP_COMPRESSIONS,
     _COPY_CHUNK_BYTES,
@@ -112,6 +113,11 @@ def _validate_path_set(
 
 
 def _extract_zip(package_path: Path, target: Path) -> str:
+    validate_zip_member_count(
+        package_path,
+        maximum=MAX_ARCHIVE_MEMBERS,
+        description="release package",
+    )
     with zipfile.ZipFile(package_path) as archive:
         entries = []
         for info in archive.infolist():
@@ -153,22 +159,50 @@ def _extract_zip(package_path: Path, target: Path) -> str:
 
 
 def _extract_tar(package_path: Path, target: Path) -> str:
-    with tarfile.open(package_path, "r:gz") as archive:
-        members = archive.getmembers()
-        entries = []
-        for member in members:
+    with tarfile.open(package_path, "r|gz") as archive:
+        roots: set[str] = set()
+        kinds: dict[str, bool] = {}
+        declared_size = 0
+        actual_size = 0
+        member_count = 0
+        for member in archive:
+            member_count += 1
+            if member_count > MAX_ARCHIVE_MEMBERS:
+                raise MaintenanceOperationError(
+                    f"Release package contains more than {MAX_ARCHIVE_MEMBERS} members"
+                )
             if not member.isfile() and not member.isdir():
                 raise MaintenanceOperationError(
                     f"Unsupported release member type: {member.name}"
                 )
-            entries.append((member.name, member.isdir(), member.size))
-        top_level, paths = _validate_path_set(entries)
-        actual_size = 0
-        for member in members:
-            parts = paths[member.name][1:]
-            if not parts:
+            parts = _archive_parts(member.name)
+            roots.add(parts[0])
+            normalized = "/".join(parts).casefold()
+            if normalized in kinds:
+                raise MaintenanceOperationError(
+                    f"Duplicate release archive path: {member.name}"
+                )
+            for index in range(1, len(parts)):
+                if kinds.get("/".join(parts[:index]).casefold()) is False:
+                    raise MaintenanceOperationError(
+                        f"Release archive file/directory conflict: {member.name}"
+                    )
+            if member.isfile():
+                prefix = f"{normalized}/"
+                if any(path.startswith(prefix) for path in kinds):
+                    raise MaintenanceOperationError(
+                        f"Release archive file/directory conflict: {member.name}"
+                    )
+                declared_size += member.size
+                if declared_size > MAX_UNCOMPRESSED_BYTES:
+                    raise MaintenanceOperationError(
+                        "Release package exceeds the 256 MiB uncompressed limit"
+                    )
+            kinds[normalized] = member.isdir()
+            relative_parts = parts[1:]
+            if not relative_parts:
                 continue
-            destination = target.joinpath(*parts)
+            destination = target.joinpath(*relative_parts)
             if member.isdir():
                 destination.mkdir(parents=True, exist_ok=True)
                 continue
@@ -186,7 +220,11 @@ def _extract_tar(package_path: Path, target: Path) -> str:
                             "Release package exceeds the uncompressed limit"
                         )
                     output.write(chunk)
-        return top_level
+        if len(roots) != 1:
+            raise MaintenanceOperationError(
+                "Release package must contain exactly one top-level directory"
+            )
+        return roots.pop()
 
 
 def _stage_release(
