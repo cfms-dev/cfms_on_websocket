@@ -54,7 +54,7 @@ from maintenance.backup.progress import (
     _BackupProgressReporter,
     _emit_progress,
 )
-from maintenance.backup.rows import _load_table_rows
+from maintenance.backup.rows import _iter_table_row_batches, _load_table_rows
 from maintenance.backup.selection import (
     _backup_tables,
 )
@@ -324,15 +324,8 @@ def _restore_database(
                 verbose_only=True,
             )
             table = tables[table_name]
-            rows = _load_table_rows(extract_dir, manifest, table)
-            if table_name == "banned_subnets" and legacy_banned_subnet_reasons:
-                for row in rows:
-                    reason = legacy_banned_subnet_reasons.get(row["subnet"])
-                    if reason is not None:
-                        row["reason_comment_id"] = CommentStore.get_or_create_id(
-                            session, reason
-                        )
             if table_name == "compiled_access_rules" and compiled_rule_set_id_by_node:
+                rows = _load_table_rows(extract_dir, manifest, table)
                 _restore_missing_compiled_rule_sets(
                     connection,
                     tables,
@@ -347,25 +340,45 @@ def _restore_database(
                             "Compiled access rule row is missing a restorable "
                             "rule_set_id"
                         )
+                row_batches = (rows,)
+            else:
+                row_batches = _iter_table_row_batches(extract_dir, manifest, table)
+
+            restored_row_count = 0
             deferred_columns = set(DEFERRED_COLUMNS.get(table_name, ()))
-            insert_rows = []
-            for row in rows:
+            for rows in row_batches:
+                if table_name == "banned_subnets" and legacy_banned_subnet_reasons:
+                    for row in rows:
+                        reason = legacy_banned_subnet_reasons.get(row["subnet"])
+                        if reason is not None:
+                            row["reason_comment_id"] = CommentStore.get_or_create_id(
+                                session, reason
+                            )
                 if deferred_columns:
-                    deferred_updates[table_name].append(row.copy())
-                    row = row.copy()
-                    for column_name in deferred_columns:
-                        row[column_name] = None
-                insert_rows.append(row)
-            if insert_rows:
-                try:
-                    connection.execute(insert(table), insert_rows)
-                except IntegrityError as exc:
-                    if table_name != "nodes" or not is_node_name_conflict(exc):
-                        raise
-                    raise BackupFormatError(
-                        "Backup contains active sibling nodes with duplicate names"
-                    ) from exc
-            LOGGER.debug("Restored table %s with %d row(s)", table_name, len(rows))
+                    insert_rows = []
+                    for row in rows:
+                        deferred_updates[table_name].append(row.copy())
+                        insert_row = row.copy()
+                        for column_name in deferred_columns:
+                            insert_row[column_name] = None
+                        insert_rows.append(insert_row)
+                else:
+                    insert_rows = rows
+                if insert_rows:
+                    try:
+                        connection.execute(insert(table), insert_rows)
+                    except IntegrityError as exc:
+                        if table_name != "nodes" or not is_node_name_conflict(exc):
+                            raise
+                        raise BackupFormatError(
+                            "Backup contains active sibling nodes with duplicate names"
+                        ) from exc
+                restored_row_count += len(rows)
+            LOGGER.debug(
+                "Restored table %s with %d row(s)",
+                table_name,
+                restored_row_count,
+            )
 
         for table_name, pk_name, column_names in DEFERRED_UPDATE_ORDER:
             if table_name not in table_names:

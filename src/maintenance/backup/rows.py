@@ -1,5 +1,6 @@
 import datetime as dt
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from maintenance.backup.archive import _safe_payload_path
 from maintenance.backup.models import BackupFormatError
 
 LOGGER = logging.getLogger(__name__)
+_RESTORE_BATCH_SIZE = 1000
 
 
 def _load_table_rows(
@@ -17,10 +19,23 @@ def _load_table_rows(
     manifest: dict[str, Any],
     table: Table,
 ) -> list[dict[str, Any]]:
+    return [
+        row
+        for batch in _iter_table_row_batches(extract_dir, manifest, table)
+        for row in batch
+    ]
+
+
+def _iter_table_row_batches(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+    table: Table,
+) -> Iterator[list[dict[str, Any]]]:
     table_name = table.name
     table_manifest = manifest["tables"][table_name]
     path = _safe_payload_path(extract_dir, f"tables/{table_name}.jsonl")
-    rows = []
+    row_count = 0
+    batch = []
     with path.open("rb") as f:
         for line_number, line in enumerate(f, start=1):
             if not line.strip():
@@ -31,14 +46,19 @@ def _load_table_rows(
                 raise BackupFormatError(
                     f"Invalid JSON row in {path} at line {line_number}"
                 ) from exc
-            rows.append(_decode_row(row, table))
-    if len(rows) != table_manifest["rows"]:
+            batch.append(_decode_row(row, table))
+            row_count += 1
+            if len(batch) == _RESTORE_BATCH_SIZE:
+                yield batch
+                batch = []
+    if batch:
+        yield batch
+    if row_count != table_manifest["rows"]:
         raise BackupFormatError(
             f"Row count mismatch for table {table_name!r}: "
-            f"manifest says {table_manifest['rows']}, payload has {len(rows)}"
+            f"manifest says {table_manifest['rows']}, payload has {row_count}"
         )
-    LOGGER.debug("Loaded %d row(s) for table %s", len(rows), table_name)
-    return rows
+    LOGGER.debug("Loaded %d row(s) for table %s", row_count, table_name)
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:

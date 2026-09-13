@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
-from sqlalchemy import insert
+from sqlalchemy import event, func, insert, select
 
 from .roundtrip_support import _seed_source
 from .support import (
@@ -13,6 +13,23 @@ from .support import (
     _write_config,
     _write_jsonl,
 )
+
+
+def _write_audit_rows(extract_dir: Path, row_count: int) -> None:
+    rows = [
+        {
+            "id": f"audit-{index:04d}",
+            "action": "batch-test",
+            "username": None,
+            "target": None,
+            "data": {"sequence": index},
+            "result": 200,
+            "remote_address": "192.0.2.1",
+            "logged_time": float(index),
+        }
+        for index in range(row_count)
+    ]
+    _write_jsonl(extract_dir / "tables" / "audit_entries.jsonl", rows)
 
 
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):
@@ -167,6 +184,77 @@ def test_legacy_banned_subnet_reason_restores_as_comment(backup_context, tmp_pat
         restored["banned_subnets"][0]["reason_comment_id"]
         == restored["comments"][0]["comment_id"]
     )
+
+
+def test_database_restore_bounds_audit_insert_batches(backup_context, tmp_path):
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_database
+
+    base = backup_context.Base
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "payload"
+    row_count = 1001
+    _write_audit_rows(extract_dir, row_count)
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["audit"],
+        "tables": {"audit_entries": {"rows": row_count}},
+        "files": [],
+        "configuration": {},
+    }
+    insert_batch_sizes = []
+
+    @event.listens_for(target_engine, "before_cursor_execute")
+    def _record_audit_insert_batch(
+        _connection,
+        _cursor,
+        statement,
+        parameters,
+        _context,
+        executemany,
+    ) -> None:
+        if statement.startswith("INSERT INTO audit_entries"):
+            insert_batch_sizes.append(len(parameters) if executemany else 1)
+
+    _restore_database(extract_dir, manifest, target_session)
+
+    assert sum(insert_batch_sizes) == row_count
+    assert len(insert_batch_sizes) > 1
+    assert max(insert_batch_sizes) <= 1000
+    with target_engine.connect() as connection:
+        restored_count = connection.scalar(
+            select(func.count()).select_from(base.metadata.tables["audit_entries"])
+        )
+    assert restored_count == row_count
+
+
+def test_database_restore_rolls_back_batches_on_row_count_mismatch(
+    backup_context,
+    tmp_path,
+):
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_database
+
+    base = backup_context.Base
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "payload"
+    _write_audit_rows(extract_dir, 1001)
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["audit"],
+        "tables": {"audit_entries": {"rows": 1000}},
+        "files": [],
+        "configuration": {},
+    }
+
+    with pytest.raises(backup_context.BackupFormatError, match="Row count mismatch"):
+        _restore_database(extract_dir, manifest, target_session)
+
+    with target_engine.connect() as connection:
+        restored_count = connection.scalar(
+            select(func.count()).select_from(base.metadata.tables["audit_entries"])
+        )
+    assert restored_count == 0
 
 
 def test_wrong_magic_and_wrong_key_fail(backup_context, tmp_path):
