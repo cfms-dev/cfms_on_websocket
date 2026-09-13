@@ -22,6 +22,23 @@ from maintenance.operations.config.legacy import (
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root
 
+MAX_CONFIG_BYTES = 16 * 1024 * 1024
+
+
+def read_config_text(path: Path) -> str:
+    with path.open("rb") as config_file:
+        contents = config_file.read(MAX_CONFIG_BYTES + 1)
+    if len(contents) > MAX_CONFIG_BYTES:
+        raise MaintenanceOperationError(
+            f"Configuration file exceeds the {MAX_CONFIG_BYTES}-byte limit: {path}"
+        )
+    try:
+        return contents.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MaintenanceOperationError(
+            f"Configuration file is not valid UTF-8: {path}"
+        ) from exc
+
 
 @dataclass(frozen=True)
 class PepperFillResult:
@@ -57,7 +74,8 @@ def fill_pepper(config_path: str | Path = "config.toml") -> PepperFillResult:
         raise MaintenanceOperationError(f"Configuration file not found: {path}")
 
     try:
-        doc = tomlkit.parse(path.read_text(encoding="utf-8"))
+        current_source = read_config_text(path)
+        doc = tomlkit.parse(current_source)
     except Exception as exc:
         raise MaintenanceOperationError(f"Unable to read {path}: {exc}") from exc
 
@@ -76,7 +94,7 @@ def fill_pepper(config_path: str | Path = "config.toml") -> PepperFillResult:
 
     security_section["pepper"] = secrets.token_hex(32)
     try:
-        path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+        _replace_text_atomically(path, tomlkit.dumps(doc))
     except Exception as exc:
         raise MaintenanceOperationError(f"Unable to write {path}: {exc}") from exc
 
@@ -179,8 +197,8 @@ def _load_documents(
         )
 
     try:
-        current_source = config_path.read_text(encoding="utf-8")
-        template_source = resolved_template_path.read_text(encoding="utf-8")
+        current_source = read_config_text(config_path)
+        template_source = read_config_text(resolved_template_path)
         current = tomlkit.parse(current_source)
         template = tomlkit.parse(template_source)
     except (OSError, TOMLKitError) as exc:
@@ -292,31 +310,37 @@ def write_config_atomically(
 ) -> Path:
     timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     backup_path = config_path.with_name(f"{config_path.name}.backup-{timestamp}")
-    temporary_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=config_path.parent,
-            prefix=f".{config_path.name}.",
-            suffix=".tmp",
-            delete=False,
-            newline="",
-        ) as temporary_file:
-            temporary_file.write(rendered)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-            temporary_path = Path(temporary_file.name)
-        shutil.copymode(config_path, temporary_path)
         shutil.copy2(config_path, backup_path)
-        if backup_path.read_text(encoding="utf-8") != current_source:
+        if read_config_text(backup_path) != current_source:
             raise OSError(f"Configuration backup verification failed: {backup_path}")
-        os.replace(temporary_path, config_path)
+        _replace_text_atomically(config_path, rendered)
     except OSError as exc:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
         raise MaintenanceOperationError(
             f"Unable to update {config_path}: {exc}"
         ) from exc
 
     return backup_path
+
+
+def _replace_text_atomically(path: Path, contents: str) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+            newline="",
+        ) as temporary_file:
+            temporary_file.write(contents)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+            temporary_path = Path(temporary_file.name)
+        shutil.copymode(path, temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)

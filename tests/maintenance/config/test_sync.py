@@ -4,6 +4,7 @@ import pytest
 import tomlkit
 
 from maintenance.operations.config import (
+    fill_pepper,
     inspect_config_template,
     sync_config_template,
 )
@@ -74,6 +75,31 @@ def test_sync_adds_template_settings_preserves_values_and_is_idempotent(
     ]
     assert 'name = "Operator Server" # operator choice' in synchronized_source
     assert sync_config_template(write=False).changed is False
+
+
+def test_fill_pepper_keeps_original_config_when_atomic_replace_fails(
+    monkeypatch,
+    tmp_path,
+):
+    from maintenance.operations.config import sync as config_sync
+
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    current["security"]["pepper"] = ""
+    src_dir = _prepare_src(tmp_path, current)
+    config_path = src_dir / "config.toml"
+    original_source = config_path.read_bytes()
+    monkeypatch.chdir(src_dir)
+
+    def fail_replace(*_args) -> None:
+        raise OSError("simulated atomic replace failure")
+
+    monkeypatch.setattr(config_sync.os, "replace", fail_replace)
+
+    with pytest.raises(MaintenanceOperationError, match="atomic replace failure"):
+        fill_pepper()
+
+    assert config_path.read_bytes() == original_source
+    assert not any(src_dir.glob(".config.toml.*.tmp"))
 
 
 def test_sync_applies_all_known_legacy_migrations(monkeypatch, tmp_path):

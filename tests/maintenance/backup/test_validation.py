@@ -338,6 +338,39 @@ def test_export_fails_when_physical_file_is_missing(backup_context, tmp_path):
         )
 
 
+def test_export_refuses_to_replace_backup_or_key_output(backup_context, tmp_path):
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_storage = tmp_path / "source-storage"
+    source_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    backup_path = tmp_path / "backup.conf"
+    key_path = tmp_path / "backup.key"
+    backup_path.write_bytes(b"existing backup")
+
+    with pytest.raises(backup_context.BackupError, match="already exists"):
+        backup_context.export_backup(
+            backup_path,
+            session_factory=source_session,
+            storage_provider=_RootedStorage(source_storage),
+            config=backup_context.source_config,
+        )
+    assert backup_path.read_bytes() == b"existing backup"
+
+    backup_path.unlink()
+    key_path.write_text("existing key\n", encoding="utf-8")
+    with pytest.raises(backup_context.BackupError, match="already exists"):
+        backup_context.export_backup(
+            backup_path,
+            key_output_path=key_path,
+            session_factory=source_session,
+            storage_provider=_RootedStorage(source_storage),
+            config=backup_context.source_config,
+        )
+    assert not backup_path.exists()
+    assert key_path.read_text(encoding="utf-8") == "existing key\n"
+
+
 def test_export_skips_missing_inactive_physical_file(backup_context, tmp_path):
     base = backup_context.Base
     source_engine, source_session = _new_database(base, tmp_path / "source.db")
@@ -431,4 +464,153 @@ def test_import_rejects_non_empty_target(backup_context, tmp_path):
             storage_provider=_RootedStorage(target_storage),
             config_path=target_config,
             init_path=tmp_path / "init",
+        )
+
+
+def test_import_removes_partially_written_storage_file(
+    backup_context,
+    tmp_path,
+):
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_storage = tmp_path / "source-storage"
+    target_storage = tmp_path / "target-storage"
+    source_storage.mkdir()
+    target_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    backup_path = tmp_path / "backup.conf"
+    key_text = backup_context.export_backup(
+        backup_path,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+
+    class FailingWriter:
+        def __init__(self, file):
+            self.file = file
+
+        def __enter__(self):
+            self.file.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.file.__exit__(*args)
+
+        def write(self, data):
+            self.file.write(bytes(data)[:1])
+            raise OSError("simulated storage write failure")
+
+    class FailingStorage(_RootedStorage):
+        def fopen(self, path: str, mode: str = "rb"):
+            opened = super().fopen(path, mode)
+            return FailingWriter(opened) if "w" in mode else opened
+
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+    original_config = target_config.read_bytes()
+
+    with pytest.raises(OSError, match="simulated storage write failure"):
+        backup_context.import_backup(
+            backup_path,
+            key_text,
+            session_factory=target_session,
+            db_engine=target_engine,
+            storage_provider=FailingStorage(target_storage),
+            config_path=target_config,
+            init_path=tmp_path / "init",
+        )
+
+    assert not any(path.is_file() for path in target_storage.rglob("*"))
+    assert target_config.read_bytes() == original_config
+
+
+def test_import_rolls_back_database_files_and_config_when_finalization_fails(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+):
+    from maintenance.backup import restore as backup_restore
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_storage = tmp_path / "source-storage"
+    target_storage = tmp_path / "target-storage"
+    source_storage.mkdir()
+    target_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    backup_path = tmp_path / "backup.conf"
+    key_text = backup_context.export_backup(
+        backup_path,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+    original_config = target_config.read_bytes()
+    init_path = tmp_path / "init"
+    real_atomic_write = backup_restore._write_file_atomically
+
+    def fail_init_write(path: Path, contents: bytes) -> None:
+        if path == init_path and contents.startswith(b"This file indicates"):
+            raise OSError("simulated init write failure")
+        real_atomic_write(path, contents)
+
+    monkeypatch.setattr(backup_restore, "_write_file_atomically", fail_init_write)
+
+    with pytest.raises(OSError, match="simulated init write failure"):
+        backup_context.import_backup(
+            backup_path,
+            key_text,
+            session_factory=target_session,
+            db_engine=target_engine,
+            storage_provider=_RootedStorage(target_storage),
+            config_path=target_config,
+            init_path=init_path,
+        )
+
+    with target_engine.connect() as connection:
+        assert all(
+            connection.scalar(select(func.count()).select_from(table)) == 0
+            for table in base.metadata.tables.values()
+        )
+    assert not any(path.is_file() for path in target_storage.rglob("*"))
+    assert target_config.read_bytes() == original_config
+    assert not init_path.exists()
+
+
+def test_restore_rejects_oversized_json_row_before_parsing(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+):
+    from maintenance.backup import rows as backup_rows
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_database
+
+    base = backup_context.Base
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    extract_dir = tmp_path / "payload"
+    _write_audit_rows(extract_dir, 1)
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["audit"],
+        "tables": {"audit_entries": {"rows": 1}},
+        "files": [],
+        "configuration": {},
+    }
+    monkeypatch.setattr(backup_rows, "MAX_JSONL_ROW_BYTES", 16)
+
+    with pytest.raises(backup_context.BackupFormatError, match="exceeds"):
+        _restore_database(extract_dir, manifest, target_session)
+
+    with target_engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(func.count()).select_from(base.metadata.tables["audit_entries"])
+            )
+            == 0
         )

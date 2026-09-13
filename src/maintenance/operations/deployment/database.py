@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from alembic import command
 from include.config.validation import parse_config_document
 from include.database.engine import create_database_engine
+from maintenance.operations.config import read_config_text
 from maintenance.operations.deployment.models import _Release
 from maintenance.operations.exceptions import MaintenanceOperationError
 
@@ -44,7 +45,7 @@ def _alembic(release: _Release, connection=None) -> tuple[Config, ScriptDirector
 def _database_engine(project_root: Path):
     config_path = project_root / "src" / "config.toml"
     try:
-        document = parse_config_document(config_path.read_text(encoding="utf-8"))
+        document = parse_config_document(read_config_text(config_path))
         database = dict(document["database"])
         if database.get("type") == "sqlite":
             database_path = Path(database["file"])

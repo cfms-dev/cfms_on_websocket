@@ -2,7 +2,7 @@ import enum
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from sqlalchemy import Table, exists, or_, select
+from sqlalchemy import Table, exists, false, or_, select, union
 
 from include.database.models.access import (
     CompiledAccessRule,
@@ -280,31 +280,37 @@ def _selected_table_names(
     )
 
 
-def _collect_selected_file_ids(
-    connection,
+def _selected_file_id_query(
     tables: dict[str, Table],
     components: frozenset[BackupComponent],
-) -> frozenset[str]:
-    file_ids: set[str] = set()
+):
+    statements = []
     if BackupComponent.ACCOUNTS in components:
         users = tables["users"]
-        statement = select(users.c.avatar_id).where(users.c.avatar_id.is_not(None))
-        for row in connection.execute(statement):
-            file_ids.add(str(row[0]))
+        statements.append(
+            select(users.c.avatar_id.label("file_id")).where(
+                users.c.avatar_id.is_not(None)
+            )
+        )
 
     if BackupComponent.DOCUMENT_LIBRARY in components:
         revisions = tables["document_revisions"]
-        statement = select(revisions.c.file_id).where(revisions.c.file_id.is_not(None))
-        for row in connection.execute(statement):
-            file_ids.add(str(row[0]))
+        statements.append(
+            select(revisions.c.file_id.label("file_id")).where(
+                revisions.c.file_id.is_not(None)
+            )
+        )
 
-    return frozenset(file_ids)
+    if not statements:
+        return select(tables["files"].c.id).where(false())
+    if len(statements) == 1:
+        return statements[0]
+    return union(*statements)
 
 
-def _collect_active_compiled_rule_set_ids(
-    connection,
+def _active_compiled_rule_set_id_query(
     tables: dict[str, Table],
-) -> frozenset[str]:
+):
     nodes = tables["nodes"]
     rule_sets = tables["compiled_access_rule_sets"]
     rules = tables["compiled_access_rules"]
@@ -317,7 +323,7 @@ def _collect_active_compiled_rule_set_ids(
         )
         .order_by(rule_sets.c.id)
     )
-    return frozenset(str(row[0]) for row in connection.execute(statement))
+    return statement
 
 
 def _apply_export_table_filter(
@@ -326,10 +332,11 @@ def _apply_export_table_filter(
     table_name: str,
     tables: dict[str, Table],
     components: frozenset[BackupComponent],
-    file_ids: frozenset[str],
 ):
     if table_name == "files":
-        return statement.where(table.c.id.in_(sorted(file_ids)))
+        return statement.where(
+            table.c.id.in_(_selected_file_id_query(tables, components))
+        )
     if (
         table_name == "object_access_entries"
         and BackupComponent.DOCUMENT_LIBRARY in components
@@ -374,20 +381,18 @@ def _apply_compiled_access_rule_export_filter(
     table: Table,
     table_name: str,
     tables: dict[str, Table],
-    active_compiled_rule_set_ids: frozenset[str],
+    active_compiled_rule_set_ids,
 ):
     if table_name == "compiled_access_rule_sets":
-        return statement.where(table.c.id.in_(sorted(active_compiled_rule_set_ids)))
+        return statement.where(table.c.id.in_(active_compiled_rule_set_ids))
     if table_name == "compiled_access_rules":
-        return statement.where(
-            table.c.rule_set_id.in_(sorted(active_compiled_rule_set_ids))
-        )
+        return statement.where(table.c.rule_set_id.in_(active_compiled_rule_set_ids))
     if table_name == "compiled_access_rule_groups":
         rules = tables["compiled_access_rules"]
         return statement.where(
             table.c.rule_id.in_(
                 select(rules.c.id).where(
-                    rules.c.rule_set_id.in_(sorted(active_compiled_rule_set_ids))
+                    rules.c.rule_set_id.in_(active_compiled_rule_set_ids)
                 )
             )
         )
@@ -402,9 +407,7 @@ def _apply_compiled_access_rule_export_filter(
                 select(groups.c.id).where(
                     groups.c.rule_id.in_(
                         select(rules.c.id).where(
-                            rules.c.rule_set_id.in_(
-                                sorted(active_compiled_rule_set_ids)
-                            )
+                            rules.c.rule_set_id.in_(active_compiled_rule_set_ids)
                         )
                     )
                 )

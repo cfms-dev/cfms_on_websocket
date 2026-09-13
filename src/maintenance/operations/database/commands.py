@@ -13,7 +13,7 @@ from tomlkit.exceptions import TOMLKitError
 from include.config import paths
 from include.config.validation import ConfigValidationError, parse_config_document
 from include.database.engine import create_database_engine, database_url
-from maintenance.operations.config import write_config_atomically
+from maintenance.operations.config import read_config_text, write_config_atomically
 from maintenance.operations.database.migration import (
     DatabaseMigrationError,
 )
@@ -135,7 +135,7 @@ def _load_target_database_config(
         )
 
     try:
-        document = tomlkit.parse(resolved.read_text(encoding="utf-8"))
+        document = tomlkit.parse(read_config_text(resolved))
     except (OSError, TOMLKitError) as exc:
         raise MaintenanceOperationError(
             f"Unable to read target database configuration: {exc}"
@@ -200,7 +200,7 @@ def _activate_target_database(
     target_document: tomlkit.TOMLDocument,
 ) -> Path:
     try:
-        current_source = config_path.read_text(encoding="utf-8")
+        current_source = read_config_text(config_path)
         current_document = tomlkit.parse(current_source)
         current_document["database"] = copy.deepcopy(target_document["database"])
         rendered = tomlkit.dumps(current_document)

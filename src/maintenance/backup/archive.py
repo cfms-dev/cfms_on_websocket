@@ -5,14 +5,18 @@ import lzma
 import os
 import shutil
 import tarfile
-from collections.abc import Iterable
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import orjson
 
 from include.providers.base import StorageProvider
-from maintenance.backup.constants import BACKUP_FORMAT_VERSION
+from maintenance.backup.constants import (
+    BACKUP_FORMAT_VERSION,
+    MAX_BACKUP_FILES,
+    MAX_MANIFEST_BYTES,
+)
 from maintenance.backup.models import (
     BackupFormatError,
     BackupIntegrityError,
@@ -36,11 +40,33 @@ LOGGER = logging.getLogger(__name__)
 
 def _validate_manifest(manifest: dict[str, Any]) -> None:
     LOGGER.debug("Validating backup manifest")
+    tables = manifest.get("tables")
+    files = manifest.get("files")
+    if not isinstance(tables, dict):
+        raise BackupFormatError("Backup manifest tables must be an object")
+    if not isinstance(files, list):
+        raise BackupFormatError("Backup manifest files must be an array")
+    if len(files) > MAX_BACKUP_FILES:
+        raise BackupFormatError(
+            f"Backup contains more than {MAX_BACKUP_FILES} file entries"
+        )
+    for table_name, table_manifest in tables.items():
+        if not isinstance(table_name, str) or not isinstance(table_manifest, dict):
+            raise BackupFormatError("Backup manifest contains invalid table metadata")
+        row_count = table_manifest.get("rows")
+        if (
+            isinstance(row_count, bool)
+            or not isinstance(row_count, int)
+            or row_count < 0
+        ):
+            raise BackupFormatError(
+                f"Backup manifest contains an invalid row count for {table_name!r}"
+            )
     if manifest.get("format_version") != BACKUP_FORMAT_VERSION:
         raise BackupFormatError(
             f"Unsupported payload format version: {manifest.get('format_version')}"
         )
-    table_names: set[str] = set(manifest.get("tables", {}).keys())
+    table_names: set[str] = set(tables)
     expected: set[str] = set(BACKUP_TABLE_NAMES)
     compiled_access_rule_tables = set(COMPILED_ACCESS_RULE_TABLE_NAMES)
     legacy_access_rule_tables = set(LEGACY_ACCESS_RULE_TABLE_NAMES)
@@ -76,12 +102,42 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     for excluded in EXCLUDED_TABLE_NAMES:
         if excluded in table_names:
             raise BackupFormatError(f"Excluded table {excluded!r} is present")
-    for entry in manifest.get("files", []):
-        _validate_storage_path(str(entry.get("storage_path", "")))
+    storage_paths: set[str] = set()
+    archive_paths: set[str] = set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise BackupFormatError("Backup manifest contains an invalid file entry")
+        file_id = entry.get("file_id")
+        storage_path = entry.get("storage_path")
+        archive_path = entry.get("archive_path")
+        size = entry.get("size")
+        digest = entry.get("sha256")
+        if (
+            not isinstance(file_id, str)
+            or not isinstance(storage_path, str)
+            or not isinstance(archive_path, str)
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in digest)
+        ):
+            raise BackupFormatError("Backup manifest contains an invalid file entry")
+        _validate_storage_path(storage_path)
+        archive_parts = PurePosixPath(archive_path).parts
+        if len(archive_parts) != 2 or archive_parts[0] != "files":
+            raise BackupFormatError(
+                f"Unsafe file archive path in backup: {archive_path!r}"
+            )
+        if storage_path in storage_paths or archive_path in archive_paths:
+            raise BackupFormatError("Backup manifest contains duplicate file paths")
+        storage_paths.add(storage_path)
+        archive_paths.add(archive_path)
     LOGGER.debug(
         "Backup manifest validated: tables=%d files=%d",
         len(table_names),
-        len(manifest.get("files", [])),
+        len(files),
     )
 
 
@@ -97,8 +153,16 @@ def _manifest_includes_configuration(manifest: dict[str, Any]) -> bool:
 def _load_manifest(path: Path) -> dict[str, Any]:
     LOGGER.debug("Loading backup manifest from %s", path)
     try:
-        manifest = orjson.loads(path.read_bytes())
-    except (FileNotFoundError, orjson.JSONDecodeError) as exc:
+        with path.open("rb") as manifest_file:
+            contents = manifest_file.read(MAX_MANIFEST_BYTES + 1)
+        if len(contents) > MAX_MANIFEST_BYTES:
+            raise BackupFormatError(
+                f"Backup manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"
+            )
+        manifest = orjson.loads(contents)
+    except BackupFormatError:
+        raise
+    except (OSError, orjson.JSONDecodeError) as exc:
         raise BackupFormatError("Backup manifest is missing or invalid") from exc
     if not isinstance(manifest, dict):
         raise BackupFormatError("Backup manifest must be a JSON object")
@@ -111,9 +175,19 @@ def _safe_extract_tar_xz(source_path: Path, target_dir: Path) -> None:
         lzma.open(source_path, "rb") as compressed,
         tarfile.open(fileobj=compressed, mode="r|") as tar,
     ):
+        member_count = 0
+        extracted_paths: set[Path] = set()
         for member in tar:
+            member_count += 1
+            if member_count > MAX_BACKUP_FILES + len(BACKUP_TABLE_NAMES) + 1:
+                raise BackupFormatError("Backup archive contains too many members")
             LOGGER.debug("Extracting archive member %s", member.name)
             target_path = _safe_payload_path(target_dir, member.name)
+            if target_path in extracted_paths:
+                raise BackupFormatError(
+                    f"Duplicate backup archive member: {member.name}"
+                )
+            extracted_paths.add(target_path)
             if member.isdir():
                 target_path.mkdir(parents=True, exist_ok=True)
                 continue
@@ -170,9 +244,9 @@ def _verify_file_digest(path: Path, entry: dict[str, Any]) -> None:
 
 def _cleanup_restored_files(
     storage_provider: StorageProvider,
-    paths: Iterable[str],
+    paths: Sequence[str],
 ) -> None:
-    for path in reversed(list(paths)):
+    for path in reversed(paths):
         with contextlib.suppress(Exception):
             LOGGER.debug("Removing restored file after failed import: %s", path)
             storage_provider.remove(path)
@@ -215,6 +289,12 @@ def _add_staged_file(
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.write_bytes(
-        orjson.dumps(data, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+    encoded = orjson.dumps(
+        data,
+        option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS,
     )
+    if len(encoded) > MAX_MANIFEST_BYTES:
+        raise BackupFormatError(
+            f"Backup manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"
+        )
+    path.write_bytes(encoded)

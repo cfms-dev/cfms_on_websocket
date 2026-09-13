@@ -23,6 +23,7 @@ def backup_context(monkeypatch, tmp_path):
 
     from include.database.session import Base
     from maintenance.backup import (
+        BackupError,
         BackupExportSelection,
         BackupFormatError,
         BackupIntegrityError,
@@ -57,6 +58,7 @@ def backup_context(monkeypatch, tmp_path):
     return SimpleNamespace(
         Base=Base,
         BackupFormatError=BackupFormatError,
+        BackupError=BackupError,
         BackupIntegrityError=BackupIntegrityError,
         BackupRestoreError=BackupRestoreError,
         BackupWarning=BackupWarning,

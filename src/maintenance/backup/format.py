@@ -3,9 +3,11 @@ import binascii
 import contextlib
 import datetime as dt
 import enum
+import itertools
 import logging
 import lzma
 import os
+import secrets
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,7 @@ from maintenance.backup.constants import (
     MAX_HEADER_BYTES,
 )
 from maintenance.backup.models import (
+    BackupError,
     BackupFormatError,
     BackupHeader,
     BackupIntegrityError,
@@ -134,7 +137,9 @@ def _write_encrypted_archive(
     encryptor.authenticate_additional_data(prefix)
 
     compressed_payload = staging_dir / "payload.tar.xz"
-    temp_output = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+    temp_output = output_path.with_name(
+        f".{output_path.name}.{secrets.token_hex(8)}.tmp"
+    )
     LOGGER.debug("Writing encrypted archive via temporary file %s", temp_output)
     try:
         _write_compressed_payload(
@@ -149,12 +154,14 @@ def _write_encrypted_archive(
                     raw_output.write(encryptor.update(chunk))
             raw_output.write(encryptor.finalize())
             raw_output.write(encryptor.tag)
-        os.replace(temp_output, output_path)
+        try:
+            os.link(temp_output, output_path)
+        except FileExistsError as exc:
+            raise BackupError(f"Backup output already exists: {output_path}") from exc
         LOGGER.debug("Encrypted archive written to %s", output_path)
-    except Exception:
+    finally:
         with contextlib.suppress(FileNotFoundError):
             temp_output.unlink()
-        raise
 
 
 def _write_compressed_payload(
@@ -164,21 +171,29 @@ def _write_compressed_payload(
     progress_reporter: _BackupProgressReporter | None = None,
 ) -> None:
     LOGGER.debug("Creating compressed payload at %s", output_path)
-    staged_files = sorted((staging_dir / "files").iterdir())
+    files_dir = staging_dir / "files"
     staged_tables = staging_dir / "tables"
-    archive_members = [
-        (staging_dir / "manifest.json", "manifest.json"),
-        *(
+    table_members = tuple(
+        (
+            staged_tables / f"{table_name}.jsonl",
+            f"tables/{table_name}.jsonl",
+        )
+        for table_name in BACKUP_TABLE_NAMES
+        if (staged_tables / f"{table_name}.jsonl").is_file()
+    )
+    file_count = sum(1 for path in files_dir.iterdir() if path.is_file())
+    archive_members = itertools.chain(
+        ((staging_dir / "manifest.json", "manifest.json"),),
+        table_members,
+        (
             (
-                staged_tables / f"{table_name}.jsonl",
-                f"tables/{table_name}.jsonl",
+                files_dir / f"{index:08d}.bin",
+                f"files/{index:08d}.bin",
             )
-            for table_name in BACKUP_TABLE_NAMES
-            if (staged_tables / f"{table_name}.jsonl").is_file()
+            for index in range(file_count)
         ),
-        *((staged_file, f"files/{staged_file.name}") for staged_file in staged_files),
-    ]
-    total_members = len(archive_members)
+    )
+    total_members = 1 + len(table_members) + file_count
     with (
         lzma.open(output_path, "wb", preset=6) as compressed,
         tarfile.open(fileobj=compressed, mode="w|") as tar,

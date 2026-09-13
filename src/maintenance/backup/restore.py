@@ -2,12 +2,13 @@ import logging
 import os
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import tomlkit
 from rich.progress import Progress
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import bindparam, func, insert, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -36,11 +37,6 @@ from maintenance.backup.format import (
     decode_backup_key,
 )
 from maintenance.backup.legacy import (
-    _build_missing_compiled_rule_set_mapping,
-    _load_compiled_rule_node_ids,
-    _load_legacy_access_rule_rows,
-    _load_legacy_banned_subnet_reasons,
-    _load_legacy_node_namespace,
     _restore_legacy_access_rules,
     _restore_missing_compiled_rule_sets,
 )
@@ -54,16 +50,23 @@ from maintenance.backup.progress import (
     _BackupProgressReporter,
     _emit_progress,
 )
-from maintenance.backup.rows import _iter_table_row_batches, _load_table_rows
+from maintenance.backup.rows import (
+    _decode_row,
+    _iter_raw_table_row_batches,
+    _iter_table_row_batches,
+)
 from maintenance.backup.selection import (
+    LEGACY_ACCESS_RULE_TABLE_NAMES,
     _backup_tables,
 )
+from maintenance.operations.config.sync import MAX_CONFIG_BYTES, read_config_text
 from maintenance.operations.database.tables import (
     DEFERRED_COLUMNS,
     DEFERRED_UPDATE_ORDER,
 )
 
 LOGGER = logging.getLogger(__name__)
+MAX_INIT_MARKER_BYTES = 64 * 1024
 
 
 def import_backup(
@@ -147,6 +150,30 @@ def import_backup(
         manifest = _load_manifest(extract_dir / "manifest.json")
         _validate_manifest(manifest)
 
+        config_file = Path(config_path)
+        init_file = Path(init_path)
+        config_snapshot = (
+            _read_file_snapshot(config_file, maximum=MAX_CONFIG_BYTES)
+            if _manifest_includes_configuration(manifest)
+            else None
+        )
+        init_snapshot = _read_file_snapshot(
+            init_file,
+            maximum=MAX_INIT_MARKER_BYTES,
+        )
+        finalization_started = False
+
+        def finalize_target_files() -> None:
+            nonlocal finalization_started
+            finalization_started = True
+            if _manifest_includes_configuration(manifest):
+                _restore_config_keys(config_file, manifest)
+            LOGGER.debug("Writing init marker to %s", init_file)
+            _write_file_atomically(
+                init_file,
+                b"This file indicates that the database has been initialized.\n",
+            )
+
         try:
             _emit_progress(
                 progress_reporter,
@@ -155,10 +182,11 @@ def import_backup(
                 current_step=6,
                 total_steps=IMPORT_PROGRESS_STEPS,
             )
-            written_paths = _restore_files(
+            _restore_files(
                 extract_dir,
                 manifest,
                 storage,
+                written_paths=written_paths,
                 progress_reporter=progress_reporter,
             )
             _emit_progress(
@@ -173,6 +201,7 @@ def import_backup(
                 manifest,
                 session_factory,
                 progress_reporter=progress_reporter,
+                finalize=finalize_target_files,
             )
             _emit_progress(
                 progress_reporter,
@@ -185,19 +214,21 @@ def import_backup(
                 current_step=8,
                 total_steps=IMPORT_PROGRESS_STEPS,
             )
-            if _manifest_includes_configuration(manifest):
-                _restore_config_keys(config_path, manifest)
-            LOGGER.debug("Writing init marker to %s", init_path)
-            Path(init_path).write_text(
-                "This file indicates that the database has been initialized.\n",
-                encoding="utf-8",
-            )
         except Exception:
             LOGGER.debug(
                 "Import failed; cleaning up %d restored file(s)",
                 len(written_paths),
             )
             _cleanup_restored_files(storage, written_paths)
+            if finalization_started:
+                try:
+                    if config_snapshot is not None:
+                        _restore_file_snapshot(config_file, config_snapshot)
+                    _restore_file_snapshot(init_file, init_snapshot)
+                except OSError:
+                    LOGGER.exception(
+                        "Unable to roll back backup import configuration or init marker"
+                    )
             raise
 
     _emit_progress(
@@ -222,9 +253,11 @@ def _restore_files(
     manifest: dict[str, Any],
     storage_provider: StorageProvider,
     *,
+    written_paths: list[str] | None = None,
     progress_reporter: _BackupProgressReporter | None = None,
 ) -> list[str]:
-    written_paths = []
+    if written_paths is None:
+        written_paths = []
     file_entries = manifest["files"]
     for file_index, entry in enumerate(file_entries, start=1):
         storage_path = str(entry["storage_path"])
@@ -265,8 +298,8 @@ def _restore_files(
             source_path.open("rb") as source,
             storage_provider.fopen(storage_path, "wb") as target,
         ):
+            written_paths.append(storage_path)
             shutil.copyfileobj(source, target, length=1024 * 1024)
-        written_paths.append(storage_path)
         LOGGER.debug("Restored storage file %s", storage_path)
 
     return written_paths
@@ -278,6 +311,7 @@ def _restore_database(
     session_factory: sessionmaker,
     *,
     progress_reporter: _BackupProgressReporter | None = None,
+    finalize: Callable[[], None] | None = None,
 ) -> None:
     tables = _backup_tables()
     table_names = _manifest_table_names(manifest)
@@ -296,17 +330,11 @@ def _restore_database(
         detail_task=True,
         details_only=False,
     )
-    legacy_access_rule_rows = _load_legacy_access_rule_rows(extract_dir, manifest)
-    compiled_rule_set_id_by_node = _build_missing_compiled_rule_set_mapping(
-        extract_dir, manifest
+    legacy_access_rule_tables = LEGACY_ACCESS_RULE_TABLE_NAMES & set(manifest["tables"])
+    missing_compiled_rule_sets = (
+        "compiled_access_rules" in manifest["tables"]
+        and "compiled_access_rule_sets" not in manifest["tables"]
     )
-    legacy_banned_subnet_reasons = _load_legacy_banned_subnet_reasons(
-        extract_dir, manifest
-    )
-    legacy_node_namespace = _load_legacy_node_namespace(extract_dir, manifest)
-    deferred_updates: dict[str, list[dict[str, Any]]] = {
-        table_name: [] for table_name in DEFERRED_COLUMNS if table_name in table_names
-    }
 
     with session_factory.begin() as session:
         connection = session.connection()
@@ -315,8 +343,6 @@ def _restore_database(
             extract_dir,
             manifest,
             tables,
-            deferred_updates,
-            legacy_node_namespace,
         )
         restored_row_count += sum(
             manifest["tables"][table_name]["rows"]
@@ -355,40 +381,30 @@ def _restore_database(
                 detail_task=True,
             )
             table = tables[table_name]
-            if table_name == "compiled_access_rules" and compiled_rule_set_id_by_node:
-                rows = _load_table_rows(extract_dir, manifest, table)
-                _restore_missing_compiled_rule_sets(
+            if table_name == "compiled_access_rules" and missing_compiled_rule_sets:
+                row_batches = _iter_legacy_compiled_rule_batches(
                     connection,
+                    extract_dir,
+                    manifest,
                     tables,
-                    compiled_rule_set_id_by_node,
+                    table,
                 )
-                legacy_node_ids = _load_compiled_rule_node_ids(extract_dir, manifest)
-                for row, node_id in zip(rows, legacy_node_ids, strict=True):
-                    if node_id in compiled_rule_set_id_by_node:
-                        row["rule_set_id"] = compiled_rule_set_id_by_node[node_id]
-                    elif row.get("rule_set_id") is None:
-                        raise BackupFormatError(
-                            "Compiled access rule row is missing a restorable "
-                            "rule_set_id"
-                        )
-                row_batches = (rows,)
+            elif table_name == "banned_subnets":
+                row_batches = _iter_banned_subnet_batches(
+                    session,
+                    extract_dir,
+                    manifest,
+                    table,
+                )
             else:
                 row_batches = _iter_table_row_batches(extract_dir, manifest, table)
 
             restored_table_row_count = 0
             deferred_columns = set(DEFERRED_COLUMNS.get(table_name, ()))
             for rows in row_batches:
-                if table_name == "banned_subnets" and legacy_banned_subnet_reasons:
-                    for row in rows:
-                        reason = legacy_banned_subnet_reasons.get(row["subnet"])
-                        if reason is not None:
-                            row["reason_comment_id"] = CommentStore.get_or_create_id(
-                                session, reason
-                            )
                 if deferred_columns:
                     insert_rows = []
                     for row in rows:
-                        deferred_updates[table_name].append(row.copy())
                         insert_row = row.copy()
                         for column_name in deferred_columns:
                             insert_row[column_name] = None
@@ -425,31 +441,22 @@ def _restore_database(
                 restored_table_row_count,
             )
 
-        for table_name, pk_name, column_names in DEFERRED_UPDATE_ORDER:
-            if table_name not in table_names:
-                continue
-            table = tables[table_name]
-            for row in deferred_updates.get(table_name, []):
-                values = {
-                    column_name: row[column_name]
-                    for column_name in column_names
-                    if row.get(column_name) is not None
-                }
-                if values:
-                    connection.execute(
-                        update(table)
-                        .where(table.c[pk_name] == row[pk_name])
-                        .values(**values)
-                    )
-            LOGGER.debug("Applied deferred updates for table %s", table_name)
+        _restore_deferred_updates(
+            connection,
+            extract_dir,
+            manifest,
+            tables,
+            table_names,
+        )
 
-        if legacy_access_rule_rows and "compiled_access_rules" not in manifest.get(
-            "tables", {}
+        if (
+            legacy_access_rule_tables
+            and "compiled_access_rules" not in manifest["tables"]
         ):
-            _restore_legacy_access_rules(session, legacy_access_rule_rows)
+            _restore_legacy_access_rules(session, extract_dir, manifest)
             restored_row_count += sum(
                 manifest["tables"][table_name]["rows"]
-                for table_name in legacy_access_rule_rows
+                for table_name in legacy_access_rule_tables
             )
             LOGGER.debug("Converted legacy JSON access rules during database restore")
 
@@ -464,6 +471,104 @@ def _restore_database(
             detail_task=True,
             details_only=False,
         )
+        if finalize is not None:
+            finalize()
+
+
+def _iter_legacy_compiled_rule_batches(
+    connection,
+    extract_dir: Path,
+    manifest: dict[str, Any],
+    tables: dict[str, Any],
+    table,
+):
+    for raw_rows in _iter_raw_table_row_batches(
+        extract_dir,
+        manifest,
+        "compiled_access_rules",
+    ):
+        rows = [_decode_row(raw_row, table) for raw_row in raw_rows]
+        node_ids = []
+        for raw_row, row in zip(raw_rows, rows, strict=True):
+            node_id = raw_row.get("node_id", raw_row.get("target_id"))
+            if node_id is None:
+                if row.get("rule_set_id") is None:
+                    raise BackupFormatError(
+                        "Compiled access rule row is missing a restorable rule_set_id"
+                    )
+                continue
+            node_ids.append(str(node_id))
+        rule_set_id_by_node = _restore_missing_compiled_rule_sets(
+            connection,
+            tables,
+            node_ids,
+        )
+        for raw_row, row in zip(raw_rows, rows, strict=True):
+            node_id = raw_row.get("node_id", raw_row.get("target_id"))
+            if node_id is not None:
+                row["rule_set_id"] = rule_set_id_by_node[str(node_id)]
+        yield rows
+
+
+def _iter_banned_subnet_batches(
+    session,
+    extract_dir: Path,
+    manifest: dict[str, Any],
+    table,
+):
+    for raw_rows in _iter_raw_table_row_batches(
+        extract_dir,
+        manifest,
+        "banned_subnets",
+    ):
+        rows = []
+        for raw_row in raw_rows:
+            row = _decode_row(raw_row, table)
+            if "reason" in raw_row and "reason_comment_id" not in raw_row:
+                row["reason_comment_id"] = CommentStore.get_or_create_id(
+                    session,
+                    raw_row["reason"],
+                )
+            rows.append(row)
+        yield rows
+
+
+def _restore_deferred_updates(
+    connection,
+    extract_dir: Path,
+    manifest: dict[str, Any],
+    tables: dict[str, Any],
+    table_names: tuple[str, ...],
+) -> None:
+    for table_name, pk_name, column_names in DEFERRED_UPDATE_ORDER:
+        if table_name not in table_names:
+            continue
+        table = tables[table_name]
+        update_statement = (
+            table.update()
+            .where(table.c[pk_name] == bindparam("restore_primary_key"))
+            .values(
+                {
+                    column_name: bindparam(f"restore_value_{column_name}")
+                    for column_name in column_names
+                }
+            )
+        )
+        for rows in _iter_table_row_batches(extract_dir, manifest, table):
+            parameters = [
+                {
+                    "restore_primary_key": row[pk_name],
+                    **{
+                        f"restore_value_{column_name}": row[column_name]
+                        for column_name in column_names
+                    },
+                }
+                for row in rows
+                if any(row.get(column_name) is not None for column_name in column_names)
+            ]
+            if parameters:
+                connection.execute(update_statement, parameters)
+        LOGGER.debug("Applied deferred updates for table %s", table_name)
 
 
 def _restore_config_keys(
@@ -478,7 +583,7 @@ def _restore_config_keys(
         raise BackupRestoreError(f"Configuration file not found: {path}")
 
     LOGGER.debug("Restoring configuration keys in %s", path)
-    doc = tomlkit.parse(path.read_text(encoding="utf-8"))
+    doc = tomlkit.parse(read_config_text(path))
     if "security" not in doc:
         doc["security"] = tomlkit.table()
     if "server" not in doc:
@@ -486,8 +591,49 @@ def _restore_config_keys(
 
     doc["security"]["pepper"] = security.get("pepper", "")
     doc["server"]["secret_key"] = server.get("secret_key", "")
-    path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    _write_file_atomically(path, tomlkit.dumps(doc).encode())
     LOGGER.debug("Configuration keys restored in %s", path)
+
+
+def _read_file_snapshot(path: Path, *, maximum: int) -> tuple[bool, bytes]:
+    try:
+        with path.open("rb") as snapshot_file:
+            contents = snapshot_file.read(maximum + 1)
+    except FileNotFoundError:
+        return False, b""
+    if len(contents) > maximum:
+        raise BackupRestoreError(
+            f"Backup restore target exceeds the {maximum}-byte rollback limit: {path}"
+        )
+    return True, contents
+
+
+def _restore_file_snapshot(path: Path, snapshot: tuple[bool, bytes]) -> None:
+    existed, contents = snapshot
+    if existed:
+        _write_file_atomically(path, contents)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _write_file_atomically(path: Path, contents: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "wb") as temporary:
+            temporary.write(contents)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        if path.exists():
+            shutil.copymode(path, temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _ensure_target_is_empty(db_engine: Engine) -> None:

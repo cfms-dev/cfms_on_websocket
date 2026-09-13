@@ -17,9 +17,14 @@ from maintenance.operations.deployment.constants import (
     _REQUIRED_RELEASE_FILES,
     _SHA256_PATTERN,
     _VERSION_PATTERN,
+    MAX_ARCHIVE_MEMBERS,
+    MAX_MANIFEST_BYTES,
+    MAX_STATE_BYTES,
+    MAX_STORED_RELEASES,
 )
 from maintenance.operations.deployment.models import DeploymentSettings, _Release
 from maintenance.operations.exceptions import MaintenanceOperationError
+from maintenance.operations.extensions.packages import _validate_extension_root_size
 
 
 def _hash_file(path: Path) -> str:
@@ -41,6 +46,35 @@ def _atomic_write(path: Path, contents: bytes) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _atomic_copy(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp-{secrets.token_hex(8)}")
+    try:
+        with source.open("rb") as input_file, temporary.open("xb") as output_file:
+            shutil.copyfileobj(input_file, output_file, length=_COPY_CHUNK_BYTES)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        shutil.copymode(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_limited_bytes(path: Path, *, maximum: int, description: str) -> bytes:
+    try:
+        with path.open("rb") as input_file:
+            contents = input_file.read(maximum + 1)
+    except OSError as exc:
+        raise MaintenanceOperationError(
+            f"Unable to read {description} {path}: {exc}"
+        ) from exc
+    if len(contents) > maximum:
+        raise MaintenanceOperationError(
+            f"{description.capitalize()} exceeds the {maximum}-byte limit: {path}"
+        )
+    return contents
 
 
 def _project_root(value: str | Path) -> Path:
@@ -89,7 +123,13 @@ def _load_settings(project_root: Path) -> DeploymentSettings:
     if not path.exists():
         return DeploymentSettings()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(
+            _read_limited_bytes(
+                path,
+                maximum=MAX_STATE_BYTES,
+                description="deployment settings",
+            )
+        )
         settings = DeploymentSettings(
             format_version=data["format_version"],
             extras=tuple(data.get("extras", ())),
@@ -125,6 +165,10 @@ def _archive_parts(name: str) -> tuple[str, ...]:
 
 
 def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[str, Any]:
+    if len(contents) > MAX_MANIFEST_BYTES:
+        raise MaintenanceOperationError(
+            f"Release manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"
+        )
     try:
         manifest = json.loads(contents)
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -143,6 +187,7 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
         or _VERSION_PATTERN(version) is None
         or (top_level is not None and top_level != f"cfms-on-websocket-{version}")
         or not isinstance(expected_files, dict)
+        or len(expected_files) > MAX_ARCHIVE_MEMBERS
         or not isinstance(managed_extensions, list)
         or any(
             not isinstance(identifier, str)
@@ -179,12 +224,11 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
 
 def _release_from_tree(root: Path, *, exact: bool) -> _Release:
     manifest_path = root / "release-manifest.json"
-    try:
-        contents = manifest_path.read_bytes()
-    except OSError as exc:
-        raise MaintenanceOperationError(
-            f"Release is missing release-manifest.json: {root}"
-        ) from exc
+    contents = _read_limited_bytes(
+        manifest_path,
+        maximum=MAX_MANIFEST_BYTES,
+        description="release manifest",
+    )
     manifest = _parse_manifest(contents)
     expected_files = manifest["files"]
     for relative_path, expected in expected_files.items():
@@ -194,12 +238,17 @@ def _release_from_tree(root: Path, *, exact: bool) -> _Release:
                 f"Release file failed SHA-256 verification: {relative_path}"
             )
     if exact:
-        actual = {
-            path.relative_to(root).as_posix()
-            for path in root.rglob("*")
-            if path.is_file() and path != manifest_path
-        }
-        if actual != set(expected_files):
+        remaining = set(expected_files)
+        for path in root.rglob("*"):
+            if not path.is_file() or path == manifest_path:
+                continue
+            relative_path = path.relative_to(root).as_posix()
+            if relative_path not in remaining:
+                raise MaintenanceOperationError(
+                    "Release archive contents do not match its manifest"
+                )
+            remaining.remove(relative_path)
+        if remaining:
             raise MaintenanceOperationError(
                 "Release archive contents do not match its manifest"
             )
@@ -225,7 +274,9 @@ def _version_root(project_root: Path, release_id: str) -> Path:
 
 
 def _verified_stored_release(root: Path) -> _Release:
-    for cache_path in sorted(root.rglob("__pycache__"), reverse=True):
+    for cache_path in root.rglob("__pycache__"):
+        if not cache_path.exists():
+            continue
         try:
             shutil.rmtree(cache_path)
         except OSError as exc:
@@ -255,7 +306,19 @@ def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
             f"Stored release root escapes the deployment: {versions_root}"
         ) from exc
     try:
-        stored_paths = sorted(versions_root.iterdir())
+        stored_paths = []
+        for path in versions_root.iterdir():
+            if _SHA256_PATTERN(path.name) is None:
+                continue
+            stored_paths.append(path)
+            if len(stored_paths) > MAX_STORED_RELEASES:
+                raise MaintenanceOperationError(
+                    f"Deployment contains more than {MAX_STORED_RELEASES} "
+                    "stored releases"
+                )
+        stored_paths.sort()
+    except MaintenanceOperationError:
+        raise
     except OSError as exc:
         raise MaintenanceOperationError(
             f"Unable to inspect stored release root {versions_root}: {exc}"
@@ -263,8 +326,6 @@ def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
 
     releases = []
     for path in stored_paths:
-        if _SHA256_PATTERN(path.name) is None:
-            continue
         if not path.is_dir() or path.is_symlink() or path.is_junction():
             raise MaintenanceOperationError(
                 f"Stored release path is not a regular directory: {path}"
@@ -323,8 +384,10 @@ def _snapshot_release(project_root: Path, release: _Release) -> Path:
 
 def _discover(root: Path) -> dict[str, Any]:
     try:
-        return discover_extensions(root / "src" / "include" / "extensions")
-    except ExtensionDiscoveryError as exc:
+        extension_root = root / "src" / "include" / "extensions"
+        _validate_extension_root_size(extension_root)
+        return discover_extensions(extension_root)
+    except (OSError, ExtensionDiscoveryError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
 
 
@@ -343,9 +406,16 @@ def _snapshot_state(project_root: Path, release: _Release) -> None:
                     extension.directory, extensions / extension.directory.name
                 )
         old = version_root / f".state-old-{secrets.token_hex(8)}"
-        if state.exists():
-            os.replace(state, old)
-        os.replace(temporary, state)
+        moved_old_state = False
+        try:
+            if state.exists():
+                os.replace(state, old)
+                moved_old_state = True
+            os.replace(temporary, state)
+        except Exception:
+            if moved_old_state and not state.exists():
+                os.replace(old, state)
+            raise
         shutil.rmtree(old, ignore_errors=True)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -362,12 +432,25 @@ def _remove_active_release(project_root: Path, release: _Release) -> None:
         if path.is_file():
             path.unlink()
     (project_root / "release-manifest.json").unlink(missing_ok=True)
-    for path in sorted(project_root.rglob("*"), reverse=True):
-        if path.is_dir() and path != _maintenance_root(project_root):
-            try:
-                path.rmdir()
-            except OSError:
-                pass
+    _remove_empty_release_directories(project_root, release.manifest["files"])
+
+
+def _remove_empty_release_directories(
+    project_root: Path,
+    relative_paths,
+) -> None:
+    maintenance_root = _maintenance_root(project_root)
+    candidates = set()
+    for relative_path in relative_paths:
+        parent = (project_root / Path(relative_path)).parent
+        while parent != project_root and not parent.is_relative_to(maintenance_root):
+            candidates.add(parent)
+            parent = parent.parent
+    for path in sorted(candidates, key=lambda item: len(item.parts), reverse=True):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
 
 
 def _copy_release_to_active(project_root: Path, release: _Release) -> None:
@@ -418,17 +501,16 @@ def _archive_active(project_root: Path, release: _Release) -> None:
 
 def _stored_release(project_root: Path, release_id: str) -> _Release:
     versions_root = _maintenance_root(project_root) / "versions"
-    matches = (
-        [
-            path
-            for path in versions_root.iterdir()
-            if path.is_dir() and path.name.startswith(release_id.lower())
-        ]
-        if versions_root.is_dir()
-        else []
-    )
-    if not matches:
+    match = None
+    if versions_root.is_dir():
+        for path in versions_root.iterdir():
+            if not path.is_dir() or not path.name.startswith(release_id.lower()):
+                continue
+            if match is not None:
+                raise MaintenanceOperationError(
+                    f"Release ID prefix is ambiguous: {release_id}"
+                )
+            match = path
+    if match is None:
         raise MaintenanceOperationError(f"Stored release not found: {release_id}")
-    if len(matches) != 1:
-        raise MaintenanceOperationError(f"Release ID prefix is ambiguous: {release_id}")
-    return _verified_stored_release(matches[0] / "release")
+    return _verified_stored_release(match / "release")

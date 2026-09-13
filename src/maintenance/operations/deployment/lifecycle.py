@@ -10,7 +10,7 @@ from packaging.version import Version
 from include.runtime_lock import RuntimeLockError, server_runtime_lock
 from maintenance.operations.config import sync_config_template
 from maintenance.operations.deployment.artifacts import _stage_release
-from maintenance.operations.deployment.constants import _SHA256_PATTERN
+from maintenance.operations.deployment.constants import _SHA256_PATTERN, MAX_STATE_BYTES
 from maintenance.operations.deployment.database import (
     _alembic,
     _current_revision,
@@ -32,6 +32,7 @@ from maintenance.operations.deployment.models import (
 from maintenance.operations.deployment.repository import (
     _active_release,
     _archive_active,
+    _atomic_copy,
     _atomic_write,
     _copy_release_to_active,
     _copy_state_extensions,
@@ -40,8 +41,10 @@ from maintenance.operations.deployment.repository import (
     _load_settings,
     _maintenance_root,
     _project_root,
+    _read_limited_bytes,
     _release_from_tree,
     _remove_active_release,
+    _remove_empty_release_directories,
     _snapshot_release,
     _snapshot_state,
     _stored_release,
@@ -67,7 +70,13 @@ def _write_transaction(project_root: Path, data: dict[str, Any]) -> None:
 def _load_transaction(project_root: Path) -> dict[str, Any]:
     path = _transaction_path(project_root)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(
+            _read_limited_bytes(
+                path,
+                maximum=MAX_STATE_BYTES,
+                description="deployment transaction",
+            )
+        )
     except (OSError, json.JSONDecodeError) as exc:
         raise MaintenanceOperationError(f"Unable to read {path}: {exc}") from exc
     if data.get("action") not in {"upgrade", "downgrade"}:
@@ -94,19 +103,14 @@ def _restore_active(
             if path.is_file() and _hash_file(path) == expected_digest:
                 path.unlink()
         (project_root / "release-manifest.json").unlink(missing_ok=True)
-        for path in sorted(project_root.rglob("*"), reverse=True):
-            if path.is_dir() and path != _maintenance_root(project_root):
-                try:
-                    path.rmdir()
-                except OSError:
-                    pass
+        _remove_empty_release_directories(
+            project_root,
+            failed_release.manifest["files"],
+        )
     if not (project_root / "release-manifest.json").exists():
         _copy_release_to_active(project_root, source)
     state = _version_root(project_root, source.release_id) / "state"
-    _atomic_write(
-        project_root / "src" / "config.toml",
-        (state / "config.toml").read_bytes(),
-    )
+    _atomic_copy(state / "config.toml", project_root / "src" / "config.toml")
     _copy_state_extensions(project_root, source)
 
 
@@ -177,12 +181,12 @@ def upgrade_deployment(
         maintenance_root = _maintenance_root(project_root)
         maintenance_root.mkdir(parents=True, exist_ok=True)
         if requirements_lock is not None:
-            shutil.copy2(
+            _atomic_copy(
                 Path(requirements_lock).expanduser().resolve(),
                 maintenance_root / "requirements.lock",
             )
         elif not (maintenance_root / "requirements.lock").exists():
-            (maintenance_root / "requirements.lock").write_text("", encoding="utf-8")
+            _atomic_write(maintenance_root / "requirements.lock", b"")
         _write_settings(project_root, settings)
 
         snapshot = _snapshot_release(project_root, staged)
@@ -287,9 +291,9 @@ def downgrade_deployment(
         )
         _archive_active(project_root, source)
         _copy_release_to_active(project_root, target)
-        _atomic_write(
+        _atomic_copy(
+            target_state / "config.toml",
             project_root / "src" / "config.toml",
-            (target_state / "config.toml").read_bytes(),
         )
         _copy_state_extensions(project_root, target)
         _sync_environment(project_root, _load_settings(project_root))

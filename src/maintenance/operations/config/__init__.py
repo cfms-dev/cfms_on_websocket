@@ -4,6 +4,7 @@ from maintenance.operations.config.sync import (
     PepperFillResult,
     fill_pepper,
     inspect_config_template,
+    read_config_text,
     sync_config_template,
     write_config_atomically,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "ConfigTemplateInspection",
     "PepperFillResult",
     "fill_pepper",
+    "read_config_text",
     "inspect_config_template",
     "sync_config_template",
     "write_config_atomically",

@@ -12,7 +12,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from packaging.version import Version
 
-from maintenance.operations.deployment.constants import MAX_PACKAGE_BYTES
+from maintenance.operations.deployment.constants import (
+    MAX_CHECKSUM_BYTES,
+    MAX_PACKAGE_BYTES,
+)
 from maintenance.operations.deployment.lifecycle import (
     DeploymentResult,
     upgrade_deployment,
@@ -21,6 +24,7 @@ from maintenance.operations.deployment.repository import (
     _active_release,
     _maintenance_root,
     _project_root,
+    _read_limited_bytes,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
 
@@ -29,7 +33,6 @@ GITHUB_LATEST_RELEASE_URL = (
 )
 GITHUB_API_VERSION = "2026-03-10"
 MAX_METADATA_BYTES = 1024 * 1024
-MAX_CHECKSUM_BYTES = 64 * 1024
 METADATA_TIMEOUT_SECONDS = 10
 DOWNLOAD_TIMEOUT_SECONDS = 60
 
@@ -392,7 +395,12 @@ def update_online_deployment(
             maximum=MAX_PACKAGE_BYTES,
         )
         expected_digest = _checksum_for(
-            checksum_path.read_bytes(), release.package.name
+            _read_limited_bytes(
+                checksum_path,
+                maximum=MAX_CHECKSUM_BYTES,
+                description="checksum file",
+            ),
+            release.package.name,
         )
         if package_digest != expected_digest:
             raise MaintenanceOperationError(

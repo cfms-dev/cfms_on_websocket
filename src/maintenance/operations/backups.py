@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger(__name__)
+_MAX_KEY_FILE_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,14 @@ def import_backup(
         if key_file is None:
             key_text = key
         else:
-            key_text = Path(key_file).read_text(encoding="utf-8").strip()
+            key_path = Path(key_file)
+            with key_path.open("rb") as key_stream:
+                key_bytes = key_stream.read(_MAX_KEY_FILE_BYTES + 1)
+            if len(key_bytes) > _MAX_KEY_FILE_BYTES:
+                raise MaintenanceOperationError(
+                    f"Backup key file exceeds the {_MAX_KEY_FILE_BYTES}-byte limit"
+                )
+            key_text = key_bytes.decode("utf-8").strip()
         if key_text is None:
             raise MaintenanceOperationError("Specify exactly one key source.")
         result: dict[str, Any] = backup_module.import_backup(

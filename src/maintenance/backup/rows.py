@@ -8,36 +8,30 @@ import orjson
 from sqlalchemy import DateTime, Table
 
 from maintenance.backup.archive import _safe_payload_path
+from maintenance.backup.constants import MAX_JSONL_ROW_BYTES
 from maintenance.backup.models import BackupFormatError
 
 LOGGER = logging.getLogger(__name__)
 _RESTORE_BATCH_SIZE = 1000
 
 
-def _load_table_rows(
+def _iter_raw_table_rows(
     extract_dir: Path,
     manifest: dict[str, Any],
-    table: Table,
-) -> list[dict[str, Any]]:
-    return [
-        row
-        for batch in _iter_table_row_batches(extract_dir, manifest, table)
-        for row in batch
-    ]
-
-
-def _iter_table_row_batches(
-    extract_dir: Path,
-    manifest: dict[str, Any],
-    table: Table,
-) -> Iterator[list[dict[str, Any]]]:
-    table_name = table.name
+    table_name: str,
+) -> Iterator[dict[str, Any]]:
     table_manifest = manifest["tables"][table_name]
     path = _safe_payload_path(extract_dir, f"tables/{table_name}.jsonl")
     row_count = 0
-    batch = []
     with path.open("rb") as f:
-        for line_number, line in enumerate(f, start=1):
+        line_number = 0
+        while line := f.readline(MAX_JSONL_ROW_BYTES + 1):
+            line_number += 1
+            if len(line) > MAX_JSONL_ROW_BYTES:
+                raise BackupFormatError(
+                    f"JSON row in {path} at line {line_number} exceeds the "
+                    f"{MAX_JSONL_ROW_BYTES}-byte limit"
+                )
             if not line.strip():
                 continue
             try:
@@ -46,19 +40,48 @@ def _iter_table_row_batches(
                 raise BackupFormatError(
                     f"Invalid JSON row in {path} at line {line_number}"
                 ) from exc
-            batch.append(_decode_row(row, table))
+            if not isinstance(row, dict):
+                raise BackupFormatError(
+                    f"JSON row in {path} at line {line_number} must be an object"
+                )
             row_count += 1
-            if len(batch) == _RESTORE_BATCH_SIZE:
-                yield batch
-                batch = []
-    if batch:
-        yield batch
+            yield row
     if row_count != table_manifest["rows"]:
         raise BackupFormatError(
             f"Row count mismatch for table {table_name!r}: "
             f"manifest says {table_manifest['rows']}, payload has {row_count}"
         )
-    LOGGER.debug("Loaded %d row(s) for table %s", row_count, table_name)
+
+
+def _iter_raw_table_row_batches(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+    table_name: str,
+) -> Iterator[list[dict[str, Any]]]:
+    batch = []
+    for row in _iter_raw_table_rows(extract_dir, manifest, table_name):
+        batch.append(row)
+        if len(batch) == _RESTORE_BATCH_SIZE:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _iter_table_row_batches(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+    table: Table,
+) -> Iterator[list[dict[str, Any]]]:
+    batch = []
+    for row in _iter_raw_table_rows(extract_dir, manifest, table.name):
+        batch.append(_decode_row(row, table))
+        if len(batch) == _RESTORE_BATCH_SIZE:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+    LOGGER.debug("Loaded table rows for %s", table.name)
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:

@@ -20,11 +20,14 @@ from include.extensions.manager import (
     discover_extensions,
     resolve_extension_selection,
 )
+from maintenance.operations.config import read_config_text
+from maintenance.operations.deployment.constants import MAX_MANIFEST_BYTES
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.extensions.models import (
     ExtensionCatalogInspection,
     ExtensionRecord,
 )
+from maintenance.operations.extensions.packages import _validate_extension_root_size
 from maintenance.runtime import enter_server_root
 
 _TRANSACTION_PREFIXES = (
@@ -56,8 +59,9 @@ def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
 
 def _discover(root: Path) -> dict[str, DiscoveredExtension]:
     try:
+        _validate_extension_root_size(root)
         return discover_extensions(root)
-    except (ExtensionDiscoveryError, ExtensionManifestError) as exc:
+    except (OSError, ExtensionDiscoveryError, ExtensionManifestError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
 
 
@@ -66,8 +70,16 @@ def _managed_extension_identifiers() -> frozenset[str]:
     if not manifest_path.is_file():
         return frozenset({"builtin"})
     try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        with manifest_path.open("rb") as manifest_file:
+            contents = manifest_file.read(MAX_MANIFEST_BYTES + 1)
+        if len(contents) > MAX_MANIFEST_BYTES:
+            raise MaintenanceOperationError(
+                f"Release manifest exceeds the size limit: {manifest_path}"
+            )
+        data = json.loads(contents)
         identifiers = data["managed_extensions"]
+    except MaintenanceOperationError:
+        raise
     except (KeyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise MaintenanceOperationError(
             f"Unable to read managed extensions from {manifest_path}: {exc}"
@@ -86,7 +98,7 @@ def _read_config(
 ) -> tuple[Path, str, tomlkit.TOMLDocument, tuple[str, ...]]:
     config_path = workdir / "config.toml"
     try:
-        source = config_path.read_text(encoding="utf-8")
+        source = read_config_text(config_path)
         document = tomlkit.parse(source)
         enabled = get_enabled_extensions(document)
     except (OSError, TOMLKitError, ConfigValidationError) as exc:

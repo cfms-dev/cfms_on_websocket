@@ -452,3 +452,35 @@ def test_status_removes_stored_bytecode_but_rejects_other_extra_files(
     (snapshot / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
     with pytest.raises(MaintenanceOperationError, match="do not match its manifest"):
         deployment.inspect_deployment(root)
+
+
+def test_state_snapshot_restores_previous_state_when_replacement_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    active = _prepare_deployment(root)
+    deployment_repository._snapshot_release(root, active)
+    deployment_repository._snapshot_state(root, active)
+    state = root / "src" / ".maintenance" / "versions" / active.release_id / "state"
+    original_config = (state / "config.toml").read_bytes()
+    (root / "src" / "config.toml").write_text("changed\n", encoding="utf-8")
+    real_replace = deployment_repository.os.replace
+    failed = False
+
+    def fail_new_state(source, target) -> None:
+        nonlocal failed
+        if Path(target) == state and not failed:
+            failed = True
+            raise OSError("simulated state activation failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(deployment_repository.os, "replace", fail_new_state)
+
+    with pytest.raises(OSError, match="simulated state activation failure"):
+        deployment_repository._snapshot_state(root, active)
+
+    assert (state / "config.toml").read_bytes() == original_config
+    assert not any(
+        path.name.startswith(".state-old-") for path in state.parent.iterdir()
+    )

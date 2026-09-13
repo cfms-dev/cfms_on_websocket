@@ -10,6 +10,8 @@ from maintenance.operations.deployment.constants import (
     _COPY_CHUNK_BYTES,
     _SHA256_PATTERN,
     MAX_ARCHIVE_MEMBERS,
+    MAX_CHECKSUM_BYTES,
+    MAX_MANIFEST_BYTES,
     MAX_PACKAGE_BYTES,
     MAX_UNCOMPRESSED_BYTES,
 )
@@ -19,6 +21,7 @@ from maintenance.operations.deployment.repository import (
     _hash_file,
     _maintenance_root,
     _parse_manifest,
+    _read_limited_bytes,
     _release_from_tree,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
@@ -43,11 +46,16 @@ def _expected_digest(
         return expected_sha256.lower()
 
     checksum_file = Path(checksums_path).expanduser().resolve()
+    contents = _read_limited_bytes(
+        checksum_file,
+        maximum=MAX_CHECKSUM_BYTES,
+        description="checksum file",
+    )
     try:
-        lines = checksum_file.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
+        lines = contents.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
         raise MaintenanceOperationError(
-            f"Unable to read checksum file {checksum_file}: {exc}"
+            f"Checksum file is not valid UTF-8: {checksum_file}"
         ) from exc
     matches = []
     for line in lines:
@@ -218,7 +226,12 @@ def _stage_release(
                 "Release package must be an official ZIP or tar.gz archive"
             )
         manifest = _parse_manifest(
-            (stage / "release-manifest.json").read_bytes(), top_level=top_level
+            _read_limited_bytes(
+                stage / "release-manifest.json",
+                maximum=MAX_MANIFEST_BYTES,
+                description="release manifest",
+            ),
+            top_level=top_level,
         )
         release = _release_from_tree(stage, exact=True)
         if release.manifest != manifest:

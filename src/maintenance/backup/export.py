@@ -12,7 +12,7 @@ from typing import Any
 
 import orjson
 from rich.progress import Progress
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import CORE_VERSION
@@ -24,6 +24,7 @@ from maintenance.backup.archive import _write_json
 from maintenance.backup.constants import (
     BACKUP_FORMAT_VERSION,
     GCM_NONCE_BYTES,
+    MAX_BACKUP_FILES,
 )
 from maintenance.backup.format import (
     _encode_bytes,
@@ -33,6 +34,7 @@ from maintenance.backup.format import (
     encode_backup_key,
 )
 from maintenance.backup.models import (
+    BackupError,
     BackupHeader,
     BackupIntegrityError,
     BackupWarning,
@@ -48,11 +50,10 @@ from maintenance.backup.selection import (
     EXCLUDED_TABLE_NAMES,
     BackupComponent,
     BackupExportSelection,
+    _active_compiled_rule_set_id_query,
     _apply_compiled_access_rule_export_filter,
     _apply_export_table_filter,
     _backup_tables,
-    _collect_active_compiled_rule_set_ids,
-    _collect_selected_file_ids,
     _selected_table_names,
     _selection_components,
 )
@@ -63,7 +64,6 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class _TableExportResult:
     manifest: dict[str, Any]
-    file_ids: frozenset[str] | None
 
 
 def export_backup(
@@ -86,6 +86,14 @@ def export_backup(
         raise ValueError("Backup key must be exactly 32 bytes")
 
     output = Path(output_path)
+    key_output = None if key_output_path is None else Path(key_output_path)
+    if output.exists():
+        raise BackupError(f"Backup output already exists: {output}")
+    if key_output is not None:
+        if key_output.resolve() == output.resolve():
+            raise BackupError("Backup output and key output must be different files")
+        if key_output.exists():
+            raise BackupError(f"Backup key output already exists: {key_output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     LOGGER.debug("Starting backup export to %s", output)
     _emit_progress(
@@ -145,9 +153,13 @@ def export_backup(
         )
 
     encoded_key = encode_backup_key(key_bytes)
-    if key_output_path is not None:
-        LOGGER.debug("Writing backup key to %s", key_output_path)
-        Path(key_output_path).write_text(f"{encoded_key}\n", encoding="utf-8")
+    if key_output is not None:
+        LOGGER.debug("Writing backup key to %s", key_output)
+        try:
+            _write_key_file(key_output, encoded_key)
+        except Exception:
+            output.unlink(missing_ok=True)
+            raise
     _emit_progress(
         progress_reporter,
         phase="complete_export",
@@ -158,6 +170,27 @@ def export_backup(
     )
     LOGGER.debug("Backup export completed: %s", output)
     return encoded_key
+
+
+def _write_key_file(path: Path, encoded_key: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="") as output:
+            output.write(f"{encoded_key}\n")
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError as exc:
+            raise BackupError(f"Backup key output already exists: {path}") from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _stage_backup_payload(
@@ -199,7 +232,7 @@ def _stage_backup_payload(
         files_dir,
         session_factory,
         storage_provider,
-        file_ids=table_export.file_ids,
+        selection=selection,
         warning_handler=warning_handler,
         progress_reporter=progress_reporter,
     )
@@ -237,21 +270,17 @@ def _export_tables(
 
     with session_factory() as session:
         connection = session.connection()
-        file_ids = None
-        active_compiled_rule_set_ids = _collect_active_compiled_rule_set_ids(
-            connection,
+        active_compiled_rule_set_ids = _active_compiled_rule_set_id_query(
             metadata_tables,
         )
         table_names = BACKUP_TABLE_NAMES
         if not full_export:
-            file_ids = _collect_selected_file_ids(
-                connection,
-                metadata_tables,
-                components,
-            )
             table_names = _selected_table_names(
                 components,
-                include_files=bool(file_ids),
+                include_files=bool(
+                    BackupComponent.ACCOUNTS in components
+                    or BackupComponent.DOCUMENT_LIBRARY in components
+                ),
             )
 
         for table_index, table_name in enumerate(table_names, start=1):
@@ -280,7 +309,21 @@ def _export_tables(
             rows_path = tables_dir / f"{table_name}.jsonl"
             row_count = 0
             order_by = [column for column in table.primary_key.columns]
-            statement = select(table)
+            selected_columns = [
+                (
+                    case(
+                        (
+                            column.in_(active_compiled_rule_set_ids),
+                            column,
+                        ),
+                        else_=None,
+                    ).label(column.name)
+                    if table_name == "nodes" and column.name == "access_rule_set_id"
+                    else column
+                )
+                for column in stored_columns
+            ]
+            statement = select(*selected_columns)
             if order_by:
                 statement = statement.order_by(*order_by)
             if not full_export:
@@ -290,7 +333,6 @@ def _export_tables(
                     table_name,
                     metadata_tables,
                     components,
-                    file_ids or frozenset(),
                 )
             statement = _apply_compiled_access_rule_export_filter(
                 statement,
@@ -305,12 +347,6 @@ def _export_tables(
                     encoded = {}
                     for column in stored_columns:
                         value = row[column.name]
-                        if (
-                            table_name == "nodes"
-                            and column.name == "access_rule_set_id"
-                            and value not in active_compiled_rule_set_ids
-                        ):
-                            value = None
                         encoded[str(column.name)] = _serialize_table_value(
                             table_name,
                             column.name,
@@ -323,10 +359,7 @@ def _export_tables(
             manifest[table_name] = {"columns": columns, "rows": row_count}
             LOGGER.debug("Exported table %s with %d row(s)", table_name, row_count)
 
-    return _TableExportResult(
-        manifest=manifest,
-        file_ids=file_ids,
-    )
+    return _TableExportResult(manifest=manifest)
 
 
 def _export_files(
@@ -334,92 +367,103 @@ def _export_files(
     session_factory: sessionmaker,
     storage_provider: StorageProvider,
     *,
-    file_ids: frozenset[str] | None = None,
+    selection: BackupExportSelection | None = None,
     warning_handler: BackupWarningHandler | None = None,
     progress_reporter: _BackupProgressReporter | None = None,
 ) -> list[dict[str, Any]]:
-    file_rows: list[dict[str, Any]] = []
-    files_table = _backup_tables()["files"]
+    tables = _backup_tables()
+    files_table = tables["files"]
+    components = _selection_components(selection)
 
     with session_factory() as session:
         connection = session.connection()
         statement = select(files_table).order_by(files_table.c.id)
-        if file_ids is not None:
-            if not file_ids:
-                statement = statement.where(files_table.c.id.in_([]))
-            else:
-                statement = statement.where(files_table.c.id.in_(sorted(file_ids)))
-        for row in connection.execute(statement).mappings():
-            file_rows.append(dict(row))
-
-    file_manifest = []
-    LOGGER.debug("Found %d database file record(s) to inspect", len(file_rows))
-    for file_index, row in enumerate(file_rows, start=1):
-        file_id = str(row["id"])
-        storage_path = str(row["path"])
-        active = bool(row["active"])
-        index = len(file_manifest)
-        archive_path = f"files/{index:08d}.bin"
-        staged_file = files_dir / f"{index:08d}.bin"
-        LOGGER.debug(
-            "Copying storage file %s from %s (%d/%d)",
-            file_id,
-            storage_path,
-            file_index,
-            len(file_rows),
+        if selection is not None:
+            statement = _apply_export_table_filter(
+                statement,
+                files_table,
+                "files",
+                tables,
+                components,
+            )
+        total_files = connection.scalar(
+            select(func.count()).select_from(statement.order_by(None).subquery())
         )
-        _emit_progress(
-            progress_reporter,
-            phase="export_file",
-            message="Copying storage file",
-            current_step=3,
-            total_steps=EXPORT_PROGRESS_STEPS,
-            detail=f"{file_id}: {storage_path}",
-            completed_units=file_index,
-            total_units=len(file_rows),
-            detail_task=True,
-        )
-
-        if not storage_provider.exists(storage_path):
-            if not active:
-                _warn_backup_skip(
-                    "Skipping inactive database file record "
-                    f"{file_id!r} because its physical file is missing: "
-                    f"{storage_path}",
-                    warning_handler,
-                )
-                continue
+        if total_files > MAX_BACKUP_FILES:
             raise BackupIntegrityError(
-                f"Physical file for database file record {file_id!r} is missing: "
-                f"{storage_path}"
+                f"Backup selection contains more than {MAX_BACKUP_FILES} files"
+            )
+        file_manifest = []
+        LOGGER.debug("Found %d database file record(s) to inspect", total_files)
+        rows = connection.execute(
+            statement.execution_options(yield_per=1000)
+        ).mappings()
+        for file_index, row in enumerate(rows, start=1):
+            file_id = str(row["id"])
+            storage_path = str(row["path"])
+            active = bool(row["active"])
+            index = len(file_manifest)
+            archive_path = f"files/{index:08d}.bin"
+            staged_file = files_dir / f"{index:08d}.bin"
+            LOGGER.debug(
+                "Copying storage file %s from %s (%d/%d)",
+                file_id,
+                storage_path,
+                file_index,
+                total_files,
+            )
+            _emit_progress(
+                progress_reporter,
+                phase="export_file",
+                message="Copying storage file",
+                current_step=3,
+                total_steps=EXPORT_PROGRESS_STEPS,
+                detail=f"{file_id}: {storage_path}",
+                completed_units=file_index,
+                total_units=total_files,
+                detail_task=True,
             )
 
-        sha256 = hashlib.sha256()
-        size = 0
-        with (
-            storage_provider.fopen(storage_path, "rb") as source,
-            staged_file.open("wb") as target,
-        ):
-            while chunk := source.read(1024 * 1024):
-                sha256.update(chunk)
-                size += len(chunk)
-                target.write(chunk)
+            if not storage_provider.exists(storage_path):
+                if not active:
+                    _warn_backup_skip(
+                        "Skipping inactive database file record "
+                        f"{file_id!r} because its physical file is missing: "
+                        f"{storage_path}",
+                        warning_handler,
+                    )
+                    continue
+                raise BackupIntegrityError(
+                    f"Physical file for database file record {file_id!r} is missing: "
+                    f"{storage_path}"
+                )
 
-        file_manifest.append(
-            {
-                "file_id": file_id,
-                "storage_path": storage_path,
-                "archive_path": archive_path,
-                "size": size,
-                "sha256": sha256.hexdigest(),
-            }
-        )
-        LOGGER.debug(
-            "Copied storage file %s (%d byte(s), sha256=%s)",
-            file_id,
-            size,
-            sha256.hexdigest(),
-        )
+            sha256 = hashlib.sha256()
+            size = 0
+            with (
+                storage_provider.fopen(storage_path, "rb") as source,
+                staged_file.open("wb") as target,
+            ):
+                while chunk := source.read(1024 * 1024):
+                    sha256.update(chunk)
+                    size += len(chunk)
+                    target.write(chunk)
+
+            file_manifest.append(
+                {
+                    "file_id": file_id,
+                    "storage_path": storage_path,
+                    "archive_path": archive_path,
+                    "size": size,
+                    "sha256": sha256.hexdigest(),
+                }
+            )
+            LOGGER.debug(
+                "Copied storage file %s (%d byte(s), sha256=%s)",
+                file_id,
+                size,
+                sha256.hexdigest(),
+            )
 
     return file_manifest
 

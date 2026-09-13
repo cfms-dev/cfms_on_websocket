@@ -17,9 +17,23 @@ from maintenance.operations.extensions.models import ExtensionPackageInspection
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 4096
+MAX_EXTENSION_MANIFEST_BYTES = 1024 * 1024
+MAX_INSTALLED_EXTENSIONS = 1024
 _COPY_CHUNK_BYTES = 1024 * 1024
 _SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}").fullmatch
 _ALLOWED_COMPRESSIONS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+
+
+def _validate_extension_root_size(root: Path) -> None:
+    directory_count = 0
+    for path in root.iterdir():
+        if path.is_dir():
+            directory_count += 1
+            if directory_count > MAX_INSTALLED_EXTENSIONS:
+                raise MaintenanceOperationError(
+                    f"Extension root contains more than {MAX_INSTALLED_EXTENSIONS} "
+                    "directories"
+                )
 
 
 def _hash_file(path: Path) -> str:
@@ -171,6 +185,10 @@ def _extract_package(
                             )
                         output.write(chunk)
         try:
+            if (stage / "manifest.toml").stat().st_size > MAX_EXTENSION_MANIFEST_BYTES:
+                raise MaintenanceOperationError(
+                    "Extension manifest exceeds the 1 MiB limit"
+                )
             manifest = parse_extension_manifest(stage / "manifest.toml")
         except ExtensionManifestError as exc:
             raise MaintenanceOperationError(str(exc)) from exc
