@@ -25,9 +25,10 @@ def _iter_raw_table_rows(
     row_count = 0
     with path.open("rb") as f:
         line_number = 0
-        while line := f.readline(MAX_JSONL_ROW_BYTES + 1):
+        while line := f.readline(MAX_JSONL_ROW_BYTES + 2):
             line_number += 1
-            if len(line) > MAX_JSONL_ROW_BYTES:
+            row_payload = line.removesuffix(b"\n")
+            if len(row_payload) > MAX_JSONL_ROW_BYTES:
                 raise BackupFormatError(
                     f"JSON row in {path} at line {line_number} exceeds the "
                     f"{MAX_JSONL_ROW_BYTES}-byte limit"

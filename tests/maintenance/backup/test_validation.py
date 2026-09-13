@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import orjson
 import pytest
 import tomlkit
 from sqlalchemy import event, func, insert, select
@@ -741,3 +742,19 @@ def test_export_rejects_json_row_larger_than_restore_limit(
             source_session,
             selection=selection,
         )
+
+
+def test_restore_accepts_json_row_at_export_limit(tmp_path, monkeypatch) -> None:
+    from maintenance.backup import rows as backup_rows
+
+    extract_dir = tmp_path / "payload"
+    table_path = extract_dir / "tables" / "audit_entries.jsonl"
+    table_path.parent.mkdir(parents=True)
+    encoded_row = orjson.dumps({"id": "boundary"})
+    table_path.write_bytes(encoded_row + b"\n")
+    monkeypatch.setattr(backup_rows, "MAX_JSONL_ROW_BYTES", len(encoded_row))
+    manifest = {"tables": {"audit_entries": {"rows": 1}}}
+
+    assert list(
+        backup_rows._iter_raw_table_rows(extract_dir, manifest, "audit_entries")
+    ) == [{"id": "boundary"}]

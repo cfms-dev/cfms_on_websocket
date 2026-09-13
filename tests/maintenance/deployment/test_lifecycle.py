@@ -23,6 +23,7 @@ from maintenance.operations.deployment import (
     repository as deployment_repository,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
+from maintenance.operations.extensions import packages as extension_packages
 
 from .support import (
     PROJECT_ROOT,
@@ -484,6 +485,70 @@ def test_state_snapshot_restores_previous_state_when_replacement_fails(
     assert not any(
         path.name.startswith(".state-old-") for path in state.parent.iterdir()
     )
+
+
+def test_stored_release_lookup_rejects_mislabeled_directory(tmp_path: Path) -> None:
+    root = tmp_path / "deployment"
+    _prepare_deployment(root)
+    release = _write_release(tmp_path / "target", "0.9.0", "target")
+    stored_root = deployment_repository._snapshot_release(root, release).parent
+    mislabeled_root = stored_root.with_name(release.release_id[:12] + ("f" * (64 - 12)))
+    stored_root.rename(mislabeled_root)
+
+    with pytest.raises(MaintenanceOperationError, match="does not match its directory"):
+        deployment_repository._stored_release(root, release.release_id[:12])
+
+
+def test_state_extension_restore_enforces_root_entry_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    release = _prepare_deployment(root)
+    state_root = (
+        root
+        / "src"
+        / ".maintenance"
+        / "versions"
+        / release.release_id
+        / "state"
+        / "extensions"
+    )
+    state_root.mkdir(parents=True)
+    for index in range(3):
+        (state_root / f"entry-{index}.txt").write_text("entry", encoding="utf-8")
+    monkeypatch.setattr(extension_packages, "MAX_INSTALLED_EXTENSIONS", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2 entries"):
+        deployment_repository._copy_state_extensions(root, release)
+
+
+@pytest.mark.parametrize(
+    "transaction",
+    [
+        [],
+        {"action": "upgrade"},
+        {
+            "action": "upgrade",
+            "phase": "activation",
+            "from_release": 1,
+            "to_release": "b" * 64,
+        },
+    ],
+)
+def test_load_transaction_rejects_invalid_state_shape(
+    tmp_path: Path,
+    transaction,
+) -> None:
+    project_root = tmp_path / "deployment"
+    transaction_path = project_root / "src" / ".maintenance" / "transaction.json"
+    transaction_path.parent.mkdir(parents=True)
+    transaction_path.write_text(json.dumps(transaction), encoding="utf-8")
+
+    with pytest.raises(
+        MaintenanceOperationError, match="Invalid deployment transaction"
+    ):
+        deployment_lifecycle._load_transaction(project_root)
 
 
 def test_upgrade_restores_source_when_atomic_release_copy_fails(

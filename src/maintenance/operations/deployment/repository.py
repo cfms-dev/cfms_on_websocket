@@ -489,8 +489,9 @@ def _copy_state_extensions(project_root: Path, release: _Release) -> None:
     if not state_root.is_dir():
         return
     try:
+        _validate_extension_root_size(state_root)
         source_catalog = discover_extensions(state_root)
-    except ExtensionDiscoveryError as exc:
+    except (OSError, ExtensionDiscoveryError) as exc:
         raise MaintenanceOperationError(str(exc)) from exc
     target_catalog = _discover(project_root)
     for identifier, extension in source_catalog.items():
@@ -514,17 +515,13 @@ def _archive_active(project_root: Path, release: _Release) -> None:
 
 
 def _stored_release(project_root: Path, release_id: str) -> _Release:
-    versions_root = _maintenance_root(project_root) / "versions"
-    match = None
-    if versions_root.is_dir():
-        for path in versions_root.iterdir():
-            if not path.is_dir() or not path.name.startswith(release_id.lower()):
-                continue
-            if match is not None:
-                raise MaintenanceOperationError(
-                    f"Release ID prefix is ambiguous: {release_id}"
-                )
-            match = path
-    if match is None:
+    matches = [
+        release
+        for _, release in _stored_releases(project_root)
+        if release.release_id.startswith(release_id.lower())
+    ]
+    if not matches:
         raise MaintenanceOperationError(f"Stored release not found: {release_id}")
-    return _verified_stored_release(match / "release")
+    if len(matches) != 1:
+        raise MaintenanceOperationError(f"Release ID prefix is ambiguous: {release_id}")
+    return matches[0]

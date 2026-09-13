@@ -77,9 +77,18 @@ def _load_transaction(project_root: Path) -> dict[str, Any]:
                 description="deployment transaction",
             )
         )
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise MaintenanceOperationError(f"Unable to read {path}: {exc}") from exc
-    if data.get("action") not in {"upgrade", "downgrade"}:
+    if (
+        not isinstance(data, dict)
+        or data.get("action") not in {"upgrade", "downgrade"}
+        or data.get("phase")
+        not in {"activation", "database-migration", "database-recovery-required"}
+        or not isinstance(data.get("from_release"), str)
+        or _SHA256_PATTERN(data["from_release"]) is None
+        or not isinstance(data.get("to_release"), str)
+        or _SHA256_PATTERN(data["to_release"]) is None
+    ):
         raise MaintenanceOperationError(f"Invalid deployment transaction: {path}")
     return data
 
