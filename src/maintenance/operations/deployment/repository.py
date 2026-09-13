@@ -194,14 +194,17 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
     managed_extensions = manifest.get("managed_extensions")
     expected_files = manifest.get("files")
     requires_python = manifest.get("requires_python")
-    if not isinstance(requires_python, str):
+    if not isinstance(requires_python, str) or not requires_python.strip():
         raise MaintenanceOperationError("Release manifest metadata is invalid")
     try:
         SpecifierSet(requires_python)
     except (InvalidSpecifier, TypeError) as exc:
         raise MaintenanceOperationError("Release manifest metadata is invalid") from exc
+    format_version = manifest.get("format_version")
     if (
-        manifest.get("format_version") != 1
+        isinstance(format_version, bool)
+        or not isinstance(format_version, int)
+        or format_version != 1
         or manifest.get("product") != "cfms-on-websocket"
         or not isinstance(version, str)
         or _VERSION_PATTERN(version) is None
@@ -223,13 +226,14 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
                 f"Release manifest contains an invalid path or digest: {relative_path!r}"
             )
         path_parts = _archive_parts(relative_path)
+        casefolded_parts = tuple(part.casefold() for part in path_parts)
         if (
             not path_parts
             or not isinstance(digest, str)
             or _SHA256_PATTERN(digest) is None
             or relative_path.casefold().startswith(_OPERATOR_OWNED_PREFIXES)
-            or "__pycache__" in path_parts
-            or PurePosixPath(relative_path).suffix in {".pyc", ".pyo"}
+            or "__pycache__" in casefolded_parts
+            or PurePosixPath(relative_path).suffix.casefold() in {".pyc", ".pyo"}
         ):
             raise MaintenanceOperationError(
                 f"Release manifest contains an invalid path or digest: {relative_path!r}"

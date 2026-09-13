@@ -783,6 +783,49 @@ def test_manifest_rejects_incomplete_configuration(
         _validate_manifest(manifest)
 
 
+def test_manifest_rejects_non_array_components(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": {"configuration": None},
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid components",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_boolean_format_version(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+
+    manifest = {
+        "format_version": True,
+        "components": ["configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="format version",
+    ):
+        _validate_manifest(manifest)
+
+
 def test_manifest_rejects_tables_outside_component_selection(backup_context) -> None:
     from maintenance.backup.archive import _validate_manifest
     from maintenance.backup.format import BACKUP_FORMAT_VERSION

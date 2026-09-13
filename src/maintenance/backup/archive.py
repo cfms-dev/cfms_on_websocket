@@ -76,10 +76,13 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             raise BackupFormatError(
                 f"Backup manifest contains an invalid row count for {table_name!r}"
             )
-    if manifest.get("format_version") != BACKUP_FORMAT_VERSION:
-        raise BackupFormatError(
-            f"Unsupported payload format version: {manifest.get('format_version')}"
-        )
+    format_version = manifest.get("format_version")
+    if (
+        isinstance(format_version, bool)
+        or not isinstance(format_version, int)
+        or format_version != BACKUP_FORMAT_VERSION
+    ):
+        raise BackupFormatError(f"Unsupported payload format version: {format_version}")
     table_names: set[str] = set(tables)
     expected: set[str] = set(BACKUP_TABLE_NAMES)
     compiled_access_rule_tables = set(COMPILED_ACCESS_RULE_TABLE_NAMES)
@@ -107,10 +110,11 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             f"expected {sorted(expected)}, got {sorted(table_names)}"
         )
     if "components" in manifest:
+        component_values = manifest["components"]
+        if not isinstance(component_values, list):
+            raise BackupFormatError("Backup manifest contains invalid components")
         try:
-            selection = BackupExportSelection.from_component_values(
-                manifest["components"]
-            )
+            selection = BackupExportSelection.from_component_values(component_values)
         except (TypeError, ValueError) as exc:
             raise BackupFormatError(
                 "Backup manifest contains invalid components"
