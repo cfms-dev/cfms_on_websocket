@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import insert, select, update
 
 from .roundtrip_support import _seed_source
@@ -7,6 +8,13 @@ from .support import (
     _RootedStorage,
     _write_jsonl,
 )
+
+
+def test_legacy_rule_data_rejects_malformed_embedded_json(backup_context) -> None:
+    from maintenance.backup.legacy import _coerce_legacy_rule_data
+
+    with pytest.raises(backup_context.BackupFormatError, match="rule_data"):
+        _coerce_legacy_rule_data("{")
 
 
 def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(

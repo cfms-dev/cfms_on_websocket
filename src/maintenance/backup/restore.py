@@ -53,6 +53,7 @@ from maintenance.backup.progress import (
 from maintenance.backup.rows import (
     _decode_row,
     _iter_raw_table_row_batches,
+    _iter_raw_table_rows,
     _iter_table_row_batches,
 )
 from maintenance.backup.selection import (
@@ -263,6 +264,7 @@ def _restore_files(
     if written_paths is None:
         written_paths = []
     file_entries = manifest["files"]
+    _validate_file_manifest_table(extract_dir, manifest)
     for file_index, entry in enumerate(file_entries, start=1):
         storage_path = str(entry["storage_path"])
         _validate_storage_path(storage_path)
@@ -307,6 +309,31 @@ def _restore_files(
         LOGGER.debug("Restored storage file %s", storage_path)
 
     return written_paths
+
+
+def _validate_file_manifest_table(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> None:
+    expected_paths = {
+        entry["file_id"]: entry["storage_path"] for entry in manifest["files"]
+    }
+    if not expected_paths:
+        return
+    if "files" not in manifest["tables"]:
+        raise BackupFormatError("Backup file manifest does not match the files table")
+    unmatched_ids = set(expected_paths)
+    for row in _iter_raw_table_rows(extract_dir, manifest, "files"):
+        file_id = row.get("id")
+        if file_id not in expected_paths:
+            continue
+        if row.get("path") != expected_paths[file_id]:
+            raise BackupFormatError(
+                "Backup file manifest does not match the files table"
+            )
+        unmatched_ids.discard(file_id)
+    if unmatched_ids:
+        raise BackupFormatError("Backup file manifest does not match the files table")
 
 
 def _restore_database(

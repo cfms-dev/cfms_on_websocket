@@ -32,7 +32,9 @@ from maintenance.backup.selection import (
     EXCLUDED_TABLE_NAMES,
     INSERT_ORDER,
     LEGACY_ACCESS_RULE_TABLE_NAMES,
+    BackupComponent,
     BackupExportSelection,
+    _selected_table_names,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -106,11 +108,35 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         )
     if "components" in manifest:
         try:
-            BackupExportSelection.from_component_values(manifest["components"])
+            selection = BackupExportSelection.from_component_values(
+                manifest["components"]
+            )
         except (TypeError, ValueError) as exc:
             raise BackupFormatError(
                 "Backup manifest contains invalid components"
             ) from exc
+        components = selection.resolved_components()
+        selected_table_names = set(
+            _selected_table_names(
+                components,
+                include_files=bool(
+                    BackupComponent.ACCOUNTS in components
+                    or BackupComponent.DOCUMENT_LIBRARY in components
+                ),
+            )
+        )
+        if BackupComponent.DOCUMENT_LIBRARY in components:
+            selected_table_names.update(LEGACY_ACCESS_RULE_TABLE_NAMES)
+        outside_selection = table_names - selected_table_names
+        if outside_selection:
+            raise BackupFormatError(
+                "Backup tables are outside the selected components: "
+                f"{sorted(outside_selection)}"
+            )
+        if configuration and BackupComponent.CONFIGURATION not in components:
+            raise BackupFormatError(
+                "Backup configuration is outside the selected components"
+            )
     for excluded in EXCLUDED_TABLE_NAMES:
         if excluded in table_names:
             raise BackupFormatError(f"Excluded table {excluded!r} is present")

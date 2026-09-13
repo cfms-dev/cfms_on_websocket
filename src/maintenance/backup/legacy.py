@@ -12,6 +12,7 @@ from include.database.models.access import (
 )
 from include.database.models.documents import Node
 from include.domains.access.authorization.compiled_rules import compile_access_rule
+from maintenance.backup.models import BackupFormatError
 from maintenance.backup.rows import _iter_raw_table_row_batches
 from maintenance.backup.selection import LEGACY_ACCESS_RULE_TABLE_NAMES
 
@@ -108,6 +109,11 @@ def _coerce_legacy_rule_data(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     if isinstance(value, str):
-        parsed = json.loads(value)
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise BackupFormatError(
+                "Legacy access rule rule_data is not valid JSON"
+            ) from exc
         return parsed if isinstance(parsed, dict) else {}
     return {}

@@ -102,6 +102,41 @@ def test_fill_pepper_keeps_original_config_when_atomic_replace_fails(
     assert not any(src_dir.glob(".config.toml.*.tmp"))
 
 
+def test_atomic_config_write_refuses_to_overwrite_same_timestamp_backup(
+    monkeypatch,
+    tmp_path,
+):
+    from maintenance.operations.config import sync as config_sync
+
+    fixed_now = config_sync.dt.datetime(2026, 9, 13, tzinfo=config_sync.dt.UTC)
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, timezone):
+            assert timezone is config_sync.dt.UTC
+            return fixed_now
+
+    monkeypatch.setattr(config_sync.dt, "datetime", FixedDateTime)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("first\n", encoding="utf-8")
+    first_source = config_sync.read_config_text(config_path)
+
+    backup_path = config_sync.write_config_atomically(
+        config_path,
+        first_source,
+        "second\n",
+    )
+    with pytest.raises(MaintenanceOperationError, match="backup already exists"):
+        config_sync.write_config_atomically(
+            config_path,
+            "second\n",
+            "third\n",
+        )
+
+    assert backup_path.read_bytes() == first_source.encode()
+    assert config_path.read_bytes() == b"second\n"
+
+
 def test_sync_applies_all_known_legacy_migrations(monkeypatch, tmp_path):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     current["database"]["db_name"] = "legacy_database"

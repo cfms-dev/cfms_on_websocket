@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import orjson
@@ -704,6 +705,73 @@ def test_manifest_rejects_invalid_configuration_shape(
         match="invalid configuration",
     ):
         _validate_manifest(manifest)
+
+
+def test_manifest_rejects_tables_outside_component_selection(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["configuration"],
+        "tables": {"audit_entries": {"rows": 0}},
+        "files": [],
+        "configuration": {"security": {"pepper": "restored"}},
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="outside the selected components",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_restore_files_rejects_manifest_entry_without_matching_database_row(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_files
+
+    extract_dir = tmp_path / "payload"
+    payload = extract_dir / "files" / "00000000.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"payload")
+    _write_jsonl(
+        extract_dir / "tables" / "files.jsonl",
+        [
+            {
+                "id": "database-file",
+                "path": "content/files/database.bin",
+                "active": True,
+            }
+        ],
+    )
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 1}},
+        "files": [
+            {
+                "file_id": "manifest-file",
+                "storage_path": "content/files/manifest.bin",
+                "archive_path": "files/00000000.bin",
+                "size": len(b"payload"),
+                "sha256": hashlib.sha256(b"payload").hexdigest(),
+            }
+        ],
+        "configuration": {},
+    }
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="does not match the files table",
+    ):
+        _restore_files(extract_dir, manifest, _RootedStorage(storage_root))
+
+    assert not (storage_root / "content" / "files" / "manifest.bin").exists()
 
 
 def test_restore_rejects_oversized_json_row_before_parsing(

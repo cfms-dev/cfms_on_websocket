@@ -161,6 +161,27 @@ def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context)
     assert backup_context.decode_backup_key(legacy_key) == bytes(range(32))
 
 
+@pytest.mark.parametrize("nonce", ("a", "AAAAAAAAAAAAAAAA!"))
+def test_backup_header_rejects_malformed_base64_nonce(
+    backup_context,
+    nonce,
+) -> None:
+    from maintenance.backup.format import _validate_header
+    from maintenance.backup.models import BackupHeader
+
+    header = BackupHeader(
+        format_version=backup_context.backup_core.BACKUP_FORMAT_VERSION,
+        created_at="2026-09-13T00:00:00+00:00",
+        core_version="0.10.1",
+        compression="xz",
+        encryption="AES-256-GCM",
+        nonce=nonce,
+    )
+
+    with pytest.raises(backup_context.BackupFormatError, match="nonce"):
+        _validate_header(header)
+
+
 @pytest.mark.parametrize(
     "layout",
     ("current", "previous_compiled", "legacy_access_rules"),

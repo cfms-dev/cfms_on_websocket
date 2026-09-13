@@ -299,7 +299,11 @@ def _validate_header(header: BackupHeader) -> None:
         raise BackupFormatError(f"Unsupported compression: {header.compression}")
     if header.encryption != "AES-256-GCM":
         raise BackupFormatError(f"Unsupported encryption: {header.encryption}")
-    if len(_decode_bytes(header.nonce)) != GCM_NONCE_BYTES:
+    try:
+        nonce = _decode_bytes(header.nonce)
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise BackupFormatError("Backup header nonce is invalid") from exc
+    if len(nonce) != GCM_NONCE_BYTES:
         raise BackupFormatError("Backup header nonce length is invalid")
 
 
@@ -350,4 +354,4 @@ def _encode_bytes(value: bytes) -> str:
 
 def _decode_bytes(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(value + padding)
+    return base64.b64decode(value + padding, altchars=b"-_", validate=True)
