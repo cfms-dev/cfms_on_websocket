@@ -597,6 +597,28 @@ def test_state_extension_restore_enforces_root_entry_limit(
         deployment_repository._copy_state_extensions(root, release)
 
 
+def test_restore_active_rejects_linked_state_config_before_writes(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "deployment"
+    source = _write_release(tmp_path / "source", "1.0.0", "source")
+    state = (
+        deployment_repository._version_root(project_root, source.release_id) / "state"
+    )
+    state.mkdir(parents=True)
+    external_config = tmp_path / "external.toml"
+    external_config.write_text("external = true\n", encoding="utf-8")
+    (state / "config.toml").symlink_to(external_config)
+
+    with pytest.raises(
+        MaintenanceOperationError,
+        match="compatible configuration snapshot",
+    ):
+        deployment_lifecycle._restore_active(project_root, source)
+
+    assert not (project_root / "release-manifest.json").exists()
+
+
 @pytest.mark.parametrize(
     "transaction",
     [

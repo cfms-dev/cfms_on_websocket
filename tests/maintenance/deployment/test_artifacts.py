@@ -151,6 +151,15 @@ def test_manifest_rejects_boolean_format_version(tmp_path: Path) -> None:
         deployment_repository._parse_manifest(json.dumps(manifest).encode())
 
 
+def test_manifest_requires_builtin_managed_extension(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "release", "1.0.0", "release")
+    manifest = dict(release.manifest)
+    manifest["managed_extensions"] = []
+
+    with pytest.raises(MaintenanceOperationError, match="metadata is invalid"):
+        deployment_repository._parse_manifest(json.dumps(manifest).encode())
+
+
 @pytest.mark.parametrize(
     "generated_path",
     [

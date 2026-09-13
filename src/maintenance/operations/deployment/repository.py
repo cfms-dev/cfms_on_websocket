@@ -216,6 +216,7 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
         or not isinstance(expected_files, dict)
         or len(expected_files) > MAX_ARCHIVE_MEMBERS
         or not isinstance(managed_extensions, list)
+        or "builtin" not in managed_extensions
         or any(
             not isinstance(identifier, str)
             or _EXTENSION_IDENTIFIER_PATTERN(identifier) is None

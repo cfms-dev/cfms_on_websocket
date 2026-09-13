@@ -16,6 +16,7 @@ import orjson
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from include.config.version import Version as CoreVersion
 from maintenance.backup.archive import _add_staged_file
 from maintenance.backup.constants import (
     BACKUP_FORMAT_VERSION,
@@ -305,6 +306,10 @@ def _validate_header(header: BackupHeader) -> None:
         raise BackupFormatError("Backup header created_at is invalid") from exc
     if created_at.tzinfo is None:
         raise BackupFormatError("Backup header created_at is invalid")
+    try:
+        CoreVersion(header.core_version)
+    except (TypeError, ValueError) as exc:
+        raise BackupFormatError("Backup header core_version is invalid") from exc
     if header.compression != "xz":
         raise BackupFormatError(f"Unsupported compression: {header.compression}")
     if header.encryption != "AES-256-GCM":

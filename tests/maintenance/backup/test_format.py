@@ -242,6 +242,23 @@ def test_backup_header_rejects_invalid_created_at(
         _validate_header(header)
 
 
+def test_backup_header_rejects_invalid_core_version(backup_context) -> None:
+    from maintenance.backup.format import _validate_header
+    from maintenance.backup.models import BackupHeader
+
+    header = BackupHeader(
+        format_version=backup_context.backup_core.BACKUP_FORMAT_VERSION,
+        created_at="2026-09-13T00:00:00+00:00",
+        core_version="not-a-version",
+        compression="xz",
+        encryption="AES-256-GCM",
+        nonce="AAECAwQFBgcICQoL",
+    )
+
+    with pytest.raises(backup_context.BackupFormatError, match="core_version"):
+        _validate_header(header)
+
+
 @pytest.mark.parametrize(
     "layout",
     ("current", "previous_compiled", "legacy_access_rules"),

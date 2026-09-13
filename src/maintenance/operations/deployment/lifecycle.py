@@ -93,11 +93,30 @@ def _load_transaction(project_root: Path) -> dict[str, Any]:
     return data
 
 
+def _state_config_path(project_root: Path, release: _Release) -> Path:
+    state = _version_root(project_root, release.release_id) / "state"
+    config = state / "config.toml"
+    if (
+        state.is_symlink()
+        or state.is_junction()
+        or not state.is_dir()
+        or config.is_symlink()
+        or config.is_junction()
+        or not config.is_file()
+    ):
+        raise MaintenanceOperationError(
+            f"Stored release has no compatible configuration snapshot: "
+            f"{release.release_id}"
+        )
+    return config
+
+
 def _restore_active(
     project_root: Path,
     source: _Release,
     failed_release: _Release | None = None,
 ) -> None:
+    state_config = _state_config_path(project_root, source)
     try:
         current = _active_release(project_root)
     except MaintenanceOperationError:
@@ -118,8 +137,7 @@ def _restore_active(
         )
     if not (project_root / "release-manifest.json").exists():
         _copy_release_to_active(project_root, source)
-    state = _version_root(project_root, source.release_id) / "state"
-    _atomic_copy(state / "config.toml", project_root / "src" / "config.toml")
+    _atomic_copy(state_config, project_root / "src" / "config.toml")
     _copy_state_extensions(project_root, source)
 
 
@@ -270,11 +288,7 @@ def downgrade_deployment(
         target = _stored_release(project_root, release_id)
         if target.release_id == source.release_id:
             raise MaintenanceOperationError("The selected release is already active")
-        target_state = _version_root(project_root, target.release_id) / "state"
-        if not (target_state / "config.toml").is_file():
-            raise MaintenanceOperationError(
-                f"Stored release has no compatible configuration snapshot: {target.release_id}"
-            )
+        target_config = _state_config_path(project_root, target)
         _preflight_downgrade_database(project_root, source, target)
         _snapshot_release(project_root, source)
         _snapshot_state(project_root, source)
@@ -301,7 +315,7 @@ def downgrade_deployment(
         _archive_active(project_root, source)
         _copy_release_to_active(project_root, target)
         _atomic_copy(
-            target_state / "config.toml",
+            target_config,
             project_root / "src" / "config.toml",
         )
         _copy_state_extensions(project_root, target)

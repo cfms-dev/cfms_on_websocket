@@ -839,6 +839,28 @@ def test_manifest_rejects_non_array_components(backup_context) -> None:
         _validate_manifest(manifest)
 
 
+def test_manifest_rejects_duplicate_components(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["configuration", "configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid components",
+    ):
+        _validate_manifest(manifest)
+
+
 def test_manifest_rejects_boolean_format_version(backup_context) -> None:
     from maintenance.backup.archive import _validate_manifest
 

@@ -63,6 +63,17 @@ def test_catalog_uses_flat_application_extension_root(tmp_path, monkeypatch):
     )
 
 
+def test_catalog_rejects_linked_installed_extension(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
+    external_root = tmp_path / "external-extensions"
+    external_root.mkdir()
+    external = _write_installed_extension(external_root, "linked_ext")
+    (root / "linked-dir").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(MaintenanceOperationError, match="regular directory"):
+        extension_operations.inspect_extensions()
+
+
 @pytest.mark.parametrize(
     "manifest",
     [

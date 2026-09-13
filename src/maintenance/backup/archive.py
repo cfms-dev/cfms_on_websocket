@@ -114,6 +114,8 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(component_values, list):
             raise BackupFormatError("Backup manifest contains invalid components")
         try:
+            if len(component_values) != len(set(component_values)):
+                raise ValueError("Duplicate backup components")
             selection = BackupExportSelection.from_component_values(component_values)
         except (TypeError, ValueError) as exc:
             raise BackupFormatError(

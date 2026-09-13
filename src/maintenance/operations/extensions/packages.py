@@ -37,8 +37,15 @@ def _validate_extension_root_size(root: Path) -> None:
             raise MaintenanceOperationError(
                 f"Extension root contains more than {MAX_INSTALLED_EXTENSIONS} entries"
             )
-        if path.name.startswith(("_", ".")) or not path.is_dir():
+        if path.name.startswith(("_", ".")):
             continue
+        if path.is_symlink() or path.is_junction():
+            raise MaintenanceOperationError(
+                f"Extension is not a regular directory: {path}"
+            )
+        if not path.is_dir():
+            continue
+        _validate_extension_tree(path, enforce_limits=False)
         manifest_path = path / "manifest.toml"
         if (
             manifest_path.is_file()
@@ -49,7 +56,7 @@ def _validate_extension_root_size(root: Path) -> None:
             )
 
 
-def _validate_extension_tree(root: Path) -> None:
+def _validate_extension_tree(root: Path, *, enforce_limits: bool = True) -> None:
     if root.is_symlink() or root.is_junction() or not root.is_dir():
         raise MaintenanceOperationError(f"Extension is not a regular directory: {root}")
     file_count = 0
@@ -65,7 +72,7 @@ def _validate_extension_tree(root: Path) -> None:
                 )
             if path.is_dir():
                 directory_count += 1
-                if directory_count > MAX_ARCHIVE_MEMBERS:
+                if enforce_limits and directory_count > MAX_ARCHIVE_MEMBERS:
                     raise MaintenanceOperationError(
                         f"Extension contains more than {MAX_ARCHIVE_MEMBERS} members: "
                         f"{root}"
@@ -77,13 +84,13 @@ def _validate_extension_tree(root: Path) -> None:
                     f"Extension contains an unsupported filesystem entry: {path}"
                 )
             file_count += 1
-            if file_count > MAX_ARCHIVE_MEMBERS:
+            if enforce_limits and file_count > MAX_ARCHIVE_MEMBERS:
                 raise MaintenanceOperationError(
                     f"Extension contains more than {MAX_ARCHIVE_MEMBERS} members: "
                     f"{root}"
                 )
             total_size += path.stat().st_size
-            if total_size > MAX_UNCOMPRESSED_BYTES:
+            if enforce_limits and total_size > MAX_UNCOMPRESSED_BYTES:
                 raise MaintenanceOperationError(
                     f"Extension exceeds the {MAX_UNCOMPRESSED_BYTES}-byte size limit: "
                     f"{root}"
