@@ -1,10 +1,12 @@
 import hashlib
+import tarfile
 from pathlib import Path
 
 import orjson
 import pytest
 import tomlkit
-from sqlalchemy import event, func, insert, select
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from sqlalchemy import event, func, insert, select, update
 
 from .roundtrip_support import _seed_source
 from .support import (
@@ -109,6 +111,51 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     restored_config = tomlkit.parse(target_config.read_text(encoding="utf-8"))
     assert restored_config["security"]["pepper"] == "target-pepper"
     assert restored_config["server"]["secret_key"] == "target-secret"
+
+
+def test_file_export_uses_the_exported_database_snapshot(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.export import _stage_backup_payload
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_storage = tmp_path / "source-storage"
+    source_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    moved_path = source_storage / "content" / "files" / "moved.bin"
+    moved_path.write_bytes(b"moved payload")
+    session_count = 0
+
+    def changing_session_factory():
+        nonlocal session_count
+        session_count += 1
+        if session_count == 2:
+            with source_engine.begin() as connection:
+                connection.execute(
+                    update(base.metadata.tables["files"])
+                    .where(base.metadata.tables["files"].c.id == "file-doc")
+                    .values(path="content/files/moved.bin")
+                )
+        return source_session()
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    manifest = _stage_backup_payload(
+        staging_dir,
+        session_factory=changing_session_factory,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+
+    exported_paths = {
+        row["id"]: row["path"]
+        for row in _read_jsonl(staging_dir / "tables" / "files.jsonl")
+    }
+    assert {
+        entry["file_id"]: entry["storage_path"] for entry in manifest["files"]
+    } == exported_paths
 
 
 def test_banned_subnet_export_includes_only_referenced_comments(
@@ -726,6 +773,27 @@ def test_manifest_rejects_tables_outside_component_selection(backup_context) -> 
         _validate_manifest(manifest)
 
 
+def test_manifest_rejects_missing_tables_for_selected_components(
+    backup_context,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {},
+        "files": [],
+        "configuration": {},
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="does not match the selected components",
+    ):
+        _validate_manifest(manifest)
+
+
 def test_restore_files_rejects_manifest_entry_without_matching_database_row(
     backup_context,
     tmp_path,
@@ -772,6 +840,109 @@ def test_restore_files_rejects_manifest_entry_without_matching_database_row(
         _restore_files(extract_dir, manifest, _RootedStorage(storage_root))
 
     assert not (storage_root / "content" / "files" / "manifest.bin").exists()
+
+
+def test_restore_files_rejects_active_database_row_without_payload(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_files
+
+    extract_dir = tmp_path / "payload"
+    _write_jsonl(
+        extract_dir / "tables" / "files.jsonl",
+        [
+            {
+                "id": "active-file",
+                "path": "content/files/active.bin",
+                "active": True,
+            }
+        ],
+    )
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 1}},
+        "files": [],
+        "configuration": {},
+    }
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="active files table row has no payload",
+    ):
+        _restore_files(extract_dir, manifest, _RootedStorage(storage_root))
+
+
+def test_import_rejects_payload_members_absent_from_manifest(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.format import _encode_header, _header_prefix
+    from maintenance.backup.models import BackupHeader
+
+    key = bytes(range(32))
+    nonce = bytes(range(12))
+    manifest = {
+        "format_version": backup_context.backup_core.BACKUP_FORMAT_VERSION,
+        "components": ["configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored-pepper"},
+            "server": {"secret_key": "restored-secret"},
+        },
+    }
+    payload_root = tmp_path / "archive-source"
+    payload_root.mkdir()
+    (payload_root / "manifest.json").write_bytes(orjson.dumps(manifest))
+    (payload_root / "unexpected.bin").write_bytes(b"not declared")
+    compressed_payload = tmp_path / "payload.tar.xz"
+    with tarfile.open(compressed_payload, "w:xz") as archive:
+        archive.add(payload_root / "manifest.json", arcname="manifest.json")
+        archive.add(payload_root / "unexpected.bin", arcname="unexpected.bin")
+
+    header_bytes = _encode_header(
+        BackupHeader(
+            format_version=backup_context.backup_core.BACKUP_FORMAT_VERSION,
+            created_at="2026-09-13T00:00:00+00:00",
+            core_version="0.10.1",
+            compression="xz",
+            encryption="AES-256-GCM",
+            nonce="AAECAwQFBgcICQoL",
+        )
+    )
+    prefix = _header_prefix(header_bytes)
+    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    encryptor.authenticate_additional_data(prefix)
+    ciphertext = encryptor.update(compressed_payload.read_bytes())
+    ciphertext += encryptor.finalize()
+    backup_path = tmp_path / "unexpected-member.conf"
+    backup_path.write_bytes(prefix + ciphertext + encryptor.tag)
+
+    target_engine, target_session = _new_database(
+        backup_context.Base,
+        tmp_path / "target.db",
+    )
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="contents do not match its manifest",
+    ):
+        backup_context.import_backup(
+            backup_path,
+            key,
+            session_factory=target_session,
+            db_engine=target_engine,
+            storage_provider=_RootedStorage(tmp_path / "storage"),
+            config_path=target_config,
+            init_path=tmp_path / "target-init",
+        )
 
 
 def test_restore_rejects_oversized_json_row_before_parsing(

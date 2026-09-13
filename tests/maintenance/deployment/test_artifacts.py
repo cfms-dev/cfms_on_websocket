@@ -123,6 +123,15 @@ def test_manifest_rejects_non_object_json(manifest: bytes) -> None:
         deployment_repository._parse_manifest(manifest)
 
 
+def test_manifest_rejects_missing_requires_python(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "release", "1.0.0", "release")
+    manifest = dict(release.manifest)
+    del manifest["requires_python"]
+
+    with pytest.raises(MaintenanceOperationError, match="metadata is invalid"):
+        deployment_repository._parse_manifest(json.dumps(manifest).encode())
+
+
 def test_stage_rejects_path_traversal_before_writing_outside_root(
     tmp_path: Path,
 ) -> None:

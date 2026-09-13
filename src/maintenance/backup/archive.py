@@ -125,9 +125,10 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
                 ),
             )
         )
+        allowed_table_names = set(selected_table_names)
         if BackupComponent.DOCUMENT_LIBRARY in components:
-            selected_table_names.update(LEGACY_ACCESS_RULE_TABLE_NAMES)
-        outside_selection = table_names - selected_table_names
+            allowed_table_names.update(LEGACY_ACCESS_RULE_TABLE_NAMES)
+        outside_selection = table_names - allowed_table_names
         if outside_selection:
             raise BackupFormatError(
                 "Backup tables are outside the selected components: "
@@ -137,6 +138,23 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             raise BackupFormatError(
                 "Backup configuration is outside the selected components"
             )
+        component_anchors = {
+            BackupComponent.ACCOUNTS: {"users"},
+            BackupComponent.DOCUMENT_LIBRARY: {"nodes", "folders", "documents"},
+            BackupComponent.AUDIT_LOG: {"audit_entries"},
+            BackupComponent.BANNED_SUBNETS: {"banned_subnets"},
+        }
+        missing_components = [
+            component.value
+            for component in selection.components
+            if (
+                component in component_anchors
+                and table_names.isdisjoint(component_anchors[component])
+            )
+            or (component is BackupComponent.CONFIGURATION and not configuration)
+        ]
+    else:
+        missing_components = []
     for excluded in EXCLUDED_TABLE_NAMES:
         if excluded in table_names:
             raise BackupFormatError(f"Excluded table {excluded!r} is present")
@@ -176,6 +194,11 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         file_ids.add(file_id)
         storage_paths.add(storage_path)
         archive_paths.add(archive_path)
+    if missing_components:
+        raise BackupFormatError(
+            "Backup payload does not match the selected components: "
+            f"{sorted(missing_components)}"
+        )
     LOGGER.debug(
         "Backup manifest validated: tables=%d files=%d",
         len(table_names),
@@ -257,6 +280,44 @@ def _safe_extract_tar_xz(source_path: Path, target_dir: Path) -> None:
                         )
                     target.write(chunk)
     LOGGER.debug("Compressed payload extracted to %s", target_dir)
+
+
+def _validate_payload_tree(root: Path, manifest: dict[str, Any]) -> None:
+    expected_files = {
+        "manifest.json",
+        *(f"tables/{table_name}.jsonl" for table_name in manifest["tables"]),
+        *(entry["archive_path"] for entry in manifest["files"]),
+    }
+    expected_directories = {
+        parent.as_posix()
+        for relative_path in expected_files
+        for parent in PurePosixPath(relative_path).parents
+        if parent != PurePosixPath(".")
+    }
+    remaining = set(expected_files)
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for path in directory.iterdir():
+            if path.is_symlink() or path.is_junction():
+                raise BackupFormatError(
+                    "Backup archive contents do not match its manifest"
+                )
+            relative_path = path.relative_to(root).as_posix()
+            if path.is_dir():
+                if relative_path not in expected_directories:
+                    raise BackupFormatError(
+                        "Backup archive contents do not match its manifest"
+                    )
+                pending.append(path)
+                continue
+            if not path.is_file() or relative_path not in remaining:
+                raise BackupFormatError(
+                    "Backup archive contents do not match its manifest"
+                )
+            remaining.remove(relative_path)
+    if remaining:
+        raise BackupFormatError("Backup archive contents do not match its manifest")
 
 
 def _safe_payload_path(root: Path, archive_path: str) -> Path:

@@ -27,6 +27,7 @@ from maintenance.backup.archive import (
     _safe_extract_tar_xz,
     _safe_payload_path,
     _validate_manifest,
+    _validate_payload_tree,
     _validate_storage_path,
     _verify_file_digest,
 )
@@ -150,6 +151,7 @@ def import_backup(
         )
         manifest = _load_manifest(extract_dir / "manifest.json")
         _validate_manifest(manifest)
+        _validate_payload_tree(extract_dir, manifest)
 
         config_file = Path(config_path)
         init_file = Path(init_path)
@@ -318,14 +320,17 @@ def _validate_file_manifest_table(
     expected_paths = {
         entry["file_id"]: entry["storage_path"] for entry in manifest["files"]
     }
-    if not expected_paths:
-        return
     if "files" not in manifest["tables"]:
+        if not expected_paths:
+            return
         raise BackupFormatError("Backup file manifest does not match the files table")
     unmatched_ids = set(expected_paths)
+    missing_active_payload = False
     for row in _iter_raw_table_rows(extract_dir, manifest, "files"):
         file_id = row.get("id")
         if file_id not in expected_paths:
+            if row.get("active") is not False:
+                missing_active_payload = True
             continue
         if row.get("path") != expected_paths[file_id]:
             raise BackupFormatError(
@@ -334,6 +339,8 @@ def _validate_file_manifest_table(
         unmatched_ids.discard(file_id)
     if unmatched_ids:
         raise BackupFormatError("Backup file manifest does not match the files table")
+    if missing_active_payload:
+        raise BackupFormatError("Backup active files table row has no payload")
 
 
 def _restore_database(

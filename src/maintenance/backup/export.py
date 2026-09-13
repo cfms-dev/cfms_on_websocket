@@ -12,7 +12,7 @@ from typing import Any
 
 import orjson
 from rich.progress import Progress
-from sqlalchemy import case, func, select
+from sqlalchemy import case, select
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import CORE_VERSION
@@ -46,6 +46,7 @@ from maintenance.backup.progress import (
     _BackupProgressReporter,
     _emit_progress,
 )
+from maintenance.backup.rows import _iter_raw_table_rows
 from maintenance.backup.selection import (
     BACKUP_TABLE_NAMES,
     EXCLUDED_TABLE_NAMES,
@@ -230,10 +231,9 @@ def _stage_backup_payload(
         total_steps=EXPORT_PROGRESS_STEPS,
     )
     file_manifest = _export_files(
-        files_dir,
-        session_factory,
+        staging_dir,
+        table_export.manifest,
         storage_provider,
-        selection=selection,
         warning_handler=warning_handler,
         progress_reporter=progress_reporter,
     )
@@ -370,107 +370,93 @@ def _export_tables(
 
 
 def _export_files(
-    files_dir: Path,
-    session_factory: sessionmaker,
+    staging_dir: Path,
+    table_manifest: dict[str, Any],
     storage_provider: StorageProvider,
     *,
-    selection: BackupExportSelection | None = None,
     warning_handler: BackupWarningHandler | None = None,
     progress_reporter: _BackupProgressReporter | None = None,
 ) -> list[dict[str, Any]]:
-    tables = _backup_tables()
-    files_table = tables["files"]
-    components = _selection_components(selection)
-
-    with session_factory() as session:
-        connection = session.connection()
-        statement = select(files_table).order_by(files_table.c.id)
-        if selection is not None:
-            statement = _apply_export_table_filter(
-                statement,
-                files_table,
-                "files",
-                tables,
-                components,
-            )
-        total_files = connection.scalar(
-            select(func.count()).select_from(statement.order_by(None).subquery())
+    files_dir = staging_dir / "files"
+    if "files" not in table_manifest:
+        return []
+    total_files = table_manifest["files"]["rows"]
+    if total_files > MAX_BACKUP_FILES:
+        raise BackupIntegrityError(
+            f"Backup selection contains more than {MAX_BACKUP_FILES} files"
         )
-        if total_files > MAX_BACKUP_FILES:
-            raise BackupIntegrityError(
-                f"Backup selection contains more than {MAX_BACKUP_FILES} files"
-            )
-        file_manifest = []
-        LOGGER.debug("Found %d database file record(s) to inspect", total_files)
-        rows = connection.execute(
-            statement.execution_options(yield_per=1000)
-        ).mappings()
-        for file_index, row in enumerate(rows, start=1):
-            file_id = str(row["id"])
-            storage_path = str(row["path"])
-            active = bool(row["active"])
-            index = len(file_manifest)
-            archive_path = f"files/{index:08d}.bin"
-            staged_file = files_dir / f"{index:08d}.bin"
-            LOGGER.debug(
-                "Copying storage file %s from %s (%d/%d)",
-                file_id,
-                storage_path,
-                file_index,
-                total_files,
-            )
-            _emit_progress(
-                progress_reporter,
-                phase="export_file",
-                message="Copying storage file",
-                current_step=3,
-                total_steps=EXPORT_PROGRESS_STEPS,
-                detail=f"{file_id}: {storage_path}",
-                completed_units=file_index,
-                total_units=total_files,
-                detail_task=True,
-            )
+    file_manifest = []
+    LOGGER.debug("Found %d database file record(s) to inspect", total_files)
+    manifest = {"tables": table_manifest}
+    for file_index, row in enumerate(
+        _iter_raw_table_rows(staging_dir, manifest, "files"),
+        start=1,
+    ):
+        file_id = str(row["id"])
+        storage_path = str(row["path"])
+        active = bool(row["active"])
+        index = len(file_manifest)
+        archive_path = f"files/{index:08d}.bin"
+        staged_file = files_dir / f"{index:08d}.bin"
+        LOGGER.debug(
+            "Copying storage file %s from %s (%d/%d)",
+            file_id,
+            storage_path,
+            file_index,
+            total_files,
+        )
+        _emit_progress(
+            progress_reporter,
+            phase="export_file",
+            message="Copying storage file",
+            current_step=3,
+            total_steps=EXPORT_PROGRESS_STEPS,
+            detail=f"{file_id}: {storage_path}",
+            completed_units=file_index,
+            total_units=total_files,
+            detail_task=True,
+        )
 
-            if not storage_provider.exists(storage_path):
-                if not active:
-                    _warn_backup_skip(
-                        "Skipping inactive database file record "
-                        f"{file_id!r} because its physical file is missing: "
-                        f"{storage_path}",
-                        warning_handler,
-                    )
-                    continue
-                raise BackupIntegrityError(
-                    f"Physical file for database file record {file_id!r} is missing: "
-                    f"{storage_path}"
+        if not storage_provider.exists(storage_path):
+            if not active:
+                _warn_backup_skip(
+                    "Skipping inactive database file record "
+                    f"{file_id!r} because its physical file is missing: "
+                    f"{storage_path}",
+                    warning_handler,
                 )
-
-            sha256 = hashlib.sha256()
-            size = 0
-            with (
-                storage_provider.fopen(storage_path, "rb") as source,
-                staged_file.open("wb") as target,
-            ):
-                while chunk := source.read(1024 * 1024):
-                    sha256.update(chunk)
-                    size += len(chunk)
-                    target.write(chunk)
-
-            file_manifest.append(
-                {
-                    "file_id": file_id,
-                    "storage_path": storage_path,
-                    "archive_path": archive_path,
-                    "size": size,
-                    "sha256": sha256.hexdigest(),
-                }
+                continue
+            raise BackupIntegrityError(
+                f"Physical file for database file record {file_id!r} is missing: "
+                f"{storage_path}"
             )
-            LOGGER.debug(
-                "Copied storage file %s (%d byte(s), sha256=%s)",
-                file_id,
-                size,
-                sha256.hexdigest(),
-            )
+
+        sha256 = hashlib.sha256()
+        size = 0
+        with (
+            storage_provider.fopen(storage_path, "rb") as source,
+            staged_file.open("wb") as target,
+        ):
+            while chunk := source.read(1024 * 1024):
+                sha256.update(chunk)
+                size += len(chunk)
+                target.write(chunk)
+
+        file_manifest.append(
+            {
+                "file_id": file_id,
+                "storage_path": storage_path,
+                "archive_path": archive_path,
+                "size": size,
+                "sha256": sha256.hexdigest(),
+            }
+        )
+        LOGGER.debug(
+            "Copied storage file %s (%d byte(s), sha256=%s)",
+            file_id,
+            size,
+            sha256.hexdigest(),
+        )
 
     return file_manifest
 

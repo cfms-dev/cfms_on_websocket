@@ -193,8 +193,11 @@ def _parse_manifest(contents: bytes, *, top_level: str | None = None) -> dict[st
     version = manifest.get("version")
     managed_extensions = manifest.get("managed_extensions")
     expected_files = manifest.get("files")
+    requires_python = manifest.get("requires_python")
+    if not isinstance(requires_python, str):
+        raise MaintenanceOperationError("Release manifest metadata is invalid")
     try:
-        SpecifierSet(manifest.get("requires_python", ""))
+        SpecifierSet(requires_python)
     except (InvalidSpecifier, TypeError) as exc:
         raise MaintenanceOperationError("Release manifest metadata is invalid") from exc
     if (
