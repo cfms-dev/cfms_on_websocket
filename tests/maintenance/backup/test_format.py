@@ -47,6 +47,15 @@ def test_comment_digest_backup_rejects_invalid_hex(backup_context) -> None:
         _decode_row({"content_digest": "not-a-digest"}, comments)
 
 
+def test_backup_row_rejects_unknown_columns(backup_context) -> None:
+    from maintenance.backup.rows import _decode_row
+
+    audit_entries = backup_context.Base.metadata.tables["audit_entries"]
+
+    with pytest.raises(backup_context.BackupFormatError, match="unknown columns"):
+        _decode_row({"id": "audit-1", "result_code": 200}, audit_entries)
+
+
 def test_file_digest_verification_accepts_valid_uppercase_hex(
     backup_context,
     tmp_path,
@@ -129,6 +138,76 @@ def test_backup_extraction_rejects_uncompressed_size_limit(
         backup_archive._safe_extract_tar_xz(source, target)
 
     assert not (target / "tables" / "audit_entries.jsonl").exists()
+
+
+def test_backup_compression_rejects_oversized_staged_payload(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from maintenance.backup import format as backup_format
+
+    staging = tmp_path / "staging"
+    (staging / "files").mkdir(parents=True)
+    (staging / "tables").mkdir()
+    (staging / "manifest.json").write_bytes(b"12345")
+    monkeypatch.setattr(
+        backup_format,
+        "MAX_BACKUP_UNCOMPRESSED_BYTES",
+        4,
+        raising=False,
+    )
+
+    with pytest.raises(
+        backup_context.BackupIntegrityError,
+        match="uncompressed size limit",
+    ):
+        backup_format._write_compressed_payload(
+            tmp_path / "payload.tar.xz",
+            staging,
+        )
+
+
+def test_backup_decryption_rejects_oversized_ciphertext_before_writing(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from maintenance.backup import format as backup_format
+    from maintenance.backup.models import BackupHeader
+
+    backup = tmp_path / "oversized.conf"
+    backup.write_bytes(b"x" * 21)
+    output = tmp_path / "payload.tar.xz"
+    header = BackupHeader(
+        format_version=backup_context.backup_core.BACKUP_FORMAT_VERSION,
+        created_at="2026-09-13T00:00:00+00:00",
+        core_version="0.10.1",
+        compression="xz",
+        encryption="AES-256-GCM",
+        nonce="AAAAAAAAAAAAAAAA",
+    )
+    monkeypatch.setattr(
+        backup_format,
+        "MAX_BACKUP_COMPRESSED_BYTES",
+        4,
+        raising=False,
+    )
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="encrypted payload exceeds",
+    ):
+        backup_format._decrypt_payload(
+            backup,
+            output,
+            bytes(32),
+            header,
+            b"",
+            0,
+        )
+
+    assert not output.exists()
 
 
 def test_backup_key_uses_human_readable_format(backup_context):

@@ -102,6 +102,17 @@ def test_fill_pepper_keeps_original_config_when_atomic_replace_fails(
     assert not any(src_dir.glob(".config.toml.*.tmp"))
 
 
+def test_fill_pepper_rejects_non_table_security_section(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    src_dir = _prepare_src(tmp_path, 'security = "invalid"\n')
+    monkeypatch.chdir(src_dir)
+
+    with pytest.raises(MaintenanceOperationError, match="security must be a table"):
+        fill_pepper()
+
+
 def test_atomic_config_write_refuses_to_overwrite_same_timestamp_backup(
     monkeypatch,
     tmp_path,

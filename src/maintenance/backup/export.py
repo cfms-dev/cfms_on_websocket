@@ -83,7 +83,7 @@ def export_backup(
 ) -> str:
     storage = storage_provider or ProviderManager().storage
     progress_reporter = _BackupProgressReporter(progress, show_progress_details)
-    key_bytes = key or secrets.token_bytes(32)
+    key_bytes = secrets.token_bytes(32) if key is None else key
     if len(key_bytes) != 32:
         raise ValueError("Backup key must be exactly 32 bytes")
 

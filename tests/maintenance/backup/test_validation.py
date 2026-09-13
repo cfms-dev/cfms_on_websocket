@@ -37,6 +37,27 @@ def _write_audit_rows(extract_dir: Path, row_count: int) -> None:
     _write_jsonl(extract_dir / "tables" / "audit_entries.jsonl", rows)
 
 
+def test_export_rejects_explicit_empty_key_before_staging(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from maintenance.backup import export as backup_export
+
+    monkeypatch.setattr(
+        backup_export,
+        "_stage_backup_payload",
+        lambda *args, **kwargs: pytest.fail("payload staging must not start"),
+    )
+
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        backup_context.export_backup(
+            tmp_path / "backup.conf",
+            key=b"",
+            storage_provider=object(),
+        )
+
+
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):
     base = backup_context.Base
     source_engine, source_session = _new_database(base, tmp_path / "source.db")

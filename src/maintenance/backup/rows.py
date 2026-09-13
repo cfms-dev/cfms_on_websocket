@@ -13,6 +13,12 @@ from maintenance.backup.models import BackupFormatError
 
 LOGGER = logging.getLogger(__name__)
 _RESTORE_BATCH_SIZE = 1000
+_LEGACY_ROW_COLUMNS = {
+    "banned_subnets": {"reason"},
+    "compiled_access_rules": {"node_id", "target_id"},
+    "documents": {"folder_id", "inherit", "status", "status_operation_id", "title"},
+    "folders": {"inherit", "name", "parent_id", "status", "status_operation_id"},
+}
 
 
 def _iter_raw_table_rows(
@@ -86,6 +92,17 @@ def _iter_table_row_batches(
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
+    stored_columns = {
+        column.name for column in table.columns if column.computed is None
+    }
+    unknown_columns = (
+        set(row) - stored_columns - _LEGACY_ROW_COLUMNS.get(table.name, set())
+    )
+    if unknown_columns:
+        raise BackupFormatError(
+            f"Backup row for {table.name!r} contains unknown columns: "
+            f"{sorted(unknown_columns)}"
+        )
     if table.name == "banned_subnets":
         created_at = row.get("created_at")
         if isinstance(created_at, str):

@@ -85,6 +85,8 @@ def fill_pepper(config_path: str | Path = "config.toml") -> PepperFillResult:
         added_security_section = True
 
     security_section = doc["security"]
+    if not isinstance(security_section, Mapping):
+        raise MaintenanceOperationError("Configuration security must be a table")
     if security_section.get("pepper"):
         return PepperFillResult(
             config_path=path,

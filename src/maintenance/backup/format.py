@@ -29,6 +29,8 @@ from maintenance.backup.constants import (
     HUMAN_KEY_GROUP_SIZE,
     HUMAN_KEY_MAX_VALUE,
     HUMAN_KEY_SEPARATOR,
+    MAX_BACKUP_COMPRESSED_BYTES,
+    MAX_BACKUP_UNCOMPRESSED_BYTES,
     MAX_HEADER_BYTES,
 )
 from maintenance.backup.models import (
@@ -152,6 +154,10 @@ def _write_encrypted_archive(
             staging_dir,
             progress_reporter=progress_reporter,
         )
+        if compressed_payload.stat().st_size > MAX_BACKUP_COMPRESSED_BYTES:
+            raise BackupIntegrityError(
+                "Compressed backup payload exceeds the size limit"
+            )
         with temp_output.open("wb") as raw_output:
             raw_output.write(prefix)
             with compressed_payload.open("rb") as source:
@@ -199,6 +205,7 @@ def _write_compressed_payload(
         ),
     )
     total_members = 1 + len(table_members) + file_count
+    total_uncompressed = 0
     with (
         lzma.open(output_path, "wb", preset=6) as compressed,
         tarfile.open(fileobj=compressed, mode="w|") as tar,
@@ -207,6 +214,11 @@ def _write_compressed_payload(
             archive_members,
             start=1,
         ):
+            total_uncompressed += source_path.stat().st_size
+            if total_uncompressed > MAX_BACKUP_UNCOMPRESSED_BYTES:
+                raise BackupIntegrityError(
+                    "Backup payload exceeds the uncompressed size limit"
+                )
             _add_staged_file(
                 tar,
                 source_path,
@@ -232,6 +244,8 @@ def _decrypt_payload(
     ciphertext_length = size - ciphertext_offset - GCM_TAG_BYTES
     if ciphertext_length < 0:
         raise BackupFormatError("Backup file is truncated")
+    if ciphertext_length > MAX_BACKUP_COMPRESSED_BYTES:
+        raise BackupFormatError("Backup encrypted payload exceeds the size limit")
     LOGGER.debug(
         "Decrypting backup payload: ciphertext_bytes=%d output=%s",
         ciphertext_length,
