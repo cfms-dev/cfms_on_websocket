@@ -51,12 +51,7 @@ _ACTIVE_FILE_TASK_STATUSES = (
     FileTaskStatus.IN_PROGRESS,
 )
 
-
-class _ReasonUnset:
-    pass  # TODO: Use a sentinel type when Python 3.15 comes out
-
-
-_REASON_UNSET = _ReasonUnset()
+_REASON_UNSET = sentinel("_REASON_UNSET")
 
 
 def _publish_lockdown_state(state: LockdownState) -> None:
@@ -114,7 +109,7 @@ def _notify_schedule_change() -> None:
 
 def apply_lockdown(
     status: bool,
-    reason: str | None | _ReasonUnset = _REASON_UNSET,
+    reason: str | None | _REASON_UNSET = _REASON_UNSET,
     *,
     only_if_inactive: bool = False,
     take_over_scheduled: bool = False,
@@ -124,7 +119,7 @@ def apply_lockdown(
         raise ValueError("only_if_inactive is only valid when enabling lockdown")
     if take_over_scheduled and (not status or not only_if_inactive):
         raise ValueError("take_over_scheduled requires enabling with only_if_inactive")
-    if not status and not isinstance(reason, _ReasonUnset):
+    if not status and reason != _REASON_UNSET:
         raise ValueError("A lockdown reason requires lockdown to be enabled")
 
     attempt = 0
@@ -171,7 +166,7 @@ def apply_lockdown(
                     status_changed = False
                 else:
                     current_reason = previous_state.reason
-                    if not isinstance(reason, _ReasonUnset):
+                    if reason != _REASON_UNSET:
                         next_reason = reason
                     elif status and previous_state.enabled:
                         next_reason = current_reason
