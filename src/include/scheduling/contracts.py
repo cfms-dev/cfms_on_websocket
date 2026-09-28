@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from include.domains.access.permissions import Permissions
+lazy from include.domains.access.permissions import Permissions
 
 
 @dataclass(frozen=True, slots=True)

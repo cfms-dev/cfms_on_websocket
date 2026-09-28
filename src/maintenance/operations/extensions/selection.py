@@ -6,10 +6,10 @@ from include.config.validation import (
     ConfigValidationError,
     parse_config_document,
 )
-from include.extensions.manager import (
+from maintenance.operations.exceptions import MaintenanceOperationError
+lazy from include.extensions.manager import (
     DiscoveredExtension,
 )
-from maintenance.operations.exceptions import MaintenanceOperationError
 
 
 def _render_enabled_config(

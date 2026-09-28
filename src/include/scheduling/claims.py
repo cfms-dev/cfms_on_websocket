@@ -4,13 +4,13 @@ from typing import cast
 
 from sqlalchemy import CursorResult, or_, select, update
 
-from include.config.validation import SchedulingPolicy
 from include.database.clock import database_now
 from include.database.models.scheduling import Schedule, ScheduleExecution
 from include.database.session import Session
 from include.scheduling.commands import lock_schedule
 from include.scheduling.contracts import ClaimedExecution, PendingDispatch
 from include.scheduling.outcomes import cancel_expired_deleted_executions
+lazy from include.config.validation import SchedulingPolicy
 
 
 def claim_execution(

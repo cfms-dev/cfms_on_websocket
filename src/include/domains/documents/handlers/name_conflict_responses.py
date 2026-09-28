@@ -1,7 +1,7 @@
 from typing import Any
 
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import Result
+lazy from include.transport.connection import ConnectionHandler
 
 
 def respond_to_node_name_conflict(

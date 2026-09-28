@@ -1,11 +1,11 @@
 """In-memory registry of trusted scheduled task implementations."""
 
-from collections.abc import Iterable
 from typing import Any
+lazy from collections.abc import Iterable
 
-from pydantic import BaseModel
+lazy from pydantic import BaseModel
 
-from include.scheduling.contracts import ScheduledTaskRegistration
+lazy from include.scheduling.contracts import ScheduledTaskRegistration
 
 
 class ScheduledTaskRegistry:

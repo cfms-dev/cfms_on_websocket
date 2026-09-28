@@ -1,15 +1,15 @@
-from collections.abc import Iterator
 from contextlib import contextmanager
+lazy from collections.abc import Iterator
 
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
 from include.database.models.documents import Document, EntityStatus, Folder, Node
-from include.database.models.identity import User
 from include.domains.access.authorization.evaluation import check_access_requirements
 from include.messages import Messages as smsg
+lazy from include.database.models.identity import User
 
 NODE_NAME_UNIQUE_CONSTRAINT = "uq_nodes_active_parent_name"
 

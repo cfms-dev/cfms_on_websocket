@@ -3,7 +3,7 @@ from typing import Any, cast
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.database.models.identity import UserGroupPermission, UserPermission
 

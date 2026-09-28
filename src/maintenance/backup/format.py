@@ -39,8 +39,8 @@ from maintenance.backup.models import (
     BackupHeader,
     BackupIntegrityError,
 )
-from maintenance.backup.progress import _BackupProgressReporter
 from maintenance.backup.selection import BACKUP_TABLE_NAMES
+lazy from maintenance.backup.progress import _BackupProgressReporter
 
 LOGGER = logging.getLogger(__name__)
 

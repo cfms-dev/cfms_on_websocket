@@ -1,8 +1,8 @@
-from collections.abc import Iterable
 from itertools import batched
+lazy from collections.abc import Iterable
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.config.constants import MAX_PARAM_SIZE, QUERY_CHUNK_SIZE
 from include.domains.documents.queries.file_references import count_file_references

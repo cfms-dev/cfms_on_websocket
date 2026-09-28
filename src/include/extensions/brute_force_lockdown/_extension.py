@@ -2,7 +2,7 @@ import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Self
+from typing import Annotated, Any, Self
 
 from loguru import logger as log
 from pydantic import (
@@ -26,11 +26,9 @@ from include.domains.operations.lockdown import (
     lockdown_state_manager,
 )
 from include.extensions.manager import hookimpl
-from include.types import PositiveInt
-
-if TYPE_CHECKING:
-    from include.transport.connection import ConnectionHandler
-    from include.transport.request_handler import Result
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.transport.request_handler import Result
+lazy from include.types import PositiveInt
 
 logger = log.bind(name="brute_force_lockdown")
 

@@ -36,7 +36,6 @@ from include.domains.pagination import (
     get_offset_pagination,
 )
 from include.messages import Messages as smsg
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -44,7 +43,8 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-from include.types import NonEmptyString
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.types import NonEmptyString
 
 _KeyContent = Annotated[str, StringConstraints(min_length=1, max_length=512)]
 

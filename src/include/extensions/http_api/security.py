@@ -7,8 +7,8 @@ __all__ = [
     "require_http_principal",
 ]
 
-from collections.abc import Callable
 from typing import Annotated, Any
+lazy from collections.abc import Callable
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status

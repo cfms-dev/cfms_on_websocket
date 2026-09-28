@@ -3,17 +3,17 @@ __all__ = ["S3FileObject", "S3StorageProvider"]
 import base64
 import hashlib
 import os
-from collections.abc import Buffer, Callable
 from io import UnsupportedOperation
 from tempfile import SpooledTemporaryFile
-from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal
+lazy from collections.abc import Buffer, Callable
+lazy from types import TracebackType
 
 import boto3
 import orjson
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from botocore.response import StreamingBody
+lazy from botocore.response import StreamingBody
 
 from include.providers.base import (
     FileObject,
@@ -23,6 +23,8 @@ from include.providers.base import (
 )
 
 if TYPE_CHECKING:
+    # We retain the use of TYPE_CHECKING here because the modules providing the type
+    # annotations are not included in the distributed package.
     from types_boto3_s3.client import S3Client
     from types_boto3_s3.type_defs import GetObjectRequestTypeDef
 

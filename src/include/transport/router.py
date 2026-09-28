@@ -7,7 +7,7 @@ from loguru import logger as log
 from pydantic import ValidationError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
-from websockets.sync.server import ServerConnection
+lazy from websockets.sync.server import ServerConnection
 
 from include.config.constants import NONCE_MIN_LENGTH
 from include.config.validation import AdmissionControlPolicy
@@ -130,7 +130,7 @@ from include.transport.admission import admission_controller
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler, send_conclusion
 from include.transport.multiplexing import FrameType, MultiplexedConnection, Stream
-from include.transport.request_handler import RequestHandler, Result
+lazy from include.transport.request_handler import RequestHandler, Result
 
 logger = log.bind(name="connection_handler")
 

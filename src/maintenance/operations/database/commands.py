@@ -2,13 +2,14 @@ import copy
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import tomlkit
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy.exc import SQLAlchemyError
 from tomlkit.exceptions import TOMLKitError
+lazy from rich.progress import Progress
 
 from include.config import paths
 from include.config.validation import ConfigValidationError, parse_config_document
@@ -29,9 +30,6 @@ from maintenance.operations.database.schema import (
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
-
-if TYPE_CHECKING:
-    from rich.progress import Progress
 
 
 @dataclass(frozen=True, slots=True)

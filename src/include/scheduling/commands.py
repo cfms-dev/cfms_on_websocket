@@ -7,12 +7,12 @@ transaction.  It never commits, rolls back, closes, or replaces that session.
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, select, update
-from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.database.clock import database_now
 from include.database.models.scheduling import Schedule, ScheduleExecution
-from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.triggers import build_trigger, first_run_at
+lazy from include.scheduling.registry import ScheduledTaskRegistry
 
 
 class ScheduleNotFoundError(LookupError):

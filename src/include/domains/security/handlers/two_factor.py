@@ -14,15 +14,12 @@ from pydantic import model_validator
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.identity.types import RequestUsername
 from include.domains.security.guards.login import (
     AuthFactor,
     LoginGuard,
     ThrottleDecision,
 )
-from include.domains.security.types import TwoFactorToken
 from include.transport.client_address import get_client_ip
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     EmptyRequestDataModel,
@@ -31,7 +28,10 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-from include.types import NonEmptyString
+lazy from include.domains.identity.types import RequestUsername
+lazy from include.domains.security.types import TwoFactorToken
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.types import NonEmptyString
 
 
 class _Setup2FARequest(RequestDataModel):

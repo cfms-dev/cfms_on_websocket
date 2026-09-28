@@ -1,7 +1,7 @@
 import sys
-from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+lazy from collections.abc import Iterator
 
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -14,8 +14,8 @@ from alembic import command
 from include.config.validation import parse_config_document
 from include.database.engine import create_database_engine
 from maintenance.operations.config import read_config_text
-from maintenance.operations.deployment.models import _Release
 from maintenance.operations.exceptions import MaintenanceOperationError
+lazy from maintenance.operations.deployment.models import _Release
 
 
 @contextmanager

@@ -8,8 +8,8 @@ execution claims, leases, and outcomes.
 import secrets
 import threading
 import time
-from collections.abc import Mapping
 from typing import Any
+lazy from collections.abc import Mapping
 
 import dramatiq
 import redis
@@ -28,8 +28,8 @@ from include.scheduling.claims import (
 )
 from include.scheduling.engine import enqueue_due_schedules, ensure_runtime_state
 from include.scheduling.reconciliation import synchronize_system_schedules
-from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.runner import run_claimed_execution
+lazy from include.scheduling.registry import ScheduledTaskRegistry
 
 _RENEW_LEASE = """
 if redis.call('get', KEYS[1]) == ARGV[1] then

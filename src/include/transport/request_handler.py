@@ -11,15 +11,15 @@ __all__ = [
 ]
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, ClassVar
+lazy from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from include.transport.connection import ConnectionHandler
 from include.types import JsonInteger, NonEmptyString
+lazy from include.transport.connection import ConnectionHandler
 
 
 @dataclass

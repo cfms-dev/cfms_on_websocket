@@ -8,7 +8,7 @@ from typing import cast
 from loguru import logger as log
 from sqlalchemy import CursorResult, delete, or_, select, update
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.database.models.files import (
     File,

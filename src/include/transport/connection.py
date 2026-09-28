@@ -1,9 +1,9 @@
 import base64
 import hashlib
 import os
-import threading
 import time
 from enum import IntEnum
+lazy import threading
 
 import jsonschema
 import orjson
@@ -14,7 +14,7 @@ from websockets.exceptions import (
     ConnectionClosed,
     ConnectionClosedError,
 )
-from websockets.typing import Data
+lazy from websockets.typing import Data
 
 from include.config.constants import (
     DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,

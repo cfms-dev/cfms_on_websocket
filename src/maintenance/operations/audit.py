@@ -1,18 +1,18 @@
 import contextlib
-import datetime as dt
 import math
 import os
 import tempfile
 import time
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+lazy import datetime as dt
+lazy from collections.abc import Iterable
 
 import orjson
 from sqlalchemy import Table, delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.sql.elements import ColumnElement
+lazy from sqlalchemy.orm import sessionmaker
+lazy from sqlalchemy.sql.elements import ColumnElement
 
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models

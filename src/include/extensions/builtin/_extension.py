@@ -2,13 +2,10 @@ import platform
 import ssl
 import threading
 from importlib.metadata import version as distribution_version
-from typing import TYPE_CHECKING
 
 from loguru import logger as log
-from websockets.sync.server import Server
-
-if TYPE_CHECKING:
-    from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
+lazy from websockets.sync.server import Server
 
 from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from include.config.settings import global_config
@@ -23,12 +20,12 @@ from include.extensions.manager import (
 )
 from include.messages import Messages as smsg
 from include.providers.manager import ProviderManager
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     EmptyRequestDataModel,
     RequestHandler,
     Result,
 )
+lazy from include.transport.connection import ConnectionHandler
 
 from .file_deduplication import (
     file_deduplication_worker,

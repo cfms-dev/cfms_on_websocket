@@ -1,18 +1,15 @@
 import importlib
 import logging
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+lazy from collections.abc import Iterable
+
+lazy from rich.progress import Progress
 
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, initialize_providers
-
-if TYPE_CHECKING:
-    from rich.progress import Progress
-
-    from maintenance.backup import BackupHeader
-
+lazy from maintenance.backup import BackupHeader
 
 LOGGER = logging.getLogger(__name__)
 _MAX_KEY_FILE_BYTES = 4096

@@ -1,13 +1,13 @@
 import math
 import threading
-from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, cast
+lazy from collections.abc import Generator
 
 from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.database.models.operations import RateLimitBucket, RiskIPAccount
 

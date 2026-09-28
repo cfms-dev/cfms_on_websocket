@@ -18,7 +18,6 @@ from include.domains.pagination import (
     make_cursor_response,
 )
 from include.messages import Messages as smsg
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -26,6 +25,7 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+lazy from include.transport.connection import ConnectionHandler
 
 
 class _LockdownRequest(RequestDataModel):

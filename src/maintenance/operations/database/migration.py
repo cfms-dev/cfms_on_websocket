@@ -5,18 +5,19 @@ import enum
 import hashlib
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import orjson
 from alembic.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from sqlalchemy import (
     MetaData,
     inspect,
     select,
     text,
 )
-from sqlalchemy.engine import Connection, Engine
+lazy from alembic.script import ScriptDirectory
+lazy from rich.progress import Progress, TaskID
+lazy from sqlalchemy.engine import Connection, Engine
 
 from maintenance.operations.database.copying import (
     copy_tables,
@@ -33,9 +34,6 @@ from maintenance.operations.database.progress import (
     update_progress,
 )
 from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
-
-if TYPE_CHECKING:
-    from rich.progress import Progress, TaskID
 
 _BATCH_SIZE = 1000
 _ALEMBIC_TABLE_NAME = "alembic_version"

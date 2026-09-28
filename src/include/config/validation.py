@@ -25,7 +25,7 @@ from include.config._policy import (
 )
 from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 from include.extensions.identifiers import validate_extension_identifier
-from include.types import (
+lazy from include.types import (
     NonEmptyString,
     NonNegativeFloat,
     NonNegativeInt,

@@ -9,8 +9,8 @@ import os
 import socket
 import ssl
 import sys
-from collections.abc import Generator
 from contextlib import contextmanager
+lazy from collections.abc import Generator
 
 from loguru import logger
 from websockets.sync.server import Server, serve

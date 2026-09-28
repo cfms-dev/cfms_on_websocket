@@ -1,9 +1,9 @@
 import datetime as dt
 import hashlib
 import json
-from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
+lazy from collections.abc import Mapping
+lazy from pathlib import Path
 
 from sqlalchemy import Table, insert, select, update
 

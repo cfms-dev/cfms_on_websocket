@@ -1,6 +1,6 @@
 import logging
-from collections.abc import Callable
 from typing import Annotated
+lazy from collections.abc import Callable
 
 import typer
 from rich.console import Console

@@ -1,7 +1,7 @@
 from itertools import batched
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.models.documents import (

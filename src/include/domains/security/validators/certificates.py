@@ -2,7 +2,7 @@ __all__ = ["get_client_cert_subject"]
 
 import ssl
 
-import websockets.sync.server
+lazy import websockets.sync.server
 
 
 def get_client_cert_subject(

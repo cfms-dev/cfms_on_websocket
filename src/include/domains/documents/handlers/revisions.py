@@ -18,7 +18,6 @@ from include.domains.documents.handlers.documents import (
 from include.domains.documents.queries.file_references import (
     find_unreachable_revision_file_ids,
 )
-from include.domains.documents.types import RevisionID
 from include.domains.pagination import (
     CursorError,
     PaginationCursor,
@@ -29,7 +28,6 @@ from include.domains.pagination import (
 )
 from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.messages import Messages as smsg
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -37,7 +35,9 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-from include.types import NonEmptyString
+lazy from include.domains.documents.types import RevisionID
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.types import NonEmptyString
 
 
 class _ListRevisionsRequest(RequestDataModel):

@@ -19,7 +19,7 @@ from typing import Annotated, Any
 
 import jsonschema
 from pydantic import ConfigDict, Field, StringConstraints
-from sqlalchemy.orm import Session as ORMSession
+lazy from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import (
     DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
@@ -77,11 +77,9 @@ from include.domains.documents.queries.file_references import (
 from include.domains.documents.queries.listing import (
     fetch_latest_active_revisions_by_document,
 )
-from include.domains.documents.types import RevisionID
 from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -90,6 +88,8 @@ from include.transport.request_handler import (
     Result,
 )
 from include.types import JsonInteger, NonEmptyString
+lazy from include.domains.documents.types import RevisionID
+lazy from include.transport.connection import ConnectionHandler
 
 _Sha256 = Annotated[str, StringConstraints(pattern="^[0-9A-Fa-f]{64}$")]
 _Tag = Annotated[str, StringConstraints(min_length=1, max_length=255)]

@@ -22,7 +22,7 @@ from loguru import logger
 from tomlkit import TOMLDocument, dumps, parse
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-from watchdog.observers.api import BaseObserver
+lazy from watchdog.observers.api import BaseObserver
 
 from include.config.paths import EXECUTABLE_ABSPATH
 from include.config.validation import ConfigValidationError, parse_config_document

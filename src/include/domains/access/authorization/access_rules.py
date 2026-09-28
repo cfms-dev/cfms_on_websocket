@@ -6,11 +6,11 @@ from sqlalchemy.orm.session import object_session
 from include.config.constants import AVAILABLE_ACCESS_TYPES
 from include.database.models.access import CompiledAccessRuleSet
 from include.database.models.documents import Document, Folder, Node
-from include.database.models.identity import User
 from include.domains.access.authorization.compiled_rules import (
     compile_access_rule,
 )
 from include.domains.access.authorization.evaluation import check_access_requirements
+lazy from include.database.models.identity import User
 
 __all__ = [
     "apply_access_rules",

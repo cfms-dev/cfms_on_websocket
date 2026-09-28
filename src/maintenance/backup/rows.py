@@ -1,8 +1,8 @@
 import datetime as dt
 import logging
-from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
+lazy from collections.abc import Iterator
+lazy from pathlib import Path
 
 import orjson
 from sqlalchemy import DateTime, Table

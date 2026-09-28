@@ -1,7 +1,7 @@
 from http import HTTPStatus
 
 from websockets import Headers, Request, Response
-from websockets.sync.server import ServerConnection
+lazy from websockets.sync.server import ServerConnection
 
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.request_rate_control import (

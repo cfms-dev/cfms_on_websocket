@@ -5,7 +5,7 @@ __all__ = [
 ]
 
 import re
-from collections.abc import Iterable, Sequence
+lazy from collections.abc import Iterable, Sequence
 
 
 class RuleRequirementsNotMetError(ValueError):

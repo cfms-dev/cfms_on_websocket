@@ -1,6 +1,6 @@
 import datetime as dt
-from pathlib import Path
 from typing import Annotated
+lazy from pathlib import Path
 
 import typer
 from rich.panel import Panel

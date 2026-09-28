@@ -6,10 +6,10 @@ __all__ = [
 
 import ipaddress
 import socket
-from collections.abc import Collection
+lazy from collections.abc import Collection
 
 from loguru import logger
-from websockets.sync.server import ServerConnection
+lazy from websockets.sync.server import ServerConnection
 
 from include.config.settings import global_config
 from include.config.validation import get_trusted_proxy_networks

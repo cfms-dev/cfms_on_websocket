@@ -1,8 +1,8 @@
 __all__ = ["build_http_application", "collect_http_router_registrations"]
 
 import asyncio
-from collections.abc import Iterable
 from string import Formatter
+lazy from collections.abc import Iterable
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,9 +24,9 @@ from include.domains.security.guards.login import LoginGuard
 from include.extensions.manager import get_loaded_extension_metadata, pm
 from include.observability.exception_logging import log_exception_with_id
 
-from .config import HttpApiPolicy
 from .contracts import HttpRouterRegistration
 from .security import get_http_client_address
+lazy from .config import HttpApiPolicy
 
 logger = log.bind(name="http_api")
 _API_PREFIX = "/api/v1"

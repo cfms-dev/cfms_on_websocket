@@ -10,7 +10,7 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
-from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.database.clock import database_now
 from include.database.session import Session

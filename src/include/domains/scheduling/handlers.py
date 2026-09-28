@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, StringConstraints
 from sqlalchemy import and_, desc, or_, select
-from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.database.models.identity import User
 from include.database.models.scheduling import Schedule
@@ -30,7 +30,6 @@ from include.scheduling.commands import (
     update_schedule,
 )
 from include.scheduling.triggers import TriggerValidationError
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     EmptyRequestDataModel,
@@ -40,6 +39,7 @@ from include.transport.request_handler import (
     Result,
 )
 from include.types import JsonInteger
+lazy from include.transport.connection import ConnectionHandler
 
 TaskName = Annotated[
     str,

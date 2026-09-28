@@ -10,8 +10,8 @@ __all__ = [
     "require_http_principal",
 ]
 
-from collections.abc import Mapping
 from typing import Any
+lazy from collections.abc import Mapping
 
 from include.config.settings import global_config
 from include.extensions.manager import hookimpl, pm

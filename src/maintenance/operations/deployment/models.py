@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
+lazy from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)

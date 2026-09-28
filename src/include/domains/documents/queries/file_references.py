@@ -5,13 +5,13 @@ __all__ = [
     "find_unreachable_revision_file_ids",
 ]
 
-from collections.abc import Sequence
 from itertools import islice
 from typing import Any, cast
+lazy from collections.abc import Sequence
 
 from sqlalchemy import Column, MetaData, Table, func, inspect, select, union_all
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
 

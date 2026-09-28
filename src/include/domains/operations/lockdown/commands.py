@@ -13,7 +13,7 @@ import orjson
 from loguru import logger as log
 from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import GLOBAL_BROADCAST_EVENT_CHANNEL
 from include.database.clock import database_now

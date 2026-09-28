@@ -1,21 +1,21 @@
 __all__ = ["HttpApiRuntime"]
 
-import asyncio
 import threading
 from dataclasses import dataclass
 from math import ceil
 from typing import Any
+lazy import asyncio
 
 import uvicorn
-from fastapi import FastAPI
 from loguru import logger as log
 from uvicorn.protocols.http.h11_impl import H11Protocol
-from uvicorn.server import ServerState
+lazy from fastapi import FastAPI
+lazy from uvicorn.server import ServerState
 
 from include.config.settings import global_config
 from include.transport.tls import create_server_ssl_context
 
-from .config import HttpApiPolicy
+lazy from .config import HttpApiPolicy
 
 logger = log.bind(name="http_api")
 _SERVER_STOP_MARGIN_SECONDS = 1.0

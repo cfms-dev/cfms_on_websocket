@@ -8,11 +8,11 @@ import time
 from collections import defaultdict
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import Document, Folder
-from include.database.models.identity import User
+lazy from include.database.models.identity import User
 
 
 # Internal helper: expand ancestor chains and preload permission data for the

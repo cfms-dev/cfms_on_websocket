@@ -1,7 +1,6 @@
-from typing import TYPE_CHECKING
-
 from sqlalchemy import MetaData, bindparam, func, insert, literal, or_, select
-from sqlalchemy.engine import Connection
+lazy from rich.progress import Progress, TaskID
+lazy from sqlalchemy.engine import Connection
 
 from maintenance.operations.database.models import DatabaseMigrationError
 from maintenance.operations.database.progress import advance_progress, update_progress
@@ -10,9 +9,6 @@ from maintenance.operations.database.tables import (
     DEFERRED_COLUMNS,
     DEFERRED_UPDATE_ORDER,
 )
-
-if TYPE_CHECKING:
-    from rich.progress import Progress, TaskID
 
 _BATCH_SIZE = 1000
 

@@ -1,7 +1,7 @@
 import os
 import secrets
 import shutil
-from pathlib import Path
+lazy from pathlib import Path
 
 from packaging.version import InvalidVersion
 from packaging.version import Version as PackageVersion

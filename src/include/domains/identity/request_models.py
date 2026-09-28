@@ -4,12 +4,12 @@ from typing import Self
 
 from pydantic import model_validator
 
-from include.domains.pagination import PaginationOffset, PaginationPageSize
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
     RequestDataModel,
 )
+lazy from include.domains.pagination import PaginationOffset, PaginationPageSize
 
 
 class OffsetPaginationRequest(RequestDataModel):

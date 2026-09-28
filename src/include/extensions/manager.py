@@ -22,13 +22,12 @@ import importlib.util
 import sys
 import tomllib
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import Annotated, Any, Literal
+lazy from collections.abc import Mapping
 
 import pluggy
-import websockets.sync.server
 from loguru import logger as log
 from packaging.version import InvalidVersion
 from packaging.version import Version as PackageVersion
@@ -40,18 +39,16 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+lazy import websockets.sync.server
+lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import CORE_VERSION
 from include.config.version import Version
-from include.extensions.identifiers import ExtensionIdentifier
-from include.types import TrimmedNonEmptyString
-
-if TYPE_CHECKING:
-    from sqlalchemy.orm import Session as OrmSession
-
-    from include.scheduling.contracts import ScheduledTaskRegistration
-    from include.transport.connection import ConnectionHandler
-    from include.transport.request_handler import RequestHandler, Result
+lazy from include.extensions.identifiers import ExtensionIdentifier
+lazy from include.scheduling.contracts import ScheduledTaskRegistration
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.transport.request_handler import RequestHandler, Result
+lazy from include.types import TrimmedNonEmptyString
 
 hookspec = pluggy.HookspecMarker("cfms")
 hookimpl = pluggy.HookimplMarker("cfms")

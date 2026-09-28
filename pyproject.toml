@@ -3,7 +3,7 @@ name = "cfms-on-websocket"
 version = "0.10.1"
 description = "The server-side program for CFMS on WebSocket, a WebSocket-based implementation of the CFMS protocol."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.15"
 dependencies = [
     "alembic>=1.18.4",
     "apscheduler>=3.11.3,<4",

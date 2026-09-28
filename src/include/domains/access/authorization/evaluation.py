@@ -2,14 +2,12 @@ import time
 from dataclasses import dataclass
 from enum import IntEnum
 
-from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import object_session
+lazy from sqlalchemy.orm import Session
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
 from include.config.settings import global_config
-from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import Document, Folder
-from include.database.models.identity import User
 from include.domains.access.authorization.compiled_rules import (
     CompiledRuleMap,
     TargetType,
@@ -22,6 +20,8 @@ from include.domains.access.authorization.searchable_tree import (
     load_document_access_context,
     load_user_folder_access_context,
 )
+lazy from include.database.models.access import ObjectAccessEntry
+lazy from include.database.models.identity import User
 
 
 class SingleNodeCheckResult(IntEnum):

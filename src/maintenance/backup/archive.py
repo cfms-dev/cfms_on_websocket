@@ -4,13 +4,12 @@ import logging
 import lzma
 import os
 import tarfile
-from collections.abc import Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+lazy from collections.abc import Sequence
 
 import orjson
 
-from include.providers.base import StorageProvider
 from maintenance.backup.constants import (
     BACKUP_FORMAT_VERSION,
     MAX_BACKUP_FILES,
@@ -36,6 +35,7 @@ from maintenance.backup.selection import (
     BackupExportSelection,
     _selected_table_names,
 )
+lazy from include.providers.base import StorageProvider
 
 LOGGER = logging.getLogger(__name__)
 

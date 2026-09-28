@@ -29,7 +29,6 @@ from include.domains.identity.sessions import (
 from include.exceptions.misc import UserNotActiveError
 from include.extensions.manager import hookimpl
 from include.providers.manager import ProviderManager
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -37,7 +36,8 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-from include.types import NonEmptyString
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.types import NonEmptyString
 
 logger = log.bind(name="oidc_sso")
 

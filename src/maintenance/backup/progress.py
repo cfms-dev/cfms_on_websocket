@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from rich.progress import Progress, TaskID
+lazy from rich.progress import Progress, TaskID
 
 EXPORT_PROGRESS_STEPS = 6
 

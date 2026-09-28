@@ -1,7 +1,7 @@
 __all__ = ["LocalEventBusProvider"]
 
 import threading
-from collections.abc import Callable
+lazy from collections.abc import Callable
 
 from loguru import logger
 

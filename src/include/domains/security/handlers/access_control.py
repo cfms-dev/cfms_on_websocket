@@ -37,7 +37,6 @@ from include.domains.security.guards.login import LoginGuard, ThrottleScope
 from include.messages import Messages as smsg
 from include.providers.manager import ProviderManager
 from include.transport.client_address import get_client_ip
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -45,7 +44,8 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-from include.types import NonNegativeFloat
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.types import NonNegativeFloat
 
 _Subnet = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 _OptionalReason = OperationReason | None
