@@ -1,0 +1,2 @@
+- Keep backup file payloads tied to their exported database snapshot and reject incomplete active file records.
+- Reject undeclared backup members, empty component claims, and release manifests without an explicit Python requirement.

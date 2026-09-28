@@ -1,0 +1,2 @@
+- Reject backup payload tables and storage files that contradict their declared components or database rows.
+- Preserve existing configuration backups and translate malformed backup metadata into consistent format errors.

@@ -38,16 +38,32 @@ class BackupHeader:
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> BackupHeader:
         try:
-            return cls(
-                format_version=int(data["format_version"]),
-                created_at=str(data["created_at"]),
-                core_version=str(data["core_version"]),
-                compression=str(data["compression"]),
-                encryption=str(data["encryption"]),
-                nonce=str(data["nonce"]),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
+            format_version = data["format_version"]
+            created_at = data["created_at"]
+            core_version = data["core_version"]
+            compression = data["compression"]
+            encryption = data["encryption"]
+            nonce = data["nonce"]
+        except (KeyError, TypeError) as exc:
             raise BackupFormatError("Backup header is missing required fields") from exc
+        if (
+            isinstance(format_version, bool)
+            or not isinstance(format_version, int)
+            or not isinstance(created_at, str)
+            or not isinstance(core_version, str)
+            or not isinstance(compression, str)
+            or not isinstance(encryption, str)
+            or not isinstance(nonce, str)
+        ):
+            raise BackupFormatError("Backup header contains invalid field types")
+        return cls(
+            format_version=format_version,
+            created_at=created_at,
+            core_version=core_version,
+            compression=compression,
+            encryption=encryption,
+            nonce=nonce,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {

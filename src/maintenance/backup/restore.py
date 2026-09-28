@@ -27,6 +27,7 @@ from maintenance.backup.archive import (
     _safe_extract_tar_xz,
     _safe_payload_path,
     _validate_manifest,
+    _validate_payload_tree,
     _validate_storage_path,
     _verify_file_digest,
 )
@@ -53,6 +54,7 @@ from maintenance.backup.progress import (
 from maintenance.backup.rows import (
     _decode_row,
     _iter_raw_table_row_batches,
+    _iter_raw_table_rows,
     _iter_table_row_batches,
 )
 from maintenance.backup.selection import (
@@ -149,6 +151,7 @@ def import_backup(
         )
         manifest = _load_manifest(extract_dir / "manifest.json")
         _validate_manifest(manifest)
+        _validate_payload_tree(extract_dir, manifest)
 
         config_file = Path(config_path)
         init_file = Path(init_path)
@@ -221,14 +224,18 @@ def import_backup(
             )
             _cleanup_restored_files(storage, written_paths)
             if finalization_started:
-                try:
-                    if config_snapshot is not None:
-                        _restore_file_snapshot(config_file, config_snapshot)
-                    _restore_file_snapshot(init_file, init_snapshot)
-                except OSError:
-                    LOGGER.exception(
-                        "Unable to roll back backup import configuration or init marker"
-                    )
+                snapshots = []
+                if config_snapshot is not None:
+                    snapshots.append((config_file, config_snapshot))
+                snapshots.append((init_file, init_snapshot))
+                for path, snapshot in snapshots:
+                    try:
+                        _restore_file_snapshot(path, snapshot)
+                    except OSError:
+                        LOGGER.exception(
+                            "Unable to roll back backup import target %s",
+                            path,
+                        )
             raise
 
     _emit_progress(
@@ -259,6 +266,7 @@ def _restore_files(
     if written_paths is None:
         written_paths = []
     file_entries = manifest["files"]
+    _validate_file_manifest_table(extract_dir, manifest)
     for file_index, entry in enumerate(file_entries, start=1):
         storage_path = str(entry["storage_path"])
         _validate_storage_path(storage_path)
@@ -303,6 +311,36 @@ def _restore_files(
         LOGGER.debug("Restored storage file %s", storage_path)
 
     return written_paths
+
+
+def _validate_file_manifest_table(
+    extract_dir: Path,
+    manifest: dict[str, Any],
+) -> None:
+    expected_paths = {
+        entry["file_id"]: entry["storage_path"] for entry in manifest["files"]
+    }
+    if "files" not in manifest["tables"]:
+        if not expected_paths:
+            return
+        raise BackupFormatError("Backup file manifest does not match the files table")
+    unmatched_ids = set(expected_paths)
+    missing_active_payload = False
+    for row in _iter_raw_table_rows(extract_dir, manifest, "files"):
+        file_id = row.get("id")
+        if file_id not in expected_paths:
+            if row.get("active") is not False:
+                missing_active_payload = True
+            continue
+        if row.get("path") != expected_paths[file_id]:
+            raise BackupFormatError(
+                "Backup file manifest does not match the files table"
+            )
+        unmatched_ids.discard(file_id)
+    if unmatched_ids:
+        raise BackupFormatError("Backup file manifest does not match the files table")
+    if missing_active_payload:
+        raise BackupFormatError("Backup active files table row has no payload")
 
 
 def _restore_database(
@@ -589,8 +627,8 @@ def _restore_config_keys(
     if "server" not in doc:
         doc["server"] = tomlkit.table()
 
-    doc["security"]["pepper"] = security.get("pepper", "")
-    doc["server"]["secret_key"] = server.get("secret_key", "")
+    doc["security"]["pepper"] = security["pepper"]
+    doc["server"]["secret_key"] = server["secret_key"]
     _write_file_atomically(path, tomlkit.dumps(doc).encode())
     LOGGER.debug("Configuration keys restored in %s", path)
 

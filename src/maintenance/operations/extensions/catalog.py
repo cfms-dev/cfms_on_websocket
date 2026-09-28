@@ -21,7 +21,10 @@ from include.extensions.manager import (
     resolve_extension_selection,
 )
 from maintenance.operations.config import read_config_text
-from maintenance.operations.deployment.constants import MAX_MANIFEST_BYTES
+from maintenance.operations.deployment.constants import (
+    _EXTENSION_IDENTIFIER_PATTERN,
+    MAX_MANIFEST_BYTES,
+)
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.extensions.models import (
     ExtensionCatalogInspection,
@@ -43,6 +46,10 @@ def _extension_root(*, mutating: bool) -> tuple[Path, Path]:
             f"Extension directory not found: {paths.EXTENSION_ROOT}"
         )
     if mutating:
+        try:
+            _validate_extension_root_size(paths.EXTENSION_ROOT)
+        except OSError as exc:
+            raise MaintenanceOperationError(str(exc)) from exc
         artifacts = sorted(
             path
             for path in paths.EXTENSION_ROOT.iterdir()
@@ -77,6 +84,10 @@ def _managed_extension_identifiers() -> frozenset[str]:
                 f"Release manifest exceeds the size limit: {manifest_path}"
             )
         data = json.loads(contents)
+        if not isinstance(data, dict):
+            raise MaintenanceOperationError(
+                f"Release manifest must be an object: {manifest_path}"
+            )
         identifiers = data["managed_extensions"]
     except MaintenanceOperationError:
         raise
@@ -84,8 +95,14 @@ def _managed_extension_identifiers() -> frozenset[str]:
         raise MaintenanceOperationError(
             f"Unable to read managed extensions from {manifest_path}: {exc}"
         ) from exc
-    if not isinstance(identifiers, list) or any(
-        not isinstance(identifier, str) for identifier in identifiers
+    if (
+        not isinstance(identifiers, list)
+        or any(
+            not isinstance(identifier, str)
+            or _EXTENSION_IDENTIFIER_PATTERN(identifier) is None
+            for identifier in identifiers
+        )
+        or len(identifiers) != len(set(identifiers))
     ):
         raise MaintenanceOperationError(
             f"Release manifest has invalid managed_extensions: {manifest_path}"

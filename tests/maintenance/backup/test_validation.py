@@ -1,8 +1,12 @@
+import hashlib
+import tarfile
 from pathlib import Path
 
+import orjson
 import pytest
 import tomlkit
-from sqlalchemy import event, func, insert, select
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from sqlalchemy import event, func, insert, select, update
 
 from .roundtrip_support import _seed_source
 from .support import (
@@ -31,6 +35,27 @@ def _write_audit_rows(extract_dir: Path, row_count: int) -> None:
         for index in range(row_count)
     ]
     _write_jsonl(extract_dir / "tables" / "audit_entries.jsonl", rows)
+
+
+def test_export_rejects_explicit_empty_key_before_staging(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from maintenance.backup import export as backup_export
+
+    monkeypatch.setattr(
+        backup_export,
+        "_stage_backup_payload",
+        lambda *args, **kwargs: pytest.fail("payload staging must not start"),
+    )
+
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        backup_context.export_backup(
+            tmp_path / "backup.conf",
+            key=b"",
+            storage_provider=object(),
+        )
 
 
 def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):
@@ -107,6 +132,51 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     restored_config = tomlkit.parse(target_config.read_text(encoding="utf-8"))
     assert restored_config["security"]["pepper"] == "target-pepper"
     assert restored_config["server"]["secret_key"] == "target-secret"
+
+
+def test_file_export_uses_the_exported_database_snapshot(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.export import _stage_backup_payload
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_storage = tmp_path / "source-storage"
+    source_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    moved_path = source_storage / "content" / "files" / "moved.bin"
+    moved_path.write_bytes(b"moved payload")
+    session_count = 0
+
+    def changing_session_factory():
+        nonlocal session_count
+        session_count += 1
+        if session_count == 2:
+            with source_engine.begin() as connection:
+                connection.execute(
+                    update(base.metadata.tables["files"])
+                    .where(base.metadata.tables["files"].c.id == "file-doc")
+                    .values(path="content/files/moved.bin")
+                )
+        return source_session()
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    manifest = _stage_backup_payload(
+        staging_dir,
+        session_factory=changing_session_factory,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+
+    exported_paths = {
+        row["id"]: row["path"]
+        for row in _read_jsonl(staging_dir / "tables" / "files.jsonl")
+    }
+    assert {
+        entry["file_id"]: entry["storage_path"] for entry in manifest["files"]
+    } == exported_paths
 
 
 def test_banned_subnet_export_includes_only_referenced_comments(
@@ -582,6 +652,476 @@ def test_import_rolls_back_database_files_and_config_when_finalization_fails(
     assert not init_path.exists()
 
 
+def test_import_attempts_init_rollback_when_config_rollback_fails(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+):
+    from maintenance.backup import restore as backup_restore
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_storage = tmp_path / "source-storage"
+    target_storage = tmp_path / "target-storage"
+    source_storage.mkdir()
+    target_storage.mkdir()
+    _seed_source(base, source_engine, source_storage)
+    backup_path = tmp_path / "backup.conf"
+    key_text = backup_context.export_backup(
+        backup_path,
+        session_factory=source_session,
+        storage_provider=_RootedStorage(source_storage),
+        config=backup_context.source_config,
+    )
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+    init_path = tmp_path / "init"
+    init_path.write_bytes(b"original init\n")
+
+    def fail_after_finalization(*args, finalize=None, **kwargs):
+        assert finalize is not None
+        finalize()
+        raise RuntimeError("simulated post-finalization failure")
+
+    real_restore_snapshot = backup_restore._restore_file_snapshot
+
+    def fail_config_rollback(path: Path, snapshot) -> None:
+        if path == target_config:
+            raise OSError("simulated config rollback failure")
+        real_restore_snapshot(path, snapshot)
+
+    monkeypatch.setattr(backup_restore, "_restore_database", fail_after_finalization)
+    monkeypatch.setattr(
+        backup_restore,
+        "_restore_file_snapshot",
+        fail_config_rollback,
+    )
+
+    with pytest.raises(RuntimeError, match="post-finalization failure"):
+        backup_context.import_backup(
+            backup_path,
+            key_text,
+            session_factory=target_session,
+            db_engine=target_engine,
+            storage_provider=_RootedStorage(target_storage),
+            config_path=target_config,
+            init_path=init_path,
+        )
+
+    assert init_path.read_bytes() == b"original init\n"
+
+
+def test_manifest_rejects_duplicate_file_ids(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 1}},
+        "files": [
+            {
+                "file_id": "duplicate",
+                "storage_path": "content/files/first.bin",
+                "archive_path": "files/00000000.bin",
+                "size": 1,
+                "sha256": "0" * 64,
+            },
+            {
+                "file_id": "duplicate",
+                "storage_path": "content/files/second.bin",
+                "archive_path": "files/00000001.bin",
+                "size": 1,
+                "sha256": "1" * 64,
+            },
+        ],
+        "configuration": {},
+    }
+
+    with pytest.raises(backup_context.BackupFormatError, match="duplicate file IDs"):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_case_colliding_file_paths(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 2}, "users": {"rows": 0}},
+        "files": [
+            {
+                "file_id": "first",
+                "storage_path": "content/files/Payload.bin",
+                "archive_path": "files/00000000.bin",
+                "size": 1,
+                "sha256": "0" * 64,
+            },
+            {
+                "file_id": "second",
+                "storage_path": "content/files/payload.bin",
+                "archive_path": "files/00000001.bin",
+                "size": 1,
+                "sha256": "1" * 64,
+            },
+        ],
+        "configuration": {},
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="duplicate file paths",
+    ):
+        _validate_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        [],
+        {"security": []},
+        {"server": []},
+        {"security": {"pepper": 1}},
+        {"server": {"secret_key": False}},
+    ],
+)
+def test_manifest_rejects_invalid_configuration_shape(
+    backup_context,
+    configuration,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["audit"],
+        "tables": {"audit_entries": {"rows": 0}},
+        "files": [],
+        "configuration": configuration,
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid configuration",
+    ):
+        _validate_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        {"security": {"pepper": "restored"}},
+        {"server": {"secret_key": "restored"}},
+    ],
+)
+def test_manifest_rejects_incomplete_configuration(
+    backup_context,
+    configuration,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": configuration,
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid configuration",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_non_array_components(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": {"configuration": None},
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid components",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_duplicate_components(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["configuration", "configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="invalid components",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_boolean_format_version(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+
+    manifest = {
+        "format_version": True,
+        "components": ["configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="format version",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_tables_outside_component_selection(backup_context) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["configuration"],
+        "tables": {"audit_entries": {"rows": 0}},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored"},
+            "server": {"secret_key": "restored"},
+        },
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="outside the selected components",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_missing_tables_for_selected_components(
+    backup_context,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {},
+        "files": [],
+        "configuration": {},
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="does not match the selected components",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_manifest_rejects_mixed_access_rule_representations(
+    backup_context,
+) -> None:
+    from maintenance.backup.archive import _validate_manifest
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["documents"],
+        "tables": {
+            "folders": {"rows": 0},
+            "compiled_access_rules": {"rows": 0},
+            "folder_access_rules": {"rows": 0},
+        },
+        "files": [],
+        "configuration": {},
+    }
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="mixes compiled and legacy access rule",
+    ):
+        _validate_manifest(manifest)
+
+
+def test_restore_files_rejects_manifest_entry_without_matching_database_row(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_files
+
+    extract_dir = tmp_path / "payload"
+    payload = extract_dir / "files" / "00000000.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"payload")
+    _write_jsonl(
+        extract_dir / "tables" / "files.jsonl",
+        [
+            {
+                "id": "database-file",
+                "path": "content/files/database.bin",
+                "active": True,
+            }
+        ],
+    )
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 1}},
+        "files": [
+            {
+                "file_id": "manifest-file",
+                "storage_path": "content/files/manifest.bin",
+                "archive_path": "files/00000000.bin",
+                "size": len(b"payload"),
+                "sha256": hashlib.sha256(b"payload").hexdigest(),
+            }
+        ],
+        "configuration": {},
+    }
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="does not match the files table",
+    ):
+        _restore_files(extract_dir, manifest, _RootedStorage(storage_root))
+
+    assert not (storage_root / "content" / "files" / "manifest.bin").exists()
+
+
+def test_restore_files_rejects_active_database_row_without_payload(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.format import BACKUP_FORMAT_VERSION
+    from maintenance.backup.restore import _restore_files
+
+    extract_dir = tmp_path / "payload"
+    _write_jsonl(
+        extract_dir / "tables" / "files.jsonl",
+        [
+            {
+                "id": "active-file",
+                "path": "content/files/active.bin",
+                "active": True,
+            }
+        ],
+    )
+    manifest = {
+        "format_version": BACKUP_FORMAT_VERSION,
+        "components": ["accounts"],
+        "tables": {"files": {"rows": 1}},
+        "files": [],
+        "configuration": {},
+    }
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="active files table row has no payload",
+    ):
+        _restore_files(extract_dir, manifest, _RootedStorage(storage_root))
+
+
+def test_import_rejects_payload_members_absent_from_manifest(
+    backup_context,
+    tmp_path,
+) -> None:
+    from maintenance.backup.format import _encode_header, _header_prefix
+    from maintenance.backup.models import BackupHeader
+
+    key = bytes(range(32))
+    nonce = bytes(range(12))
+    manifest = {
+        "format_version": backup_context.backup_core.BACKUP_FORMAT_VERSION,
+        "components": ["configuration"],
+        "tables": {},
+        "files": [],
+        "configuration": {
+            "security": {"pepper": "restored-pepper"},
+            "server": {"secret_key": "restored-secret"},
+        },
+    }
+    payload_root = tmp_path / "archive-source"
+    payload_root.mkdir()
+    (payload_root / "manifest.json").write_bytes(orjson.dumps(manifest))
+    (payload_root / "unexpected.bin").write_bytes(b"not declared")
+    compressed_payload = tmp_path / "payload.tar.xz"
+    with tarfile.open(compressed_payload, "w:xz") as archive:
+        archive.add(payload_root / "manifest.json", arcname="manifest.json")
+        archive.add(payload_root / "unexpected.bin", arcname="unexpected.bin")
+
+    header_bytes = _encode_header(
+        BackupHeader(
+            format_version=backup_context.backup_core.BACKUP_FORMAT_VERSION,
+            created_at="2026-09-13T00:00:00+00:00",
+            core_version="0.10.1",
+            compression="xz",
+            encryption="AES-256-GCM",
+            nonce="AAECAwQFBgcICQoL",
+        )
+    )
+    prefix = _header_prefix(header_bytes)
+    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    encryptor.authenticate_additional_data(prefix)
+    ciphertext = encryptor.update(compressed_payload.read_bytes())
+    ciphertext += encryptor.finalize()
+    backup_path = tmp_path / "unexpected-member.conf"
+    backup_path.write_bytes(prefix + ciphertext + encryptor.tag)
+
+    target_engine, target_session = _new_database(
+        backup_context.Base,
+        tmp_path / "target.db",
+    )
+    target_config = tmp_path / "target-config.toml"
+    _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
+
+    with pytest.raises(
+        backup_context.BackupFormatError,
+        match="contents do not match its manifest",
+    ):
+        backup_context.import_backup(
+            backup_path,
+            key,
+            session_factory=target_session,
+            db_engine=target_engine,
+            storage_provider=_RootedStorage(tmp_path / "storage"),
+            config_path=target_config,
+            init_path=tmp_path / "target-init",
+        )
+
+
 def test_restore_rejects_oversized_json_row_before_parsing(
     backup_context,
     tmp_path,
@@ -614,3 +1154,55 @@ def test_restore_rejects_oversized_json_row_before_parsing(
             )
             == 0
         )
+
+
+def test_export_rejects_json_row_larger_than_restore_limit(
+    backup_context,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from maintenance.backup import export as backup_export
+
+    base = backup_context.Base
+    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    with source_engine.begin() as connection:
+        connection.execute(
+            insert(base.metadata.tables["audit_entries"]),
+            {
+                "id": "oversized-audit",
+                "action": "export-limit",
+                "username": None,
+                "target": None,
+                "data": {"payload": "too large"},
+                "result": 200,
+                "remote_address": None,
+                "logged_time": 0.0,
+            },
+        )
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    monkeypatch.setattr(backup_export, "MAX_JSONL_ROW_BYTES", 16)
+    selection = backup_context.BackupExportSelection.from_component_values(["audit"])
+
+    with pytest.raises(backup_context.BackupIntegrityError, match="backup limit"):
+        backup_export._export_tables(
+            staging_dir,
+            source_session,
+            selection=selection,
+        )
+
+
+def test_restore_accepts_json_row_at_export_limit(tmp_path, monkeypatch) -> None:
+    from maintenance.backup import rows as backup_rows
+
+    extract_dir = tmp_path / "payload"
+    table_path = extract_dir / "tables" / "audit_entries.jsonl"
+    table_path.parent.mkdir(parents=True)
+    encoded_row = orjson.dumps({"id": "boundary"})
+    table_path.write_bytes(encoded_row + b"\n")
+    monkeypatch.setattr(backup_rows, "MAX_JSONL_ROW_BYTES", len(encoded_row))
+    manifest = {"tables": {"audit_entries": {"rows": 1}}}
+
+    assert list(
+        backup_rows._iter_raw_table_rows(extract_dir, manifest, "audit_entries")
+    ) == [{"id": "boundary"}]

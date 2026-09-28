@@ -16,6 +16,7 @@ import orjson
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from include.config.version import Version as CoreVersion
 from maintenance.backup.archive import _add_staged_file
 from maintenance.backup.constants import (
     BACKUP_FORMAT_VERSION,
@@ -28,6 +29,8 @@ from maintenance.backup.constants import (
     HUMAN_KEY_GROUP_SIZE,
     HUMAN_KEY_MAX_VALUE,
     HUMAN_KEY_SEPARATOR,
+    MAX_BACKUP_COMPRESSED_BYTES,
+    MAX_BACKUP_UNCOMPRESSED_BYTES,
     MAX_HEADER_BYTES,
 )
 from maintenance.backup.models import (
@@ -75,7 +78,11 @@ def decode_backup_key(value: str) -> bytes:
         raise ValueError("Backup key cannot be empty")
     padding = "=" * (-len(normalized) % 4)
     try:
-        decoded = base64.urlsafe_b64decode(normalized + padding)
+        decoded = base64.b64decode(
+            normalized + padding,
+            altchars=b"-_",
+            validate=True,
+        )
         if len(decoded) == 32:
             return decoded
     except (binascii.Error, ValueError) as exc:
@@ -147,6 +154,10 @@ def _write_encrypted_archive(
             staging_dir,
             progress_reporter=progress_reporter,
         )
+        if compressed_payload.stat().st_size > MAX_BACKUP_COMPRESSED_BYTES:
+            raise BackupIntegrityError(
+                "Compressed backup payload exceeds the size limit"
+            )
         with temp_output.open("wb") as raw_output:
             raw_output.write(prefix)
             with compressed_payload.open("rb") as source:
@@ -194,6 +205,7 @@ def _write_compressed_payload(
         ),
     )
     total_members = 1 + len(table_members) + file_count
+    total_uncompressed = 0
     with (
         lzma.open(output_path, "wb", preset=6) as compressed,
         tarfile.open(fileobj=compressed, mode="w|") as tar,
@@ -202,6 +214,11 @@ def _write_compressed_payload(
             archive_members,
             start=1,
         ):
+            total_uncompressed += source_path.stat().st_size
+            if total_uncompressed > MAX_BACKUP_UNCOMPRESSED_BYTES:
+                raise BackupIntegrityError(
+                    "Backup payload exceeds the uncompressed size limit"
+                )
             _add_staged_file(
                 tar,
                 source_path,
@@ -227,6 +244,8 @@ def _decrypt_payload(
     ciphertext_length = size - ciphertext_offset - GCM_TAG_BYTES
     if ciphertext_length < 0:
         raise BackupFormatError("Backup file is truncated")
+    if ciphertext_length > MAX_BACKUP_COMPRESSED_BYTES:
+        raise BackupFormatError("Backup encrypted payload exceeds the size limit")
     LOGGER.debug(
         "Decrypting backup payload: ciphertext_bytes=%d output=%s",
         ciphertext_length,
@@ -295,11 +314,25 @@ def _validate_header(header: BackupHeader) -> None:
         raise BackupFormatError(
             f"Unsupported backup format version: {header.format_version}"
         )
+    try:
+        created_at = dt.datetime.fromisoformat(header.created_at)
+    except (TypeError, ValueError) as exc:
+        raise BackupFormatError("Backup header created_at is invalid") from exc
+    if created_at.tzinfo is None:
+        raise BackupFormatError("Backup header created_at is invalid")
+    try:
+        CoreVersion(header.core_version)
+    except (TypeError, ValueError) as exc:
+        raise BackupFormatError("Backup header core_version is invalid") from exc
     if header.compression != "xz":
         raise BackupFormatError(f"Unsupported compression: {header.compression}")
     if header.encryption != "AES-256-GCM":
         raise BackupFormatError(f"Unsupported encryption: {header.encryption}")
-    if len(_decode_bytes(header.nonce)) != GCM_NONCE_BYTES:
+    try:
+        nonce = _decode_bytes(header.nonce)
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise BackupFormatError("Backup header nonce is invalid") from exc
+    if len(nonce) != GCM_NONCE_BYTES:
         raise BackupFormatError("Backup header nonce length is invalid")
 
 
@@ -350,4 +383,4 @@ def _encode_bytes(value: bytes) -> str:
 
 def _decode_bytes(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(value + padding)
+    return base64.b64decode(value + padding, altchars=b"-_", validate=True)

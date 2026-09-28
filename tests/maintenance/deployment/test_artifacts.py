@@ -100,6 +100,7 @@ def test_release_id_is_manifest_digest_and_distinguishes_same_version(
     "operator_path",
     [
         "src/.maintenance/transaction.json",
+        "src/.MAINTENANCE/transaction.json",
         "src/content/files/production.dat",
         "src/content/logs/server.log",
     ],
@@ -112,6 +113,68 @@ def test_manifest_rejects_operator_owned_paths(
     manifest = dict(release.manifest)
     manifest["files"] = dict(manifest["files"])
     manifest["files"][operator_path] = "0" * 64
+
+    with pytest.raises(MaintenanceOperationError, match="invalid path or digest"):
+        deployment_repository._parse_manifest(json.dumps(manifest).encode())
+
+
+@pytest.mark.parametrize("manifest", [b"[]", b"null", b'"release"'])
+def test_manifest_rejects_non_object_json(manifest: bytes) -> None:
+    with pytest.raises(MaintenanceOperationError, match="metadata is invalid"):
+        deployment_repository._parse_manifest(manifest)
+
+
+def test_manifest_rejects_missing_requires_python(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "release", "1.0.0", "release")
+    manifest = dict(release.manifest)
+    del manifest["requires_python"]
+
+    with pytest.raises(MaintenanceOperationError, match="metadata is invalid"):
+        deployment_repository._parse_manifest(json.dumps(manifest).encode())
+
+
+def test_manifest_rejects_empty_requires_python(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "release", "1.0.0", "release")
+    manifest = dict(release.manifest)
+    manifest["requires_python"] = ""
+
+    with pytest.raises(MaintenanceOperationError, match="metadata is invalid"):
+        deployment_repository._parse_manifest(json.dumps(manifest).encode())
+
+
+def test_manifest_rejects_boolean_format_version(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "release", "1.0.0", "release")
+    manifest = dict(release.manifest)
+    manifest["format_version"] = True
+
+    with pytest.raises(MaintenanceOperationError, match="metadata is invalid"):
+        deployment_repository._parse_manifest(json.dumps(manifest).encode())
+
+
+def test_manifest_requires_builtin_managed_extension(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "release", "1.0.0", "release")
+    manifest = dict(release.manifest)
+    manifest["managed_extensions"] = []
+
+    with pytest.raises(MaintenanceOperationError, match="metadata is invalid"):
+        deployment_repository._parse_manifest(json.dumps(manifest).encode())
+
+
+@pytest.mark.parametrize(
+    "generated_path",
+    [
+        "src/package/__PYCACHE__/module.py",
+        "src/package/cache.PYC",
+    ],
+)
+def test_manifest_rejects_generated_bytecode_case_insensitively(
+    tmp_path: Path,
+    generated_path: str,
+) -> None:
+    release = _write_release(tmp_path / "release", "1.0.0", "release")
+    manifest = dict(release.manifest)
+    manifest["files"] = dict(manifest["files"])
+    manifest["files"][generated_path] = "0" * 64
 
     with pytest.raises(MaintenanceOperationError, match="invalid path or digest"):
         deployment_repository._parse_manifest(json.dumps(manifest).encode())

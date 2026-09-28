@@ -23,6 +23,7 @@ from maintenance.operations.deployment import (
     repository as deployment_repository,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
+from maintenance.operations.extensions import packages as extension_packages
 
 from .support import (
     PROJECT_ROOT,
@@ -454,6 +455,110 @@ def test_status_removes_stored_bytecode_but_rejects_other_extra_files(
         deployment.inspect_deployment(root)
 
 
+def test_status_rejects_extra_empty_directory_in_stored_release(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "deployment"
+    active = _prepare_deployment(root)
+    snapshot = deployment_repository._snapshot_release(root, active)
+    (snapshot / "unexpected").mkdir()
+
+    with pytest.raises(MaintenanceOperationError, match="do not match its manifest"):
+        deployment.inspect_deployment(root)
+
+
+def test_load_settings_translates_invalid_utf8(tmp_path: Path) -> None:
+    settings = tmp_path / "src" / ".maintenance" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_bytes(b"\xff")
+
+    with pytest.raises(MaintenanceOperationError, match="Unable to read"):
+        deployment_repository._load_settings(tmp_path)
+
+
+def test_load_settings_rejects_non_array_extras(tmp_path: Path) -> None:
+    settings = tmp_path / "src" / ".maintenance" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps({"format_version": 1, "extras": "cluster"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="Invalid deployment settings"):
+        deployment_repository._load_settings(tmp_path)
+
+
+def test_load_settings_rejects_boolean_format_version(tmp_path: Path) -> None:
+    settings = tmp_path / "src" / ".maintenance" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps({"format_version": True, "extras": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="Invalid deployment settings"):
+        deployment_repository._load_settings(tmp_path)
+
+
+def test_stored_release_root_enforces_total_entry_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    versions = tmp_path / "src" / ".maintenance" / "versions"
+    versions.mkdir(parents=True)
+    for index in range(3):
+        (versions / f"unexpected-{index}").mkdir()
+    monkeypatch.setattr(deployment_repository, "MAX_STORED_RELEASES", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2"):
+        deployment_repository._stored_releases(tmp_path)
+
+
+def test_release_tree_enforces_total_file_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_root = tmp_path / "release"
+    _write_release(release_root, "1.0.0", "release")
+    monkeypatch.setattr(deployment_repository, "MAX_UNCOMPRESSED_BYTES", 1)
+
+    with pytest.raises(MaintenanceOperationError, match="uncompressed size limit"):
+        deployment_repository._release_from_tree(release_root, exact=True)
+
+
+def test_release_snapshot_rejects_linked_version_root(tmp_path: Path) -> None:
+    project_root = tmp_path / "deployment"
+    release = _write_release(tmp_path / "source", "1.0.0", "source")
+    external_root = tmp_path / "external-version"
+    shutil.copytree(release.root, external_root / "release")
+    versions_root = project_root / "src" / ".maintenance" / "versions"
+    versions_root.mkdir(parents=True)
+    (versions_root / release.release_id).symlink_to(
+        external_root,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="not a regular directory"):
+        deployment_repository._snapshot_release(project_root, release)
+
+    assert not (external_root / "state").exists()
+
+
+def test_state_snapshot_enforces_extension_tree_member_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    active = _prepare_deployment(root)
+    deployment_repository._snapshot_release(root, active)
+    custom = root / "src" / "include" / "extensions" / "custom-dir"
+    (custom / "asset.txt").write_text("asset\n", encoding="utf-8")
+    monkeypatch.setattr(extension_packages, "MAX_ARCHIVE_MEMBERS", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2 members"):
+        deployment_repository._snapshot_state(root, active)
+
+
 def test_state_snapshot_restores_previous_state_when_replacement_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -483,4 +588,185 @@ def test_state_snapshot_restores_previous_state_when_replacement_fails(
     assert (state / "config.toml").read_bytes() == original_config
     assert not any(
         path.name.startswith(".state-old-") for path in state.parent.iterdir()
+    )
+
+
+def test_stored_release_lookup_rejects_mislabeled_directory(tmp_path: Path) -> None:
+    root = tmp_path / "deployment"
+    _prepare_deployment(root)
+    release = _write_release(tmp_path / "target", "0.9.0", "target")
+    stored_root = deployment_repository._snapshot_release(root, release).parent
+    mislabeled_root = stored_root.with_name(release.release_id[:12] + ("f" * (64 - 12)))
+    stored_root.rename(mislabeled_root)
+
+    with pytest.raises(MaintenanceOperationError, match="does not match its directory"):
+        deployment_repository._stored_release(root, release.release_id[:12])
+
+
+def test_state_extension_restore_enforces_root_entry_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    release = _prepare_deployment(root)
+    state_root = (
+        root
+        / "src"
+        / ".maintenance"
+        / "versions"
+        / release.release_id
+        / "state"
+        / "extensions"
+    )
+    state_root.mkdir(parents=True)
+    for index in range(3):
+        (state_root / f"entry-{index}.txt").write_text("entry", encoding="utf-8")
+    monkeypatch.setattr(extension_packages, "MAX_INSTALLED_EXTENSIONS", 2)
+
+    with pytest.raises(MaintenanceOperationError, match="more than 2 entries"):
+        deployment_repository._copy_state_extensions(root, release)
+
+
+def test_restore_active_rejects_linked_state_config_before_writes(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "deployment"
+    source = _write_release(tmp_path / "source", "1.0.0", "source")
+    state = (
+        deployment_repository._version_root(project_root, source.release_id) / "state"
+    )
+    state.mkdir(parents=True)
+    external_config = tmp_path / "external.toml"
+    external_config.write_text("external = true\n", encoding="utf-8")
+    (state / "config.toml").symlink_to(external_config)
+
+    with pytest.raises(
+        MaintenanceOperationError,
+        match="compatible configuration snapshot",
+    ):
+        deployment_lifecycle._restore_active(project_root, source)
+
+    assert not (project_root / "release-manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    "transaction",
+    [
+        [],
+        {"action": "upgrade"},
+        {
+            "action": "upgrade",
+            "phase": "activation",
+            "from_release": 1,
+            "to_release": "b" * 64,
+        },
+    ],
+)
+def test_load_transaction_rejects_invalid_state_shape(
+    tmp_path: Path,
+    transaction,
+) -> None:
+    project_root = tmp_path / "deployment"
+    transaction_path = project_root / "src" / ".maintenance" / "transaction.json"
+    transaction_path.parent.mkdir(parents=True)
+    transaction_path.write_text(json.dumps(transaction), encoding="utf-8")
+
+    with pytest.raises(
+        MaintenanceOperationError, match="Invalid deployment transaction"
+    ):
+        deployment_lifecycle._load_transaction(project_root)
+
+
+def test_upgrade_restores_source_when_atomic_release_copy_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _prepare_deployment(root)
+    staged_target = _write_release(tmp_path / "target", "1.1.0", "new")
+    stage = root / "src" / ".maintenance" / "staging" / "stage"
+    stage.mkdir(parents=True)
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_stage_release",
+        lambda *args, **kwargs: (staged_target, "a" * 64, stage),
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle, "_preflight_upgrade_database", lambda *args: None
+    )
+    monkeypatch.setattr(deployment_lifecycle, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(
+        deployment_lifecycle, "sync_config_template", lambda *args, **kwargs: None
+    )
+    real_atomic_copy = deployment_repository._atomic_copy
+    failed = False
+
+    def fail_target_main_copy(copy_source: Path, target: Path) -> None:
+        nonlocal failed
+        if (
+            target == root / "src" / "main.py"
+            and copy_source.read_text(encoding="utf-8") == "# new\n"
+            and not failed
+        ):
+            failed = True
+            raise OSError("simulated release copy failure")
+        real_atomic_copy(copy_source, target)
+
+    monkeypatch.setattr(deployment_repository, "_atomic_copy", fail_target_main_copy)
+
+    with pytest.raises(OSError, match="simulated release copy failure"):
+        deployment.upgrade_deployment(tmp_path / "release.zip", root)
+
+    assert deployment_repository._active_release(root).release_id == source.release_id
+    assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
+    assert not (root / "src" / ".maintenance" / "transaction.json").exists()
+
+
+def test_upgrade_restores_source_when_atomic_extension_copy_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _prepare_deployment(root)
+    staged_target = _write_release(tmp_path / "target", "1.1.0", "new")
+    stage = root / "src" / ".maintenance" / "staging" / "stage"
+    stage.mkdir(parents=True)
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_stage_release",
+        lambda *args, **kwargs: (staged_target, "a" * 64, stage),
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle, "_preflight_upgrade_database", lambda *args: None
+    )
+    monkeypatch.setattr(deployment_lifecycle, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(
+        deployment_lifecycle, "sync_config_template", lambda *args, **kwargs: None
+    )
+    real_atomic_copytree = deployment_repository._atomic_copytree
+    failed = False
+
+    def fail_custom_extension_copy(copy_source: Path, target: Path) -> None:
+        nonlocal failed
+        if target.name == "custom-dir" and not failed:
+            failed = True
+            raise OSError("simulated extension copy failure")
+        real_atomic_copytree(copy_source, target)
+
+    monkeypatch.setattr(
+        deployment_repository,
+        "_atomic_copytree",
+        fail_custom_extension_copy,
+    )
+
+    with pytest.raises(OSError, match="simulated extension copy failure"):
+        deployment.upgrade_deployment(tmp_path / "release.zip", root)
+
+    assert deployment_repository._active_release(root).release_id == source.release_id
+    assert (
+        root / "src" / "include" / "extensions" / "custom-dir" / "_extension.py"
+    ).read_text(encoding="utf-8") == "# original custom\n"
+    assert not any(
+        path.name.startswith(".custom-dir.tmp-")
+        for path in (root / "src" / "include" / "extensions").iterdir()
     )

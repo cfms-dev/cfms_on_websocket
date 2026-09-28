@@ -13,6 +13,12 @@ from maintenance.backup.models import BackupFormatError
 
 LOGGER = logging.getLogger(__name__)
 _RESTORE_BATCH_SIZE = 1000
+_LEGACY_ROW_COLUMNS = {
+    "banned_subnets": {"reason"},
+    "compiled_access_rules": {"node_id", "target_id"},
+    "documents": {"folder_id", "inherit", "status", "status_operation_id", "title"},
+    "folders": {"inherit", "name", "parent_id", "status", "status_operation_id"},
+}
 
 
 def _iter_raw_table_rows(
@@ -25,9 +31,10 @@ def _iter_raw_table_rows(
     row_count = 0
     with path.open("rb") as f:
         line_number = 0
-        while line := f.readline(MAX_JSONL_ROW_BYTES + 1):
+        while line := f.readline(MAX_JSONL_ROW_BYTES + 2):
             line_number += 1
-            if len(line) > MAX_JSONL_ROW_BYTES:
+            row_payload = line.removesuffix(b"\n")
+            if len(row_payload) > MAX_JSONL_ROW_BYTES:
                 raise BackupFormatError(
                     f"JSON row in {path} at line {line_number} exceeds the "
                     f"{MAX_JSONL_ROW_BYTES}-byte limit"
@@ -85,10 +92,36 @@ def _iter_table_row_batches(
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
+    stored_columns = {
+        column.name for column in table.columns if column.computed is None
+    }
+    unknown_columns = (
+        set(row) - stored_columns - _LEGACY_ROW_COLUMNS.get(table.name, set())
+    )
+    if unknown_columns:
+        raise BackupFormatError(
+            f"Backup row for {table.name!r} contains unknown columns: "
+            f"{sorted(unknown_columns)}"
+        )
+    missing_primary_keys = [
+        column.name
+        for column in table.primary_key.columns
+        if column.name not in row or row[column.name] is None
+    ]
+    if missing_primary_keys:
+        raise BackupFormatError(
+            f"Backup row for {table.name!r} is missing primary key values: "
+            f"{missing_primary_keys}"
+        )
     if table.name == "banned_subnets":
         created_at = row.get("created_at")
         if isinstance(created_at, str):
-            parsed_created_at = dt.datetime.fromisoformat(created_at)
+            try:
+                parsed_created_at = dt.datetime.fromisoformat(created_at)
+            except ValueError as exc:
+                raise BackupFormatError(
+                    "Invalid datetime for banned_subnets.created_at"
+                ) from exc
             if parsed_created_at.tzinfo is None:
                 parsed_created_at = parsed_created_at.replace(tzinfo=dt.UTC)
             created_at = parsed_created_at.timestamp()
@@ -107,7 +140,12 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
             continue
         value = row[column.name]
         if value is not None and isinstance(column.type, DateTime):
-            value = dt.datetime.fromisoformat(value)
+            try:
+                value = dt.datetime.fromisoformat(value)
+            except (TypeError, ValueError) as exc:
+                raise BackupFormatError(
+                    f"Invalid datetime for {table.name}.{column.name}"
+                ) from exc
         if (
             value is not None
             and table.name == "comments"

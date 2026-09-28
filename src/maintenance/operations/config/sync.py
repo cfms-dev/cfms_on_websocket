@@ -85,6 +85,8 @@ def fill_pepper(config_path: str | Path = "config.toml") -> PepperFillResult:
         added_security_section = True
 
     security_section = doc["security"]
+    if not isinstance(security_section, Mapping):
+        raise MaintenanceOperationError("Configuration security must be a table")
     if security_section.get("pepper"):
         return PepperFillResult(
             config_path=path,
@@ -311,10 +313,17 @@ def write_config_atomically(
     timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     backup_path = config_path.with_name(f"{config_path.name}.backup-{timestamp}")
     try:
-        shutil.copy2(config_path, backup_path)
+        try:
+            os.link(config_path, backup_path)
+        except FileExistsError as exc:
+            raise MaintenanceOperationError(
+                f"Configuration backup already exists: {backup_path}"
+            ) from exc
         if read_config_text(backup_path) != current_source:
             raise OSError(f"Configuration backup verification failed: {backup_path}")
         _replace_text_atomically(config_path, rendered)
+    except MaintenanceOperationError:
+        raise
     except OSError as exc:
         raise MaintenanceOperationError(
             f"Unable to update {config_path}: {exc}"
