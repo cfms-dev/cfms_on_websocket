@@ -6,6 +6,15 @@ from include.config.validation import (
 )
 from include.providers.manager import ProviderManager
 from include.providers.storage import LocalStorageProvider
+lazy from include.providers.caching import MemoryCachingProvider, RedisCachingProvider
+lazy from include.providers.events import LocalEventBusProvider, RedisEventBusProvider
+lazy from include.providers.rate_limits import (
+    MemoryRateLimitProvider,
+    RedisRateLimitProvider,
+)
+lazy from include.providers.scheduling import LocalSchedulingProvider
+lazy from include.providers.scheduling.redis import RedisSchedulingProvider
+lazy from include.providers.storage.s3 import S3StorageProvider
 
 
 def initialize_providers(config=global_config) -> None:
@@ -17,8 +26,6 @@ def initialize_providers(config=global_config) -> None:
         case "local":
             storage_provider = LocalStorageProvider()
         case "s3":
-            from include.providers.storage.s3 import S3StorageProvider
-
             s3_policy = S3StoragePolicy.from_config(config)
             storage_provider = S3StorageProvider(
                 bucket_name=s3_policy.bucket,
@@ -42,12 +49,8 @@ def initialize_providers(config=global_config) -> None:
 
     match config["provider"]["caching"]:
         case "memory":
-            from include.providers.caching import MemoryCachingProvider
-
             caching_provider = MemoryCachingProvider()
         case "redis":
-            from include.providers.caching import RedisCachingProvider
-
             redis_cfg = config["redis"]
             caching_provider = RedisCachingProvider(
                 host=redis_cfg["host"],
@@ -64,12 +67,8 @@ def initialize_providers(config=global_config) -> None:
 
     match config["provider"].get("rate_limit", "memory"):
         case "memory":
-            from include.providers.rate_limits import MemoryRateLimitProvider
-
             rate_limit_provider = MemoryRateLimitProvider()
         case "redis":
-            from include.providers.rate_limits import RedisRateLimitProvider
-
             redis_cfg = config["redis"]
             rate_limit_provider = RedisRateLimitProvider(
                 host=redis_cfg["host"],
@@ -87,12 +86,8 @@ def initialize_providers(config=global_config) -> None:
 
     match config["provider"]["event_bus"]:
         case "local":
-            from include.providers.events import LocalEventBusProvider
-
             event_bus_provider = LocalEventBusProvider()
         case "redis":
-            from include.providers.events import RedisEventBusProvider
-
             redis_cfg = config["redis"]
             event_bus_provider = RedisEventBusProvider(
                 host=redis_cfg["host"],
@@ -110,14 +105,10 @@ def initialize_providers(config=global_config) -> None:
 
     match config["provider"].get("scheduling", "local"):
         case "local":
-            from include.providers.scheduling import LocalSchedulingProvider
-
             scheduling_provider = LocalSchedulingProvider(
                 SchedulingPolicy.from_config(config)
             )
         case "redis":
-            from include.providers.scheduling.redis import RedisSchedulingProvider
-
             scheduling_provider = RedisSchedulingProvider.from_config(config)
         case _:
             raise ValueError(

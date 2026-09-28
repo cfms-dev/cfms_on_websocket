@@ -26,6 +26,7 @@ from include.domains.operations.lockdown import (
     lockdown_state_manager,
 )
 from include.extensions.manager import hookimpl
+lazy from include.config.settings import global_config
 lazy from include.transport.connection import ConnectionHandler
 lazy from include.transport.request_handler import Result
 lazy from include.types import PositiveInt
@@ -213,8 +214,6 @@ def ext_post_request(
             source = lockdown_state_manager.get_source()
             if source in (LockdownSource.AUTOMATIC, LockdownSource.UNKNOWN):
                 return
-
-            from include.config.settings import global_config
 
             policy = BruteForceLockdownPolicy.from_config(global_config)
             now = time.time()

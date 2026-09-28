@@ -16,6 +16,9 @@ lazy from sqlalchemy.sql.elements import ColumnElement
 
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
+lazy from include.config.validation import AuditRetentionPolicy
+lazy from include.database.models.operations import AuditEntry
+lazy from include.database.session import Session
 
 _SECONDS_PER_DAY = 24 * 60 * 60
 _AUDIT_COLUMNS = (
@@ -75,8 +78,6 @@ def create_audit_selection(
 ) -> AuditSelection:
     enter_server_root()
 
-    from include.config.validation import AuditRetentionPolicy
-
     if before is not None:
         if before.tzinfo is None or before.utcoffset() is None:
             raise MaintenanceOperationError("--before must include a timezone offset.")
@@ -107,9 +108,6 @@ def create_audit_selection(
 def inspect_audit_entries(selection: AuditSelection) -> AuditInspectionResult:
     enter_server_root()
     load_database_models()
-
-    from include.database.models.operations import AuditEntry
-    from include.database.session import Session
 
     table = AuditEntry.__table__
     conditions = _selection_conditions(table, selection)
@@ -155,10 +153,6 @@ def export_audit_entries(
 ) -> AuditExportResult:
     enter_server_root()
     load_database_models()
-
-    from include.config.validation import AuditRetentionPolicy
-    from include.database.models.operations import AuditEntry
-    from include.database.session import Session
 
     policy = AuditRetentionPolicy.from_config()
     table = AuditEntry.__table__
@@ -237,10 +231,6 @@ def purge_audit_entries(
             f"Expected {expected_count}, archived {export_result.record_count}; "
             f"nothing was deleted and the archive remains at {export_result.output_path}."
         )
-
-    from include.config.validation import AuditRetentionPolicy
-    from include.database.models.operations import AuditEntry
-    from include.database.session import Session
 
     policy = AuditRetentionPolicy.from_config()
     table = AuditEntry.__table__

@@ -6,6 +6,7 @@ lazy from sqlalchemy.orm import Session
 
 from include.config.constants import MAX_PARAM_SIZE, QUERY_CHUNK_SIZE
 from include.domains.documents.queries.file_references import count_file_references
+lazy from include.database.models.documents import DocumentRevision
 
 
 def batch_count_other_revisions(
@@ -27,9 +28,6 @@ def batch_count_other_revisions(
     Returns:
         Dict mapping file_id to reference count excluding specified documents.
     """
-    # FIXME: Use lazy import when Python 3.15 is out
-    from include.database.models.documents import DocumentRevision
-
     # Materialize iterables so they can be safely iterated multiple times.
     file_ids_list = list(file_ids)
     if not file_ids_list:

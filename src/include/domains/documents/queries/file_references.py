@@ -14,6 +14,11 @@ from sqlalchemy.engine import Engine
 lazy from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
+lazy from include.database.models.documents import (
+    Document,
+    DocumentRevision,
+    EntityStatus,
+)
 
 # Cache keyed by engine URL so that different engines (e.g. in tests) each
 # get their own reflected FK list.  Call ``_clear_file_references_cache()``
@@ -151,12 +156,6 @@ def _find_unreachable_file_ids(
     if not candidate_file_ids:
         return set()
 
-    from include.database.models.documents import (
-        Document,
-        DocumentRevision,
-        EntityStatus,
-    )
-
     excluded_document_ids = excluded_document_ids or set()
     excluded_revision_ids = excluded_revision_ids or set()
     reachable: set[str] = set()
@@ -204,8 +203,6 @@ def _find_unreachable_file_ids(
 def find_unreachable_document_file_ids(
     session: Session, document_ids: Sequence[str]
 ) -> set[str]:
-    from include.database.models.documents import DocumentRevision
-
     excluded_document_ids = set(document_ids)
     if not excluded_document_ids:
         return set()
@@ -226,8 +223,6 @@ def find_unreachable_document_file_ids(
 def find_unreachable_revision_file_ids(
     session: Session, revision_ids: Sequence[str]
 ) -> set[str]:
-    from include.database.models.documents import DocumentRevision
-
     excluded_revision_ids = set(revision_ids)
     if not excluded_revision_ids:
         return set()

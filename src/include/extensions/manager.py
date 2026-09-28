@@ -46,6 +46,8 @@ from include.config.constants import CORE_VERSION
 from include.config.version import Version
 lazy from include.extensions.identifiers import ExtensionIdentifier
 lazy from include.scheduling.contracts import ScheduledTaskRegistration
+lazy from include.scheduling.registry import ScheduledTaskRegistry
+lazy from include.scheduling.tasks import CORE_SCHEDULED_TASKS
 lazy from include.transport.connection import ConnectionHandler
 lazy from include.transport.request_handler import RequestHandler, Result
 lazy from include.types import TrimmedNonEmptyString
@@ -644,9 +646,6 @@ def get_loaded_extension_metadata() -> tuple[ExtensionMetadata, ...]:
 
 
 def collect_scheduled_tasks():
-    from include.scheduling.registry import ScheduledTaskRegistry
-    from include.scheduling.tasks import CORE_SCHEDULED_TASKS
-
     registry = ScheduledTaskRegistry(CORE_SCHEDULED_TASKS)
     for registrations in pm.hook.ext_register_scheduled_tasks():
         for registration in registrations:

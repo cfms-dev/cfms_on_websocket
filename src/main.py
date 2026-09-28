@@ -10,10 +10,18 @@ import socket
 import ssl
 import sys
 from contextlib import contextmanager
+lazy import datetime
+lazy import secrets
+lazy import string
 lazy from collections.abc import Generator
 
 from loguru import logger
 from websockets.sync.server import Server, serve
+lazy from cryptography import x509
+lazy from cryptography.hazmat.backends import default_backend
+lazy from cryptography.hazmat.primitives import hashes, serialization
+lazy from cryptography.hazmat.primitives.asymmetric import ec
+lazy from cryptography.x509.oid import NameOID
 
 import include.database.models  # noqa: F401
 from include.config.constants import (
@@ -65,6 +73,8 @@ from include.transport.router import (
     whitelisted_functions,
 )
 from include.transport.tls import create_server_ssl_context
+lazy from include.domains.identity.commands.groups import create_group
+lazy from include.domains.identity.commands.users import create_user
 
 # fix
 os.makedirs(EXECUTABLE_ABSPATH / "content" / "logs", exist_ok=True)
@@ -112,11 +122,6 @@ def server_init():
 
     If it is not, create the necessary tables and a default admin user.
     """
-    import datetime
-    import secrets
-
-    from include.domains.identity.commands.groups import create_group
-
     initialize_database_schema(engine, Base.metadata)
 
     # Ensure the root folder exists before seeding any objects that reference it.
@@ -240,11 +245,6 @@ def server_init():
         session.add(init_document_revision)
         session.commit()
 
-    import secrets
-    import string
-
-    from include.domains.identity.commands.users import create_user
-
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{};:,.<>?/"
     password = "".join(secrets.choice(alphabet) for _ in range(16))
 
@@ -277,14 +277,6 @@ def server_init():
     # therefore, the `os` library is used for read/write operations instead of
     # `StorageProvider`.
     os.makedirs(EXECUTABLE_ABSPATH / "content", exist_ok=True)
-
-    import datetime
-
-    from cryptography import x509
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
 
     cert_path = global_config["server"]["ssl_certfile"]
     key_path = global_config["server"]["ssl_keyfile"]

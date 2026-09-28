@@ -19,6 +19,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
+lazy import pywintypes
+lazy import win32file
 
 from include.database.session import Base
 from include.providers.manager import ProviderManager
@@ -164,9 +166,6 @@ class File(Base):
             return True
 
         if sys.platform == "win32":
-            import pywintypes
-            import win32file
-
             hFile = None
             try:
                 if ProviderManager().storage.exists(self.path):

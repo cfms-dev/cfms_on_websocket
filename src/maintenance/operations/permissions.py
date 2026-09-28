@@ -2,6 +2,12 @@ import time
 from dataclasses import dataclass
 
 from maintenance.runtime import enter_server_root, load_database_models
+lazy from include.config.validation import IdentityPermissionRetentionPolicy
+lazy from include.database.session import Session
+lazy from include.domains.identity.commands.permission_cleanup import (
+    count_expired_permission_entries,
+    purge_expired_permission_entries,
+)
 
 _SECONDS_PER_DAY = 24 * 60 * 60
 
@@ -21,12 +27,6 @@ def inspect_expired_permissions(now: float | None = None) -> PermissionPurgeResu
     enter_server_root()
     load_database_models()
 
-    from include.config.validation import IdentityPermissionRetentionPolicy
-    from include.database.session import Session
-    from include.domains.identity.commands.permission_cleanup import (
-        count_expired_permission_entries,
-    )
-
     policy = IdentityPermissionRetentionPolicy.from_config()
     reference_time = time.time() if now is None else now
     cutoff = reference_time - policy.retention_days * _SECONDS_PER_DAY
@@ -45,13 +45,6 @@ def purge_expired_permissions(
 ) -> PermissionPurgeResult:
     enter_server_root()
     load_database_models()
-
-    from include.config.validation import IdentityPermissionRetentionPolicy
-    from include.database.session import Session
-    from include.domains.identity.commands.permission_cleanup import (
-        count_expired_permission_entries,
-        purge_expired_permission_entries,
-    )
 
     policy = IdentityPermissionRetentionPolicy.from_config()
     if cutoff is None:

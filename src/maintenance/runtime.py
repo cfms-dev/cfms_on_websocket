@@ -1,5 +1,9 @@
+import importlib
 import os
 from pathlib import Path
+
+lazy from include.config import paths
+lazy from include.providers.bootstrap import initialize_providers as _initialize
 
 
 class MaintenanceRuntimeError(RuntimeError):
@@ -40,8 +44,6 @@ def enter_server_root(start: Path | None = None) -> Path:
         raise MaintenanceRuntimeError(
             f"Unable to enter the CFMS server root {server_root}: {exc}"
         ) from exc
-    from include.config import paths
-
     paths.EXECUTABLE_ABSPATH = server_root
     paths.PROJECT_ABSPATH = server_root.parent
     paths.EXTENSION_ROOT = server_root / "include" / "extensions"
@@ -50,10 +52,8 @@ def enter_server_root(start: Path | None = None) -> Path:
 
 def load_database_models() -> None:
     enter_server_root()
-    import include.database.models  # noqa: F401
+    importlib.import_module("include.database.models")
 
 
 def initialize_providers() -> None:
-    from include.providers.bootstrap import initialize_providers as _initialize
-
     _initialize()
