@@ -336,6 +336,44 @@ def test_enable_if_inactive_preserves_existing_reason(lockdown_database) -> None
     assert existing.state == initial.state
 
 
+def test_enable_if_inactive_takes_over_scheduled_lockdown(
+    monkeypatch, lockdown_database
+) -> None:
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
+    broadcasts = []
+    cancellations = []
+    schedule_changes = []
+    monkeypatch.setattr(lockdown, "_publish_lockdown_state", broadcasts.append)
+    monkeypatch.setattr(
+        lockdown,
+        "_cancel_pending_file_tasks",
+        lambda _session: (cancellations.append(True) or [], 0),
+    )
+    monkeypatch.setattr(
+        lockdown, "_notify_schedule_change", lambda: schedule_changes.append(True)
+    )
+
+    transition = apply_lockdown(
+        True,
+        "Replacement",
+        only_if_inactive=True,
+        take_over_scheduled=True,
+    )
+
+    expected_state = LockdownState(enabled=True, reason="Maintenance")
+    assert transition.outcome is LockdownTransitionOutcome.APPLIED
+    assert transition.previous_state == transition.state == expected_state
+    assert transition.previous_source is LockdownSource.SCHEDULED
+    assert transition.source is LockdownSource.AUTOMATIC
+    assert lockdown_state_manager.get_state() == expected_state
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+    assert lockdown_state_manager.get_scheduled_activation() is None
+    assert broadcasts == []
+    assert cancellations == []
+    assert schedule_changes == [True]
+
+
 def test_legacy_lockdown_source_is_inferred_conservatively(lockdown_database) -> None:
     sessions, _database_path = lockdown_database
     with sessions.begin() as session:
