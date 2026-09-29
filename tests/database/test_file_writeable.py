@@ -8,6 +8,12 @@ import pytest
 from include.database.models import files as file_models
 from include.database.models.documents import DocumentRevision
 from include.database.models.files import File
+from include.platform.win32.constants import (
+    FILE_SHARE_READ,
+    INVALID_HANDLE_VALUE,
+    OPEN_ALWAYS,
+    GenericAccess,
+)
 from include.providers.storage import LocalStorageProvider
 
 
@@ -18,6 +24,16 @@ def local_storage(monkeypatch: pytest.MonkeyPatch) -> None:
         "ProviderManager",
         lambda: SimpleNamespace(storage=LocalStorageProvider()),
     )
+
+
+def test_win32_file_access_constants_match_sdk_values() -> None:
+    assert GenericAccess.READ == 0x80000000
+    assert GenericAccess.WRITE == 0x40000000
+    assert GenericAccess.READ | GenericAccess.WRITE == 0xC0000000
+    assert isinstance(GenericAccess.READ | GenericAccess.WRITE, GenericAccess)
+    assert FILE_SHARE_READ == 0x00000001
+    assert OPEN_ALWAYS == 4
+    assert INVALID_HANDLE_VALUE == -1
 
 
 def test_nonlocal_file_is_writeable_without_filesystem_check(
