@@ -192,9 +192,6 @@ def test_s3_storage_provider_uses_sdk_defaults_and_tuned_client_config(monkeypat
 def test_provider_bootstrap_uses_validated_s3_policy_defaults(monkeypatch):
     pytest.importorskip("boto3")
     bootstrap_module = import_module("include.providers.bootstrap")
-    caching_module = import_module("include.providers.caching")
-    events_module = import_module("include.providers.events")
-    s3_module = import_module("include.providers.storage.s3")
     captured = {}
 
     class FakeS3StorageProvider:
@@ -205,9 +202,9 @@ def test_provider_bootstrap_uses_validated_s3_policy_defaults(monkeypatch):
         def register(self, _provider) -> None:
             pass
 
-    monkeypatch.setattr(s3_module, "S3StorageProvider", FakeS3StorageProvider)
-    monkeypatch.setattr(caching_module, "MemoryCachingProvider", object)
-    monkeypatch.setattr(events_module, "LocalEventBusProvider", object)
+    monkeypatch.setattr(bootstrap_module, "S3StorageProvider", FakeS3StorageProvider)
+    monkeypatch.setattr(bootstrap_module, "MemoryCachingProvider", object)
+    monkeypatch.setattr(bootstrap_module, "LocalEventBusProvider", object)
     monkeypatch.setattr(bootstrap_module, "ProviderManager", FakeProviderManager)
 
     bootstrap_module.initialize_providers(

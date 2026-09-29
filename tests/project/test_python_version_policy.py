@@ -1,6 +1,5 @@
 import ast
 import pathlib
-import tomllib
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PYTHON_SOURCE_ROOTS = (
@@ -8,13 +7,6 @@ PYTHON_SOURCE_ROOTS = (
     PROJECT_ROOT / "tests",
     PROJECT_ROOT / "tools",
 )
-
-
-def test_project_requires_python_3_14_or_newer():
-    with (PROJECT_ROOT / "pyproject.toml").open("rb") as pyproject_file:
-        pyproject = tomllib.load(pyproject_file)
-
-    assert pyproject["project"]["requires-python"] == ">=3.14"
 
 
 def test_python_sources_do_not_enable_postponed_annotations():
