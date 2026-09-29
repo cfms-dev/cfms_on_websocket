@@ -34,6 +34,7 @@ class _RequestUnset(Enum):
     TOKEN = object()
 
 
+# TODO: replace with sentinel() when pydantic supports it
 REQUEST_UNSET = _RequestUnset.TOKEN
 type Omittable[T] = T | _RequestUnset
 
