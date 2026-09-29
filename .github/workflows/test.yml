@@ -198,6 +198,12 @@ jobs:
       with:
         version: "latest"
 
+    - name: Test Windows file writeability
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+      run: uv run --locked pytest tests/database/test_file_writeable.py -q
+      timeout-minutes: 3
+
     - name: Build and inspect a flat release deployment
       shell: pwsh
       run: |

@@ -2,6 +2,7 @@ import secrets
 import sys
 import time
 from enum import IntEnum
+lazy import ctypes
 
 from loguru import logger as log
 from sqlalchemy import (
@@ -19,8 +20,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
-lazy import pywintypes
-lazy import win32file
 
 from include.database.session import Base
 from include.providers.manager import ProviderManager
@@ -166,23 +165,36 @@ class File(Base):
             return True
 
         if sys.platform == "win32":
-            hFile = None
-            try:
-                if ProviderManager().storage.exists(self.path):
-                    hFile = win32file.CreateFile(
-                        self.path,
-                        win32file.GENERIC_READ + win32file.GENERIC_WRITE,
-                        win32file.FILE_SHARE_READ,
-                        None,
-                        win32file.OPEN_ALWAYS,
-                        0,
-                        None,
-                    )
-            except pywintypes.error:
-                return False
-            finally:
-                if hFile:
-                    hFile.Close()
+            if ProviderManager().storage.exists(self.path):
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                create_file = kernel32.CreateFileW
+                create_file.argtypes = (
+                    ctypes.c_wchar_p,
+                    ctypes.c_uint32,
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                )
+                create_file.restype = ctypes.c_void_p
+                close_handle = kernel32.CloseHandle
+                close_handle.argtypes = (ctypes.c_void_p,)
+                close_handle.restype = ctypes.c_int
+
+                handle = create_file(
+                    self.path,
+                    0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
+                    0x00000001,  # FILE_SHARE_READ
+                    None,
+                    4,  # OPEN_ALWAYS
+                    0,
+                    None,
+                )
+                if handle == ctypes.c_void_p(-1).value:
+                    return False
+                if not close_handle(handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
 
         return True
 
