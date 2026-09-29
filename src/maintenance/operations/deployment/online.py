@@ -187,7 +187,7 @@ def _parse_published_at(value: Any) -> dt.datetime:
     if not isinstance(value, str):
         raise MaintenanceOperationError("GitHub release metadata is invalid")
     try:
-        published_at = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        published_at = dt.datetime.fromisoformat(value)
     except ValueError as exc:
         raise MaintenanceOperationError("GitHub release metadata is invalid") from exc
     if published_at.tzinfo is None:
