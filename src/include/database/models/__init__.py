@@ -38,6 +38,7 @@ from include.database.models.identity import (
 from include.database.models.keyrings import UserKey
 from include.database.models.operations import (
     AuditEntry,
+    OptionEntry,
     RateLimitBucket,
     RiskIPAccount,
     SystemStateEntry,
@@ -79,6 +80,7 @@ __all__ = [
     "LoginThrottle",
     "Node",
     "ObjectAccessEntry",
+    "OptionEntry",
     "RateLimitBucket",
     "RiskIPAccount",
     "Schedule",

@@ -8,6 +8,7 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from alembic.script.revision import RangeNotAncestorError, ResolutionError
 from alembic.util.exc import CommandError
+from sqlalchemy import inspect, literal, select, table
 from sqlalchemy.exc import SQLAlchemyError
 
 from alembic import command
@@ -92,6 +93,22 @@ def _require_source_revision(connection, source_head: str) -> None:
         )
 
 
+def _require_options_preserved_on_downgrade(
+    connection, scripts: ScriptDirectory, source_head: str, target_head: str
+) -> None:
+    revisions = scripts.iterate_revisions(source_head, target_head)
+    if not any(item.revision == "2a32581dc561" for item in revisions):
+        return
+    if "options" not in inspect(connection).get_table_names():
+        return
+    if connection.execute(
+        select(literal(1)).select_from(table("options")).limit(1)
+    ).first():
+        raise MaintenanceOperationError(
+            "Cannot downgrade across the options migration while persistent configuration exists"
+        )
+
+
 def _preflight_upgrade_database(
     project_root: Path,
     source: _Release,
@@ -130,6 +147,9 @@ def _preflight_downgrade_database(
                     f"Target Alembic head {target_head} is not reachable from {source_head}"
                 )
             _require_source_revision(connection, source_head)
+            _require_options_preserved_on_downgrade(
+                connection, source_scripts, source_head, target_head
+            )
     except (CommandError, OSError, SQLAlchemyError) as exc:
         raise MaintenanceOperationError(
             f"Database downgrade preflight failed: {exc}"
@@ -172,6 +192,9 @@ def _downgrade_database(project_root: Path, source: _Release, target: _Release) 
                     f"Target Alembic head {target_head} is not reachable from {source_head}"
                 )
             _require_source_revision(connection, source_head)
+            _require_options_preserved_on_downgrade(
+                connection, source_scripts, source_head, target_head
+            )
             if source_head != target_head:
                 command.downgrade(source_config, target_head)
             if _current_revision(connection) != target_head:

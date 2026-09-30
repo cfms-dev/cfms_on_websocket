@@ -74,3 +74,20 @@ class SystemStateEntry(Base):
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[float] = mapped_column(Double, nullable=False)
+
+
+class OptionEntry(Base):
+    __tablename__ = "options"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version > 0", name="ck_options_schema_version_positive"
+        ),
+        CheckConstraint("revision > 0", name="ck_options_revision_positive"),
+    )
+
+    owner: Mapped[str] = mapped_column(VARCHAR(255), primary_key=True)
+    option_key: Mapped[str] = mapped_column(VARCHAR(128), primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[float] = mapped_column(Double, nullable=False)
