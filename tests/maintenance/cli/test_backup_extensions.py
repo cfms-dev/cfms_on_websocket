@@ -10,6 +10,7 @@ from .support import (
     _make_src_dir,
     _normalize_cli_output,
     _run_maintain,
+    _run_python,
 )
 
 
@@ -77,6 +78,91 @@ license = "Apache-2.0"
     assert "CLI Extension" in _normalize_cli_output(info.stdout)
     config = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
     assert config["extensions"]["enabled"] == ["cli_extension"]
+
+
+def test_extension_purge_cli_aborts_without_import_and_options_only_recovers(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    shutil.copytree(
+        _SRC_PATH / "include" / "extensions",
+        src_dir / "include" / "extensions",
+    )
+    target = src_dir / "include" / "extensions" / "cli_extension"
+    target.mkdir()
+    target.joinpath("manifest.toml").write_text(
+        """manifest_version = 2
+
+[extension]
+identifier = "cli_extension"
+name = "CLI Extension"
+version = "1.0.0"
+authors = ["Test Author"]
+license = "Apache-2.0"
+""",
+        encoding="utf-8",
+    )
+    target.joinpath("_extension.py").write_text(
+        "raise RuntimeError('broken extension must not run')\n", encoding="utf-8"
+    )
+    _create_empty_database(src_dir)
+    _run_python(
+        src_dir,
+        """
+from maintenance.runtime import load_database_models
+load_database_models()
+
+from include.database.models.operations import OptionEntry, SystemStateEntry
+from include.database.session import Session
+
+with Session.begin() as session:
+    session.add(OptionEntry(owner="cli_extension", option_key="settings", schema_version=1,
+        revision=1, payload={"keep": True}, updated_at=1.0))
+    session.add(SystemStateEntry(owner="cli_extension", state_key="state", schema_version=1,
+        revision=1, payload={"keep": True}, updated_at=1.0))
+""",
+    )
+
+    aborted = _run_maintain(
+        src_dir,
+        ["extension", "purge-data", "cli_extension"],
+        check=False,
+        input_text="n\n",
+    )
+    assert aborted.returncode == 1
+    assert "Aborted" in aborted.stderr
+    assert "broken extension must not run" not in aborted.stdout + aborted.stderr
+    _run_python(
+        src_dir,
+        """
+from maintenance.runtime import load_database_models
+load_database_models()
+
+from include.database.models.operations import OptionEntry
+from include.database.session import Session
+with Session() as session:
+    assert session.get(OptionEntry, ("cli_extension", "settings")) is not None
+""",
+    )
+
+    purged = _run_maintain(
+        src_dir, ["extension", "purge-data", "cli_extension", "--options-only", "--yes"]
+    )
+    assert "Purged 1 option rows and 1 system state rows" in _normalize_cli_output(
+        purged.stdout
+    )
+    assert target.is_dir()
+    _run_python(
+        src_dir,
+        """
+from maintenance.runtime import load_database_models
+load_database_models()
+
+from include.database.models.operations import OptionEntry, SystemStateEntry
+from include.database.session import Session
+with Session() as session:
+    assert session.get(OptionEntry, ("cli_extension", "settings")) is None
+    assert session.get(SystemStateEntry, ("cli_extension", "state")) is None
+""",
+    )
 
 
 def test_backup_export_interactive_rejects_other_arguments(tmp_path):
