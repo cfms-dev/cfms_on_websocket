@@ -1,3 +1,4 @@
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -143,6 +144,7 @@ def test_compare_and_swap_has_one_winner(option_database):
     "owner,key,version,payload",
     [
         ("core", "server", 0, {}),
+        ("core", "server", 2**31, {}),
         ("CORE", "server", 1, {}),
         ("core", "server", 1, {"number": float("nan")}),
     ],
@@ -154,3 +156,16 @@ def test_low_level_api_rejects_invalid_rows(
         create_option(session, owner, key, schema_version=version, payload=payload)
     with option_database() as session:
         assert not list(session.scalars(select(OptionEntry)))
+
+
+def test_invalid_group_errors_do_not_expose_the_original_payload(option_database):
+    with option_database() as session:
+        with pytest.raises(ConfigValidationError) as error:
+            write_options(
+                session,
+                "core",
+                CORE_SERVER_OPTIONS,
+                {"name": ["private-marker"]},
+                expected_revision=0,
+            )
+        assert "private-marker" not in "".join(traceback.format_exception(error.value))

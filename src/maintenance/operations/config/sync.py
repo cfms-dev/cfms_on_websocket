@@ -207,6 +207,15 @@ def _load_documents(
         raise MaintenanceOperationError(
             f"Unable to read configuration documents: {exc}"
         ) from exc
+    for document in (current, template):
+        if any(
+            has_path(document, path)
+            for path in ("server.name", "extensions.brute_force_lockdown")
+        ):
+            raise MaintenanceOperationError(
+                "Database-backed settings must be moved out of config.toml and its template. "
+                "Run 'maintain config migrate-options' before synchronizing the template."
+            )
     return config_path, resolved_template_path, current, template, current_source
 
 

@@ -2,8 +2,7 @@
 debug = false
 
 [server]
-# Name of the server
-name = "CFMS WebSocket Server"
+# Display name is managed with `maintain config options`, under core/server.
 # Host address to bind the server to
 host = "localhost"
 # Port to listen on
@@ -271,14 +270,8 @@ max_pool_connections = 64
 # Add "scheduled_lockdown" to schedule lockdown transitions or windows.
 enabled = []
 
-# Automatically enter lockdown after a service-wide burst of failed local
-# password or TOTP authentication attempts.
-[extensions.brute_force_lockdown]
-window_seconds = 600
-failure_threshold = 50
-distinct_account_threshold = 10
-distinct_ip_threshold = 10
-reason = "Automatic security lockdown: suspected credential-guessing attack detected."
+# Brute-force lockdown policy is managed with `maintain config options`, under
+# brute_force_lockdown/policy; enable the extension above to use the detector.
 
 # Optional HTTPS API framework for extension-owned APIRouter registrations.
 # Install with `uv sync --extra ext-http-api` and add "http_api" to enabled.

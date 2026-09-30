@@ -838,7 +838,7 @@ def test_secret_initialization_uses_config_directory_sentinel(tmp_path, monkeypa
     config = object.__new__(GlobalConfig)
     config._config_path = config_path
 
-    config._init_secrets()
+    config.initialize_secrets()
 
     document = parse(config_path.read_text(encoding="utf-8"))
     assert document["server"]["secret_key"] == "existing-secret"

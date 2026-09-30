@@ -1,7 +1,7 @@
 import time
 from typing import Annotated, Any, cast
 
-from pydantic import ConfigDict, JsonValue, StringConstraints, validate_call
+from pydantic import ConfigDict, Field, JsonValue, StringConstraints, validate_call
 from pydantic.dataclasses import dataclass
 from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -25,13 +25,14 @@ type OptionKey = Annotated[
     StringConstraints(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]*$"),
 ]
 type OptionPayload = dict[str, JsonValue]
+type OptionSchemaVersion = Annotated[int, Field(gt=0, le=2**31 - 1)]
 
 
 @dataclass(frozen=True, slots=True, config=OPTION_VALIDATION_CONFIG)
 class StoredOption:
     owner: OptionOwner
     option_key: OptionKey
-    schema_version: PositiveInt
+    schema_version: OptionSchemaVersion
     revision: PositiveInt
     payload: OptionPayload
     updated_at: float
@@ -64,7 +65,7 @@ def create_option(
     owner: OptionOwner,
     option_key: OptionKey,
     *,
-    schema_version: PositiveInt,
+    schema_version: OptionSchemaVersion,
     payload: OptionPayload,
 ) -> bool:
     values = {
@@ -101,7 +102,7 @@ def update_option(
     option_key: OptionKey,
     *,
     expected_revision: PositiveInt,
-    schema_version: PositiveInt,
+    schema_version: OptionSchemaVersion,
     payload: OptionPayload,
 ) -> bool:
     result = session.execute(

@@ -6,6 +6,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 import maintenance.operations.config as operations
+import maintenance.operations.config.options as option_operations
+from maintenance.cli import options
 from maintenance.cli.common import (
     _confirm_or_abort,
     _print_success,
@@ -18,6 +20,55 @@ app = typer.Typer(
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
+app.add_typer(options.app, name="options")
+
+
+@app.command("migrate-options")
+def migrate_options(
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Preview without writing files or database rows."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes", help="Apply the displayed migration without confirmation."
+        ),
+    ] = False,
+    discard_legacy: Annotated[
+        bool,
+        typer.Option(
+            "--discard-legacy",
+            help="Discard legacy values in favor of database values or code defaults.",
+        ),
+    ] = False,
+) -> None:
+    """Explicitly migrate server name and brute-force policy from config.toml."""
+    if check and yes:
+        raise typer.BadParameter("--check cannot be combined with --yes.")
+    preview = _run(
+        lambda: option_operations.migrate_options(discard_legacy=discard_legacy)
+    )
+    table = Table(title="Database Configuration Migration")
+    for column in ("Legacy path", "Configuration group", "Action"):
+        table.add_column(column)
+    for item in preview.items:
+        table.add_row(item.legacy_path, f"{item.owner}/{item.option_key}", item.action)
+    console.print(table)
+    if not preview.changed:
+        _print_success("No legacy database-backed settings remain in config.toml.")
+        return
+    if check:
+        raise typer.Exit(1)
+    _confirm_or_abort(
+        "Commit these database settings and back up and clean config.toml?", yes
+    )
+    result = _run(
+        lambda: option_operations.migrate_options(
+            write=True, discard_legacy=discard_legacy
+        )
+    )
+    _print_success(f"Configuration options migrated. Backup: {result.backup_path}")
 
 
 @app.command("fill-pepper")

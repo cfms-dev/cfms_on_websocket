@@ -12,6 +12,7 @@ from include.database.options import (
     OptionKey,
     OptionOwner,
     OptionPayload,
+    OptionSchemaVersion,
     create_option,
     read_option,
     update_option,
@@ -32,7 +33,7 @@ class OptionGroupDefinition[T]:
 
     def __post_init__(self):
         TypeAdapter(OptionKey).validate_python(self.option_key, strict=True)
-        TypeAdapter(Annotated[int, Field(gt=0)]).validate_python(
+        TypeAdapter(OptionSchemaVersion).validate_python(
             self.schema_version, strict=True
         )
         object.__setattr__(self, "_adapter", TypeAdapter(self.model))
@@ -54,7 +55,7 @@ class OptionGroupDefinition[T]:
                     if isinstance(exc, ValidationError)
                     else "invalid JSON value"
                 )
-            ) from exc
+            ) from None
 
     def serialize(self, value: T) -> OptionPayload:
         payload = self._adapter.dump_python(value, mode="json")

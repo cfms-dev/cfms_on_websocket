@@ -5,9 +5,10 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from include.config.options import write_options
 from include.config.validation import ConfigValidationError
 from include.database.models.identity import User
-from include.database.models.operations import AuditEntry
+from include.database.models.operations import AuditEntry, OptionEntry
 from include.database.session import Base
 from include.domains.operations.lockdown import LockdownSource
 from include.extensions.brute_force_lockdown import _extension as extension
@@ -23,18 +24,11 @@ def _config(**overrides):
         "reason": extension.DEFAULT_REASON,
     }
     settings.update(overrides)
-    return {
-        "extensions": {
-            "enabled": ["brute_force_lockdown"],
-            "brute_force_lockdown": settings,
-        }
-    }
+    return settings
 
 
-def test_policy_uses_defaults_when_extension_table_is_missing():
-    policy = extension.BruteForceLockdownPolicy.from_config(
-        {"extensions": {"enabled": ["brute_force_lockdown"]}}
-    )
+def test_policy_uses_defaults_when_group_is_missing():
+    policy = extension.POLICY_OPTIONS.validate({})
 
     assert policy == extension.BruteForceLockdownPolicy()
 
@@ -53,15 +47,15 @@ def test_policy_uses_defaults_when_extension_table_is_missing():
 )
 def test_policy_rejects_invalid_values(overrides, field):
     with pytest.raises(ConfigValidationError) as error:
-        extension.BruteForceLockdownPolicy.from_config(_config(**overrides))
+        extension.POLICY_OPTIONS.validate(_config(**overrides))
 
     message = str(error.value)
-    assert "extensions.brute_force_lockdown" in message
+    assert "policy" in message
     assert field in message
 
 
 def test_policy_normalizes_configured_reason():
-    policy = extension.BruteForceLockdownPolicy.from_config(
+    policy = extension.POLICY_OPTIONS.validate(
         _config(reason="  Automatic maintenance  ")
     )
 
@@ -82,7 +76,7 @@ def detector_database(monkeypatch):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(
         engine,
-        tables=[User.__table__, AuditEntry.__table__],
+        tables=[User.__table__, AuditEntry.__table__, OptionEntry.__table__],
     )
     testing_session = sessionmaker(bind=engine)
     monkeypatch.setattr(extension, "Session", testing_session)
@@ -132,7 +126,8 @@ def test_window_stats_include_current_audited_failure_once(detector_database):
         distinct_ip_threshold=3,
     )
 
-    stats = extension._collect_window_stats("alice", policy, now=1000)
+    with detector_database() as session:
+        stats = extension._collect_window_stats(session, "alice", policy, now=1000)
 
     assert stats == extension.FailureWindowStats(
         failure_count=3,
@@ -152,12 +147,16 @@ def test_window_stats_exclude_expired_and_unknown_accounts(detector_database):
 
     policy = extension.BruteForceLockdownPolicy(window_seconds=100)
 
-    stats = extension._collect_window_stats("alice", policy, now=1000)
+    with detector_database() as session:
+        stats = extension._collect_window_stats(session, "alice", policy, now=1000)
+        assert (
+            extension._collect_window_stats(session, "unknown", policy, now=1000)
+            is None
+        )
 
     assert stats.failure_count == 1
     assert stats.distinct_accounts == 1
     assert stats.distinct_ip_addresses == 1
-    assert extension._collect_window_stats("unknown", policy, now=1000) is None
 
 
 @pytest.mark.parametrize(
@@ -201,9 +200,9 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
         lambda: None,
     )
     monkeypatch.setattr(
-        extension.BruteForceLockdownPolicy,
-        "from_config",
-        lambda _config: policy,
+        extension,
+        "read_options",
+        lambda *_args: SimpleNamespace(value=policy),
     )
     monkeypatch.setattr(
         extension,
@@ -235,6 +234,62 @@ def test_detector_triggers_once_at_threshold(monkeypatch):
 
     assert transitions == [((extension.DEFAULT_REASON,), {})]
     assert audits == [(policy, stats, 4, None)]
+
+
+def test_detector_reads_changed_database_policy_on_each_failed_login(
+    detector_database, monkeypatch
+):
+    transitions = []
+    monkeypatch.setattr(extension.lockdown_state_manager, "get_source", lambda: None)
+    monkeypatch.setattr(extension.time, "time", lambda: 1000)
+    monkeypatch.setattr(
+        extension,
+        "apply_automatic_lockdown",
+        lambda reason: (
+            transitions.append(reason)
+            or SimpleNamespace(
+                applied=True, cancelled_file_tasks=0, previous_source=None
+            )
+        ),
+    )
+    monkeypatch.setattr(extension, "_audit_automatic_lockdown", lambda *_args: None)
+    with detector_database.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", 1000)
+        write_options(
+            session,
+            "brute_force_lockdown",
+            extension.POLICY_OPTIONS,
+            _config(
+                failure_threshold=2,
+                distinct_account_threshold=1,
+                distinct_ip_threshold=1,
+            ),
+            expected_revision=0,
+            source="test",
+        )
+    handler = SimpleNamespace(data={}, remote_address="192.0.2.1")
+    callback = Result(code=401, target="alice")
+
+    extension.ext_post_request("login", handler, callback, 0.1)
+    assert transitions == []
+
+    with detector_database.begin() as session:
+        write_options(
+            session,
+            "brute_force_lockdown",
+            extension.POLICY_OPTIONS,
+            _config(
+                failure_threshold=1,
+                distinct_account_threshold=1,
+                distinct_ip_threshold=1,
+                reason="Updated policy reason",
+            ),
+            expected_revision=1,
+            source="test",
+        )
+    extension.ext_post_request("login", handler, callback, 0.1)
+
+    assert transitions == ["Updated policy reason"]
 
 
 @pytest.mark.parametrize(
@@ -280,9 +335,9 @@ def test_detector_takes_over_an_existing_releasable_lockdown(monkeypatch, source
         lambda: source,
     )
     monkeypatch.setattr(
-        extension.BruteForceLockdownPolicy,
-        "from_config",
-        lambda _config: policy,
+        extension,
+        "read_options",
+        lambda *_args: SimpleNamespace(value=policy),
     )
     monkeypatch.setattr(
         extension,
@@ -329,11 +384,13 @@ def test_window_stats_exclude_failures_before_last_unlock(
         lambda: 950.0,
     )
 
-    stats = extension._collect_window_stats(
-        "alice",
-        extension.BruteForceLockdownPolicy(window_seconds=100),
-        now=1000,
-    )
+    with detector_database() as session:
+        stats = extension._collect_window_stats(
+            session,
+            "alice",
+            extension.BruteForceLockdownPolicy(window_seconds=100),
+            now=1000,
+        )
 
     assert stats.failure_count == 1
     assert stats.window_started_at == 950.0

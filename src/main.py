@@ -32,6 +32,7 @@ from include.config.constants import (
     LOGIN_GUARD_EVENT_CHANNEL,
     ROOT_DIRECTORY_ID,
 )
+from include.config.options import CORE_SERVER_OPTIONS, ensure_option_defaults
 from include.config.paths import (
     EXECUTABLE_ABSPATH,
     EXTENSION_ROOT,
@@ -60,6 +61,9 @@ from include.extensions.manager import (
     collect_scheduled_tasks,
     load_extensions_from_directory,
     pm,
+    prepare_extension_data,
+    shutdown_extensions,
+    start_extensions,
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
@@ -408,18 +412,22 @@ def prepare_logger():
 @contextmanager
 def _server_lifecycle(server: Server) -> Generator[None]:
     try:
-        pm.hook.ext_on_startup(server=server)
+        start_extensions(server)
         ProviderManager().scheduling.start(collect_scheduled_tasks())
         yield
     finally:
         try:
             ProviderManager().scheduling.shutdown()
         finally:
-            pm.hook.ext_on_shutdown()
+            shutdown_extensions()
 
 
 def _run_server():
     prepare_logger()
+
+    global_config.require_migrated_options()
+    initialize_database_schema(engine, Base.metadata)
+    global_config.initialize_secrets()
 
     if not os.path.exists(EXECUTABLE_ABSPATH / "init"):
         logger.info("Database not initialized, initializing now...")
@@ -478,6 +486,10 @@ def _run_server():
         get_enabled_extensions(global_config),
         config=global_config,
     )
+
+    with Session.begin() as session:
+        ensure_option_defaults(session, "core", CORE_SERVER_OPTIONS)
+    prepare_extension_data()
 
     # Initialize available request handlers
     prepare_handlers()

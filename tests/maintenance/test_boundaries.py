@@ -10,7 +10,7 @@ from maintenance.cli import app
 
 COMMANDS = {
     "user": ("reset-password", "clear-totp"),
-    "config": ("fill-pepper", "sync-template"),
+    "config": ("migrate-options", "fill-pepper", "sync-template"),
     "backup": ("export", "info", "import"),
     "audit": ("export", "purge"),
     "permission": ("purge-expired",),

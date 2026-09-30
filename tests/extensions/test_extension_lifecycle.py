@@ -46,6 +46,10 @@ def test_lifecycle_hooks_are_part_of_the_extension_contract():
 
     assert "ext_on_startup" in hook_names
     assert "ext_on_shutdown" in hook_names
+    assert "ext_register_options" in hook_names
+    assert "ext_prepare_data" in hook_names
+    assert "ext_purge_data" in hook_names
+    assert "ext_on_deactivate" not in hook_names
     assert "ext_before_file_upload_finalize" in hook_names
     assert "ext_on_file_upload_completed" in hook_names
     assert "ext_on_server_start" not in hook_names
@@ -142,6 +146,12 @@ def test_core_scheduling_wraps_extension_lifecycle(monkeypatch, protected_test_c
     monkeypatch.setattr(server_main, "pm", SimpleNamespace(hook=hook))
     monkeypatch.setattr(
         server_main,
+        "start_extensions",
+        lambda server: hook.ext_on_startup(server=server),
+    )
+    monkeypatch.setattr(server_main, "shutdown_extensions", hook.ext_on_shutdown)
+    monkeypatch.setattr(
+        server_main,
         "ProviderManager",
         lambda: SimpleNamespace(scheduling=provider),
     )
@@ -183,14 +193,22 @@ def test_core_lifecycle_cleans_up_when_scheduling_start_fails(
     monkeypatch.setattr(server_main, "pm", SimpleNamespace(hook=hook))
     monkeypatch.setattr(
         server_main,
+        "start_extensions",
+        lambda server: hook.ext_on_startup(server=server),
+    )
+    monkeypatch.setattr(server_main, "shutdown_extensions", hook.ext_on_shutdown)
+    monkeypatch.setattr(
+        server_main,
         "ProviderManager",
         lambda: SimpleNamespace(scheduling=provider),
     )
     monkeypatch.setattr(server_main, "collect_scheduled_tasks", object)
 
-    with pytest.raises(RuntimeError, match="scheduling failed"):
-        with server_main._server_lifecycle(_FakeServer()):
-            pytest.fail("the serving phase must not start")
+    with (
+        pytest.raises(RuntimeError, match="scheduling failed"),
+        server_main._server_lifecycle(_FakeServer()),
+    ):
+        pytest.fail("the serving phase must not start")
 
     assert events == [
         "extensions_start",
@@ -251,7 +269,7 @@ def test_extension_handler_overrides_and_unregistration_keep_existing_order(
             }
         ],
         ext_unregister_handlers=lambda: [{"get_schedule", "extension_action"}],
-        ext_register_whitelisted_actions=lambda: [],
+        ext_register_whitelisted_actions=list,
     )
     monkeypatch.setattr(
         server_main,

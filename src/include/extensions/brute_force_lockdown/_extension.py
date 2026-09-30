@@ -1,20 +1,19 @@
 import threading
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Self
+from typing import Annotated, Self
 
 from loguru import logger as log
 from pydantic import (
     AfterValidator,
     ConfigDict,
-    ValidationError,
     model_validator,
 )
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 from sqlalchemy import distinct, func
+lazy from sqlalchemy.orm import Session as OrmSession
 
-from include.config.validation import ConfigValidationError
+from include.config.options import OptionGroupDefinition, read_options
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
@@ -26,7 +25,6 @@ from include.domains.operations.lockdown import (
     lockdown_state_manager,
 )
 from include.extensions.manager import hookimpl
-lazy from include.config.settings import global_config
 lazy from include.transport.connection import ConnectionHandler
 lazy from include.transport.request_handler import Result
 lazy from include.types import PositiveInt
@@ -80,32 +78,6 @@ class BruteForceLockdownPolicy:
             raise ValueError("distinct_ip_threshold must not exceed failure_threshold")
         return self
 
-    @classmethod
-    def from_config(cls, config: Any) -> BruteForceLockdownPolicy:
-        try:
-            extensions = config["extensions"]
-        except KeyError as exc:
-            raise ConfigValidationError(
-                "Missing configuration section 'extensions'"
-            ) from exc
-        if not isinstance(extensions, Mapping):
-            raise ConfigValidationError(
-                "Configuration section 'extensions' must be a table"
-            )
-
-        section = extensions.get("brute_force_lockdown", {})
-        if not isinstance(section, Mapping):
-            raise ConfigValidationError(
-                "extensions.brute_force_lockdown must be a table"
-            )
-
-        try:
-            return cls(**section)
-        except ValidationError as exc:
-            raise ConfigValidationError(
-                f"Invalid extensions.brute_force_lockdown configuration: {exc}"
-            ) from exc
-
 
 @dataclass(frozen=True, slots=True)
 class FailureWindowStats:
@@ -122,7 +94,11 @@ class FailureWindowStats:
         )
 
 
+POLICY_OPTIONS = OptionGroupDefinition("policy", 1, BruteForceLockdownPolicy)
+
+
 def _collect_window_stats(
+    session: OrmSession,
     username: str,
     policy: BruteForceLockdownPolicy,
     now: float,
@@ -132,28 +108,24 @@ def _collect_window_stats(
         _STARTED_AT,
         lockdown_state_manager.get_last_disabled_at(),
     )
-    with Session() as session:
-        if (
-            session.query(User.username).filter(User.username == username).first()
-            is None
-        ):
-            return None
+    if session.query(User.username).filter(User.username == username).first() is None:
+        return None
 
-        row = (
-            session.query(
-                func.count(AuditEntry.id),
-                func.count(distinct(AuditEntry.target)),
-                func.count(distinct(AuditEntry.remote_address)),
-            )
-            .select_from(AuditEntry)
-            .join(User, User.username == AuditEntry.target)
-            .filter(
-                AuditEntry.action == "login",
-                AuditEntry.result == 401,
-                AuditEntry.logged_time >= window_started_at,
-            )
-            .one()
+    row = (
+        session.query(
+            func.count(AuditEntry.id),
+            func.count(distinct(AuditEntry.target)),
+            func.count(distinct(AuditEntry.remote_address)),
         )
+        .select_from(AuditEntry)
+        .join(User, User.username == AuditEntry.target)
+        .filter(
+            AuditEntry.action == "login",
+            AuditEntry.result == 401,
+            AuditEntry.logged_time >= window_started_at,
+        )
+        .one()
+    )
 
     return FailureWindowStats(
         failure_count=int(row[0] or 0),
@@ -192,8 +164,10 @@ def _audit_automatic_lockdown(
 
 
 @hookimpl
-def ext_validate_config(config: Mapping[str, Any]) -> None:
-    BruteForceLockdownPolicy.from_config(config)
+def ext_register_options() -> tuple[
+    OptionGroupDefinition[BruteForceLockdownPolicy], ...
+]:
+    return (POLICY_OPTIONS,)
 
 
 @hookimpl
@@ -215,13 +189,17 @@ def ext_post_request(
             if source in (LockdownSource.AUTOMATIC, LockdownSource.UNKNOWN):
                 return
 
-            policy = BruteForceLockdownPolicy.from_config(global_config)
-            now = time.time()
-            stats = _collect_window_stats(
-                callback.target,
-                policy,
-                now,
-            )
+            with Session() as session:
+                policy = read_options(
+                    session, "brute_force_lockdown", POLICY_OPTIONS
+                ).value
+                now = time.time()
+                stats = _collect_window_stats(
+                    session,
+                    callback.target,
+                    policy,
+                    now,
+                )
             if stats is None or not stats.reaches(policy):
                 return
 

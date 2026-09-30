@@ -43,8 +43,8 @@ def test_sync_adds_template_settings_preserves_values_and_is_idempotent(
 ):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     del current["server"]["trusted_proxy_networks"]
-    current["server"]["name"] = tomlkit.string("Operator Server")
-    current["server"]["name"].comment("operator choice")
+    current["server"]["host"] = tomlkit.string("operator.example")
+    current["server"]["host"].comment("operator choice")
     current["server"]["local_setting"] = "keep-me"
     current["server"]["secret_key"] = "sensitive-value"
     src_dir = _prepare_src(tmp_path, current)
@@ -66,14 +66,14 @@ def test_sync_adds_template_settings_preserves_values_and_is_idempotent(
 
     assert result.backup_path is not None
     assert result.backup_path.read_text(encoding="utf-8") == original_source
-    assert synchronized["server"]["name"] == "Operator Server"
+    assert synchronized["server"]["host"] == "operator.example"
     assert synchronized["server"]["local_setting"] == "keep-me"
     assert synchronized["server"]["secret_key"] == "sensitive-value"
     assert synchronized["server"]["trusted_proxy_networks"] == [
         "127.0.0.1/32",
         "::1/128",
     ]
-    assert 'name = "Operator Server" # operator choice' in synchronized_source
+    assert 'host = "operator.example" # operator choice' in synchronized_source
     assert sync_config_template(write=False).changed is False
 
 
@@ -327,4 +327,26 @@ def test_sync_rejects_invalid_current_document_without_writing(monkeypatch, tmp_
         sync_config_template()
 
     assert config_path.read_text(encoding="utf-8") == "[server"
+    assert list(src_dir.glob("config.toml.backup-*")) == []
+
+
+@pytest.mark.parametrize(
+    "legacy_path", ["server.name", "extensions.brute_force_lockdown"]
+)
+def test_template_sync_requires_explicit_options_migration(
+    monkeypatch, tmp_path, legacy_path
+):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    if legacy_path == "server.name":
+        current["server"]["name"] = "Legacy Server"
+    else:
+        current["extensions"]["brute_force_lockdown"] = {"failure_threshold": 12}
+    src_dir = _prepare_src(tmp_path, current)
+    original = (src_dir / "config.toml").read_bytes()
+    monkeypatch.chdir(src_dir)
+
+    with pytest.raises(MaintenanceOperationError, match="migrate-options"):
+        sync_config_template(prune=True)
+
+    assert (src_dir / "config.toml").read_bytes() == original
     assert list(src_dir.glob("config.toml.backup-*")) == []

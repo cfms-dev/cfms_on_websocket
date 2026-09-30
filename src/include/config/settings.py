@@ -111,7 +111,6 @@ class GlobalConfig(Mapping[str, Any]):
         self._lock = threading.Lock()
         self._observer: BaseObserver | None = None
 
-        self._init_secrets()
         self._load()
         self._start_watching()
 
@@ -119,7 +118,7 @@ class GlobalConfig(Mapping[str, Any]):
 
     # -- first-run initialization ------------------------------------------
 
-    def _init_secrets(self):
+    def initialize_secrets(self) -> None:
         """Generate ``secret_key`` and ``pepper`` on first run.
 
         Uses ``tomlkit`` to preserve comments and formatting when writing
@@ -137,11 +136,26 @@ class GlobalConfig(Mapping[str, Any]):
         with open(self._config_path, encoding="utf-8") as f:
             toml_doc = parse(f.read())
 
-        toml_doc["server"]["secret_key"] = secrets.token_hex(32)
-        toml_doc["security"]["pepper"] = secrets.token_hex(32)
+        changed = False
+        for section, key in (("server", "secret_key"), ("security", "pepper")):
+            if not toml_doc[section][key]:
+                toml_doc[section][key] = secrets.token_hex(32)
+                changed = True
+        if not changed:
+            return
 
         with open(self._config_path, "w", encoding="utf-8") as f:
             f.write(dumps(toml_doc))
+
+        self._load()
+
+    def require_migrated_options(self) -> None:
+        if self._legacy_option_paths:
+            raise ConfigValidationError(
+                "Database-backed settings remain in config.toml: "
+                + ", ".join(self._legacy_option_paths)
+                + ". Run 'maintain config migrate-options' before starting the server."
+            )
 
     # -- loading ----------------------------------------------------------
 
@@ -149,8 +163,25 @@ class GlobalConfig(Mapping[str, Any]):
         with open(self._config_path, encoding="utf-8") as f:
             new_data = parse_config_document(f.read())
 
+        legacy_paths = []
+        server_config = new_data.get("server", {})
+        extensions_config = new_data.get("extensions", {})
+        if "name" in server_config:
+            legacy_paths.append("server.name")
+            del new_data["server"]["name"]
+        if "brute_force_lockdown" in extensions_config:
+            legacy_paths.append("extensions.brute_force_lockdown")
+            del new_data["extensions"]["brute_force_lockdown"]
+        if self._initialized and legacy_paths:
+            raise ConfigValidationError(
+                "Database-backed settings cannot be reintroduced into config.toml: "
+                + ", ".join(legacy_paths)
+                + ". Use 'maintain config migrate-options'."
+            )
+
         with self._lock:
             self._data = new_data
+            self._legacy_option_paths = tuple(legacy_paths)
 
         if self._initialized:
             logger.info(f"Configuration reloaded from {self._config_path}")
