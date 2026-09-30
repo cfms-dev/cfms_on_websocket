@@ -7,13 +7,16 @@ from typing import Any
 lazy from collections.abc import Callable
 
 import tomlkit
+from alembic.migration import MigrationContext
 from sqlalchemy import bindparam, func, insert, select
 from sqlalchemy.exc import IntegrityError
 lazy from rich.progress import Progress
 lazy from sqlalchemy.engine import Engine
 lazy from sqlalchemy.orm import sessionmaker
 
+from include.config.options import CORE_SERVER_OPTIONS, ensure_option_defaults
 from include.config.paths import EXECUTABLE_ABSPATH
+from include.database.options import read_option
 from include.database.session import Base, Session, engine
 from include.domains.documents.commands.name_conflicts import is_node_name_conflict
 from include.domains.operations.comments import CommentStore
@@ -61,6 +64,7 @@ from maintenance.backup.selection import (
     _backup_tables,
 )
 from maintenance.operations.config.sync import MAX_CONFIG_BYTES, read_config_text
+from maintenance.operations.database.schema import _alembic_config
 from maintenance.operations.database.tables import (
     DEFERRED_COLUMNS,
     DEFERRED_UPDATE_ORDER,
@@ -151,6 +155,8 @@ def import_backup(
         )
         manifest = _load_manifest(extract_dir / "manifest.json")
         _validate_manifest(manifest)
+        if manifest["format_version"] != header.format_version:
+            raise BackupFormatError("Backup header and payload format versions differ")
         _validate_payload_tree(extract_dir, manifest)
 
         config_file = Path(config_path)
@@ -374,6 +380,19 @@ def _restore_database(
         and "compiled_access_rule_sets" not in manifest["tables"]
     )
 
+    with session_factory.begin() as schema_session:
+        schema_connection = schema_session.connection()
+        _, scripts = _alembic_config(schema_connection)
+        heads = tuple(scripts.get_heads())
+        if len(heads) != 1:
+            raise BackupRestoreError(
+                "The release must contain exactly one Alembic head"
+            )
+        context = MigrationContext.configure(schema_connection)
+        if not context.get_current_heads():
+            # MySQL DDL must finish before the transaction restoring data begins.
+            context.stamp(scripts, "base")
+
     with session_factory.begin() as session:
         connection = session.connection()
         restored_node_tables = _restore_node_tables(
@@ -509,6 +528,9 @@ def _restore_database(
             detail_task=True,
             details_only=False,
         )
+        if read_option(session, "core", CORE_SERVER_OPTIONS.option_key) is None:
+            ensure_option_defaults(session, "core", CORE_SERVER_OPTIONS)
+        MigrationContext.configure(connection).stamp(scripts, heads[0])
         if finalize is not None:
             finalize()
 

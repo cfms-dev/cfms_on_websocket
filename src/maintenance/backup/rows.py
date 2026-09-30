@@ -5,8 +5,10 @@ lazy from collections.abc import Iterator
 lazy from pathlib import Path
 
 import orjson
+from pydantic import ValidationError
 from sqlalchemy import DateTime, Table
 
+from include.database.options import StoredOption
 from maintenance.backup.archive import _safe_payload_path
 from maintenance.backup.constants import MAX_JSONL_ROW_BYTES
 from maintenance.backup.models import BackupFormatError
@@ -113,6 +115,11 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
             f"Backup row for {table.name!r} is missing primary key values: "
             f"{missing_primary_keys}"
         )
+    if table.name == "options":
+        try:
+            StoredOption(**row)
+        except ValidationError as exc:
+            raise BackupFormatError("Backup contains an invalid option row") from exc
     if table.name == "banned_subnets":
         created_at = row.get("created_at")
         if isinstance(created_at, str):

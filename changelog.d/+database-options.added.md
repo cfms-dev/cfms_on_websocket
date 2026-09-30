@@ -1,0 +1,1 @@
+Add revision-controlled database options for the server name and brute-force policy, explicit configuration migration, extension data preparation and offline purge hooks, and version 2 logical backups that preserve extension options.

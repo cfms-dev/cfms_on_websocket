@@ -112,6 +112,7 @@ def test_transfer_clones_every_application_table(backup_context, tmp_path) -> No
     rows_by_table = {result.name: result.rows for result in results}
     assert rows_by_table["file_tasks"] == 1
     assert rows_by_table["system_states"] == 1
+    assert rows_by_table["options"] == 1
     assert rows_by_table["file_deduplication_tasks"] == 1
     with source_engine.connect() as source, target_engine.connect() as target:
         for table_name in APPLICATION_TABLE_NAMES:
@@ -264,7 +265,8 @@ def test_target_config_is_validated_and_can_be_activated(tmp_path) -> None:
     activated = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     assert activated["database"]["type"] == "sqlite"
     assert activated["database"]["file"] == "migrated.db"
-    assert activated["server"]["name"] == "CFMS WebSocket Server"
+    assert activated["server"]["host"] == "localhost"
+    assert "name" not in activated["server"]
     assert backup_path.read_text(encoding="utf-8") == current_source
 
 
@@ -273,14 +275,16 @@ def test_target_config_is_validated_and_can_be_activated(tmp_path) -> None:
     [
         ('[database]\ntype = "sqlite"\nfile = ":memory:"\n', "in-memory"),
         (
-            "[database]\n"
-            'type = "mysql"\n'
-            'host = "localhost"\n'
-            "port = 3306\n"
-            'username = "cfms"\n'
-            'password = "secret"\n'
-            'name = "app_db"\n'
-            'charset = "latin1"\n',
+            (
+                "[database]\n"
+                'type = "mysql"\n'
+                'host = "localhost"\n'
+                "port = 3306\n"
+                'username = "cfms"\n'
+                'password = "secret"\n'
+                'name = "app_db"\n'
+                'charset = "latin1"\n'
+            ),
             "utf8mb4",
         ),
     ],

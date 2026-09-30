@@ -30,7 +30,7 @@ from include.database.models.identity import (
     UserPermission,
 )
 from include.database.models.keyrings import UserKey
-from include.database.models.operations import AuditEntry
+from include.database.models.operations import AuditEntry, OptionEntry
 from include.database.models.security import BannedSubnet
 from include.database.session import Base
 from maintenance.backup.models import BackupFormatError
@@ -39,6 +39,7 @@ _MODEL_IMPORTS = (
     UserBlockEntry,
     UserBlockSubEntry,
     AuditEntry,
+    OptionEntry,
     ObjectAccessEntry,
     CompiledAccessRule,
     CompiledAccessRuleGroup,
@@ -86,6 +87,7 @@ BACKUP_TABLE_NAMES = (
     "userblock_entries",
     "userblock_sub_entries",
     "banned_subnets",
+    "options",
     "schedules",
 )
 
@@ -130,6 +132,7 @@ INSERT_ORDER = (
     "userblock_entries",
     "userblock_sub_entries",
     "banned_subnets",
+    "options",
     "schedules",
 )
 
@@ -171,7 +174,7 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
     ),
     BackupComponent.AUDIT_LOG: ("audit_entries",),
     BackupComponent.BANNED_SUBNETS: ("comments", "banned_subnets"),
-    BackupComponent.CONFIGURATION: (),
+    BackupComponent.CONFIGURATION: ("options",),
 }
 
 

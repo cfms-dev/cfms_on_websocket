@@ -17,9 +17,9 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from include.config.version import Version as CoreVersion
+from maintenance.backup import constants
 from maintenance.backup.archive import _add_staged_file
 from maintenance.backup.constants import (
-    BACKUP_FORMAT_VERSION,
     BACKUP_MAGIC,
     GCM_NONCE_BYTES,
     GCM_TAG_BYTES,
@@ -32,6 +32,7 @@ from maintenance.backup.constants import (
     MAX_BACKUP_COMPRESSED_BYTES,
     MAX_BACKUP_UNCOMPRESSED_BYTES,
     MAX_HEADER_BYTES,
+    SUPPORTED_BACKUP_FORMAT_VERSIONS,
 )
 from maintenance.backup.models import (
     BackupError,
@@ -43,6 +44,7 @@ from maintenance.backup.selection import BACKUP_TABLE_NAMES
 lazy from maintenance.backup.progress import _BackupProgressReporter
 
 LOGGER = logging.getLogger(__name__)
+BACKUP_FORMAT_VERSION = constants.BACKUP_FORMAT_VERSION
 
 
 def read_backup_header(
@@ -310,7 +312,11 @@ def _read_header_bytes(
 
 
 def _validate_header(header: BackupHeader) -> None:
-    if header.format_version != BACKUP_FORMAT_VERSION:
+    if (
+        isinstance(header.format_version, bool)
+        or not isinstance(header.format_version, int)
+        or header.format_version not in SUPPORTED_BACKUP_FORMAT_VERSIONS
+    ):
         raise BackupFormatError(
             f"Unsupported backup format version: {header.format_version}"
         )

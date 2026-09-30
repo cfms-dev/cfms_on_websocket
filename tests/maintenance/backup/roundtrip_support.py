@@ -18,6 +18,17 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
 
     with db_engine.begin() as connection:
         connection.execute(
+            insert(tables["options"]),
+            {
+                "owner": "core",
+                "option_key": "server",
+                "schema_version": 1,
+                "revision": 3,
+                "payload": {"name": "Source document library"},
+                "updated_at": now,
+            },
+        )
+        connection.execute(
             insert(tables["comments"]),
             [
                 {

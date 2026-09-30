@@ -29,6 +29,7 @@ APPLICATION_TABLE_NAMES = (
     "rate_limit_buckets",
     "risk_ip_accounts",
     "system_states",
+    "options",
     "traffic_throttles",
     "file_deduplication_tasks",
     "schedules",

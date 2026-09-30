@@ -122,6 +122,9 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
     assert {row["id"] for row in restored["files"]} == {"file-avatar", "file-doc"}
     assert restored["audit_entries"] == []
     assert restored["banned_subnets"] == []
+    assert len(restored["options"]) == 1
+    assert restored["options"][0]["owner"] == "core"
+    assert restored["options"][0]["payload"] == {"name": "CFMS WebSocket Server"}
     assert (target_storage / "content" / "files" / "doc.bin").read_bytes() == (
         source_storage / "content" / "files" / "doc.bin"
     ).read_bytes()
@@ -1066,7 +1069,7 @@ def test_import_rejects_payload_members_absent_from_manifest(
     manifest = {
         "format_version": backup_context.backup_core.BACKUP_FORMAT_VERSION,
         "components": ["configuration"],
-        "tables": {},
+        "tables": {"options": {"rows": 0}},
         "files": [],
         "configuration": {
             "security": {"pepper": "restored-pepper"},
@@ -1076,10 +1079,14 @@ def test_import_rejects_payload_members_absent_from_manifest(
     payload_root = tmp_path / "archive-source"
     payload_root.mkdir()
     (payload_root / "manifest.json").write_bytes(orjson.dumps(manifest))
+    _write_jsonl(payload_root / "tables" / "options.jsonl", [])
     (payload_root / "unexpected.bin").write_bytes(b"not declared")
     compressed_payload = tmp_path / "payload.tar.xz"
     with tarfile.open(compressed_payload, "w:xz") as archive:
         archive.add(payload_root / "manifest.json", arcname="manifest.json")
+        archive.add(
+            payload_root / "tables" / "options.jsonl", arcname="tables/options.jsonl"
+        )
         archive.add(payload_root / "unexpected.bin", arcname="unexpected.bin")
 
     header_bytes = _encode_header(

@@ -11,10 +11,10 @@ lazy from collections.abc import Sequence
 import orjson
 
 from maintenance.backup.constants import (
-    BACKUP_FORMAT_VERSION,
     MAX_BACKUP_FILES,
     MAX_BACKUP_UNCOMPRESSED_BYTES,
     MAX_MANIFEST_BYTES,
+    SUPPORTED_BACKUP_FORMAT_VERSIONS,
 )
 from maintenance.backup.models import (
     BackupFormatError,
@@ -80,7 +80,7 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     if (
         isinstance(format_version, bool)
         or not isinstance(format_version, int)
-        or format_version != BACKUP_FORMAT_VERSION
+        or format_version not in SUPPORTED_BACKUP_FORMAT_VERSIONS
     ):
         raise BackupFormatError(f"Unsupported payload format version: {format_version}")
     table_names: set[str] = set(tables)
@@ -94,6 +94,8 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     # Schedules were added without changing the backup format version, so full
     # backups created before that table existed remain compatible.
     compatible_table_names = table_names | {"schedules"}
+    if format_version == 1:
+        compatible_table_names.add("options")
     unknown_tables = table_names - expected - legacy_access_rule_tables
     if unknown_tables:
         raise BackupFormatError(
@@ -157,6 +159,8 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             BackupComponent.AUDIT_LOG: {"audit_entries"},
             BackupComponent.BANNED_SUBNETS: {"banned_subnets"},
         }
+        if format_version == 2:
+            component_anchors[BackupComponent.CONFIGURATION] = {"options"}
         missing_components = [
             component.value
             for component in selection.components

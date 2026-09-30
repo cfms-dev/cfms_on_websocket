@@ -367,9 +367,9 @@ def test_pre_scheduling_full_backup_manifest_is_accepted(
         )
         | set(core.LEGACY_ACCESS_RULE_TABLE_NAMES),
     }
-    historical_tables = layouts[layout] - {"schedules"}
+    historical_tables = layouts[layout] - {"schedules", "options"}
     manifest = {
-        "format_version": core.BACKUP_FORMAT_VERSION,
+        "format_version": 1,
         "tables": {table_name: {"rows": 0} for table_name in historical_tables},
         "files": [],
         "configuration": {},
