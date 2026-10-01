@@ -426,7 +426,7 @@ def _run_server():
         server_init()
 
     logger.info("Initializating CFMS WebSocket server...")
-    logger.info(f"CFMS Core Version: {CORE_VERSION}")
+    logger.info(f"Core Version: {CORE_VERSION}")
 
     # TODO: Add support for TLS ECH when upstream libraries support it.
     security_cfg = global_config.get("security", {})
@@ -448,15 +448,13 @@ def _run_server():
     for warning in get_config_warnings(global_config):
         logger.warning(warning)
 
+    # NOTE: Version contract: (major, minor, fix, patch, status)
     if ssl.OPENSSL_VERSION_INFO < (3, 5):
-        logger.warning(
-            "The version of OpenSSL bundled with Python is too low "
-            f"({ssl.OPENSSL_VERSION}) and therefore **does not support"
-            " post-quantum encryption**. Communication without post-quantum "
-            'encryption may be vulnerable to "harvest now, decrypt later" '
-            "attacks. Consider using a Python distribution that bundles "
-            "OpenSSL 3.5 or later to resolve this issue."
+        openssl_version = ssl.OPENSSL_VERSION.split()[1]
+        logger.critical(
+            f"The used OpenSSL library is too old ({openssl_version} < 3.5)"
         )
+        sys.exit(1)
 
     # Ensure the root folder record exists (handles upgrades from older versions)
     ensure_root_folder()
