@@ -221,6 +221,7 @@ def test_connection_handler_closes_websocket_before_post_disconnect(
 
     class FakeWebSocket:
         remote_address = ("192.0.2.10", 12345)
+        socket = object()
         disconnected = False
 
         def close(self, *, code=1000, reason=""):
@@ -236,7 +237,6 @@ def test_connection_handler_closes_websocket_before_post_disconnect(
 
         def accept_stream(self):
             self.close(code=1013, reason="inbound overload")
-            return None
 
         def close(self, code=1000, reason=""):
             if self.close_started:
@@ -921,7 +921,7 @@ def test_password_change_wrong_credentials_do_not_disclose_user_existence(
     existing = _PasswordUser("correct-password")
     for target in (existing, None):
         session = _PasswordSession({"alice": target} if target else {})
-        monkeypatch.setattr(users, "Session", lambda: session)
+        monkeypatch.setattr(users, "Session", lambda session=session: session)
         handler, responses = _password_request(
             {
                 "username": "alice",
