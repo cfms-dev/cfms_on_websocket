@@ -29,7 +29,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     
     strategy:
       matrix:
@@ -87,7 +87,7 @@ jobs:
         retention-days: 7
 
   mysql-database-migration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -137,7 +137,7 @@ jobs:
       timeout-minutes: 10
 
   postgresql-scheduling-concurrency:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     services:
       postgresql:
         image: postgres:18
@@ -181,7 +181,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-26.04, windows-latest]
 
     steps:
     - uses: actions/checkout@v7

@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   resolve-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       actions: read
       contents: read
@@ -103,7 +103,7 @@ jobs:
       always() &&
       needs.resolve-tests.result == 'success' &&
       (needs.test.result == 'success' || needs.test.result == 'skipped')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
 
