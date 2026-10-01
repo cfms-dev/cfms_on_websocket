@@ -1,3 +1,4 @@
+import ssl
 import threading
 import time
 
@@ -313,8 +314,16 @@ def handle_connection(websocket: ServerConnection):
     else:
         logger.info(f"Incoming connection: {websocket.remote_address[0]}")
 
+    # FIXME: For debugging purposes; remove this when unused.
+    sock = websocket.socket
+    if isinstance(sock, ssl.SSLSocket):
+        logger.debug(
+            f"Is a TLS connection: version={sock.version()} cipher={sock.cipher()} "
+            f"group={sock.group()} server_sigalg={sock.server_sigalg()}",
+        )
+
     multiplexer: MultiplexedConnection | None = None
-    extension_connected = False
+    ext_on_connect_triggered = False
     try:
         policy = AdmissionControlPolicy.from_config()
         multiplexer = MultiplexedConnection(
@@ -326,7 +335,7 @@ def handle_connection(websocket: ServerConnection):
             clients.add(multiplexer)
 
         pm.hook.ext_on_connect(websocket=websocket)
-        extension_connected = True
+        ext_on_connect_triggered = True
 
         while True:
             stream = multiplexer.accept_stream()
@@ -370,7 +379,7 @@ def handle_connection(websocket: ServerConnection):
             with clients_lock:
                 clients.discard(multiplexer)
 
-        if extension_connected:
+        if ext_on_connect_triggered:
             pm.hook.ext_post_disconnect()
         admission_controller.release_connection(ip)
 
