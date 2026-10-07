@@ -25,7 +25,11 @@ from tests.support.utils import assert_success
 class TestFileTransfer:
     @pytest.mark.asyncio
     async def test_upload_and_download_file(
-        self, authenticated_client: CFMSTestClient, document_factory, tmp_path
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+        tmp_path,
+        protected_test_config,
     ):
         doc = await document_factory(
             "File Transfer Test Doc", upload_file=None
@@ -50,9 +54,12 @@ class TestFileTransfer:
         current_rev = next((r for r in revisions if r["is_current"]), None)
         assert current_rev is not None
         original_size = os.path.getsize(test_file_path)
-        assert _get_revision_file_size(current_rev["id"]) == original_size
+        database_path = protected_test_config.src_dir / "app.db"
+        assert (
+            _get_revision_file_size(database_path, current_rev["id"]) == original_size
+        )
 
-        _set_revision_file_size(current_rev["id"], 1)
+        _set_revision_file_size(database_path, current_rev["id"], 1)
 
         # 4. Prepare download
         get_rev_resp = await authenticated_client.get_revision(current_rev["id"])
@@ -66,8 +73,10 @@ class TestFileTransfer:
         downloaded_hash = calculate_sha256(download_dest)
         assert original_hash == downloaded_hash
         assert original_size == os.path.getsize(download_dest)
-        assert _get_revision_file_size(current_rev["id"]) == original_size
-        assert _get_file_task_status(dl_task_id) == 1
+        assert (
+            _get_revision_file_size(database_path, current_rev["id"]) == original_size
+        )
+        assert _get_file_task_status(database_path, dl_task_id) == 1
 
     @pytest.mark.asyncio
     async def test_download_invalid_task_id_raises_runtime_error(

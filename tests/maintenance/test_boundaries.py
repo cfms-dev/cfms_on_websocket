@@ -72,6 +72,7 @@ assert not any(name.startswith("include.database.models.") for name in sys.modul
         capture_output=True,
         check=False,
         text=True,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stderr

@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import maintenance.operations.deployment as deployment
 from include.runtime_lock import RuntimeLock
 from maintenance.cli import app
+from maintenance.operations import deployment
 from maintenance.operations.deployment import (
     lifecycle as deployment_lifecycle,
 )

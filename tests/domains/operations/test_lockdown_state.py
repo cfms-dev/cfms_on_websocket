@@ -858,6 +858,10 @@ def _run_lockdown_process(runtime_dir: Path, action: str) -> dict:
     script = """
 import sys
 import orjson
+from pathlib import Path
+from maintenance.runtime import enter_server_root
+
+enter_server_root(Path.cwd())
 import include.database.models
 from include.config.settings import global_config
 from include.database.session import Base, engine
@@ -900,6 +904,7 @@ def test_lockdown_persists_across_process_restarts(tmp_path) -> None:
     config["provider"]["caching"] = "memory"
     config["provider"]["event_bus"] = "local"
     (runtime_dir / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
+    (runtime_dir / "main.py").write_bytes((source_dir / "main.py").read_bytes())
     (runtime_dir / "init").write_text("initialized\n", encoding="utf-8")
 
     assert _run_lockdown_process(runtime_dir, "enable") == {

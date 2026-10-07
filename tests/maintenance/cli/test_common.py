@@ -1,6 +1,9 @@
+from io import StringIO
+
 import pytest
 import tomlkit
 import typer
+from rich.console import Console
 
 from .support import _make_src_dir, _normalize_cli_output, _run_maintain
 
@@ -45,15 +48,30 @@ def test_run_prints_error_after_status_exits(monkeypatch):
     assert events == ["enter", "exit", "error:boom"]
 
 
-def test_backup_progress_shares_verbose_log_console():
+@pytest.mark.parametrize("width", [80, 120], ids=["narrow-console", "wide-console"])
+def test_backup_progress_renders_long_description_without_wrapping_on_error_console(
+    monkeypatch, width
+):
     from maintenance.cli import common as cli
 
+    output = StringIO()
+    console = Console(file=output, width=width, force_terminal=False, color_system=None)
+    monkeypatch.setattr(cli, "error_console", console)
     progress = cli._build_backup_progress()
-    description_column = progress.columns[1].get_table_column()
+    progress.add_task(
+        "Restoring database rows " + "large table " * 20,
+        start=False,
+        total=10,
+        completed=3,
+    )
 
-    assert progress.console is cli.error_console
-    assert description_column.no_wrap is True
-    assert description_column.overflow == "ellipsis"
+    progress.console.print(progress.get_renderable())
+
+    lines = output.getvalue().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("Restoring database rows")
+    assert lines[0].rstrip().endswith("…")
+    assert len(lines[0]) <= width
 
 
 def test_command_finds_server_root_from_deployment_root(tmp_path):
@@ -88,31 +106,43 @@ def test_command_rejects_unrelated_workdir(tmp_path):
     assert "Unable to locate a CFMS server root" in result.stdout + result.stderr
 
 
-def test_deployment_commands_remove_redundant_confirmation_options(tmp_path):
-    upgrade_help = _run_maintain(tmp_path, ["deployment", "upgrade", "--help"])
-    downgrade_help = _run_maintain(tmp_path, ["deployment", "downgrade", "--help"])
-    prune_help = _run_maintain(tmp_path, ["deployment", "prune", "--help"])
-    resume_help = _run_maintain(tmp_path, ["deployment", "resume", "--help"])
-    upgrade_output = _normalize_cli_output(upgrade_help.stdout + upgrade_help.stderr)
-    downgrade_output = _normalize_cli_output(
-        downgrade_help.stdout + downgrade_help.stderr
-    )
-    prune_output = _normalize_cli_output(prune_help.stdout + prune_help.stderr)
-    resume_output = _normalize_cli_output(resume_help.stdout + resume_help.stderr)
+@pytest.mark.parametrize(
+    ("command", "present_options", "absent_options"),
+    [
+        pytest.param(
+            "upgrade",
+            ("--yes", "--sha256", "--checksums"),
+            ("--backup-confirmed",),
+            id="upgrade",
+        ),
+        pytest.param("downgrade", ("--yes",), ("--backup-confirmed",), id="downgrade"),
+        pytest.param("prune", ("--dry-run", "--yes"), (), id="prune"),
+        pytest.param("resume", (), ("--database-restored",), id="resume"),
+    ],
+)
+def test_deployment_command_help_exposes_current_confirmation_options(
+    tmp_path, command, present_options, absent_options
+):
+    result = _run_maintain(tmp_path, ["deployment", command, "--help"])
+    output = _normalize_cli_output(result.stdout + result.stderr)
 
-    assert "--backup-confirmed" not in upgrade_output
-    assert "--backup-confirmed" not in downgrade_output
-    assert "--database-restored" not in resume_output
-    assert "--yes" in upgrade_output
-    assert "--yes" in downgrade_output
-    assert "--sha256" in upgrade_output
-    assert "--checksums" in upgrade_output
-    assert "--dry-run" in prune_output
-    assert "--yes" in prune_output
+    for option in present_options:
+        assert option in output
+    for option in absent_options:
+        assert option not in output
 
 
-def test_deployment_upgrade_warns_only_without_external_digest(tmp_path):
-    without_digest = _run_maintain(
+@pytest.mark.parametrize(
+    ("digest_args", "warns"),
+    [
+        pytest.param([], True, id="without-digest"),
+        pytest.param(["--sha256", "a" * 64], False, id="with-digest"),
+    ],
+)
+def test_deployment_upgrade_warns_only_without_external_digest(
+    tmp_path, digest_args, warns
+):
+    result = _run_maintain(
         tmp_path,
         [
             "deployment",
@@ -120,30 +150,15 @@ def test_deployment_upgrade_warns_only_without_external_digest(tmp_path):
             "release.zip",
             "--deployment-root",
             str(tmp_path),
-            "--yes",
-        ],
-        check=False,
-    )
-    with_digest = _run_maintain(
-        tmp_path,
-        [
-            "deployment",
-            "upgrade",
-            "release.zip",
-            "--deployment-root",
-            str(tmp_path),
-            "--sha256",
-            "a" * 64,
+            *digest_args,
             "--yes",
         ],
         check=False,
     )
 
     warning = "external release package SHA-256 verification is disabled"
-    assert warning in _normalize_cli_output(
-        without_digest.stdout + without_digest.stderr
-    )
-    assert warning not in _normalize_cli_output(with_digest.stdout + with_digest.stderr)
+    output = _normalize_cli_output(result.stdout + result.stderr)
+    assert (warning in output) is warns
 
 
 def test_backup_import_requires_exactly_one_key_source(tmp_path):
@@ -153,7 +168,7 @@ def test_backup_import_requires_exactly_one_key_source(tmp_path):
         check=False,
     )
 
-    assert result.returncode != 0
+    assert result.returncode == 2
     assert "Choose exactly one decryption key source" in _normalize_cli_output(
         result.stdout + result.stderr
     )

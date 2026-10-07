@@ -10,7 +10,7 @@ from include.database.clock import _database_time_expression, database_now
 
 @pytest.mark.parametrize(
     ("dialect_name", "dialect", "expected_clause"),
-    (
+    [
         (
             "sqlite",
             sqlite.dialect(),
@@ -26,7 +26,7 @@ from include.database.clock import _database_time_expression, database_now
             mysql.dialect(),
             "unix_timestamp(CURRENT_TIMESTAMP(6))",
         ),
-    ),
+    ],
 )
 def test_database_time_expression_uses_supported_dialect_clock(
     dialect_name,

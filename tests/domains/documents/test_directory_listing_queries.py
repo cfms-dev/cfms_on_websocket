@@ -18,7 +18,7 @@ def directory_models(protected_test_config):
 
     original_cwd = Path.cwd()
     try:
-        os.chdir(src_path)
+        os.chdir(protected_test_config.src_dir)
         import include.database.models.access as blocking
         import include.database.models.keyrings as keyring
         import include.domains.documents.handlers.documents as document_handlers
@@ -67,7 +67,7 @@ def directory_models(protected_test_config):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def directory_session(directory_models):
     engine = create_engine("sqlite:///:memory:")
     directory_models.Base.metadata.create_all(

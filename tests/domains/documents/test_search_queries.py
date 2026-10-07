@@ -19,7 +19,7 @@ _SYSOP_READ_RULES = {
 }
 
 
-@pytest.fixture()
+@pytest.fixture
 def search_query_context(monkeypatch, tmp_path):
     config = tomlkit.parse((_SRC_PATH / "config.toml.sample").read_text("utf-8"))
     config["database"]["type"] = "sqlite"
@@ -27,7 +27,7 @@ def search_query_context(monkeypatch, tmp_path):
     (tmp_path / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    import include.database.models as models
+    from include.database import models
     from include.database.session import Base
     from include.domains.access.authorization.access_rules import set_access_rules
     from include.domains.access.authorization.evaluation import (

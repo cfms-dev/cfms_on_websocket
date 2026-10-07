@@ -1,6 +1,5 @@
-import os
 import socket
-from pathlib import Path
+from contextlib import chdir
 from types import SimpleNamespace
 
 import orjson
@@ -11,14 +10,10 @@ from include.config.validation import parse_trusted_proxy_networks
 
 @pytest.fixture(scope="module")
 def client_address(protected_test_config):
-    original_directory = Path.cwd()
-    os.chdir(protected_test_config.src_dir)
-    try:
+    with chdir(protected_test_config.src_dir):
         from include.transport import client_address as module
 
-        yield module
-    finally:
-        os.chdir(original_directory)
+    return module
 
 
 @pytest.fixture(autouse=True)

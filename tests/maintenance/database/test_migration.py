@@ -34,7 +34,6 @@ from maintenance.operations.database.migration import (
 from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
 from maintenance.operations.exceptions import MaintenanceOperationError
 from tests.maintenance.backup.roundtrip_support import _seed_source
-from tests.maintenance.backup.support import _new_database
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -86,42 +85,46 @@ def test_table_signature_scopes_streaming_to_its_select() -> None:
         engine.dispose()
 
 
-def test_transfer_clones_every_application_table(backup_context, tmp_path) -> None:
+def test_transfer_clones_every_application_table(
+    backup_context, tmp_path, database_factory
+) -> None:
     base = backup_context.Base
-    source_engine, _source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, _source_session = database_factory(base, tmp_path / "source.db")
     target_engine = create_database_engine(
         {"type": "sqlite", "file": str(tmp_path / "target.db")}
     )
-    storage_root = tmp_path / "storage"
-    storage_root.mkdir()
-    _seed_source(base, source_engine, storage_root)
-    _seed_runtime_tables(base, source_engine)
+    try:
+        storage_root = tmp_path / "storage"
+        storage_root.mkdir()
+        _seed_source(base, source_engine, storage_root)
+        _seed_runtime_tables(base, source_engine)
 
-    scripts = _script_directory()
-    head = scripts.get_current_head()
-    assert head is not None
-    results = transfer_database_contents(
-        source_engine,
-        target_engine,
-        base.metadata,
-        scripts,
-        head,
-    )
+        scripts = _script_directory()
+        head = scripts.get_current_head()
+        assert head is not None
+        results = transfer_database_contents(
+            source_engine,
+            target_engine,
+            base.metadata,
+            scripts,
+            head,
+        )
 
-    assert tuple(result.name for result in results) == APPLICATION_TABLE_NAMES
-    rows_by_table = {result.name: result.rows for result in results}
-    assert rows_by_table["file_tasks"] == 1
-    assert rows_by_table["system_states"] == 1
-    assert rows_by_table["file_deduplication_tasks"] == 1
-    with source_engine.connect() as source, target_engine.connect() as target:
-        for table_name in APPLICATION_TABLE_NAMES:
-            table = base.metadata.tables[table_name]
-            statement = select(table).order_by(*table.primary_key.columns)
-            assert target.execute(statement).all() == source.execute(statement).all()
-        assert MigrationContext.configure(target).get_current_heads() == (head,)
-
-    source_engine.dispose()
-    target_engine.dispose()
+        assert tuple(result.name for result in results) == APPLICATION_TABLE_NAMES
+        rows_by_table = {result.name: result.rows for result in results}
+        assert rows_by_table["file_tasks"] == 1
+        assert rows_by_table["system_states"] == 1
+        assert rows_by_table["file_deduplication_tasks"] == 1
+        with source_engine.connect() as source, target_engine.connect() as target:
+            for table_name in APPLICATION_TABLE_NAMES:
+                table = base.metadata.tables[table_name]
+                statement = select(table).order_by(*table.primary_key.columns)
+                assert (
+                    target.execute(statement).all() == source.execute(statement).all()
+                )
+            assert MigrationContext.configure(target).get_current_heads() == (head,)
+    finally:
+        target_engine.dispose()
 
 
 def _seed_runtime_tables(base, source_engine) -> None:
@@ -175,6 +178,7 @@ def _seed_runtime_tables(base, source_engine) -> None:
 
 
 def test_transfer_cleans_target_when_verification_fails(
+    database_factory,
     backup_context,
     tmp_path,
     monkeypatch,
@@ -182,39 +186,43 @@ def test_transfer_cleans_target_when_verification_fails(
     from maintenance.operations.database import migration as database_migration
 
     base = backup_context.Base
-    source_engine, _source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, _source_session = database_factory(base, tmp_path / "source.db")
     target_engine = create_engine(f"sqlite:///{tmp_path / 'target.db'}")
-    scripts = _script_directory()
-    head = scripts.get_current_head()
-    assert head is not None
+    try:
+        scripts = _script_directory()
+        head = scripts.get_current_head()
+        assert head is not None
 
-    def fail_verification(*_args, **_kwargs):
-        raise DatabaseMigrationError("verification failed")
+        def fail_verification(*_args, **_kwargs):
+            raise DatabaseMigrationError("verification failed")
 
-    monkeypatch.setattr(database_migration, "_verify_tables", fail_verification)
-    with pytest.raises(DatabaseMigrationError, match="verification failed"):
-        transfer_database_contents(
-            source_engine,
-            target_engine,
-            base.metadata,
-            scripts,
-            head,
-        )
+        monkeypatch.setattr(database_migration, "_verify_tables", fail_verification)
+        with pytest.raises(DatabaseMigrationError, match="verification failed"):
+            transfer_database_contents(
+                source_engine,
+                target_engine,
+                base.metadata,
+                scripts,
+                head,
+            )
 
-    assert inspect(target_engine).get_table_names() == []
-    source_engine.dispose()
-    target_engine.dispose()
+        assert inspect(target_engine).get_table_names() == []
+    finally:
+        target_engine.dispose()
 
 
 def test_public_migration_rejects_same_database_engine() -> None:
     source_engine = create_engine("sqlite:///:memory:")
     target_engine = create_engine("sqlite:///:memory:")
-
-    with pytest.raises(
-        DatabaseMigrationError,
-        match="Source and target database engines must be different",
-    ):
-        migrate_database(source_engine, target_engine, object(), object())
+    try:
+        with pytest.raises(
+            DatabaseMigrationError,
+            match="Source and target database engines must be different",
+        ):
+            migrate_database(source_engine, target_engine, object(), object())
+    finally:
+        target_engine.dispose()
+        source_engine.dispose()
 
 
 @pytest.mark.parametrize("version", [(8, 4, 12), (9, 7, 3)])
@@ -273,14 +281,16 @@ def test_target_config_is_validated_and_can_be_activated(tmp_path) -> None:
     [
         ('[database]\ntype = "sqlite"\nfile = ":memory:"\n', "in-memory"),
         (
-            "[database]\n"
-            'type = "mysql"\n'
-            'host = "localhost"\n'
-            "port = 3306\n"
-            'username = "cfms"\n'
-            'password = "secret"\n'
-            'name = "app_db"\n'
-            'charset = "latin1"\n',
+            (
+                "[database]\n"
+                'type = "mysql"\n'
+                'host = "localhost"\n'
+                "port = 3306\n"
+                'username = "cfms"\n'
+                'password = "secret"\n'
+                'name = "app_db"\n'
+                'charset = "latin1"\n'
+            ),
             "utf8mb4",
         ),
     ],

@@ -11,7 +11,6 @@ from sqlalchemy import event, func, insert, select, update
 from .roundtrip_support import _seed_source
 from .support import (
     _dump_backup_tables,
-    _new_database,
     _read_jsonl,
     _RootedStorage,
     _test_progress,
@@ -58,10 +57,12 @@ def test_export_rejects_explicit_empty_key_before_staging(
         )
 
 
-def test_partial_document_export_restores_dependency_closure(backup_context, tmp_path):
+def test_partial_document_export_restores_dependency_closure(
+    backup_context, tmp_path, database_factory
+):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()
@@ -135,13 +136,14 @@ def test_partial_document_export_restores_dependency_closure(backup_context, tmp
 
 
 def test_file_export_uses_the_exported_database_snapshot(
+    database_factory,
     backup_context,
     tmp_path,
 ) -> None:
     from maintenance.backup.export import _stage_backup_payload
 
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
     source_storage = tmp_path / "source-storage"
     source_storage.mkdir()
     _seed_source(base, source_engine, source_storage)
@@ -180,12 +182,12 @@ def test_file_export_uses_the_exported_database_snapshot(
 
 
 def test_banned_subnet_export_includes_only_referenced_comments(
-    backup_context, tmp_path
+    database_factory, backup_context, tmp_path
 ):
     from maintenance.backup.export import _stage_backup_payload
 
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
     source_storage = tmp_path / "source-storage"
     staging_dir = tmp_path / "staging"
     source_storage.mkdir()
@@ -223,12 +225,14 @@ def test_banned_subnet_export_includes_only_referenced_comments(
     )
 
 
-def test_legacy_banned_subnet_reason_restores_as_comment(backup_context, tmp_path):
+def test_legacy_banned_subnet_reason_restores_as_comment(
+    backup_context, tmp_path, database_factory
+):
     from maintenance.backup.format import BACKUP_FORMAT_VERSION
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     extract_dir = tmp_path / "legacy-payload"
     tables_dir = extract_dir / "tables"
     rows = [
@@ -258,6 +262,7 @@ def test_legacy_banned_subnet_reason_restores_as_comment(backup_context, tmp_pat
 
 
 def test_database_restore_bounds_batches_and_reports_row_progress(
+    database_factory,
     backup_context,
     tmp_path,
 ):
@@ -266,7 +271,7 @@ def test_database_restore_bounds_batches_and_reports_row_progress(
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     extract_dir = tmp_path / "payload"
     row_count = 1001
     _write_audit_rows(extract_dir, row_count)
@@ -318,6 +323,7 @@ def test_database_restore_bounds_batches_and_reports_row_progress(
 
 
 def test_database_restore_rolls_back_batches_on_row_count_mismatch(
+    database_factory,
     backup_context,
     tmp_path,
 ):
@@ -325,7 +331,7 @@ def test_database_restore_rolls_back_batches_on_row_count_mismatch(
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     extract_dir = tmp_path / "payload"
     _write_audit_rows(extract_dir, 1001)
     manifest = {
@@ -346,15 +352,22 @@ def test_database_restore_rolls_back_batches_on_row_count_mismatch(
     assert restored_count == 0
 
 
-def test_wrong_magic_and_wrong_key_fail(backup_context, tmp_path):
+def test_read_backup_header_rejects_wrong_magic(backup_context, tmp_path):
     bad_backup = tmp_path / "bad.conf"
     bad_backup.write_bytes(b"NOPE")
-    with pytest.raises(backup_context.BackupFormatError):
+
+    with pytest.raises(
+        backup_context.BackupFormatError, match="File is not a CFMS backup"
+    ):
         backup_context.read_backup_header(bad_backup)
 
+
+def test_import_backup_rejects_wrong_key_without_writing_target(
+    backup_context, tmp_path, database_factory
+):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()
@@ -364,22 +377,20 @@ def test_wrong_magic_and_wrong_key_fail(backup_context, tmp_path):
     backup_path = tmp_path / "backup.conf"
     backup_context.export_backup(
         backup_path,
+        key=bytes(32),
         session_factory=source_session,
         storage_provider=_RootedStorage(source_storage),
         config=backup_context.source_config,
     )
-    wrong_key = backup_context.decode_backup_key(
-        backup_context.export_backup(
-            tmp_path / "other.conf",
-            session_factory=source_session,
-            storage_provider=_RootedStorage(source_storage),
-            config=backup_context.source_config,
-        )
-    )
+    wrong_key = bytes([1]) * 32
 
     target_config = tmp_path / "target-config.toml"
     _write_config(target_config, secret_key="target-secret", pepper="target-pepper")
-    with pytest.raises(backup_context.BackupIntegrityError):
+    original_config = target_config.read_bytes()
+
+    with pytest.raises(
+        backup_context.BackupIntegrityError, match="Backup decryption failed"
+    ):
         backup_context.import_backup(
             backup_path,
             wrong_key,
@@ -390,10 +401,22 @@ def test_wrong_magic_and_wrong_key_fail(backup_context, tmp_path):
             init_path=tmp_path / "init",
         )
 
+    assert target_config.read_bytes() == original_config
+    assert not (tmp_path / "init").exists()
+    assert list(target_storage.iterdir()) == []
+    with target_engine.connect() as connection:
+        row_counts = {
+            table.name: connection.scalar(select(func.count()).select_from(table))
+            for table in base.metadata.tables.values()
+        }
+    assert row_counts == dict.fromkeys(row_counts, 0)
 
-def test_export_fails_when_physical_file_is_missing(backup_context, tmp_path):
+
+def test_export_fails_when_physical_file_is_missing(
+    backup_context, tmp_path, database_factory
+):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
     source_storage = tmp_path / "source-storage"
     source_storage.mkdir()
     _seed_source(base, source_engine, source_storage)
@@ -408,27 +431,23 @@ def test_export_fails_when_physical_file_is_missing(backup_context, tmp_path):
         )
 
 
-def test_export_refuses_to_replace_backup_or_key_output(backup_context, tmp_path):
+@pytest.mark.parametrize(
+    "existing_output", ["backup", "key"], ids=["backup-exists", "key-exists"]
+)
+def test_export_refuses_to_replace_existing_output(
+    backup_context, tmp_path, database_factory, existing_output
+):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
     source_storage = tmp_path / "source-storage"
     source_storage.mkdir()
     _seed_source(base, source_engine, source_storage)
     backup_path = tmp_path / "backup.conf"
     key_path = tmp_path / "backup.key"
-    backup_path.write_bytes(b"existing backup")
+    existing_path = backup_path if existing_output == "backup" else key_path
+    existing_bytes = b"existing output\n"
+    existing_path.write_bytes(existing_bytes)
 
-    with pytest.raises(backup_context.BackupError, match="already exists"):
-        backup_context.export_backup(
-            backup_path,
-            session_factory=source_session,
-            storage_provider=_RootedStorage(source_storage),
-            config=backup_context.source_config,
-        )
-    assert backup_path.read_bytes() == b"existing backup"
-
-    backup_path.unlink()
-    key_path.write_text("existing key\n", encoding="utf-8")
     with pytest.raises(backup_context.BackupError, match="already exists"):
         backup_context.export_backup(
             backup_path,
@@ -437,14 +456,17 @@ def test_export_refuses_to_replace_backup_or_key_output(backup_context, tmp_path
             storage_provider=_RootedStorage(source_storage),
             config=backup_context.source_config,
         )
-    assert not backup_path.exists()
-    assert key_path.read_text(encoding="utf-8") == "existing key\n"
+    assert existing_path.read_bytes() == existing_bytes
+    absent_path = key_path if existing_output == "backup" else backup_path
+    assert not absent_path.exists()
 
 
-def test_export_skips_missing_inactive_physical_file(backup_context, tmp_path):
+def test_export_skips_missing_inactive_physical_file(
+    backup_context, tmp_path, database_factory
+):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()
@@ -492,10 +514,10 @@ def test_export_skips_missing_inactive_physical_file(backup_context, tmp_path):
     assert not (target_storage / Path(missing_storage_path)).exists()
 
 
-def test_import_rejects_non_empty_target(backup_context, tmp_path):
+def test_import_rejects_non_empty_target(backup_context, tmp_path, database_factory):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()
@@ -538,12 +560,13 @@ def test_import_rejects_non_empty_target(backup_context, tmp_path):
 
 
 def test_import_removes_partially_written_storage_file(
+    database_factory,
     backup_context,
     tmp_path,
 ):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()
@@ -597,6 +620,7 @@ def test_import_removes_partially_written_storage_file(
 
 
 def test_import_rolls_back_database_files_and_config_when_finalization_fails(
+    database_factory,
     backup_context,
     tmp_path,
     monkeypatch,
@@ -604,8 +628,8 @@ def test_import_rolls_back_database_files_and_config_when_finalization_fails(
     from maintenance.backup import restore as backup_restore
 
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()
@@ -643,16 +667,18 @@ def test_import_rolls_back_database_files_and_config_when_finalization_fails(
         )
 
     with target_engine.connect() as connection:
-        assert all(
-            connection.scalar(select(func.count()).select_from(table)) == 0
+        row_counts = {
+            table.name: connection.scalar(select(func.count()).select_from(table))
             for table in base.metadata.tables.values()
-        )
+        }
+    assert row_counts == dict.fromkeys(row_counts, 0)
     assert not any(path.is_file() for path in target_storage.rglob("*"))
     assert target_config.read_bytes() == original_config
     assert not init_path.exists()
 
 
 def test_import_attempts_init_rollback_when_config_rollback_fails(
+    database_factory,
     backup_context,
     tmp_path,
     monkeypatch,
@@ -660,8 +686,8 @@ def test_import_attempts_init_rollback_when_config_rollback_fails(
     from maintenance.backup import restore as backup_restore
 
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()
@@ -1055,6 +1081,7 @@ def test_restore_files_rejects_active_database_row_without_payload(
 
 
 def test_import_rejects_payload_members_absent_from_manifest(
+    database_factory,
     backup_context,
     tmp_path,
 ) -> None:
@@ -1100,7 +1127,7 @@ def test_import_rejects_payload_members_absent_from_manifest(
     backup_path = tmp_path / "unexpected-member.conf"
     backup_path.write_bytes(prefix + ciphertext + encryptor.tag)
 
-    target_engine, target_session = _new_database(
+    target_engine, target_session = database_factory(
         backup_context.Base,
         tmp_path / "target.db",
     )
@@ -1123,6 +1150,7 @@ def test_import_rejects_payload_members_absent_from_manifest(
 
 
 def test_restore_rejects_oversized_json_row_before_parsing(
+    database_factory,
     backup_context,
     tmp_path,
     monkeypatch,
@@ -1132,7 +1160,7 @@ def test_restore_rejects_oversized_json_row_before_parsing(
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     extract_dir = tmp_path / "payload"
     _write_audit_rows(extract_dir, 1)
     manifest = {
@@ -1157,6 +1185,7 @@ def test_restore_rejects_oversized_json_row_before_parsing(
 
 
 def test_export_rejects_json_row_larger_than_restore_limit(
+    database_factory,
     backup_context,
     tmp_path,
     monkeypatch,
@@ -1164,7 +1193,7 @@ def test_export_rejects_json_row_larger_than_restore_limit(
     from maintenance.backup import export as backup_export
 
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
     with source_engine.begin() as connection:
         connection.execute(
             insert(base.metadata.tables["audit_entries"]),

@@ -1,540 +1,227 @@
-"""
-Tests for two-factor authentication (TOTP) functionality.
-"""
+"""Public two-factor setup, validation, disabling, and login contracts."""
 
 import pyotp
 import pytest
+import pytest_asyncio
 
 from tests.support.client import CFMSTestClient
+from tests.support.utils import assert_error, assert_success
+
+
+@pytest_asyncio.fixture
+async def pending_totp(user_client: CFMSTestClient):
+    return assert_success(await user_client.setup_2fa())
+
+
+@pytest_asyncio.fixture
+async def enabled_totp(user_client: CFMSTestClient, pending_totp):
+    token = pyotp.TOTP(pending_totp["secret"]).now()
+    assert_success(await user_client.validate_2fa(token))
+    return pending_totp
 
 
 class TestTwoFactorAuth:
-    """Test two-factor authentication setup, validation, and cancellation."""
-
     @pytest.mark.asyncio
     async def test_disable_2fa_does_not_disclose_cross_user_target(
         self,
-        authenticated_client: CFMSTestClient,
-        admin_credentials: dict,
+        user_client: CFMSTestClient,
+        test_user,
+        enabled_totp,
         low_privilege_client: CFMSTestClient,
     ):
-        setup_started = False
-        two_factor_enabled = False
-        try:
-            setup_response = await authenticated_client.setup_2fa()
-            assert setup_response.get("code") == 200, "Failed to setup 2FA"
-            setup_started = True
+        existing_response = await low_privilege_client.send_request(
+            "disable_2fa", {"username": test_user["username"]}
+        )
+        missing_response = await low_privilege_client.send_request(
+            "disable_2fa", {"username": "nonexistent_user_xyz_12345"}
+        )
 
-            token = pyotp.TOTP(setup_response["data"]["secret"]).now()
-            validation_response = await authenticated_client.validate_2fa(token)
-            assert validation_response.get("code") == 200
-            two_factor_enabled = True
-
-            existing_response = await low_privilege_client.send_request(
-                "disable_2fa",
-                {"username": admin_credentials["username"]},
-            )
-            missing_response = await low_privilege_client.send_request(
-                "disable_2fa",
-                {"username": "nonexistent_user_xyz_12345"},
-            )
-
-            for response in (existing_response, missing_response):
-                assert response["code"] == 403
-                assert response["message"] == "Permission denied"
-                assert response["data"] == {}
-
-            status_response = await authenticated_client.get_2fa_status()
-            assert status_response["data"]["enabled"] is True
-        finally:
-            if two_factor_enabled:
-                await authenticated_client.cancel_2fa(admin_credentials["password"])
-            elif setup_started:
-                await authenticated_client.cancel_2fa_setup()
+        for response in (existing_response, missing_response):
+            assert response["code"] == 403
+            assert response["message"] == "Permission denied"
+            assert response["data"] == {}
+        assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
     @pytest.mark.asyncio
     async def test_manage_2fa_permission_preserves_target_diagnostics(
         self,
         authenticated_client: CFMSTestClient,
-        test_user: dict,
+        test_user,
     ):
         existing_response = await authenticated_client.send_request(
-            "get_2fa_status",
-            {"target": test_user["username"]},
+            "get_2fa_status", {"target": test_user["username"]}
         )
         missing_response = await authenticated_client.send_request(
-            "get_2fa_status",
-            {"target": "nonexistent_user_xyz_12345"},
+            "get_2fa_status", {"target": "nonexistent_user_xyz_12345"}
         )
 
-        assert existing_response["code"] == 200
-        assert missing_response["code"] == 404
-        assert missing_response["message"] == "Target user not found"
+        assert_success(existing_response)
+        error = assert_error(missing_response, 404)
+        assert error["message"] == "Target user not found"
 
     @pytest.mark.asyncio
     async def test_get_2fa_status_disabled_by_default(
-        self, authenticated_client: CFMSTestClient
+        self, user_client: CFMSTestClient
     ):
-        """Test that 2FA is disabled by default for new users."""
-        response = await authenticated_client.get_2fa_status()
+        status = assert_success(await user_client.get_2fa_status())
 
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 200, (
-            f"Failed to get 2FA status: {response.get('message', '')}"
-        )
-
-        assert "data" in response, "Response missing 'data'"
-        assert "enabled" in response["data"], "Response missing 'enabled'"
-        assert response["data"].get("method", None) is None, (
-            "2FA method should be None when disabled"
-        )
-        assert response["data"]["enabled"] is False, "2FA should be disabled by default"
+        assert status["enabled"] is False
+        assert status["method"] is None
+        assert status["backup_codes_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_setup_2fa(self, authenticated_client: CFMSTestClient):
-        """Test setting up 2FA for a user."""
-        response = await authenticated_client.setup_2fa()
+    async def test_setup_2fa(self, user_client: CFMSTestClient):
+        data = assert_success(await user_client.setup_2fa())
 
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 200, (
-            f"Failed to setup 2FA: {response.get('message', '')}"
-        )
-
-        assert "data" in response, "Response missing 'data'"
-        assert "secret" in response["data"], "Response missing 'secret'"
-        assert "provisioning_uri" in response["data"], (
-            "Response missing 'provisioning_uri'"
-        )
-        assert "backup_codes" in response["data"], "Response missing 'backup_codes'"
-
-        # Verify the secret is a valid base32 string
-        secret = response["data"]["secret"]
-        assert isinstance(secret, str), "Secret should be a string"
-        assert len(secret) > 0, "Secret should not be empty"
-
-        # Verify backup codes
-        backup_codes = response["data"]["backup_codes"]
-        assert isinstance(backup_codes, list), "Backup codes should be a list"
-        assert len(backup_codes) == 10, "Should have 10 backup codes"
-
-        # Verify provisioning URI format
-        provisioning_uri = response["data"]["provisioning_uri"]
-        assert provisioning_uri.startswith("otpauth://totp/"), (
-            "Provisioning URI should start with 'otpauth://totp/'"
-        )
-
-        # Cleanup: Cancel 2FA setup for other tests
-        try:
-            await authenticated_client.cancel_2fa_setup()
-        except Exception:
-            pass  # Ignore cleanup errors
+        assert isinstance(data["secret"], str)
+        assert data["secret"]
+        assert isinstance(data["backup_codes"], list)
+        assert len(data["backup_codes"]) == 10
+        assert data["provisioning_uri"].startswith("otpauth://totp/")
+        assert pyotp.parse_uri(data["provisioning_uri"]).secret == data["secret"]
 
     @pytest.mark.asyncio
     async def test_validate_2fa_with_valid_token(
-        self, authenticated_client: CFMSTestClient, admin_credentials: dict
+        self,
+        user_client: CFMSTestClient,
+        pending_totp,
     ):
-        """Test validating 2FA with a valid TOTP token."""
-        did_setup = False
-        try:
-            setup_response = await authenticated_client.setup_2fa()
-            assert setup_response.get("code") == 200, "Failed to setup 2FA"
-            did_setup = True
+        token = pyotp.TOTP(pending_totp["secret"]).now()
 
-            secret = setup_response["data"]["secret"]
+        data = assert_success(await user_client.validate_2fa(token))
 
-            # Generate a valid TOTP token
-            totp = pyotp.TOTP(secret)
-            token = totp.now()
-
-            # Validate the token
-            response = await authenticated_client.validate_2fa(token)
-
-            assert isinstance(response, dict), "Response should be a dictionary"
-            assert "code" in response, "Response missing 'code'"
-            assert response["code"] == 200, (
-                f"Failed to validate 2FA: {response.get('message', '')}"
-            )
-            assert "data" in response, "Response missing 'data'"
-            assert response["data"].get("method") == "totp", (
-                "2FA method should be 'totp' after validation"
-            )  # for now
-
-            # Get 2FA status to confirm it's enabled
-            status_response = await authenticated_client.get_2fa_status()
-
-            assert "data" in status_response, "Response missing 'data'"
-            assert status_response["data"].get("enabled") is True, (
-                "2FA should be enabled after validation"
-            )
-        finally:
-            # Cleanup: Disable 2FA for other tests (always attempt regardless of failures)
-            if did_setup:
-                try:
-                    await authenticated_client.cancel_2fa(admin_credentials["password"])
-                except Exception:
-                    pass  # Ignore cleanup errors
+        assert data == {"method": "totp"}
+        status = assert_success(await user_client.get_2fa_status())
+        assert status["enabled"] is True
+        assert status["method"] == "totp"
 
     @pytest.mark.asyncio
     async def test_validate_2fa_with_invalid_token(
-        self, authenticated_client: CFMSTestClient
+        self,
+        user_client: CFMSTestClient,
+        pending_totp,
     ):
-        """Test that validation fails with an invalid TOTP token."""
-        # Setup 2FA first
-        setup_response = await authenticated_client.setup_2fa()
-        assert setup_response.get("code") == 200, "Failed to setup 2FA"
+        response = await user_client.validate_2fa("invalid-totp")
 
-        # Try to validate with an invalid token
-        response = await authenticated_client.validate_2fa("000000")
-
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 401, (
-            f"Expected 401 for invalid token, got {response.get('code')}"
-        )
-
-        # Cleanup: Cancel 2FA setup for other tests
-        try:
-            await authenticated_client.cancel_2fa_setup()
-        except Exception:
-            pass  # Ignore cleanup errors
+        error = assert_error(response, 401)
+        assert error["message"] == "Invalid verification code"
+        assert assert_success(await user_client.get_2fa_status())["enabled"] is False
 
     @pytest.mark.asyncio
-    async def test_validate_2fa_without_setup(
-        self, authenticated_client: CFMSTestClient
-    ):
-        """Test that validation fails if 2FA hasn't been set up."""
-        response = await authenticated_client.validate_2fa("123456")
+    async def test_validate_2fa_without_setup(self, user_client: CFMSTestClient):
+        response = await user_client.validate_2fa("123456")
 
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 400, (
-            f"Expected 400 for validation without setup, got {response.get('code')}"
+        error = assert_error(response, 400)
+        assert error["message"] == (
+            "Two-factor authentication has not been set up. Please set it up first."
         )
 
     @pytest.mark.asyncio
     async def test_setup_2fa_twice_fails(
-        self, authenticated_client: CFMSTestClient, admin_credentials: dict
+        self, user_client: CFMSTestClient, enabled_totp
     ):
-        """Test that setting up 2FA twice fails if already enabled."""
-        # Setup and enable 2FA
-        setup_response = await authenticated_client.setup_2fa()
-        assert setup_response.get("code") == 200, "Failed to setup 2FA"
+        response = await user_client.setup_2fa()
 
-        secret = setup_response["data"]["secret"]
-        totp = pyotp.TOTP(secret)
-        token = totp.now()
-
-        validate_response = await authenticated_client.validate_2fa(token)
-        assert validate_response.get("code") == 200, "Failed to validate 2FA"
-
-        # Try to setup again
-        response = await authenticated_client.setup_2fa()
-
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 400, (
-            f"Expected 400 for duplicate setup, got {response.get('code')}"
-        )
-
-        # Cleanup: Disable 2FA for other tests
-        try:
-            await authenticated_client.cancel_2fa(admin_credentials["password"])
-        except Exception:
-            pass  # Ignore cleanup errors
+        error = assert_error(response, 400)
+        assert error["data"] == {"method": "totp"}
+        assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
     @pytest.mark.asyncio
     async def test_cancel_2fa_with_valid_password(
-        self, authenticated_client: CFMSTestClient, admin_credentials: dict
+        self,
+        user_client: CFMSTestClient,
+        test_user,
+        enabled_totp,
     ):
-        """Test canceling 2FA with correct password."""
-        # Setup and enable 2FA
-        setup_response = await authenticated_client.setup_2fa()
-        assert setup_response.get("code") == 200, "Failed to setup 2FA"
+        response = await user_client.cancel_2fa(test_user["password"])
 
-        secret = setup_response["data"]["secret"]
-        totp = pyotp.TOTP(secret)
-        token = totp.now()
-
-        validate_response = await authenticated_client.validate_2fa(token)
-        assert validate_response.get("code") == 200, "Failed to validate 2FA"
-
-        # Cancel 2FA
-        try:
-            response = await authenticated_client.cancel_2fa(
-                admin_credentials["password"]
-            )
-        except Exception as e:
-            pytest.fail(f"cancel_2fa() raised an exception: {e}")
-
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 200, (
-            f"Failed to cancel 2FA: {response.get('message', '')}"
-        )
+        assert_success(response)
+        status = assert_success(await user_client.get_2fa_status())
+        assert status["enabled"] is False
+        assert status["method"] is None
+        assert status["backup_codes_count"] == 0
 
     @pytest.mark.asyncio
     async def test_cancel_2fa_with_invalid_password(
-        self, authenticated_client: CFMSTestClient, admin_credentials: dict
+        self,
+        user_client: CFMSTestClient,
+        enabled_totp,
     ):
-        """Test that canceling 2FA fails with incorrect password."""
-        # Setup and enable 2FA
-        setup_response = await authenticated_client.setup_2fa()
-        assert setup_response.get("code") == 200, "Failed to setup 2FA"
+        response = await user_client.cancel_2fa("wrong_password")
 
-        secret = setup_response["data"]["secret"]
-        totp = pyotp.TOTP(secret)
-        token = totp.now()
-
-        validate_response = await authenticated_client.validate_2fa(token)
-        assert validate_response.get("code") == 200, "Failed to validate 2FA"
-
-        # Try to cancel with wrong password
-        response = await authenticated_client.cancel_2fa("wrong_password")
-
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 401, (
-            f"Expected 401 for invalid password, got {response.get('code')}"
-        )
-
-        # Cleanup: Disable 2FA with correct password for other tests
-        try:
-            await authenticated_client.cancel_2fa(admin_credentials["password"])
-        except Exception:
-            pass  # Ignore cleanup errors
+        error = assert_error(response, 401)
+        assert error["message"] == "Invalid password"
+        assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
     @pytest.mark.asyncio
     async def test_cancel_2fa_when_not_enabled(
-        self, authenticated_client: CFMSTestClient, admin_credentials: dict
+        self,
+        user_client: CFMSTestClient,
+        test_user,
     ):
-        """Test that canceling 2FA fails if it's not enabled."""
-        try:
-            response = await authenticated_client.cancel_2fa(
-                admin_credentials["password"]
-            )
-        except Exception as e:
-            pytest.fail(f"cancel_2fa() raised an exception: {e}")
+        response = await user_client.cancel_2fa(test_user["password"])
 
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        assert response["code"] == 400, (
-            f"Expected 400 for cancel when not enabled, got {response.get('code')}"
-        )
+        error = assert_error(response, 400)
+        assert error["message"] == "2FA not enabled or user not found"
 
 
 class TestTwoFactorAuthLogin:
-    """Test two-factor authentication during login flow."""
-
-    @pytest.mark.asyncio
-    async def test_login_without_2fa(self, client: CFMSTestClient):
-        """Test normal login flow when 2FA is not enabled."""
-        response = await client.login("admin", "admin")
-
-        # Should succeed with code 200
-        assert isinstance(response, dict), "Response should be a dictionary"
-        assert "code" in response, "Response missing 'code'"
-        # Admin password might not be "admin", so accept both 200 and 401
-        assert response["code"] in [200, 401], (
-            f"Unexpected response code: {response.get('code')}"
-        )
-
     @pytest.mark.asyncio
     async def test_login_with_2fa_enabled_returns_202(
         self,
-        authenticated_client: CFMSTestClient,
-        test_user: dict,
         client: CFMSTestClient,
-        admin_credentials: dict,
+        test_user,
+        enabled_totp,
     ):
-        """Test that login returns 202 when 2FA is enabled and no token provided."""
-        did_setup = False
-        try:
-            # Setup and enable 2FA for test user
-            setup_response = await authenticated_client.setup_2fa()
-            assert setup_response.get("code") == 200, "Failed to setup 2FA"
-            did_setup = True
+        response = await client.login(test_user["username"], test_user["password"])
 
-            secret = setup_response["data"]["secret"]
-            totp = pyotp.TOTP(secret)
-            token = totp.now()
-
-            validate_response = await authenticated_client.validate_2fa(token)
-            assert validate_response.get("code") == 200, "Failed to validate 2FA"
-
-            # Try to login with new client without providing 2FA token
-            try:
-                await client.connect()
-                response = await client.login(
-                    admin_credentials["username"], admin_credentials["password"]
-                )
-            except Exception as e:
-                pytest.fail(f"login() raised an exception: {e}")
-
-            assert isinstance(response, dict), "Response should be a dictionary"
-            assert "code" in response, "Response missing 'code'"
-            assert response["code"] == 202, (
-                f"Expected 202 (2FA required), got {response.get('code')}"
-            )
-
-            assert "data" in response, "Response missing 'data'"
-            assert response["data"].get("method") == "totp", (
-                "Response should indicate TOTP method is required"
-            )
-        finally:
-            # Always attempt to disable 2FA if setup succeeded
-            if did_setup:
-                try:
-                    await authenticated_client.cancel_2fa(admin_credentials["password"])
-                except Exception:
-                    pass  # Ignore cleanup errors
+        assert response["code"] == 202
+        assert response["data"]["method"] == "totp"
 
     @pytest.mark.asyncio
     async def test_verify_2fa_login_with_valid_token(
         self,
-        authenticated_client: CFMSTestClient,
-        test_user: dict,
         client: CFMSTestClient,
-        admin_credentials: dict,
+        test_user,
+        enabled_totp,
     ):
-        """Test completing login with valid 2FA token."""
-        did_setup = False
-        try:
-            # Setup and enable 2FA
-            setup_response = await authenticated_client.setup_2fa()
-            assert setup_response.get("code") == 200, "Failed to setup 2FA"
-            did_setup = True
+        token = pyotp.TOTP(enabled_totp["secret"]).now()
 
-            secret = setup_response["data"]["secret"]
-            totp = pyotp.TOTP(secret)
-            token = totp.now()
-
-            validate_response = await authenticated_client.validate_2fa(token)
-            assert validate_response.get("code") == 200, "Failed to validate 2FA"
-
-            # Login with 2FA token provided
-            token = totp.now()
-            try:
-                response = await client.login(
-                    admin_credentials["username"],
-                    admin_credentials["password"],
-                    two_fa_token=token,
-                )
-            except Exception as e:
-                pytest.fail(f"login() raised an exception: {e}")
-
-            assert isinstance(response, dict), "Response should be a dictionary"
-            assert "code" in response, "Response missing 'code'"
-            assert response["code"] == 200, (
-                f"Failed to login with 2FA: {response.get('message', '')}"
+        data = assert_success(
+            await client.login(
+                test_user["username"], test_user["password"], two_fa_token=token
             )
+        )
 
-            assert "data" in response, "Response missing 'data'"
-            assert "token" in response["data"], "Response should include token"
-            assert "exp" in response["data"], "Response should include token expiry"
-        finally:
-            # Cleanup: Disable 2FA regardless of test outcome
-            if did_setup:
-                try:
-                    await authenticated_client.cancel_2fa(admin_credentials["password"])
-                except Exception:
-                    pass  # Ignore cleanup errors
+        assert data["token"]
+        assert "exp" in data
 
     @pytest.mark.asyncio
     async def test_verify_2fa_login_with_invalid_token(
         self,
-        authenticated_client: CFMSTestClient,
-        test_user: dict,
         client: CFMSTestClient,
-        admin_credentials: dict,
+        test_user,
+        enabled_totp,
     ):
-        """Test that login fails with invalid 2FA token."""
-        did_setup = False
-        try:
-            # Setup and enable 2FA
-            setup_response = await authenticated_client.setup_2fa()
-            assert setup_response.get("code") == 200, "Failed to setup 2FA"
-            did_setup = True
+        response = await client.login(
+            test_user["username"], test_user["password"], two_fa_token="invalid-totp"
+        )
 
-            secret = setup_response["data"]["secret"]
-            totp = pyotp.TOTP(secret)
-            token = totp.now()
-
-            validate_response = await authenticated_client.validate_2fa(token)
-            assert validate_response.get("code") == 200, "Failed to validate 2FA"
-
-            # Try to login with invalid 2FA token
-            try:
-                response = await client.login(
-                    admin_credentials["username"],
-                    admin_credentials["password"],
-                    two_fa_token="000000",
-                )
-            except Exception as e:
-                pytest.fail(f"login() raised an exception: {e}")
-
-            assert isinstance(response, dict), "Response should be a dictionary"
-            assert "code" in response, "Response missing 'code'"
-            assert response["code"] == 401, (
-                f"Expected 401 for invalid token, got {response.get('code')}"
-            )
-        finally:
-            # Always attempt to disable 2FA if setup succeeded
-            if did_setup:
-                try:
-                    await authenticated_client.cancel_2fa(admin_credentials["password"])
-                except Exception:
-                    pass  # Ignore cleanup errors
+        assert_error(response, 401)
 
     @pytest.mark.asyncio
     async def test_verify_2fa_login_with_backup_code(
         self,
-        authenticated_client: CFMSTestClient,
-        test_user: dict,
         client: CFMSTestClient,
-        admin_credentials: dict,
+        test_user,
+        enabled_totp,
     ):
-        """Test completing login with a backup code."""
-        did_setup = False
-        try:
-            # Setup and enable 2FA
-            setup_response = await authenticated_client.setup_2fa()
-            assert setup_response.get("code") == 200, "Failed to setup 2FA"
-            did_setup = True
-
-            secret = setup_response["data"]["secret"]
-            backup_codes = setup_response["data"]["backup_codes"]
-
-            totp = pyotp.TOTP(secret)
-            token = totp.now()
-
-            validate_response = await authenticated_client.validate_2fa(token)
-            assert validate_response.get("code") == 200, "Failed to validate 2FA"
-
-            # Login with backup code
-            backup_code = backup_codes[0]
-            try:
-                response = await client.login(
-                    admin_credentials["username"],
-                    admin_credentials["password"],
-                    two_fa_token=backup_code,
-                )
-            except Exception as e:
-                pytest.fail(f"login() raised an exception: {e}")
-
-            assert isinstance(response, dict), "Response should be a dictionary"
-            assert "code" in response, "Response missing 'code'"
-            assert response["code"] == 200, (
-                f"Failed to verify with backup code: {response.get('message', '')}"
+        data = assert_success(
+            await client.login(
+                test_user["username"],
+                test_user["password"],
+                two_fa_token=enabled_totp["backup_codes"][0],
             )
+        )
 
-            assert "data" in response, "Response missing 'data'"
-            assert "token" in response["data"], "Response should include token"
-        finally:
-            # Always attempt to disable 2FA if setup succeeded
-            if did_setup:
-                try:
-                    await authenticated_client.cancel_2fa(admin_credentials["password"])
-                except Exception:
-                    pass  # Ignore cleanup errors
+        assert data["token"]

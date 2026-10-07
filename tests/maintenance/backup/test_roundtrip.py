@@ -6,17 +6,18 @@ from sqlalchemy import select
 from .roundtrip_support import _seed_source
 from .support import (
     _dump_backup_tables,
-    _new_database,
     _RootedStorage,
     _test_progress,
     _write_config,
 )
 
 
-def test_backup_header_and_roundtrip_restore(backup_context, tmp_path, caplog):
+def test_backup_header_and_roundtrip_restore(
+    backup_context, tmp_path, caplog, database_factory
+):
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     source_storage = tmp_path / "source-storage"
     target_storage = tmp_path / "target-storage"
     source_storage.mkdir()

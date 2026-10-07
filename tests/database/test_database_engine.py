@@ -70,9 +70,12 @@ def test_file_sqlite_engine_applies_configured_queue_pool_limits(tmp_path) -> No
     try:
         assert engine.pool.size() == 1
         assert engine.pool.timeout() == 0
-        with engine.connect(), engine.connect():
-            with pytest.raises(SQLAlchemyTimeoutError, match="QueuePool limit"):
-                engine.connect()
+        with (
+            engine.connect(),
+            engine.connect(),
+            pytest.raises(SQLAlchemyTimeoutError, match="QueuePool limit"),
+        ):
+            engine.connect()
     finally:
         engine.dispose()
 

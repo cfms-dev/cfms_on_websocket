@@ -72,9 +72,11 @@ def test_name_mutation_rolls_back_and_translates_name_conflict() -> None:
     )
     original.sqlite_errorname = "SQLITE_CONSTRAINT_UNIQUE"
 
-    with pytest.raises(NodeNameConflictError) as caught:
-        with node_name_mutation(session, "parent", "report"):
-            raise _integrity_error(original)
+    with (
+        pytest.raises(NodeNameConflictError) as caught,
+        node_name_mutation(session, "parent", "report"),
+    ):
+        raise _integrity_error(original)
 
     assert session.rollback_calls == 1
     assert caught.value.parent_id == "parent"
@@ -87,9 +89,11 @@ def test_name_mutation_does_not_hide_other_integrity_errors() -> None:
     session = SimpleNamespace(rollback=lambda: None)
     error = _integrity_error(_OriginalError("NOT NULL constraint failed"))
 
-    with pytest.raises(IntegrityError) as caught:
-        with node_name_mutation(session, "parent", "report"):
-            raise error
+    with (
+        pytest.raises(IntegrityError) as caught,
+        node_name_mutation(session, "parent", "report"),
+    ):
+        raise error
 
     assert caught.value is error
 

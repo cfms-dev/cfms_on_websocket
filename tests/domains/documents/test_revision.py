@@ -1,133 +1,163 @@
+from pathlib import Path
+
 import pytest
+import pytest_asyncio
 
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
 
+@pytest_asyncio.fixture
+async def revision_history(authenticated_client, document_factory, tmp_path: Path):
+    document = await document_factory("Revision History")
+    document_id = document["document_id"]
+    initial = assert_success(await authenticated_client.list_revisions(document_id))
+    original_revision_id = initial["items"][0]["id"]
+    payload = tmp_path / "second-revision.bin"
+    payload.write_bytes(b"second revision content")
+    task = assert_success(await authenticated_client.upload_document(document_id))
+    await authenticated_client.upload_file_to_server(
+        task["task_data"]["task_id"], str(payload)
+    )
+    current = assert_success(await authenticated_client.list_revisions(document_id))
+    current_revision_id = next(
+        item["id"] for item in current["items"] if item["is_current"]
+    )
+    assert current_revision_id != original_revision_id
+    return {
+        "document_id": document_id,
+        "original_revision_id": original_revision_id,
+        "current_revision_id": current_revision_id,
+    }
+
+
 class TestRevisionOperations:
     @pytest.mark.asyncio
-    async def test_list_revisions(
-        self, authenticated_client: CFMSTestClient, document_factory
+    async def test_created_document_has_one_current_revision(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
     ):
-        doc = await document_factory("Revisions Test Doc")
-        doc_id = doc["document_id"]
+        document = await document_factory("Initial Revision")
 
-        # When created (and uploaded), there's 1 revision.
-        response = await authenticated_client.list_revisions(doc_id)
-        data = assert_success(response)
+        data = assert_success(
+            await authenticated_client.list_revisions(document["document_id"])
+        )
 
-        assert "items" in data
         assert len(data["items"]) == 1
         assert data["items"][0]["is_current"] is True
 
-        # Now let's upload a second revision
-        upload_resp = await authenticated_client.upload_document(doc_id)
-        upload_data = assert_success(upload_resp)
-        task_id = upload_data["task_data"]["task_id"]
+    @pytest.mark.asyncio
+    async def test_upload_adds_one_revision_and_makes_it_current(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+        tmp_path: Path,
+    ):
+        document = await document_factory("New Revision")
+        document_id = document["document_id"]
+        original = assert_success(
+            await authenticated_client.list_revisions(document_id)
+        )["items"][0]["id"]
+        payload = tmp_path / "new-revision.bin"
+        payload.write_bytes(b"new revision content")
+        task = assert_success(await authenticated_client.upload_document(document_id))
 
-        await authenticated_client.upload_file_to_server(task_id, "./pytest.ini")
-
-        # Now there should be 2 revisions
-        response2 = await authenticated_client.list_revisions(doc_id)
-        data2 = assert_success(response2)
-
-        assert len(data2["items"]) == 2
-
-        current_revs = [r for r in data2["items"] if r["is_current"]]
-        assert len(current_revs) == 1
-
-        first_page_response = await authenticated_client.list_revisions(
-            doc_id, page_size=1
+        await authenticated_client.upload_file_to_server(
+            task["task_data"]["task_id"], str(payload)
         )
-        first_page = assert_success(first_page_response)
-        second_page_response = await authenticated_client.list_revisions(
-            doc_id, page_size=1, cursor=first_page["next_cursor"]
+
+        items = assert_success(await authenticated_client.list_revisions(document_id))[
+            "items"
+        ]
+        assert len(items) == 2
+        original_revision = next(item for item in items if item["id"] == original)
+        new_revision = next(item for item in items if item["id"] != original)
+        assert original_revision["is_current"] is False
+        assert new_revision["is_current"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_revisions_cursor_returns_each_revision_once(
+        self,
+        authenticated_client: CFMSTestClient,
+        revision_history,
+    ):
+        document_id = revision_history["document_id"]
+
+        first = assert_success(
+            await authenticated_client.list_revisions(document_id, page_size=1)
         )
-        second_page = assert_success(second_page_response)
-        assert len(first_page["items"]) == 1
-        assert len(second_page["items"]) == 1
-        assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
+        second = assert_success(
+            await authenticated_client.list_revisions(
+                document_id, page_size=1, cursor=first["next_cursor"]
+            )
+        )
+
+        assert len(first["items"]) == len(second["items"]) == 1
+        assert {item["id"] for item in first["items"] + second["items"]} == {
+            revision_history["original_revision_id"],
+            revision_history["current_revision_id"],
+        }
+        assert first["has_more"] is True
+        assert second["has_more"] is False
 
     @pytest.mark.asyncio
     async def test_get_revision(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self,
+        authenticated_client: CFMSTestClient,
+        revision_history,
     ):
-        doc = await document_factory("Revision Details Doc")
-        doc_id = doc["document_id"]
+        revision_id = revision_history["current_revision_id"]
 
-        list_resp = await authenticated_client.list_revisions(doc_id)
-        data = assert_success(list_resp)
-        rev_id = data["items"][0]["id"]
+        data = assert_success(await authenticated_client.get_revision(revision_id))
 
-        # Request get_revision
-        get_resp = await authenticated_client.get_revision(rev_id)
-        rev_data = assert_success(get_resp)
-
-        assert "task_data" in rev_data
-        assert "task_id" in rev_data["task_data"]
+        assert data["task_data"]["task_id"]
 
     @pytest.mark.asyncio
     async def test_set_document_revision(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self,
+        authenticated_client: CFMSTestClient,
+        revision_history,
     ):
-        doc = await document_factory("Set Revision Doc")
-        doc_id = doc["document_id"]
+        document_id = revision_history["document_id"]
+        original_id = revision_history["original_revision_id"]
 
-        # First revision ID
-        list_resp = await authenticated_client.list_revisions(doc_id)
-        rev1_id = assert_success(list_resp)["items"][0]["id"]
+        response = await authenticated_client.set_document_revision(
+            document_id, original_id
+        )
 
-        # Upload second revision
-        upload_resp = await authenticated_client.upload_document(doc_id)
-        task_id = assert_success(upload_resp)["task_data"]["task_id"]
-        await authenticated_client.upload_file_to_server(task_id, "./pytest.ini")
-
-        list_resp2 = await authenticated_client.list_revisions(doc_id)
-        data2 = assert_success(list_resp2)
-        rev2 = next(r for r in data2["items"] if r["is_current"])
-        rev2_id = rev2["id"]
-
-        assert rev1_id != rev2_id
-
-        # Roll back to revision 1
-        set_resp = await authenticated_client.set_document_revision(doc_id, rev1_id)
-        assert_success(set_resp)
-
-        list_resp3 = await authenticated_client.list_revisions(doc_id)
-        data3 = assert_success(list_resp3)
-        check_rev1 = next(r for r in data3["items"] if r["id"] == rev1_id)
-        assert check_rev1["is_current"] is True
+        assert_success(response)
+        items = assert_success(await authenticated_client.list_revisions(document_id))[
+            "items"
+        ]
+        assert {item["id"]: item["is_current"] for item in items} == {
+            original_id: True,
+            revision_history["current_revision_id"]: False,
+        }
 
     @pytest.mark.asyncio
     async def test_delete_revision(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self,
+        authenticated_client: CFMSTestClient,
+        revision_history,
     ):
-        doc = await document_factory("Delete Revision Doc")
-        doc_id = doc["document_id"]
+        document_id = revision_history["document_id"]
+        original_id = revision_history["original_revision_id"]
 
-        # Upload second revision
-        upload_resp = await authenticated_client.upload_document(doc_id)
-        task_id = assert_success(upload_resp)["task_data"]["task_id"]
-        await authenticated_client.upload_file_to_server(task_id, "./pytest.ini")
+        response = await authenticated_client.delete_revision(original_id)
 
-        list_resp = await authenticated_client.list_revisions(doc_id)
-        data = assert_success(list_resp)
-        # Find the non-current revision
-        rev_to_delete = next(r for r in data["items"] if not r["is_current"])
-        rev_id = rev_to_delete["id"]
-
-        del_resp = await authenticated_client.delete_revision(rev_id)
-        assert_success(del_resp)
-
-        list_resp2 = await authenticated_client.list_revisions(doc_id)
-        data2 = assert_success(list_resp2)
-        assert len(data2["items"]) == 1
-        assert data2["items"][0]["id"] != rev_id
-        assert data2["items"][0]["is_current"] is True
+        assert_success(response)
+        items = assert_success(await authenticated_client.list_revisions(document_id))[
+            "items"
+        ]
+        assert [(item["id"], item["is_current"]) for item in items] == [
+            (revision_history["current_revision_id"], True)
+        ]
 
     @pytest.mark.asyncio
     async def test_list_revisions_missing_doc(
         self, authenticated_client: CFMSTestClient
     ):
-        resp = await authenticated_client.list_revisions("invalid-doc-id-12345")
-        assert_error(resp, 404)
+        response = await authenticated_client.list_revisions("invalid-doc-id-12345")
+
+        assert_error(response, 404)

@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
+import pytest
 from sqlalchemy import create_engine
 
 from include.database.models.documents import Document, DocumentRevision
+from tools import explain_query_plans
 from tools.explain_query_plans import EXPECTED_INDEXES, QUERIES, explain, time_query
 
 
@@ -13,8 +17,9 @@ def test_expected_indexes_match_document_models():
     }
 
 
-def test_queries_match_current_node_schema(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'query-plans.db'}")
+@pytest.fixture
+def query_engine():
+    engine = create_engine("sqlite:///:memory:")
     schema = """
         CREATE TABLE nodes (
             id TEXT PRIMARY KEY,
@@ -35,15 +40,22 @@ def test_queries_match_current_node_schema(tmp_path):
             parent_revision_id TEXT
         );
     """
-    with engine.begin() as conn:
-        for statement in schema.split(";"):
-            if statement.strip():
-                conn.exec_driver_sql(statement)
-        conn.exec_driver_sql(
-            "INSERT INTO nodes VALUES ('/', 'directory', 'root', NULL, 1, 0)"
-        )
-        conn.exec_driver_sql("INSERT INTO folders VALUES ('/')")
+    try:
+        with engine.begin() as conn:
+            for statement in schema.split(";"):
+                if statement.strip():
+                    conn.exec_driver_sql(statement)
+            conn.exec_driver_sql(
+                "INSERT INTO nodes VALUES ('/', 'directory', 'root', NULL, 1, 0)"
+            )
+            conn.exec_driver_sql("INSERT INTO folders VALUES ('/')")
+        yield engine
+    finally:
+        engine.dispose()
 
+
+@pytest.mark.parametrize("query_name", QUERIES)
+def test_query_can_be_explained_against_node_schema(query_engine, query_name):
     params = {
         "pattern": "%",
         "limit": 64,
@@ -51,9 +63,55 @@ def test_queries_match_current_node_schema(tmp_path):
         "document_id": "",
         "revision_id": "",
     }
-    for sql in QUERIES.values():
-        normalized_sql = "\n".join(line.rstrip() for line in sql.strip().splitlines())
-        assert explain(engine, normalized_sql, params)
-        row_count, mean_ms, max_ms = time_query(engine, normalized_sql, params, runs=1)
-        assert row_count >= 0
-        assert 0 <= mean_ms <= max_ms
+
+    plan = explain(query_engine, QUERIES[query_name], params)
+
+    assert plan
+
+
+@pytest.mark.parametrize(
+    ("query_name", "expected_rows"),
+    [
+        ("search_directory_candidates", 1),
+        ("effective_active_revision_chain", 0),
+        ("access_ancestor_tree", 1),
+        ("deletion_subtree", 0),
+        ("revisions_by_document", 0),
+        ("child_revisions", 0),
+        ("documents_by_current_revision", 0),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_time_query_reports_rows_from_seeded_node_schema(
+    query_engine, monkeypatch, query_name, expected_rows
+):
+    params = {
+        "pattern": "%",
+        "limit": 64,
+        "folder_id": "/",
+        "document_id": "",
+        "revision_id": "",
+    }
+    clock = iter((10.0, 10.125))
+    monkeypatch.setattr(
+        explain_query_plans, "time", SimpleNamespace(perf_counter=lambda: next(clock))
+    )
+
+    row_count, mean_ms, max_ms = time_query(
+        query_engine, QUERIES[query_name], params, runs=1
+    )
+
+    assert row_count == expected_rows
+    assert mean_ms == 125.0
+    assert max_ms == 125.0
+
+
+def test_time_query_reports_mean_and_max_across_runs(query_engine, monkeypatch):
+    clock = iter((10.0, 10.125, 11.0, 11.25, 12.0, 12.375))
+    monkeypatch.setattr(
+        explain_query_plans, "time", SimpleNamespace(perf_counter=lambda: next(clock))
+    )
+
+    result = time_query(query_engine, "SELECT id FROM nodes", {}, runs=3)
+
+    assert result == (1, 250.0, 375.0)

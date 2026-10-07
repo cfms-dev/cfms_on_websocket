@@ -68,7 +68,11 @@ def _new_database(base, path: Path):
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    base.metadata.create_all(db_engine)
+    try:
+        base.metadata.create_all(db_engine)
+    except BaseException:
+        db_engine.dispose()
+        raise
     return db_engine, sessionmaker(bind=db_engine)
 
 

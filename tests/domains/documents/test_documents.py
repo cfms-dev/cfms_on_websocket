@@ -26,7 +26,7 @@ class TestDocumentOperations:
     @pytest.mark.asyncio
     async def test_get_nonexistent_document(self, authenticated_client: CFMSTestClient):
         response = await authenticated_client.get_document("nonexistent_doc_id_xyz_123")
-        assert response.get("code") in [400, 404]
+        assert_error(response, 404)
 
     @pytest.mark.asyncio
     async def test_get_document_info(
@@ -171,7 +171,7 @@ class TestDocumentOperations:
         assert_success(delete_response)
 
         get_response = await authenticated_client.get_document(document_id)
-        assert get_response.get("code") != 200
+        assert_error(get_response, 404)
 
     @pytest.mark.asyncio
     async def test_create_document_with_empty_title(

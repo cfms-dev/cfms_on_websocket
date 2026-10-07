@@ -135,7 +135,7 @@ def test_concurrent_creates_have_one_winner(tmp_path, first_type, second_type) -
         session.add(Folder(id="/", name="/"))
         session.commit()
 
-    barrier = Barrier(2)
+    barrier = Barrier(2, timeout=10)
 
     node_types = (first_type, second_type)
 
@@ -165,8 +165,10 @@ def test_concurrent_creates_have_one_winner(tmp_path, first_type, second_type) -
     ("statement", "index_name"),
     [
         (
-            "SELECT id FROM nodes WHERE parent_id = '/' AND status = 0 "
-            "ORDER BY lower(name), id",
+            (
+                "SELECT id FROM nodes WHERE parent_id = '/' AND status = 0 "
+                "ORDER BY lower(name), id"
+            ),
             "ix_nodes_parent_status_lower_name_id",
         ),
         (

@@ -2,6 +2,7 @@ import shutil
 import zipfile
 from pathlib import Path
 
+import pytest
 import tomlkit
 
 from .support import (
@@ -79,20 +80,25 @@ license = "Apache-2.0"
     assert config["extensions"]["enabled"] == ["cli_extension"]
 
 
-def test_backup_export_interactive_rejects_other_arguments(tmp_path):
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        pytest.param(["backup.confbak"], id="output-path"),
+        pytest.param(["--key-out", "backup.key"], id="key-output"),
+        pytest.param(["--verbose"], id="verbose"),
+    ],
+)
+def test_backup_export_interactive_rejects_other_arguments(tmp_path, extra_args):
     src_dir = _make_src_dir(tmp_path)
-    cases = [
-        ["backup", "export", "-i", "backup.confbak"],
-        ["backup", "export", "-i", "--key-out", "backup.key"],
-        ["backup", "export", "-i", "--verbose"],
-    ]
 
-    for args in cases:
-        result = _run_maintain(src_dir, args, check=False)
-        output = _normalize_cli_output(result.stdout + result.stderr)
+    result = _run_maintain(
+        src_dir, ["backup", "export", "-i", *extra_args], check=False
+    )
 
-        assert result.returncode != 0
-        assert "Interactive export must be invoked" in output
+    assert result.returncode == 2
+    assert "Interactive export must be invoked" in _normalize_cli_output(
+        result.stdout + result.stderr
+    )
 
 
 def test_backup_export_interactive_wizard_and_import(tmp_path):

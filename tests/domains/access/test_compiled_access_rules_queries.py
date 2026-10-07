@@ -313,7 +313,7 @@ def test_folder_access_context_reuses_queries_across_depth(access_rule_session):
             event.remove(session.bind, "before_cursor_execute", collect_statement)
         return context, len(statements)
 
-    shallow_context, shallow_statement_count = load_with_statement_count(shallow)
+    _shallow_context, shallow_statement_count = load_with_statement_count(shallow)
     deep_context, deep_statement_count = load_with_statement_count(deep)
     assert deep_statement_count == shallow_statement_count
 

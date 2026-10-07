@@ -8,8 +8,8 @@ import pytest
 from alembic.migration import MigrationContext
 from typer.testing import CliRunner
 
-import maintenance.operations.deployment as deployment
 from maintenance.cli import app
+from maintenance.operations import deployment
 from maintenance.operations.deployment import (
     database as deployment_database,
 )

@@ -1,7 +1,6 @@
 import asyncio
 import queue
 import threading
-import time
 
 import pytest
 
@@ -80,6 +79,7 @@ class _SyncWebSocket:
         self.sent = []
         self.closed = threading.Event()
         self.send_entered = threading.Event()
+        self.send_completed = threading.Event()
         self.release_send = threading.Event()
         self.block_send = block_send
         self.send_error = send_error
@@ -95,6 +95,7 @@ class _SyncWebSocket:
         if self.send_error is not None:
             raise self.send_error
         self.sent.append(payload)
+        self.send_completed.set()
 
     def close(self, *args, **kwargs):
         self.release_send.set()
@@ -104,6 +105,22 @@ class _SyncWebSocket:
 class _InvalidFrameWebSocket(_SyncWebSocket):
     def recv(self, timeout=None, decode=None):
         return b"bad"
+
+
+class _ControlledInboundWebSocket(_SyncWebSocket):
+    def __init__(self, *, block_send=False):
+        super().__init__(block_send=block_send)
+        self.incoming = _ORIGINAL_QUEUE()
+
+    def recv(self, timeout=None, decode=None):
+        payload = self.incoming.get()
+        if payload is None:
+            raise RuntimeError("closed")
+        return payload
+
+    def close(self, *args, **kwargs):
+        super().close(*args, **kwargs)
+        self.incoming.put(None)
 
 
 class _InboundFloodWebSocket(_SyncWebSocket):
@@ -156,9 +173,28 @@ class _ShutdownRaceQueue(_ORIGINAL_QUEUE):
         return super().put(item, block=block, timeout=timeout)
 
 
+class _EnqueueSignalingQueue(_ORIGINAL_QUEUE):
+    def __init__(self, maxsize, expected_puts, all_enqueued):
+        super().__init__(maxsize)
+        self.expected_puts = expected_puts
+        self.all_enqueued = all_enqueued
+        self.put_count = 0
+        self.put_count_lock = threading.Lock()
+
+    def put(self, item, block=True, timeout=None):
+        super().put(item, block=block, timeout=timeout)
+        with self.put_count_lock:
+            self.put_count += 1
+            if self.put_count == self.expected_puts:
+                self.all_enqueued.set()
+
+
 def _finish_connection_close(connection, websocket) -> None:
     connection.close()
     websocket.close(code=connection.close_code, reason=connection.close_reason)
+    for thread in (connection._dispatcher, connection._writer):
+        thread.join(timeout=2)
+        assert not thread.is_alive()
 
 
 def test_stream_send_waits_until_writer_sends():
@@ -182,6 +218,8 @@ def test_stream_send_waits_until_writer_sends():
         assert len(websocket.sent) == 1
     finally:
         _finish_connection_close(connection, websocket)
+        sender.join(timeout=1)
+        assert not sender.is_alive()
 
 
 def test_pending_inbound_stream_limit_closes_flooding_connection():
@@ -234,9 +272,7 @@ def test_stream_send_nowait_does_not_wait_for_socket_io():
         assert websocket.sent == []
 
         websocket.release_send.set()
-        deadline = time.monotonic() + 1
-        while not websocket.sent and time.monotonic() < deadline:
-            time.sleep(0.01)
+        assert websocket.send_completed.wait(timeout=1)
         assert len(websocket.sent) == 1
     finally:
         _finish_connection_close(connection, websocket)
@@ -258,21 +294,29 @@ def test_stream_send_nowait_returns_false_when_queue_is_full():
         _finish_connection_close(connection, websocket)
 
 
-def test_stream_send_nowait_conclusion_removes_stream_when_queued():
-    websocket = _SyncWebSocket(block_send=True)
+def test_queued_conclusion_rejects_later_frames_for_finished_server_stream():
+    websocket = _ControlledInboundWebSocket(block_send=True)
     connection = MultiplexedConnection(websocket)
     stream = connection.open_stream()
 
     try:
-        assert stream.frame_id in connection._streams
         assert stream.send_nowait(b"done", FrameType.CONCLUSION) is True
-        assert stream.frame_id not in connection._streams
+        websocket.incoming.put(
+            encode_frame(stream.frame_id, FrameType.PROCESS, b"late")
+        )
+
+        connection._dispatcher.join(timeout=1)
+        assert not connection._dispatcher.is_alive()
+        assert connection.close_code == 1002
+        assert (
+            connection.close_reason == "Protocol error: invalid client-initiated stream"
+        )
     finally:
         _finish_connection_close(connection, websocket)
 
 
-def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
-    websocket = _SyncWebSocket(block_send=True)
+def test_unqueued_conclusion_keeps_original_stream_receiving_frames():
+    websocket = _ControlledInboundWebSocket(block_send=True)
     connection = MultiplexedConnection(websocket)
 
     try:
@@ -284,7 +328,14 @@ def test_stream_send_nowait_conclusion_keeps_stream_when_queue_is_full():
 
         stream = connection.open_stream()
         assert stream.send_nowait(b"overflow", FrameType.CONCLUSION) is False
-        assert stream.frame_id in connection._streams
+        websocket.incoming.put(
+            encode_frame(stream.frame_id, FrameType.PROCESS, b"reply")
+        )
+
+        received = stream.recv(timeout=1)
+        assert received.stream_id == stream.frame_id
+        assert received.frame_type is FrameType.PROCESS
+        assert received.data == b"reply"
     finally:
         _finish_connection_close(connection, websocket)
 
@@ -528,11 +579,12 @@ def test_close_unblocks_send_waiting_for_outbound_queue_space(monkeypatch):
     connection = MultiplexedConnection(websocket)
     done = threading.Event()
     errors = []
+    sender = None
 
     def send_when_queue_is_full():
         try:
             connection.open_stream().send(b"blocked-on-queue", FrameType.PROCESS)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Report any worker failure in the main thread.
             errors.append(exc)
         finally:
             done.set()
@@ -557,6 +609,9 @@ def test_close_unblocks_send_waiting_for_outbound_queue_space(monkeypatch):
     finally:
         websocket.release_send.set()
         _finish_connection_close(connection, websocket)
+        if sender is not None:
+            sender.join(timeout=1)
+            assert not sender.is_alive()
 
 
 def test_stream_send_raises_when_writer_fails():
@@ -571,7 +626,15 @@ def test_stream_send_raises_when_writer_fails():
         _finish_connection_close(connection, websocket)
 
 
-def test_pending_stream_sends_preserve_writer_failure_cause():
+def test_pending_stream_sends_preserve_writer_failure_cause(monkeypatch):
+    all_enqueued = threading.Event()
+
+    def queue_factory(maxsize=0):
+        if maxsize == OUTBOUND_QUEUE_SIZE:
+            return _EnqueueSignalingQueue(maxsize, 4, all_enqueued)
+        return _ORIGINAL_QUEUE(maxsize)
+
+    monkeypatch.setattr(multiplexing_module.queue, "Queue", queue_factory)
     send_error = OSError("boom")
     websocket = _SyncWebSocket(block_send=True, send_error=send_error)
     connection = MultiplexedConnection(websocket)
@@ -581,7 +644,7 @@ def test_pending_stream_sends_preserve_writer_failure_cause():
         try:
             stream = connection.open_stream()
             stream.send(f"payload-{index}".encode(), FrameType.PROCESS)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Report any worker failure in the main thread.
             errors.append(exc)
 
     threads = [
@@ -595,13 +658,7 @@ def test_pending_stream_sends_preserve_writer_failure_cause():
         for thread in threads[1:]:
             thread.start()
 
-        deadline = time.monotonic() + 1
-        while connection._pending_outbound_frames.qsize() < len(threads) - 1:
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(0.01)
-
-        assert connection._pending_outbound_frames.qsize() == len(threads) - 1
+        assert all_enqueued.wait(timeout=1)
         websocket.release_send.set()
 
         for thread in threads:
@@ -614,7 +671,9 @@ def test_pending_stream_sends_preserve_writer_failure_cause():
         websocket.release_send.set()
         _finish_connection_close(connection, websocket)
         for thread in threads:
-            thread.join(timeout=1)
+            if thread.ident is not None:
+                thread.join(timeout=1)
+                assert not thread.is_alive()
 
 
 def test_concurrent_stream_sends_are_serialized_by_writer():
@@ -628,7 +687,7 @@ def test_concurrent_stream_sends_are_serialized_by_writer():
             stream = connection.open_stream()
             barrier.wait(timeout=1)
             stream.send(f"payload-{index}".encode(), FrameType.PROCESS)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Report any worker failure in the main thread.
             errors.append(exc)
 
     threads = [
@@ -648,6 +707,10 @@ def test_concurrent_stream_sends_are_serialized_by_writer():
         assert len(websocket.sent) == 5
     finally:
         _finish_connection_close(connection, websocket)
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=1)
+                assert not thread.is_alive()
 
 
 def test_broadcast_does_not_wait_for_slow_client():
@@ -698,9 +761,11 @@ def test_broadcast_logs_diagnostics_when_dropping_slow_client(monkeypatch):
         on_global_broadcast("hello")
 
         assert warnings == [
-            "Dropped slow client during global broadcast: "
-            "remote_address=('127.0.0.1', 12345), "
-            f"outbound_queue_size={OUTBOUND_QUEUE_SIZE}"
+            (
+                "Dropped slow client during global broadcast: "
+                "remote_address=('127.0.0.1', 12345), "
+                f"outbound_queue_size={OUTBOUND_QUEUE_SIZE}"
+            )
         ]
     finally:
         with clients_lock:
@@ -714,21 +779,22 @@ def test_broadcast_does_not_start_slow_client_close_handshake(monkeypatch):
     healthy_websocket = _SyncWebSocket()
     healthy_connection = MultiplexedConnection(healthy_websocket)
     broadcast_done = threading.Event()
-
-    assert slow_connection.open_stream().send_nowait(b"blocked") is True
-    assert slow_websocket.send_entered.wait(timeout=1)
-    for _ in range(OUTBOUND_QUEUE_SIZE):
-        assert slow_connection.open_stream().send_nowait(b"queued") is True
-
-    monkeypatch.setattr(
-        broadcast_module, "clients", [slow_connection, healthy_connection]
-    )
-    broadcaster = threading.Thread(
-        target=lambda: (on_global_broadcast("hello"), broadcast_done.set())
-    )
-    broadcaster.start()
+    broadcaster = None
 
     try:
+        assert slow_connection.open_stream().send_nowait(b"blocked") is True
+        assert slow_websocket.send_entered.wait(timeout=1)
+        for _ in range(OUTBOUND_QUEUE_SIZE):
+            assert slow_connection.open_stream().send_nowait(b"queued") is True
+
+        monkeypatch.setattr(
+            broadcast_module, "clients", [slow_connection, healthy_connection]
+        )
+        broadcaster = threading.Thread(
+            target=lambda: (on_global_broadcast("hello"), broadcast_done.set())
+        )
+        broadcaster.start()
+
         assert broadcast_done.wait(timeout=1)
         assert not slow_websocket.close_entered.is_set()
         assert healthy_websocket.send_entered.wait(timeout=1)
@@ -737,7 +803,9 @@ def test_broadcast_does_not_start_slow_client_close_handshake(monkeypatch):
         slow_websocket.release_send.set()
         _finish_connection_close(slow_connection, slow_websocket)
         _finish_connection_close(healthy_connection, healthy_websocket)
-        broadcaster.join(timeout=1)
+        if broadcaster is not None:
+            broadcaster.join(timeout=1)
+            assert not broadcaster.is_alive()
 
 
 def test_broadcast_ignores_already_closed_connections(monkeypatch):

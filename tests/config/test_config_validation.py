@@ -42,8 +42,8 @@ def _valid_config() -> dict:
     }
 
 
-@pytest.fixture(autouse=True)
-def clear_proxy_network_cache():
+@pytest.fixture
+def _clear_proxy_network_cache():
     parse_trusted_proxy_networks.cache_clear()
     yield
     parse_trusted_proxy_networks.cache_clear()
@@ -188,26 +188,39 @@ def test_request_rate_control_defaults_to_observation_mode():
 
     assert policy.mode == "observe"
     assert policy.cost_for("unconfigured") == 1
+
+
+def test_admission_control_uses_default_connection_and_request_limits():
+    config = _valid_config()
+
     admission_policy = AdmissionControlPolicy.from_config(config)
+
     assert admission_policy.max_connections == 64
     assert admission_policy.max_inflight_requests == 12
 
 
-def test_database_pool_policy_defaults_and_overrides():
+@pytest.mark.parametrize(
+    ("pool", "expected"),
+    [
+        pytest.param(
+            {},
+            DatabasePoolPolicy(size=5, max_overflow=10, timeout_seconds=30),
+            id="defaults",
+        ),
+        pytest.param(
+            {"size": 3, "max_overflow": 2, "timeout_seconds": 0},
+            DatabasePoolPolicy(size=3, max_overflow=2, timeout_seconds=0),
+            id="overrides",
+        ),
+    ],
+)
+def test_database_pool_policy_uses_configured_values_or_defaults(pool, expected):
     config = _valid_config()
+    config["database"] = {"pool": pool}
 
-    assert DatabasePoolPolicy.from_config(config) == DatabasePoolPolicy(
-        size=5,
-        max_overflow=10,
-        timeout_seconds=30,
-    )
+    policy = DatabasePoolPolicy.from_config(config)
 
-    config["database"] = {"pool": {"size": 3, "max_overflow": 2, "timeout_seconds": 0}}
-    assert DatabasePoolPolicy.from_config(config) == DatabasePoolPolicy(
-        size=3,
-        max_overflow=2,
-        timeout_seconds=0,
-    )
+    assert policy == expected
 
 
 @pytest.mark.parametrize(
@@ -248,45 +261,48 @@ def test_database_pool_capacity_mismatch_emits_warning():
     assert "database pool capacity" in warnings[0]
 
 
-def test_identity_permission_retention_defaults_and_overrides():
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        pytest.param({}, (30, 3600, 500), id="defaults"),
+        pytest.param(
+            {"retention_days": 14, "cleanup_interval_seconds": 600, "batch_size": 100},
+            (14, 600, 100),
+            id="overrides",
+        ),
+    ],
+)
+def test_identity_permission_retention_uses_configured_values_or_defaults(
+    settings, expected
+):
     config = _valid_config()
+    config["identity"] = {"permission_retention": settings}
+
     policy = IdentityPermissionRetentionPolicy.from_config(config)
 
-    assert policy.retention_days == 30
-    assert policy.cleanup_interval_seconds == 3600
-    assert policy.batch_size == 500
-
-    config["identity"] = {
-        "permission_retention": {
-            "retention_days": 14,
-            "cleanup_interval_seconds": 600,
-            "batch_size": 100,
-        }
-    }
-    policy = IdentityPermissionRetentionPolicy.from_config(config)
-
-    assert policy.retention_days == 14
-    assert policy.cleanup_interval_seconds == 600
-    assert policy.batch_size == 100
+    assert (
+        policy.retention_days,
+        policy.cleanup_interval_seconds,
+        policy.batch_size,
+    ) == expected
 
 
-def test_audit_retention_defaults_and_overrides():
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        pytest.param({}, (365, 500), id="defaults"),
+        pytest.param(
+            {"retention_days": 730, "batch_size": 100}, (730, 100), id="overrides"
+        ),
+    ],
+)
+def test_audit_retention_uses_configured_values_or_defaults(settings, expected):
     config = _valid_config()
+    config["maintenance"] = {"audit_retention": settings}
+
     policy = AuditRetentionPolicy.from_config(config)
 
-    assert policy.retention_days == 365
-    assert policy.batch_size == 500
-
-    config["maintenance"] = {
-        "audit_retention": {
-            "retention_days": 730,
-            "batch_size": 100,
-        }
-    }
-    policy = AuditRetentionPolicy.from_config(config)
-
-    assert policy.retention_days == 730
-    assert policy.batch_size == 100
+    assert (policy.retention_days, policy.batch_size) == expected
 
 
 @pytest.mark.parametrize(
@@ -383,21 +399,32 @@ def test_rate_limit_provider_selection_is_validated():
         validate_config(config)
 
 
-def test_scheduling_policy_defaults_and_overrides():
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        pytest.param({}, (4, 60, 20), id="defaults"),
+        pytest.param(
+            {
+                "worker_threads": 2,
+                "execution_lease_seconds": 30,
+                "lease_refresh_seconds": 10,
+            },
+            (2, 30, 10),
+            id="overrides",
+        ),
+    ],
+)
+def test_scheduling_policy_uses_configured_values_or_defaults(settings, expected):
     config = _valid_config()
+    config["scheduling"] = settings
 
-    assert SchedulingPolicy.from_config(config).worker_threads == 4
-
-    config["scheduling"] = {
-        "worker_threads": 2,
-        "execution_lease_seconds": 30,
-        "lease_refresh_seconds": 10,
-    }
     policy = SchedulingPolicy.from_config(config)
 
-    assert policy.worker_threads == 2
-    assert policy.execution_lease_seconds == 30
-    assert policy.lease_refresh_seconds == 10
+    assert (
+        policy.worker_threads,
+        policy.execution_lease_seconds,
+        policy.lease_refresh_seconds,
+    ) == expected
 
 
 @pytest.mark.parametrize("provider", ["database", "dramatiq"])
@@ -499,6 +526,7 @@ def test_proxy_networks_follow_config_changes():
     assert str(reloaded_networks[0]) == "192.0.2.0/24"
 
 
+@pytest.mark.usefixtures("_clear_proxy_network_cache")
 def test_unchanged_proxy_networks_reuse_parse_cache():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = ["10.0.0.0/8"]
@@ -521,25 +549,36 @@ def test_policy_is_built_from_validated_config():
     assert policy.ip_failure_threshold == 42
 
 
-def test_policy_sources_preserve_required_root_sections():
-    with pytest.raises(ConfigValidationError) as security_error:
-        AuthThrottlePolicy.from_config({})
-    with pytest.raises(ConfigValidationError) as server_error:
-        AdmissionControlPolicy.from_config({})
+@pytest.mark.parametrize(
+    ("policy_type", "section"),
+    [
+        pytest.param(AuthThrottlePolicy, "security", id="security"),
+        pytest.param(AdmissionControlPolicy, "server", id="server"),
+    ],
+)
+def test_policy_sources_require_their_root_section(policy_type, section):
+    with pytest.raises(
+        ConfigValidationError, match=f"^Missing configuration section '{section}'$"
+    ):
+        policy_type.from_config({})
 
-    assert str(security_error.value) == "Missing configuration section 'security'"
-    assert str(server_error.value) == "Missing configuration section 'server'"
 
+@pytest.mark.parametrize(
+    ("policy_type", "config"),
+    [
+        pytest.param(DocumentUploadPolicy, {}, id="absent-upload"),
+        pytest.param(DocumentDownloadRiskPolicy, {}, id="absent-download"),
+        pytest.param(
+            DocumentCreationRiskPolicy,
+            {"document": {"upload": {"creation_risk_control": None}}},
+            id="null-creation-risk",
+        ),
+    ],
+)
+def test_document_policy_sources_default_optional_sections(policy_type, config):
+    policy = policy_type.from_config(config)
 
-def test_document_policy_sources_preserve_optional_section_semantics():
-    assert DocumentUploadPolicy.from_config({}) == DocumentUploadPolicy()
-    assert DocumentDownloadRiskPolicy.from_config({}) == DocumentDownloadRiskPolicy()
-    assert (
-        DocumentCreationRiskPolicy.from_config(
-            {"document": {"upload": {"creation_risk_control": None}}}
-        )
-        == DocumentCreationRiskPolicy()
-    )
+    assert policy == policy_type()
 
 
 @pytest.mark.parametrize(
@@ -588,24 +627,34 @@ def test_policy_positive_integer_fields_reject_booleans(policy_type, config, pat
     assert path in str(error.value)
 
 
-def test_declarative_policy_fields_do_not_coerce_values():
-    with pytest.raises(ConfigValidationError) as boolean_error:
-        AuthThrottlePolicy.from_config({"security": {"auth_throttle": {"enabled": 1}}})
-    with pytest.raises(ConfigValidationError) as ratio_error:
-        DocumentCreationRiskPolicy.from_config(
+@pytest.mark.parametrize(
+    ("policy_type", "config", "path"),
+    [
+        pytest.param(
+            AuthThrottlePolicy,
+            {"security": {"auth_throttle": {"enabled": 1}}},
+            "security.auth_throttle.enabled",
+            id="integer-is-not-boolean",
+        ),
+        pytest.param(
+            DocumentCreationRiskPolicy,
             {
                 "document": {
                     "upload": {
                         "creation_risk_control": {"pending_elevated_ratio": "0.5"}
                     }
                 }
-            }
-        )
+            },
+            "document.upload.creation_risk_control.pending_elevated_ratio",
+            id="string-is-not-ratio",
+        ),
+    ],
+)
+def test_declarative_policy_fields_do_not_coerce_values(policy_type, config, path):
+    with pytest.raises(ConfigValidationError) as error:
+        policy_type.from_config(config)
 
-    assert "security.auth_throttle.enabled" in str(boolean_error.value)
-    assert "document.upload.creation_risk_control.pending_elevated_ratio" in str(
-        ratio_error.value
-    )
+    assert path in str(error.value)
 
 
 def test_policy_mapping_conversion_and_unknown_fields_preserve_compatibility():
@@ -623,14 +672,23 @@ def test_policy_mapping_conversion_and_unknown_fields_preserve_compatibility():
     assert policy.action_costs == (("login", 2), ("search", 5))
 
 
-def test_document_upload_policy_defaults_and_overrides():
+@pytest.mark.parametrize(
+    ("settings", "expected_pending"),
+    [
+        pytest.param({}, 16, id="defaults"),
+        pytest.param({"max_pending_documents_per_creator": 8}, 8, id="overrides"),
+    ],
+)
+def test_document_upload_policy_uses_configured_values_or_defaults(
+    settings, expected_pending
+):
     config = _valid_config()
-    assert DocumentUploadPolicy.from_config(config).start_timeout_seconds == 3600
+    config["document"] = {"upload": settings}
 
-    config["document"] = {"upload": {"max_pending_documents_per_creator": 8}}
-    assert (
-        DocumentUploadPolicy.from_config(config).max_pending_documents_per_creator == 8
-    )
+    policy = DocumentUploadPolicy.from_config(config)
+
+    assert policy.start_timeout_seconds == 3600
+    assert policy.max_pending_documents_per_creator == expected_pending
 
 
 def test_document_creation_risk_policy_defaults():
@@ -643,22 +701,28 @@ def test_document_creation_risk_policy_defaults():
     assert policy.ip_refill_tokens == 1000
 
 
-def test_document_download_risk_policy_defaults_and_overrides():
+@pytest.mark.parametrize(
+    ("settings", "expected_mode", "expected_capacity"),
+    [
+        pytest.param({}, "observe", 5, id="defaults"),
+        pytest.param(
+            {"mode": "enforce", "task_capacity": 8}, "enforce", 8, id="overrides"
+        ),
+    ],
+)
+def test_document_download_risk_policy_uses_configured_values_or_defaults(
+    settings, expected_mode, expected_capacity
+):
     config = _valid_config()
+    config["document"] = {"download": {"risk_control": settings}}
+
     policy = DocumentDownloadRiskPolicy.from_config(config)
 
-    assert policy.mode == "observe"
+    assert policy.mode == expected_mode
     assert policy.issue_account_refill_tokens == 300
     assert policy.transfer_ip_refill_tokens == 1000
-    assert policy.task_capacity == 5
+    assert policy.task_capacity == expected_capacity
     assert policy.task_refill_tokens == 10
-
-    config["document"] = {
-        "download": {"risk_control": {"mode": "enforce", "task_capacity": 8}}
-    }
-    policy = DocumentDownloadRiskPolicy.from_config(config)
-    assert policy.mode == "enforce"
-    assert policy.task_capacity == 8
 
 
 @pytest.mark.parametrize(
@@ -794,7 +858,11 @@ def test_invalid_reload_keeps_previous_configuration(tmp_path):
     config_path.write_text(
         """
 [server]
+file_chunk_size = 2097152
 trusted_proxy_networks = ["not-a-cidr"]
+
+[extensions]
+enabled = []
 
 [security]
 pepper = "test-pepper"
@@ -805,7 +873,11 @@ require_client_cert = false
     previous_data = parse(
         """
 [server]
+file_chunk_size = 2097152
 trusted_proxy_networks = ["127.0.0.1/32"]
+
+[extensions]
+enabled = []
 
 [security]
 pepper = "test-pepper"
@@ -818,8 +890,10 @@ require_client_cert = false
     config._lock = threading.Lock()
     config._initialized = True
 
-    assert config.reload() is False
-    assert config._data is previous_data
+    reloaded = config.reload()
+
+    assert reloaded is False
+    assert dict(config) == previous_data
 
 
 def test_secret_initialization_uses_config_directory_sentinel(tmp_path, monkeypatch):

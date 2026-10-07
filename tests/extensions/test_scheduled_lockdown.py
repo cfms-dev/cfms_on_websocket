@@ -65,7 +65,16 @@ def test_transition_payloads_reject_invalid_values(model, payload):
         model.model_validate(payload)
 
 
-def test_window_uses_execution_id_as_unique_activation(monkeypatch):
+@pytest.mark.parametrize(
+    ("execution_id", "scheduled_for", "expires_at"),
+    [
+        pytest.param("execution-1", 100.0, 160.0, id="first-occurrence"),
+        pytest.param("execution-2", 200.0, 260.0, id="later-occurrence"),
+    ],
+)
+def test_window_uses_execution_id_as_unique_activation(
+    monkeypatch, execution_id, scheduled_for, expires_at
+):
     calls = []
 
     def apply(activation_id, expires_at, reason):
@@ -81,22 +90,17 @@ def test_window_uses_execution_id_as_unique_activation(monkeypatch):
         reason="Maintenance",
     )
 
-    first = extension.run_scheduled_lockdown_window(_context("execution-1"), payload)
-    second = extension.run_scheduled_lockdown_window(
-        _context("execution-2", 200.0), payload
+    result = extension.run_scheduled_lockdown_window(
+        _context(execution_id, scheduled_for), payload
     )
 
-    assert calls == [
-        ("execution-1", 160.0, "Maintenance"),
-        ("execution-2", 260.0, "Maintenance"),
-    ]
-    assert first.data == {
-        "activation_id": "execution-1",
-        "expires_at": 160.0,
+    assert calls == [(execution_id, expires_at, "Maintenance")]
+    assert result.data == {
+        "activation_id": execution_id,
+        "expires_at": expires_at,
         "outcome": "applied",
         "cancelled_file_tasks": 2,
     }
-    assert second.data["activation_id"] == "execution-2"
 
 
 def test_enable_uses_execution_id_without_an_expiry(monkeypatch):

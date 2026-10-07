@@ -25,7 +25,6 @@ def guard_context(monkeypatch, tmp_path):
     from include.database.session import Base
     from include.domains.security.guards import login
     from include.providers.caching.memory import MemoryCachingProvider
-    from include.providers.manager import ProviderManager
 
     test_engine = create_engine(f"sqlite:///{tmp_path / 'guard.db'}")
     Base.metadata.create_all(
@@ -61,7 +60,9 @@ def guard_context(monkeypatch, tmp_path):
         "from_config",
         classmethod(lambda _cls: policy),
     )
-    ProviderManager().register(MemoryCachingProvider())
+    provider = SimpleNamespace(caching=MemoryCachingProvider())
+    monkeypatch.setattr(login, "ProviderManager", lambda: provider)
+    monkeypatch.setattr(login.time, "time", lambda: 1_700_000_000.0)
     monkeypatch.setattr(login.LoginGuard, "_banned_rules", [])
     monkeypatch.setattr(login.LoginGuard, "_networks_loaded", True)
 
@@ -238,10 +239,22 @@ def test_permanent_access_compatibility_method_was_removed(guard_context):
 
 def test_lockout_invalidation_event_clears_local_cache(guard_context):
     guard = guard_context.login.LoginGuard
-    key = guard_context.TrafficThrottle.make_cache_key("192.0.2.25")
-    cache = guard_context.login.ProviderManager().caching
-    cache.set(guard._cache_key(key), 1_800_000_000.0, ttl=600)
+    ip = "192.0.2.25"
+    factor = guard_context.login.AuthFactor.PASSWORD
+    with guard_context.Session.begin() as session:
+        session.add(
+            guard_context.TrafficThrottle(
+                ip_address=ip,
+                failed_attempts=3,
+                last_attempt=1_700_000_000.0,
+                locked_until=1_700_000_600.0,
+            )
+        )
+    assert guard.evaluate(ip, "alice", factor).allowed is False
+    with guard_context.Session.begin() as session:
+        session.delete(session.get(guard_context.TrafficThrottle, ip))
+    assert guard.evaluate(ip, "alice", factor).allowed is False
 
     guard.handle_event('{"type":"invalidate_lockouts","keys":[["ip","192.0.2.25"]]}')
 
-    assert cache.get(guard._cache_key(key)) is None
+    assert guard.evaluate(ip, "alice", factor).allowed is True

@@ -159,7 +159,10 @@ def test_http_extension_shutdown_does_not_reload_changed_config(
 def test_invalid_http_configuration_is_rejected(http_api_modules, section):
     config = {"extensions": {"http_api": section}}
 
-    with pytest.raises(Exception, match="Invalid extensions.http_api"):
+    with pytest.raises(
+        http_api_modules.config.ConfigValidationError,
+        match=r"Invalid extensions\.http_api configuration",
+    ):
         http_api_modules.config.HttpApiPolicy.from_config(config)
 
 
@@ -287,15 +290,23 @@ async def test_docs_use_fixed_api_paths_when_enabled(monkeypatch, http_api_modul
         assert (await client.head("/api/v1/docs")).status_code == 200
 
 
-@pytest.mark.parametrize("invalid_router", [object(), APIRouter()])
+@pytest.mark.parametrize(
+    ("invalid_router", "exception_type", "message"),
+    [
+        pytest.param(object(), TypeError, "must contain an APIRouter", id="wrong-type"),
+        pytest.param(
+            APIRouter(), ValueError, "non-empty sub-prefix", id="missing-prefix"
+        ),
+    ],
+)
 def test_invalid_router_registration_fails_startup(
-    monkeypatch, http_api_modules, invalid_router
+    monkeypatch, http_api_modules, invalid_router, exception_type, message
 ):
     modules = http_api_modules
     registration = modules.contracts.HttpRouterRegistration("consumer", invalid_router)
     _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
 
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(exception_type, match=message):
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
 
@@ -354,7 +365,7 @@ def test_equivalent_parameterized_routes_fail_startup_across_extensions(
         [("first", (registrations[0],)), ("second", (registrations[1],))],
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="Duplicate HTTP route GET") as exc_info:
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
     message = str(exc_info.value)
@@ -425,7 +436,7 @@ def test_broader_dynamic_route_cannot_shadow_later_dynamic_route(
         [("broad", (registrations[0],)), ("narrow", (registrations[1],))],
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="Shadowed HTTP route GET") as exc_info:
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
     message = str(exc_info.value)
@@ -453,7 +464,7 @@ def test_dynamic_route_cannot_shadow_later_static_route_across_extensions(
         [("dynamic", (registrations[0],)), ("static", (registrations[1],))],
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="Shadowed HTTP route GET") as exc_info:
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
     message = str(exc_info.value)
@@ -1002,7 +1013,9 @@ async def test_bearer_authentication_fully_validates_user_token(
     app = FastAPI()
 
     @app.get("/")
-    def endpoint(principal=Depends(security.require_http_principal)):
+    def endpoint(
+        principal=Depends(security.require_http_principal),  # noqa: B008 - FastAPI dependency metadata.
+    ):
         return {"username": principal.username}
 
     headers = {}
@@ -1049,8 +1062,8 @@ async def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modu
 
     @app.get("/forbidden")
     def forbidden(
-        _principal=Depends(
-            security.require_http_permissions(Permissions.MANAGE_SYSTEM)
+        _principal=Depends(  # noqa: B008 - FastAPI dependency metadata.
+            security.require_http_permissions(Permissions.MANAGE_SYSTEM)  # noqa: B008 - FastAPI permission dependency.
         ),
     ):
         return {}

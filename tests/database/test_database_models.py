@@ -24,7 +24,7 @@ def test_database_models_register_core_tables(monkeypatch, protected_test_config
 def test_database_models_export_node_only(monkeypatch, protected_test_config):
     monkeypatch.chdir(protected_test_config.src_dir)
 
-    import include.database.models as models
+    from include.database import models
     from include.database.models import documents
 
     legacy_name = "Base" + "Object"

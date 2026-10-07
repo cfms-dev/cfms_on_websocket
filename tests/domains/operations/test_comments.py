@@ -37,20 +37,22 @@ def test_comment_store_reuses_equal_comments() -> None:
         assert len(session.scalars(select(Comment)).all()) == 1
 
 
-def test_comment_digest_is_stable_binary() -> None:
+def test_comment_store_persists_stable_binary_digest() -> None:
+    from include.database.models.comments import Comment
     from include.domains.operations.comments import CommentStore
 
-    first = CommentStore._digest(
-        CommentStore._serialize("Routine maintenance", {"actor": "admin", "ticket": 42})
-    )
-    second = CommentStore._digest(
-        CommentStore._serialize("Routine maintenance", {"ticket": 42, "actor": "admin"})
-    )
+    with _make_session() as session:
+        comment_id = CommentStore.get_or_create_id(
+            session, "Routine maintenance", {"actor": "admin", "ticket": 42}
+        )
+        session.commit()
 
-    assert first == bytes.fromhex(
-        "b9c8c9161e6eeb241b2c4f3b6519a8b9bb7300fe00dbccbed10bcf215b4b37a2"
-    )
-    assert second == first
+        comment = session.get(Comment, comment_id)
+        assert comment is not None
+        assert comment.digest_version == 1
+        assert comment.content_digest == bytes.fromhex(
+            "b9c8c9161e6eeb241b2c4f3b6519a8b9bb7300fe00dbccbed10bcf215b4b37a2"
+        )
 
 
 def test_comment_id_store_uses_one_statement_for_new_sqlite_comment() -> None:
@@ -221,7 +223,7 @@ def test_comment_store_deduplicates_concurrent_transactions(tmp_path) -> None:
         connect_args={"timeout": 10},
     )
     Base.metadata.create_all(engine, tables=[Comment.__table__])
-    barrier = Barrier(2)
+    barrier = Barrier(2, timeout=10)
 
     def store_comment() -> int:
         with Session(engine) as session:

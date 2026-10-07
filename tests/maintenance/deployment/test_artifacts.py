@@ -2,11 +2,12 @@ import hashlib
 import json
 import tarfile
 import zipfile
+from functools import partial
 from pathlib import Path
 
 import pytest
 
-import maintenance.operations.deployment as deployment
+from maintenance.operations import deployment
 from maintenance.operations.deployment import (
     artifacts as deployment_artifacts,
 )
@@ -65,20 +66,20 @@ def test_manifestless_deployment_is_rejected_before_writes(
     main = root / "src" / "main.py"
     main.write_text("# pre-manifest release\n", encoding="utf-8")
 
+    if command == "status":
+        action = partial(deployment.inspect_deployment, root)
+    elif command == "upgrade":
+        action = partial(
+            deployment.upgrade_deployment,
+            tmp_path / "release.zip",
+            root,
+            expected_sha256="a" * 64,
+        )
+    else:
+        action = partial(deployment.downgrade_deployment, "stored-release", root)
+
     with pytest.raises(MaintenanceOperationError, match="release-manifest.json"):
-        if command == "status":
-            deployment.inspect_deployment(root)
-        elif command == "upgrade":
-            deployment.upgrade_deployment(
-                tmp_path / "release.zip",
-                root,
-                expected_sha256="a" * 64,
-            )
-        else:
-            deployment.downgrade_deployment(
-                "stored-release",
-                root,
-            )
+        action()
 
     assert main.read_text(encoding="utf-8") == "# pre-manifest release\n"
     assert not (root / "src" / ".maintenance").exists()

@@ -329,17 +329,12 @@ def test_invalid_manifest_sections_are_rejected(tmp_path, source, field):
 def test_flat_manifest_version_one_is_rejected(tmp_path):
     manifest_path = tmp_path / "manifest.toml"
     manifest_path.write_text(
-        "\n".join(
-            [
-                "manifest_version = 1",
-                "identifier = 'sample_ext'",
-                "name = 'Sample Extension'",
-                "version = '1.0.0'",
-                "authors = ['Test Author']",
-                "license = 'Apache-2.0'",
-                "",
-            ]
-        ),
+        "manifest_version = 1\n"
+        "identifier = 'sample_ext'\n"
+        "name = 'Sample Extension'\n"
+        "version = '1.0.0'\n"
+        "authors = ['Test Author']\n"
+        "license = 'Apache-2.0'\n",
         encoding="utf-8",
     )
 
@@ -564,30 +559,24 @@ def test_dependency_can_add_hook_spec_before_consumer_registration(
     framework = _write_extension(
         tmp_path,
         "http_framework",
-        "\n".join(
-            [
-                "from include.extensions.manager import hookimpl, hookspec, pm",
-                "class HttpHookSpecs:",
-                "    @hookspec",
-                "    def ext_register_http_routers(self):",
-                "        pass",
-                "pm.add_hookspecs(HttpHookSpecs)",
-                "http_hookimpl = hookimpl",
-                "",
-            ]
+        (
+            "from include.extensions.manager import hookimpl, hookspec, pm\n"
+            "class HttpHookSpecs:\n"
+            "    @hookspec\n"
+            "    def ext_register_http_routers(self):\n"
+            "        pass\n"
+            "pm.add_hookspecs(HttpHookSpecs)\n"
+            "http_hookimpl = hookimpl\n"
         ),
     )
     consumer = _write_extension(
         tmp_path,
         "consumer",
-        "\n".join(
-            [
-                "from http_api import http_hookimpl",
-                "@http_hookimpl",
-                "def ext_register_http_routers():",
-                "    return ('consumer',)",
-                "",
-            ]
+        (
+            "from http_api import http_hookimpl\n"
+            "@http_hookimpl\n"
+            "def ext_register_http_routers():\n"
+            "    return ('consumer',)\n"
         ),
     )
     _write_manifest(framework, "http_api", manifest_version=3)
@@ -900,15 +889,12 @@ def test_enabled_extension_config_failure_is_fatal(monkeypatch, tmp_path):
     extension_dir = _write_extension(
         tmp_path,
         "validated_folder",
-        "\n".join(
-            [
-                "from include.config.validation import ConfigValidationError",
-                "from include.extensions.manager import hookimpl",
-                "@hookimpl",
-                "def ext_validate_config(config):",
-                "    raise ConfigValidationError('invalid extension config')",
-                "",
-            ]
+        (
+            "from include.config.validation import ConfigValidationError\n"
+            "from include.extensions.manager import hookimpl\n"
+            "@hookimpl\n"
+            "def ext_validate_config(config):\n"
+            "    raise ConfigValidationError('invalid extension config')\n"
         ),
     )
     _write_manifest(extension_dir, "validated_ext")
@@ -935,12 +921,9 @@ def test_undecorated_config_validator_is_not_called(monkeypatch, tmp_path):
     extension_dir = _write_extension(
         tmp_path,
         "plain_validator_folder",
-        "\n".join(
-            [
-                "def ext_validate_config(config):",
-                "    raise RuntimeError('must only run as a Pluggy hook')",
-                "",
-            ]
+        (
+            "def ext_validate_config(config):\n"
+            "    raise RuntimeError('must only run as a Pluggy hook')\n"
         ),
     )
     _write_manifest(extension_dir, "plain_validator_ext")

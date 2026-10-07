@@ -22,7 +22,7 @@ def _run_maintain(
     input_text: str | None = None,
 ):
     result = subprocess.run(
-        ["uv", "run", "--project", str(_PROJECT_ROOT), "maintain", *args],
+        ["uv", "run", "--locked", "--project", str(_PROJECT_ROOT), "maintain", *args],
         cwd=cwd,
         input=input_text,
         capture_output=True,
@@ -30,6 +30,7 @@ def _run_maintain(
         encoding="utf-8",
         errors="replace",
         timeout=30,
+        check=False,
     )
     if check and result.returncode != 0:
         pytest.fail(
@@ -43,13 +44,23 @@ def _run_maintain(
 
 def _run_python(cwd: Path, code: str):
     result = subprocess.run(
-        ["uv", "run", "--project", str(_PROJECT_ROOT), "python", "-c", code],
+        [
+            "uv",
+            "run",
+            "--locked",
+            "--project",
+            str(_PROJECT_ROOT),
+            "python",
+            "-c",
+            code,
+        ],
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=30,
+        check=False,
     )
     if result.returncode != 0:
         pytest.fail(

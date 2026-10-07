@@ -408,7 +408,10 @@ def test_delete_compiled_access_rules_validates_target_type(access_rule_session)
     )
     session.flush()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid compiled access rule target\(s\) for document: folder-type-check",
+    ):
         delete_compiled_access_rules_for_targets(session, [("document", folder.id)])
 
     assert session.get(models.Folder, folder.id).access_rule_set_id is not None

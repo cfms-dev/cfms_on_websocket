@@ -88,7 +88,7 @@ def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def access_rule_session(monkeypatch, tmp_path):
     if str(_SRC_PATH) not in sys.path:
         sys.path.insert(0, str(_SRC_PATH))
@@ -99,7 +99,7 @@ def access_rule_session(monkeypatch, tmp_path):
     (tmp_path / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    import include.database.models as models
+    from include.database import models
     from include.database.session import Base
 
     engine = create_engine("sqlite:///:memory:")

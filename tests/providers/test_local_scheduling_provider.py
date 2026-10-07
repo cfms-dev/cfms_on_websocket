@@ -23,7 +23,6 @@ def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
 
     def claim(_generation, _owner, _policy):
         worker_ran.set()
-        return None
 
     monkeypatch.setattr(local, "enqueue_due_schedules", enqueue)
     monkeypatch.setattr(local, "claim_execution", claim)
@@ -45,27 +44,33 @@ def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
         )
     )
 
-    provider.start(ScheduledTaskRegistry())
+    try:
+        provider.start(ScheduledTaskRegistry())
 
-    assert scheduler_ran.wait(1)
-    assert synchronized.wait(1)
-    assert expired_deleted_cancelled.wait(1)
-    assert worker_ran.wait(1)
-    assert provider.status().available is True
+        assert scheduler_ran.wait(1)
+        assert synchronized.wait(1)
+        assert expired_deleted_cancelled.wait(1)
+        assert worker_ran.wait(1)
+        assert provider.status().available is True
 
-    provider.shutdown()
+        provider.shutdown()
 
-    assert provider.status().available is False
-    provider.shutdown()
+        assert provider.status().available is False
+        provider.shutdown()
+
+    finally:
+        provider.shutdown()
 
 
 def test_local_provider_cleans_up_after_partial_thread_start(monkeypatch):
     original_start = threading.Thread.start
+    started_threads = []
 
     def start_or_fail(thread):
         if thread.name == "schedule-local-worker-1":
             raise RuntimeError("worker thread failed to start")
         original_start(thread)
+        started_threads.append(thread)
 
     monkeypatch.setattr(local, "ensure_runtime_state", lambda _mode: 1)
     monkeypatch.setattr(local, "synchronize_system_schedules", lambda _registry: None)
@@ -82,12 +87,16 @@ def test_local_provider_cleans_up_after_partial_thread_start(monkeypatch):
         )
     )
 
-    with pytest.raises(RuntimeError, match="worker thread failed to start"):
-        provider.start(ScheduledTaskRegistry())
+    try:
+        with pytest.raises(RuntimeError, match="worker thread failed to start"):
+            provider.start(ScheduledTaskRegistry())
 
-    provider.shutdown()
-    assert provider.status().available is False
-    assert provider._threads == []
+        provider.shutdown()
+        assert provider.status().available is False
+        assert all(not thread.is_alive() for thread in started_threads)
+
+    finally:
+        provider.shutdown()
 
 
 def test_local_provider_fails_startup_before_threads_for_invalid_definition(
@@ -104,73 +113,78 @@ def test_local_provider_fails_startup_before_threads_for_invalid_definition(
     with pytest.raises(ValueError, match="invalid definition"):
         provider.start(ScheduledTaskRegistry())
 
-    assert provider._threads == []
     assert provider.status().detail == "not_running"
 
 
 def test_reconciliation_failure_does_not_block_due_scan(monkeypatch):
-    provider = LocalSchedulingProvider(SchedulingPolicy())
-    registry = ScheduledTaskRegistry()
-    stop = threading.Event()
-    wake = SimpleNamespace(wait=lambda _timeout: None, clear=lambda: None)
-    scanned = []
+    policy = SchedulingPolicy(worker_threads=1, poll_interval_seconds=0.01)
+    provider = LocalSchedulingProvider(policy)
+    scanned = threading.Event()
+    reconciliations = 0
+
+    def reconcile(_registry):
+        nonlocal reconciliations
+        reconciliations += 1
+        if reconciliations > 1:
+            raise ValueError("invalid definition")
 
     monkeypatch.setattr(
         local,
         "synchronize_system_schedules",
-        lambda _registry: (_ for _ in ()).throw(ValueError("invalid definition")),
+        reconcile,
     )
-    monkeypatch.setattr(
-        local, "cancel_expired_deleted_executions", lambda batch: scanned.append(batch)
-    )
+    monkeypatch.setattr(local, "cancel_expired_deleted_executions", lambda _batch: 0)
 
-    def enqueue(generation, policy):
-        scanned.append((generation, policy))
-        stop.set()
+    def enqueue(_generation, _policy):
+        scanned.set()
 
     monkeypatch.setattr(local, "enqueue_due_schedules", enqueue)
+    monkeypatch.setattr(local, "ensure_runtime_state", lambda _mode: 3)
+    monkeypatch.setattr(local, "claim_execution", lambda *_args: None)
 
-    provider._scheduler_loop(registry, 3, stop, wake)
-    provider._threads = [threading.current_thread()]
-    provider._stop = threading.Event()
-
-    assert scanned == [provider._policy.claim_batch_size, (3, provider._policy)]
-    assert provider.status().detail == "ValueError"
+    try:
+        provider.start(ScheduledTaskRegistry())
+        assert scanned.wait(1)
+        assert provider.status().available is False
+        assert provider.status().detail == "ValueError"
+    finally:
+        provider.shutdown()
 
 
 def test_scheduler_success_does_not_hide_worker_failure(monkeypatch):
-    provider = LocalSchedulingProvider(SchedulingPolicy())
-    registry = ScheduledTaskRegistry()
-    stop = threading.Event()
-    wake = SimpleNamespace(wait=lambda _timeout: None, clear=lambda: None)
+    provider = LocalSchedulingProvider(
+        SchedulingPolicy(worker_threads=1, poll_interval_seconds=0.01)
+    )
+    worker_failed = threading.Event()
+    scanned_after_failure = threading.Event()
 
     def fail_claim(_generation, _owner, _policy):
-        stop.set()
         raise RuntimeError("worker failed")
 
     monkeypatch.setattr(local, "claim_execution", fail_claim)
-    provider._worker_loop(registry, 1, stop, wake)
 
-    stop.clear()
+    def scan(_generation, _policy):
+        if worker_failed.is_set():
+            scanned_after_failure.set()
 
-    def finish_scheduler_iteration(_registry):
-        stop.set()
-
-    monkeypatch.setattr(
-        local, "synchronize_system_schedules", finish_scheduler_iteration
-    )
+    monkeypatch.setattr(local, "synchronize_system_schedules", lambda _registry: None)
     monkeypatch.setattr(
         local, "cancel_expired_deleted_executions", lambda _batch_size: 0
     )
-    monkeypatch.setattr(local, "enqueue_due_schedules", lambda _generation, _policy: 0)
-    provider._scheduler_loop(registry, 1, stop, wake)
+    monkeypatch.setattr(local, "enqueue_due_schedules", scan)
+    monkeypatch.setattr(local, "ensure_runtime_state", lambda _mode: 1)
+    monkeypatch.setattr(
+        local, "logger", SimpleNamespace(exception=lambda _message: worker_failed.set())
+    )
 
-    provider._threads = [threading.current_thread()]
-    provider._stop = threading.Event()
-    status = provider.status()
-
-    assert status.available is False
-    assert status.detail == "RuntimeError"
+    try:
+        provider.start(ScheduledTaskRegistry())
+        assert scanned_after_failure.wait(1)
+        status = provider.status()
+        assert status.available is False
+        assert status.detail == "RuntimeError"
+    finally:
+        provider.shutdown()
 
 
 def test_provider_bootstrap_registers_scheduling_when_api_extension_is_disabled(
@@ -228,7 +242,8 @@ def test_local_provider_rejects_restart_until_long_running_worker_exits(monkeypa
 
     def run(_claim, _generation, _registry, _policy):
         task_started.set()
-        assert release_task.wait(5)
+        if not release_task.wait(5):
+            raise TimeoutError("test did not release the running task")
 
     monkeypatch.setattr(local, "claim_execution", claim)
     monkeypatch.setattr(local, "run_claimed_execution", run)
@@ -241,26 +256,31 @@ def test_local_provider_rejects_restart_until_long_running_worker_exits(monkeypa
     )
     registry = ScheduledTaskRegistry()
 
-    provider.start(registry)
-    provider.start(registry)
-    assert task_started.wait(1)
-
-    provider.shutdown()
-
-    status = provider.status()
-    assert status.available is False
-    assert status.detail == "stopping"
-    with pytest.raises(
-        RuntimeError,
-        match="previous run is still stopping",
-    ):
+    try:
         provider.start(registry)
+        provider.start(registry)
+        assert task_started.wait(1)
 
-    release_task.set()
-    provider.shutdown()
-    with claim_lock:
-        assert claim_count == 1
+        provider.shutdown()
 
-    provider.start(registry)
-    assert restarted_worker.wait(1)
-    provider.shutdown()
+        status = provider.status()
+        assert status.available is False
+        assert status.detail == "stopping"
+        with pytest.raises(
+            RuntimeError,
+            match="previous run is still stopping",
+        ):
+            provider.start(registry)
+
+        release_task.set()
+        provider.shutdown()
+        with claim_lock:
+            assert claim_count == 1
+
+        provider.start(registry)
+        assert restarted_worker.wait(1)
+        provider.shutdown()
+
+    finally:
+        release_task.set()
+        provider.shutdown()

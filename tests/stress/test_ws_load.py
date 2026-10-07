@@ -4,7 +4,6 @@ import base64
 import json
 import ssl
 import sys
-import time
 from pathlib import Path
 
 import orjson
@@ -462,15 +461,29 @@ def test_generator_rss_metric_reads_current_process_memory():
 
 @pytest.mark.asyncio
 async def test_generator_monitor_stops_without_waiting_for_sample_interval():
-    stop_event = asyncio.Event()
+    waiting = asyncio.Event()
+
+    class SignalingStopEvent(asyncio.Event):
+        async def wait(self):
+            waiting.set()
+            return await super().wait()
+
+    stop_event = SignalingStopEvent()
     health = GeneratorHealth()
-    task = asyncio.create_task(monitor_generator(stop_event, health, interval=1))
-    started = time.perf_counter()
+    task = asyncio.create_task(monitor_generator(stop_event, health, interval=60))
 
-    stop_event.set()
-    await task
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=1)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
 
-    assert time.perf_counter() - started < 0.1
+        assert health.event_loop_lag.count == 0
+        assert task.result() is None
+    finally:
+        stop_event.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 def test_step_profile_builds_one_phase_per_rate():

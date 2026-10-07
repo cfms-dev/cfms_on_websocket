@@ -80,6 +80,7 @@ for column in username_columns:
         ],
         cwd=tmp_path,
         capture_output=True,
+        check=False,
         text=True,
         timeout=20,
     )

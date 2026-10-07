@@ -425,7 +425,8 @@ def test_upload_closes_resources_when_negotiation_send_fails(
     )
 
     assert storage.upload is not None
-    assert storage.upload._closed is True
+    with pytest.raises(ValueError, match="closed file"):
+        storage.upload.write(b"a")
     with file_task_context.session() as session:
         task = session.get(file_task_context.FileTask, task_id)
         assert task.status == FileTaskStatus.PENDING

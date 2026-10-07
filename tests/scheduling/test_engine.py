@@ -407,7 +407,6 @@ def test_execution_logs_when_lease_refresh_is_lost(monkeypatch):
 
     def execute(_context, _payload):
         assert refresh_attempted.wait(3)
-        return None
 
     registry = ScheduledTaskRegistry(
         [
@@ -1663,7 +1662,7 @@ def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
 
 @pytest.mark.parametrize(
     ("new_state", "retry_at"),
-    (("succeeded", None), ("retry_wait", 200.0)),
+    [("succeeded", None), ("retry_wait", 200.0)],
 )
 @pytest.mark.parametrize("claim_by_id", [False, True])
 def test_claim_rechecks_candidate_state_at_atomic_update(

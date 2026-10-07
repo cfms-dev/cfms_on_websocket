@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pluggy
@@ -10,7 +9,7 @@ from include.extensions import manager as extension_manager
 
 @pytest.fixture
 def builtin_extension(monkeypatch, protected_test_config):
-    monkeypatch.chdir(Path(__file__).parents[2] / "src")
+    monkeypatch.chdir(protected_test_config.src_dir)
     from include.extensions.builtin import _extension
 
     monkeypatch.setattr(
@@ -126,7 +125,7 @@ def test_startup_hook_server_argument_is_optional_for_implementations():
 
 
 def test_core_scheduling_wraps_extension_lifecycle(monkeypatch, protected_test_config):
-    monkeypatch.chdir(Path(__file__).parents[2] / "src")
+    monkeypatch.chdir(protected_test_config.src_dir)
     import main as server_main
 
     events = []
@@ -163,7 +162,7 @@ def test_core_scheduling_wraps_extension_lifecycle(monkeypatch, protected_test_c
 def test_core_lifecycle_cleans_up_when_scheduling_start_fails(
     monkeypatch, protected_test_config
 ):
-    monkeypatch.chdir(Path(__file__).parents[2] / "src")
+    monkeypatch.chdir(protected_test_config.src_dir)
     import main as server_main
 
     events = []
@@ -188,9 +187,11 @@ def test_core_lifecycle_cleans_up_when_scheduling_start_fails(
     )
     monkeypatch.setattr(server_main, "collect_scheduled_tasks", object)
 
-    with pytest.raises(RuntimeError, match="scheduling failed"):
-        with server_main._server_lifecycle(_FakeServer()):
-            pytest.fail("the serving phase must not start")
+    with (
+        pytest.raises(RuntimeError, match="scheduling failed"),
+        server_main._server_lifecycle(_FakeServer()),
+    ):
+        pytest.fail("the serving phase must not start")
 
     assert events == [
         "extensions_start",
@@ -238,7 +239,7 @@ def test_builtin_registers_all_system_tasks(builtin_extension):
 def test_extension_handler_overrides_and_unregistration_keep_existing_order(
     monkeypatch, protected_test_config
 ):
-    monkeypatch.chdir(Path(__file__).parents[2] / "src")
+    monkeypatch.chdir(protected_test_config.src_dir)
     import main as server_main
 
     core_list_handler = server_main.available_functions["list_schedules"]
@@ -251,7 +252,7 @@ def test_extension_handler_overrides_and_unregistration_keep_existing_order(
             }
         ],
         ext_unregister_handlers=lambda: [{"get_schedule", "extension_action"}],
-        ext_register_whitelisted_actions=lambda: [],
+        ext_register_whitelisted_actions=list,
     )
     monkeypatch.setattr(
         server_main,

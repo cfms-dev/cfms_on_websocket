@@ -3,32 +3,23 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from include.domains.identity.commands.permission_cleanup import PermissionEntryCounts
+from include.extensions.builtin import permission_cleanup, scheduled_tasks
+from include.scheduling import tasks
 
 
 def test_permission_cleanup_is_registered_as_a_system_interval_task(monkeypatch):
-    from include.extensions.builtin import permission_cleanup
-
-    policy = SimpleNamespace(cleanup_interval_seconds=180)
     monkeypatch.setattr(
-        permission_cleanup,
-        "IdentityPermissionRetentionPolicy",
-        SimpleNamespace(from_config=lambda: policy),
+        permission_cleanup.IdentityPermissionRetentionPolicy,
+        "from_config",
+        classmethod(lambda _cls: SimpleNamespace(cleanup_interval_seconds=180)),
     )
-    monkeypatch.setattr(
-        permission_cleanup,
-        "cleanup_expired_permission_entries",
-        lambda received_policy: (
-            PermissionEntryCounts(user_entries=2, group_entries=3)
-            if received_policy is policy
-            else None
-        ),
-    )
-
     registration = permission_cleanup.permission_cleanup_task
+
     definition = registration.system_schedule()
-    result = registration.execute(object(), registration.payload_model())
 
     assert registration.required_permission is None
     assert registration.user_schedulable is False
@@ -36,211 +27,173 @@ def test_permission_cleanup_is_registered_as_a_system_interval_task(monkeypatch)
     assert definition.id == "builtin.permission_cleanup"
     assert definition.trigger_type == "interval"
     assert definition.trigger_data == {"seconds": 180}
-    assert result.data == {"user_entries": 2, "group_entries": 3}
-    assert result.audit_success is True
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected_data", "audit_success"),
+    [
+        pytest.param(
+            PermissionEntryCounts(user_entries=2, group_entries=3),
+            {"user_entries": 2, "group_entries": 3},
+            True,
+            id="nonempty",
+        ),
+        pytest.param(
+            PermissionEntryCounts(),
+            {"user_entries": 0, "group_entries": 0},
+            False,
+            id="empty",
+        ),
+    ],
+)
+def test_permission_cleanup_task_reports_counts_and_audit_policy(
+    monkeypatch, counts, expected_data, audit_success
+):
+    policy = object()
+    monkeypatch.setattr(
+        permission_cleanup.IdentityPermissionRetentionPolicy,
+        "from_config",
+        classmethod(lambda _cls: policy),
+    )
+
+    def cleanup(received_policy):
+        assert received_policy is policy
+        return counts
 
     monkeypatch.setattr(
-        permission_cleanup,
-        "cleanup_expired_permission_entries",
-        lambda _policy: PermissionEntryCounts(),
+        permission_cleanup, "cleanup_expired_permission_entries", cleanup
     )
-    assert (
-        registration.execute(object(), registration.payload_model()).audit_success
-        is False
-    )
+    registration = permission_cleanup.permission_cleanup_task
+
+    result = registration.execute(object(), registration.payload_model())
+
+    assert result.data == expected_data
+    assert result.audit_success is audit_success
 
 
-def test_builtin_system_task_intervals_follow_their_policies(monkeypatch):
-    from include.extensions.builtin import scheduled_tasks
-
+@pytest.mark.parametrize(
+    ("task_name", "seconds"),
+    [
+        pytest.param("builtin.upload_cleanup", 180, id="upload"),
+        pytest.param("builtin.auth_throttle_cleanup", 3600, id="authentication"),
+        pytest.param("builtin.creation_risk_cleanup", 180, id="creation-risk"),
+        pytest.param("builtin.download_risk_cleanup", 60, id="download-risk"),
+    ],
+)
+def test_builtin_system_task_interval_follows_policy(monkeypatch, task_name, seconds):
     monkeypatch.setattr(
         scheduled_tasks.DocumentUploadPolicy,
         "from_config",
         classmethod(lambda _cls: SimpleNamespace(cleanup_interval_seconds=180)),
     )
-
-    definitions = {
-        registration.name: registration.system_schedule()
-        for registration in scheduled_tasks.BUILTIN_SCHEDULED_TASKS
-    }
-
-    assert {
-        name: definition.trigger_data for name, definition in definitions.items()
-    } == {
-        "builtin.upload_cleanup": {"seconds": 180},
-        "builtin.auth_throttle_cleanup": {"seconds": 3600},
-        "builtin.creation_risk_cleanup": {"seconds": 180},
-        "builtin.download_risk_cleanup": {"seconds": 60},
-    }
-    assert all(definition.run_immediately for definition in definitions.values())
-    for registration in scheduled_tasks.BUILTIN_SCHEDULED_TASKS:
-        assert registration.required_permission is None
-        assert registration.user_schedulable is False
-        assert registration.max_attempts == 1
-        with pytest.raises(ValidationError):
-            registration.payload_model.model_validate({"unexpected": True})
-
-
-def test_builtin_system_tasks_return_cleanup_counts(monkeypatch):
-    from include.extensions.builtin import scheduled_tasks
-
-    session = object()
-
-    class SessionFactory:
-        def __call__(self):
-            return nullcontext(session)
-
-        def begin(self):
-            return nullcontext(session)
-
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "Session",
-        SessionFactory(),
+    registration = next(
+        item
+        for item in scheduled_tasks.BUILTIN_SCHEDULED_TASKS
+        if item.name == task_name
     )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "database_now",
-        lambda received_session: 123.0 if received_session is session else None,
-    )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "reclaim_abandoned_uploads",
-        lambda now, *, limit: (
-            SimpleNamespace(
-                matched_tasks=limit,
-                expired_tasks=2,
-                removed_revisions=3,
-                removed_documents=4,
-                storage_cleanup_failures=5,
-            )
-            if now == 123.0
-            else None
-        ),
-    )
-    policy = object()
-    monkeypatch.setattr(
-        scheduled_tasks.AuthThrottlePolicy,
-        "from_config",
-        classmethod(lambda _cls: policy),
-    )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "purge_expired_auth_throttle_records",
-        lambda received_policy, *, now: (
-            SimpleNamespace(account_records=6, login_records=7, traffic_records=8)
-            if received_policy is policy and now == 123.0
-            else None
-        ),
-    )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "cleanup_document_creation_risk_state",
-        lambda received_session, *, now: (
-            SimpleNamespace(ip_accounts=9, buckets=10)
-            if received_session is session and now == 123.0
-            else None
-        ),
-    )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "cleanup_document_download_risk_state",
-        lambda received_session, *, now: (
-            SimpleNamespace(ip_accounts=11, buckets=12)
-            if received_session is session and now == 123.0
-            else None
-        ),
-    )
-    registrations = {
-        registration.name: registration
-        for registration in scheduled_tasks.BUILTIN_SCHEDULED_TASKS
-    }
 
-    results = {
-        name: registration.execute(object(), registration.payload_model())
-        for name, registration in registrations.items()
-    }
+    definition = registration.system_schedule()
 
-    assert {name: result.data for name, result in results.items()} == {
-        "builtin.upload_cleanup": {
-            "matched_tasks": 256,
-            "expired_tasks": 2,
-            "removed_revisions": 3,
-            "removed_documents": 4,
-            "storage_cleanup_failures": 5,
-        },
-        "builtin.auth_throttle_cleanup": {
-            "account_records": 6,
-            "login_records": 7,
-            "traffic_records": 8,
-        },
-        "builtin.creation_risk_cleanup": {"ip_accounts": 9, "buckets": 10},
-        "builtin.download_risk_cleanup": {"ip_accounts": 11, "buckets": 12},
-    }
-    assert all(result.audit_success for result in results.values())
+    assert definition.id == task_name
+    assert definition.trigger_data == {"seconds": seconds}
+    assert definition.run_immediately is True
+    assert registration.required_permission is None
+    assert registration.user_schedulable is False
+    assert registration.max_attempts == 1
 
 
-def test_builtin_system_tasks_suppress_empty_cleanup_audits(monkeypatch):
-    from include.extensions.builtin import scheduled_tasks
+@pytest.mark.parametrize(
+    "registration", scheduled_tasks.BUILTIN_SCHEDULED_TASKS, ids=lambda item: item.name
+)
+def test_builtin_system_task_rejects_payload_fields(registration):
+    with pytest.raises(ValidationError, match="unexpected"):
+        registration.payload_model.model_validate({"unexpected": True})
 
-    session = object()
 
-    class SessionFactory:
-        def __call__(self):
-            return nullcontext(session)
-
-        def begin(self):
-            return nullcontext(session)
-
-    monkeypatch.setattr(scheduled_tasks, "Session", SessionFactory())
+@pytest.fixture
+def _task_sessions(monkeypatch):
+    database = create_engine("sqlite://")
+    monkeypatch.setattr(scheduled_tasks, "Session", sessionmaker(bind=database))
     monkeypatch.setattr(scheduled_tasks, "database_now", lambda _session: 123.0)
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "reclaim_abandoned_uploads",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            matched_tasks=0,
-            expired_tasks=0,
-            removed_revisions=0,
-            removed_documents=0,
-            storage_cleanup_failures=0,
+    try:
+        yield
+    finally:
+        database.dispose()
+
+
+@pytest.mark.usefixtures("_task_sessions")
+@pytest.mark.parametrize(
+    ("task_name", "cleanup_name", "counts"),
+    [
+        pytest.param(
+            "builtin.upload_cleanup",
+            "reclaim_abandoned_uploads",
+            {
+                "matched_tasks": 256,
+                "expired_tasks": 2,
+                "removed_revisions": 3,
+                "removed_documents": 4,
+                "storage_cleanup_failures": 5,
+            },
+            id="upload",
         ),
-    )
-    monkeypatch.setattr(
-        scheduled_tasks.AuthThrottlePolicy,
-        "from_config",
-        classmethod(lambda _cls: object()),
-    )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "purge_expired_auth_throttle_records",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            account_records=0,
-            login_records=0,
-            traffic_records=0,
+        pytest.param(
+            "builtin.auth_throttle_cleanup",
+            "purge_expired_auth_throttle_records",
+            {"account_records": 6, "login_records": 7, "traffic_records": 8},
+            id="authentication",
         ),
-    )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "cleanup_document_creation_risk_state",
-        lambda *_args, **_kwargs: SimpleNamespace(ip_accounts=0, buckets=0),
-    )
-    monkeypatch.setattr(
-        scheduled_tasks,
-        "cleanup_document_download_risk_state",
-        lambda *_args, **_kwargs: SimpleNamespace(ip_accounts=0, buckets=0),
+        pytest.param(
+            "builtin.creation_risk_cleanup",
+            "cleanup_document_creation_risk_state",
+            {"ip_accounts": 9, "buckets": 10},
+            id="creation-risk",
+        ),
+        pytest.param(
+            "builtin.download_risk_cleanup",
+            "cleanup_document_download_risk_state",
+            {"ip_accounts": 11, "buckets": 12},
+            id="download-risk",
+        ),
+    ],
+)
+@pytest.mark.parametrize("empty", [False, True], ids=["nonempty", "empty"])
+def test_builtin_cleanup_task_reports_its_counts_and_audit_policy(
+    monkeypatch, task_name, cleanup_name, counts, empty
+):
+    expected_data = {key: 0 for key in counts} if empty else counts
+    policy = object()
+    if task_name == "builtin.auth_throttle_cleanup":
+        monkeypatch.setattr(
+            scheduled_tasks.AuthThrottlePolicy,
+            "from_config",
+            classmethod(lambda _cls: policy),
+        )
+
+    def cleanup(*args, **kwargs):
+        assert kwargs["now"] == 123.0
+        if task_name == "builtin.upload_cleanup":
+            assert kwargs["limit"] == 256
+        elif task_name == "builtin.auth_throttle_cleanup":
+            assert args == (policy,)
+        else:
+            assert args[0].in_transaction() is True
+        return SimpleNamespace(**expected_data)
+
+    monkeypatch.setattr(scheduled_tasks, cleanup_name, cleanup)
+    registration = next(
+        item
+        for item in scheduled_tasks.BUILTIN_SCHEDULED_TASKS
+        if item.name == task_name
     )
 
-    results = [
-        registration.execute(object(), registration.payload_model())
-        for registration in scheduled_tasks.BUILTIN_SCHEDULED_TASKS
-    ]
+    result = registration.execute(object(), registration.payload_model())
 
-    assert all(result.audit_success is False for result in results)
+    assert result.data == expected_data
+    assert result.audit_success is (not empty)
 
 
 def test_permission_cleanup_uses_database_clock(monkeypatch):
-    from include.extensions.builtin import permission_cleanup
-
     session = object()
     policy = SimpleNamespace(retention_days=2, batch_size=10)
     monkeypatch.setattr(
@@ -267,36 +220,43 @@ def test_permission_cleanup_uses_database_clock(monkeypatch):
     assert calls == [(session, 27_200.0, 10)]
 
 
-def test_core_schedule_history_cleanup_is_always_registered(monkeypatch):
-    from include.scheduling import tasks
+def test_core_schedule_history_cleanup_is_always_registered():
+    registration = next(
+        item
+        for item in tasks.CORE_SCHEDULED_TASKS
+        if item.name == "core.schedule_history_cleanup"
+    )
 
+    definition = registration.system_schedule()
+
+    assert registration.required_permission is None
+    assert registration.user_schedulable is False
+    assert registration.max_attempts == 1
+    assert definition.id == registration.name
+    assert definition.trigger_data == {"seconds": 3600}
+
+
+@pytest.mark.parametrize("deleted", [13, 0], ids=["nonempty", "empty"])
+def test_schedule_history_cleanup_reports_count_and_audit_policy(monkeypatch, deleted):
     policy = object()
     monkeypatch.setattr(
         tasks.SchedulingPolicy,
         "from_config",
         classmethod(lambda _cls: policy),
     )
-    monkeypatch.setattr(
-        tasks,
-        "purge_execution_history",
-        lambda received_policy: 13 if received_policy is policy else None,
+
+    def purge(received_policy):
+        assert received_policy is policy
+        return deleted
+
+    monkeypatch.setattr(tasks, "purge_execution_history", purge)
+    registration = next(
+        item
+        for item in tasks.CORE_SCHEDULED_TASKS
+        if item.name == "core.schedule_history_cleanup"
     )
 
-    registration = tasks.CORE_SCHEDULED_TASKS[0]
-    definition = registration.system_schedule()
     result = registration.execute(object(), registration.payload_model())
 
-    assert registration.name == "core.schedule_history_cleanup"
-    assert registration.required_permission is None
-    assert registration.user_schedulable is False
-    assert registration.max_attempts == 1
-    assert definition.id == registration.name
-    assert definition.trigger_data == {"seconds": 3600}
-    assert result.data == {"deleted_executions": 13}
-    assert result.audit_success is True
-
-    monkeypatch.setattr(tasks, "purge_execution_history", lambda _policy: 0)
-    assert (
-        registration.execute(object(), registration.payload_model()).audit_success
-        is False
-    )
+    assert result.data == {"deleted_executions": deleted}
+    assert result.audit_success is (deleted > 0)

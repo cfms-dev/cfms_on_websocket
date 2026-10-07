@@ -20,8 +20,8 @@ _project_root = Path(__file__).resolve().parents[3]
 _src_path = _project_root / "src"
 
 
-def _get_revision_file_size(revision_id: str) -> int | None:
-    with sqlite3.connect("src/app.db") as connection:
+def _get_revision_file_size(database_path: Path, revision_id: str) -> int | None:
+    with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             """
             SELECT files.size
@@ -35,8 +35,8 @@ def _get_revision_file_size(revision_id: str) -> int | None:
     return row[0] if row else None
 
 
-def _set_revision_file_size(revision_id: str, size: int) -> None:
-    with sqlite3.connect("src/app.db") as connection:
+def _set_revision_file_size(database_path: Path, revision_id: str, size: int) -> None:
+    with sqlite3.connect(database_path) as connection:
         connection.execute(
             """
             UPDATE files
@@ -52,8 +52,8 @@ def _set_revision_file_size(revision_id: str, size: int) -> None:
         connection.commit()
 
 
-def _get_file_task_status(task_id: str) -> int | None:
-    with sqlite3.connect("src/app.db") as connection:
+def _get_file_task_status(database_path: Path, task_id: str) -> int | None:
+    with sqlite3.connect(database_path) as connection:
         row = connection.execute(
             "SELECT status FROM file_tasks WHERE id = ?", (task_id,)
         ).fetchone()
@@ -305,7 +305,7 @@ def file_task_context(monkeypatch, tmp_path):
         ),
     )
 
-    return SimpleNamespace(
+    yield SimpleNamespace(
         session=TestingSession,
         connection=connection_handler,
         ConnectionHandler=connection_handler.ConnectionHandler,
@@ -317,6 +317,7 @@ def file_task_context(monkeypatch, tmp_path):
         User=User,
         UPLOAD_TRANSFER_MIN_CHUNK_SIZE=UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
     )
+    engine.dispose()
 
 
 def _create_file_task(context, path, mode, status=0):
@@ -784,65 +785,112 @@ def test_terminal_transfer_task_reports_specific_status(
     }
 
 
-def test_file_request_handlers_delegate_claiming(file_task_context) -> None:
-    from include.domains.documents.handlers.documents import (
-        RequestDownloadFileHandler,
-        RequestUploadFileHandler,
+def test_download_request_passes_offset_and_chunk_size_to_transfer(
+    file_task_context,
+) -> None:
+    from include.domains.documents.handlers.documents import RequestDownloadFileHandler
+
+    transfers = []
+    handler = SimpleNamespace(
+        data={"task_id": "task", "offset": 64, "max_chunk_size": 32 * 1024},
+        send_file=lambda task_id, offset, max_chunk_size: transfers.append(
+            (task_id, offset, max_chunk_size)
+        ),
     )
 
-    calls = []
+    RequestDownloadFileHandler().handle(handler)
+
+    assert transfers == [("task", 64, 32 * 1024)]
+
+
+def test_upload_request_normalizes_digest_and_passes_transfer_metadata(
+    file_task_context,
+) -> None:
+    from include.domains.documents.handlers.documents import RequestUploadFileHandler
+
+    transfers = []
     handler = SimpleNamespace(
         data={
             "task_id": "task",
-            "offset": 64,
             "file_size": 1,
             "sha256": "A" * 64,
             "max_chunk_size": 32 * 1024,
             "restart": True,
         },
-        send_file=lambda task_id, offset, max_chunk_size: calls.append(
-            ("download", task_id, offset, max_chunk_size)
-        ),
-        receive_file=lambda *args: calls.append(("upload", *args)),
+        receive_file=lambda *args: transfers.append(args),
     )
 
-    RequestDownloadFileHandler().handle(handler)
     RequestUploadFileHandler().handle(handler)
 
-    assert calls == [
-        ("download", "task", 64, 32 * 1024),
-        ("upload", "task", 1, "a" * 64, 32 * 1024, True),
-    ]
+    assert transfers == [("task", 1, "a" * 64, 32 * 1024, True)]
 
 
-def test_download_request_requires_bounded_chunk_size(file_task_context) -> None:
+@pytest.mark.parametrize(
+    "request_data",
+    [
+        pytest.param({"task_id": "task"}, id="missing-chunk-size"),
+        pytest.param(
+            {"task_id": "task", "max_chunk_size": 8 * 1024},
+            id="below-minimum",
+        ),
+        pytest.param(
+            {"task_id": "task", "max_chunk_size": 4 * 1024 * 1024},
+            id="above-maximum",
+        ),
+    ],
+)
+def test_download_request_rejects_missing_or_unbounded_chunk_size(
+    file_task_context, request_data
+) -> None:
     from include.domains.documents.handlers.documents import RequestDownloadFileHandler
 
-    with pytest.raises(ValidationError):
-        RequestDownloadFileHandler.request_model.model_validate({"task_id": "task"})
-    with pytest.raises(ValidationError):
-        RequestDownloadFileHandler.request_model.model_validate(
-            {"task_id": "task", "max_chunk_size": 8 * 1024}
-        )
-    with pytest.raises(ValidationError):
-        RequestDownloadFileHandler.request_model.model_validate(
-            {"task_id": "task", "max_chunk_size": 4 * 1024 * 1024}
-        )
+    with pytest.raises(ValidationError) as excinfo:
+        RequestDownloadFileHandler.request_model.model_validate(request_data)
+
+    assert {error["loc"] for error in excinfo.value.errors()} == {("max_chunk_size",)}
 
 
-def test_upload_request_requires_v21_metadata(file_task_context) -> None:
+def test_upload_request_accepts_required_transfer_metadata(file_task_context) -> None:
     from include.domains.documents.handlers.documents import RequestUploadFileHandler
 
-    valid = {
+    request_data = {
         "task_id": "task",
         "file_size": 1,
         "sha256": "a" * 64,
         "max_chunk_size": 512,
     }
-    RequestUploadFileHandler.request_model.model_validate(valid)
-    with pytest.raises(ValidationError):
-        RequestUploadFileHandler.request_model.model_validate({"task_id": "task"})
-    with pytest.raises(ValidationError):
-        RequestUploadFileHandler.request_model.model_validate(
-            {**valid, "sha256": "not-a-digest"}
-        )
+
+    request = RequestUploadFileHandler.request_model.model_validate(request_data)
+
+    assert request.model_dump(exclude_unset=True) == request_data
+
+
+@pytest.mark.parametrize(
+    ("request_data", "error_fields"),
+    [
+        pytest.param(
+            {"task_id": "task"},
+            {("file_size",), ("sha256",), ("max_chunk_size",)},
+            id="missing-transfer-metadata",
+        ),
+        pytest.param(
+            {
+                "task_id": "task",
+                "file_size": 1,
+                "sha256": "not-a-digest",
+                "max_chunk_size": 512,
+            },
+            {("sha256",)},
+            id="invalid-digest",
+        ),
+    ],
+)
+def test_upload_request_rejects_invalid_transfer_metadata(
+    file_task_context, request_data, error_fields
+) -> None:
+    from include.domains.documents.handlers.documents import RequestUploadFileHandler
+
+    with pytest.raises(ValidationError) as excinfo:
+        RequestUploadFileHandler.request_model.model_validate(request_data)
+
+    assert {error["loc"] for error in excinfo.value.errors()} == error_fields
