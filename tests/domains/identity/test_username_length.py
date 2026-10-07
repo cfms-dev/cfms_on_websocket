@@ -1,12 +1,11 @@
 import subprocess
 import sys
 from pathlib import Path
-from shutil import copyfile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_username_length_limit_is_shared_by_server(tmp_path):
+def test_username_length_limit_is_shared_by_server(protected_test_config):
     database_model_constants = (
         (
             "src/include/database/models/identity.py",
@@ -26,15 +25,15 @@ def test_username_length_limit_is_shared_by_server(tmp_path):
         assert expected_usage in source
         assert "USERNAME_MAX_LENGTH" not in source
 
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    (tmp_path / "init").touch()
-
     result = subprocess.run(
         [
             sys.executable,
             "-c",
             """
+from pathlib import Path
+
 from include.config.constants import USERNAME_DATABASE_MAX_LENGTH, USERNAME_MAX_LENGTH
+from include.config.paths import EXECUTABLE_ABSPATH
 from include.database.models.documents import DocumentMetadata
 from include.database.models.identity import User
 from include.database.models.security import AccountThrottle
@@ -45,6 +44,8 @@ from include.domains.identity.handlers.users import (
 )
 from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
 from pydantic import ValidationError
+
+assert EXECUTABLE_ABSPATH == Path.cwd()
 
 handler_payloads = (
     (RequestLoginHandler, {"username": "u", "password": "secret"}),
@@ -78,7 +79,7 @@ for column in username_columns:
     assert column.type.length == USERNAME_DATABASE_MAX_LENGTH
 """,
         ],
-        cwd=tmp_path,
+        cwd=protected_test_config.src_dir,
         capture_output=True,
         check=False,
         text=True,
