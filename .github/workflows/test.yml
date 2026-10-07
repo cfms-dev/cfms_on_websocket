@@ -198,17 +198,21 @@ jobs:
       with:
         version: "latest"
 
+    - name: Install release smoke dependencies
+      run: uv sync --locked --dev
+      timeout-minutes: 10
+
     - name: Test Windows file writeability
       if: matrix.os == 'windows-latest'
       shell: pwsh
-      run: uv run --locked pytest tests/database/test_file_writeable.py -q
+      run: uv run --locked --no-sync pytest tests/database/test_file_writeable.py -q
       timeout-minutes: 3
 
     - name: Build and inspect a flat release deployment
       shell: pwsh
       run: |
-        $version = uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-        uv run --locked python tools/build_release.py --version $version --source-date-epoch 1788000000 --output-dir dist
+        $version = uv run --locked --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+        uv run --locked --no-sync python tools/build_release.py --version $version --source-date-epoch 1788000000 --output-dir dist
         $archive = (Resolve-Path "dist/cfms-on-websocket-$version.zip").Path
         Expand-Archive -LiteralPath $archive -DestinationPath smoke
         $bundle = (Resolve-Path "smoke/cfms-on-websocket-$version").Path
