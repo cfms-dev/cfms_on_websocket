@@ -2,6 +2,7 @@ import pytest
 
 from .support import (
     _AUDIT_CUTOFF,
+    _PERMISSION_NOW,
     _make_src_dir,
     _normalize_cli_output,
     _read_audit_ids,
@@ -21,14 +22,21 @@ def test_permission_purge_dry_run_reports_eligible_entries_without_changes(tmp_p
     dry_run = _run_maintain(
         src_dir,
         ["permission", "purge-expired", "--dry-run"],
+        permission_now=_PERMISSION_NOW,
     )
     dry_run_output = _normalize_cli_output(dry_run.stdout)
 
     assert "User permission entries 1" in dry_run_output
     assert "Group permission entries 1" in dry_run_output
+    assert "Cutoff timestamp 1408000.0" in dry_run_output
     assert _read_permission_entries(src_dir) == {
-        "user": ["old_user", "recent_user", "permanent_user_revocation"],
-        "group": ["old_group", "recent_group", "permanent_group_revocation"],
+        "user": ["old_user", "recent_user", "cutoff_user", "permanent_user_revocation"],
+        "group": [
+            "old_group",
+            "recent_group",
+            "cutoff_group",
+            "permanent_group_revocation",
+        ],
     }
 
 
@@ -41,13 +49,19 @@ def test_permission_purge_aborted_confirmation_preserves_all_entries(tmp_path):
         ["permission", "purge-expired"],
         check=False,
         input_text="n\n",
+        permission_now=_PERMISSION_NOW,
     )
 
     assert aborted.returncode == 1
     assert "Aborted." in aborted.stderr
     assert _read_permission_entries(src_dir) == {
-        "user": ["old_user", "recent_user", "permanent_user_revocation"],
-        "group": ["old_group", "recent_group", "permanent_group_revocation"],
+        "user": ["old_user", "recent_user", "cutoff_user", "permanent_user_revocation"],
+        "group": [
+            "old_group",
+            "recent_group",
+            "cutoff_group",
+            "permanent_group_revocation",
+        ],
     }
 
 
@@ -58,24 +72,31 @@ def test_permission_purge_removes_expired_entries_and_preserves_revocations(tmp_
     purged = _run_maintain(
         src_dir,
         ["permission", "purge-expired", "--yes"],
+        permission_now=_PERMISSION_NOW,
     )
 
     assert "Purged Permission Entries" in purged.stdout
+    assert "Cutoff timestamp 1408000.0" in _normalize_cli_output(purged.stdout)
     assert _read_permission_entries(src_dir) == {
-        "user": ["recent_user", "permanent_user_revocation"],
-        "group": ["recent_group", "permanent_group_revocation"],
+        "user": ["recent_user", "cutoff_user", "permanent_user_revocation"],
+        "group": ["recent_group", "cutoff_group", "permanent_group_revocation"],
     }
 
 
 def test_permission_purge_is_idempotent_after_removing_eligible_entries(tmp_path):
     src_dir = _make_src_dir(tmp_path)
     _seed_permission_entries(src_dir)
-    _run_maintain(src_dir, ["permission", "purge-expired", "--yes"])
+    _run_maintain(
+        src_dir,
+        ["permission", "purge-expired", "--yes"],
+        permission_now=_PERMISSION_NOW,
+    )
     remaining = _read_permission_entries(src_dir)
 
     repeated = _run_maintain(
         src_dir,
         ["permission", "purge-expired", "--yes"],
+        permission_now=_PERMISSION_NOW,
     )
 
     assert "No expired permission entries are eligible" in repeated.stdout

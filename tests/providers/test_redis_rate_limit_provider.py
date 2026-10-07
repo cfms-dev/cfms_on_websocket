@@ -50,7 +50,3 @@ def test_redis_rate_limit_provider_uses_one_atomic_multi_bucket_script(monkeypat
     assert decision.scope == "ip"
     assert decision.effective_limit == 10
     assert decision.retry_after_seconds == 7
-    assert "redis.call('TIME')" in _CONSUME_SCRIPT
-    assert "redis.call('HMGET'" in _CONSUME_SCRIPT
-    assert "redis.call('HSET'" in _CONSUME_SCRIPT
-    assert "redis.call('EXPIRE'" in _CONSUME_SCRIPT

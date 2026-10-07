@@ -86,6 +86,43 @@ jobs:
           test_logs/
         retention-days: 7
 
+  redis-provider-behavior:
+    runs-on: ubuntu-26.04
+    services:
+      redis:
+        image: redis:8.2.10-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v10.2.0
+      with:
+        version: "latest"
+
+    - name: Install Redis provider test dependencies
+      run: uv sync --locked --dev --extra cluster --extra ext-scheduling-cluster
+
+    - name: Run real Redis provider behavior tests
+      env:
+        CFMS_TEST_REDIS_URL: "redis://127.0.0.1:6379/0"
+      run: uv run --locked pytest tests/providers/test_redis_lua_integration.py -q
+      timeout-minutes: 5
+
   mysql-database-migration:
     runs-on: ubuntu-26.04
     strategy:

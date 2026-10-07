@@ -569,10 +569,3 @@ def test_coordinator_retries_after_redis_recovers(monkeypatch):
     assert failed_pubsub.closed == 1
     assert recovered_pubsub.closed == 1
     assert provider._redis_error is None
-
-
-def test_leader_scripts_compare_the_unique_owner_token():
-    assert "get', KEYS[1]" in scheduling_redis._RENEW_LEASE
-    assert "ARGV[1]" in scheduling_redis._RENEW_LEASE
-    assert "pexpire" in scheduling_redis._RENEW_LEASE
-    assert "del" in scheduling_redis._RELEASE_LEASE

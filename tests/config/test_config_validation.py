@@ -1,10 +1,11 @@
-import threading
-from collections.abc import Mapping
+import subprocess
+import sys
+from textwrap import dedent, indent
+from types import SimpleNamespace
 
 import pytest
-from tomlkit import parse
+from tomlkit import dumps
 
-from include.config.settings import GlobalConfig
 from include.config.validation import (
     AdmissionControlPolicy,
     AuditRetentionPolicy,
@@ -47,6 +48,57 @@ def _clear_proxy_network_cache():
     parse_trusted_proxy_networks.cache_clear()
     yield
     parse_trusted_proxy_networks.cache_clear()
+
+
+@pytest.fixture
+def config_lifecycle(tmp_path):
+    config_root = tmp_path / "server"
+    config_root.mkdir()
+    config_path = config_root / "config.toml"
+    document = _valid_config()
+    document["server"].update({"secret_key": "existing-secret", "port": 8765})
+    document["security"]["pepper"] = "existing-pepper"
+    config_path.write_text(dumps(document), encoding="utf-8")
+    sentinel = config_root / "init"
+    sentinel.touch()
+    working_directory = tmp_path / "elsewhere"
+    working_directory.mkdir()
+
+    def run_check(code):
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from include.config import paths\n"
+            "config_path = Path(sys.argv[1])\n"
+            "paths.EXECUTABLE_ABSPATH = config_path.parent\n"
+            "from include.config.settings import GlobalConfig, global_config\n"
+            "config = GlobalConfig(str(config_path))\n"
+            "assert config is global_config\n"
+            "config.stop()\n"
+            "try:\n" + indent(dedent(code).strip(), "    ") + "\nfinally:\n"
+            "    config.stop()\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(config_path)],
+            cwd=working_directory,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, (
+            f"Configuration lifecycle check failed\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+    return SimpleNamespace(
+        run_check=run_check,
+        config_path=config_path,
+        sentinel=sentinel,
+        working_directory=working_directory,
+    )
 
 
 def test_valid_configuration_is_accepted():
@@ -853,83 +905,76 @@ def test_obsolete_document_name_duplicate_option_warns_and_is_ignored():
     assert "unique names" in warnings[0]
 
 
-def test_invalid_reload_keeps_previous_configuration(tmp_path):
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
+@pytest.mark.parametrize("invalid_source", ["[server", "invalid-cidr"])
+def test_invalid_reload_keeps_previous_configuration(config_lifecycle, invalid_source):
+    config_lifecycle.run_check(
+        f"""
+        valid_source = config_path.read_text(encoding="utf-8")
+        previous = dict(config)
+        invalid_source = {invalid_source!r}
+        if invalid_source == "invalid-cidr":
+            invalid_source = valid_source.replace("127.0.0.1/32", "not-a-cidr")
+        config_path.write_text(invalid_source, encoding="utf-8")
+
+        assert config.reload() is False
+        assert dict(config) == previous
+        assert config["server"]["port"] == 8765
+
+        config_path.write_text(
+            valid_source.replace("port = 8765", "port = 9000"), encoding="utf-8"
+        )
+        assert config.reload() is True
+        assert config["server"]["port"] == 9000
+        assert config["security"]["pepper"] == "existing-pepper"
         """
-[server]
-file_chunk_size = 2097152
-trusted_proxy_networks = ["not-a-cidr"]
-
-[extensions]
-enabled = []
-
-[security]
-pepper = "test-pepper"
-require_client_cert = false
-""".strip(),
-        encoding="utf-8",
     )
-    previous_data = parse(
+
+
+@pytest.mark.parametrize("sentinel_in_config_directory", [True, False])
+def test_secret_initialization_uses_config_directory_sentinel(
+    config_lifecycle, sentinel_in_config_directory
+):
+    if not sentinel_in_config_directory:
+        config_lifecycle.sentinel.unlink()
+        (config_lifecycle.working_directory / "init").touch()
+
+    config_lifecycle.run_check(
+        f"""
+        from tomlkit import parse
+
+        document = parse(config_path.read_text(encoding="utf-8"))
+        if {sentinel_in_config_directory!r}:
+            assert document["server"]["secret_key"] == "existing-secret"
+            assert document["security"]["pepper"] == "existing-pepper"
+        else:
+            assert document["server"]["secret_key"]
+            assert document["server"]["secret_key"] != "existing-secret"
+            assert document["security"]["pepper"]
+            assert document["security"]["pepper"] != "existing-pepper"
+        assert config["server"]["secret_key"] == document["server"]["secret_key"]
+        assert config["security"]["pepper"] == document["security"]["pepper"]
         """
-[server]
-file_chunk_size = 2097152
-trusted_proxy_networks = ["127.0.0.1/32"]
-
-[extensions]
-enabled = []
-
-[security]
-pepper = "test-pepper"
-require_client_cert = false
-""".strip()
     )
-    config = object.__new__(GlobalConfig)
-    config._config_path = config_path
-    config._data = previous_data
-    config._lock = threading.Lock()
-    config._initialized = True
-
-    reloaded = config.reload()
-
-    assert reloaded is False
-    assert dict(config) == previous_data
 
 
-def test_secret_initialization_uses_config_directory_sentinel(tmp_path, monkeypatch):
-    config_root = tmp_path / "server"
-    config_root.mkdir()
-    config_path = config_root / "config.toml"
-    config_path.write_text(
-        '[server]\nsecret_key = "existing-secret"\n\n'
-        '[security]\npepper = "existing-pepper"\n',
-        encoding="utf-8",
+def test_global_config_implements_read_only_mapping_contract(config_lifecycle):
+    config_lifecycle.run_check(
+        """
+        from collections.abc import Mapping
+
+        import pytest
+
+        assert isinstance(config, Mapping)
+        assert len(config) == 3
+        assert list(config) == ["extensions", "server", "security"]
+        assert "server" in config
+        assert "missing" not in config
+        assert config.get("missing", "fallback") == "fallback"
+        assert config["server"]["port"] == 8765
+        with pytest.raises(TypeError):
+            config["server"] = {}
+        """
     )
-    (config_root / "init").touch()
-    unrelated_working_directory = tmp_path / "elsewhere"
-    unrelated_working_directory.mkdir()
-    monkeypatch.chdir(unrelated_working_directory)
-    config = object.__new__(GlobalConfig)
-    config._config_path = config_path
-
-    config._init_secrets()
-
-    document = parse(config_path.read_text(encoding="utf-8"))
-    assert document["server"]["secret_key"] == "existing-secret"
-    assert document["security"]["pepper"] == "existing-pepper"
-
-
-def test_global_config_implements_read_only_mapping_contract():
-    config = object.__new__(GlobalConfig)
-    config._data = parse("[server]\nport = 8765")
-    config._lock = threading.Lock()
-
-    assert isinstance(config, Mapping)
-    assert len(config) == 1
-    assert list(config) == ["server"]
-    assert "server" in config
-    assert config.get("missing", "fallback") == "fallback"
-    assert config["server"]["port"] == 8765
 
 
 def test_invalid_toml_is_reported_as_configuration_error():

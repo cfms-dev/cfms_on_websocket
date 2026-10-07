@@ -393,6 +393,30 @@ class TestDirectoryOperations:
         assert second_page["next_cursor"] is None
 
     @pytest.mark.asyncio
+    async def test_list_directory_cursor_is_bound_to_its_directory(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+    ):
+        source = await directory_factory()
+        other = await directory_factory()
+        await directory_factory("Cursor Child A", parent_id=source["folder_id"])
+        await directory_factory("Cursor Child B", parent_id=source["folder_id"])
+        first_page = assert_success(
+            await authenticated_client.list_directory(source["folder_id"], page_size=1)
+        )
+        assert first_page["has_more"] is True
+        assert first_page["next_cursor"] is not None
+
+        response = await authenticated_client.list_directory(
+            other["folder_id"], page_size=1, cursor=first_page["next_cursor"]
+        )
+
+        assert_error(response, 400)
+        assert response["data"] == {}
+        assert response["message"] == "Cursor does not match this request"
+
+    @pytest.mark.asyncio
     async def test_get_directory_info_counts_active_direct_children(
         self,
         authenticated_client: CFMSTestClient,

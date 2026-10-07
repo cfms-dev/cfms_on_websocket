@@ -3,7 +3,10 @@ from typing import ClassVar
 import pytest
 from pydantic import ValidationError
 
-from include.config.constants import DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE
+from include.config.constants import (
+    DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
+    PAGINATION_MAX_PAGE_SIZE,
+)
 from include.domains.documents.handlers.directories import (
     RequestCreateDirectoryHandler,
     RequestRestoreDirectoryHandler,
@@ -23,6 +26,7 @@ from include.domains.identity.handlers.groups import (
 from include.domains.identity.handlers.users import (
     RequestChangeUserPermissionsHandler,
     RequestCreateUserHandler,
+    RequestListUsersHandler,
     RequestManageUserStatusHandler,
     RequestSetPasswdHandler,
     RequestUpdateUserBlockHandler,
@@ -79,6 +83,51 @@ def test_json_integer_accepts_json_schema_integer_values(value, expected):
 def test_json_integer_rejects_non_integer_values(value):
     with pytest.raises(ValidationError, match="value"):
         IntegerRequest.model_validate({"value": value})
+
+
+@pytest.mark.parametrize(
+    ("offset", "count"),
+    [
+        pytest.param(0, 1, id="minimum"),
+        pytest.param(32767, PAGINATION_MAX_PAGE_SIZE, id="maximum"),
+        pytest.param(32767.0, float(PAGINATION_MAX_PAGE_SIZE), id="integral-floats"),
+    ],
+)
+def test_offset_pagination_request_accepts_protocol_boundaries(offset, count):
+    request = RequestListUsersHandler.request_model.model_validate(
+        {"offset": offset, "count": count}
+    )
+
+    assert request.model_dump(exclude_unset=True) == {
+        "offset": int(offset),
+        "count": int(count),
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("offset", -1, id="negative-offset"),
+        pytest.param("offset", 32768, id="excessive-offset"),
+        pytest.param("offset", True, id="boolean-offset"),
+        pytest.param("offset", "0", id="string-offset"),
+        pytest.param("offset", 1.5, id="fractional-offset"),
+        pytest.param("count", 0, id="zero-count"),
+        pytest.param("count", PAGINATION_MAX_PAGE_SIZE + 1, id="excessive-count"),
+        pytest.param("count", False, id="boolean-count"),
+        pytest.param("count", "1", id="string-count"),
+        pytest.param("count", 1.5, id="fractional-count"),
+    ],
+)
+def test_offset_pagination_request_rejects_invalid_values(field, value):
+    with pytest.raises(ValidationError, match=field):
+        RequestListUsersHandler.request_model.model_validate({field: value})
+
+
+def test_offset_pagination_request_preserves_omitted_values():
+    request = RequestListUsersHandler.request_model.model_validate({})
+
+    assert request.model_dump(exclude_unset=True) == {}
 
 
 def test_request_data_model_forbids_extra_fields():

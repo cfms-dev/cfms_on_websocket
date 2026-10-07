@@ -1,16 +1,43 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import SimpleNamespace
 
+import orjson
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import ColumnDefault, create_engine, event, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from include.config.validation import ConfigValidationError
+from include.config.constants import (
+    FILE_TASK_EVENT_CHANNEL,
+    GLOBAL_BROADCAST_EVENT_CHANNEL,
+)
+from include.config.validation import ConfigValidationError, SchedulingPolicy
+from include.database import system_states
+from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import User
-from include.database.models.operations import AuditEntry
+from include.database.models.operations import AuditEntry, SystemStateEntry
 from include.database.session import Base
-from include.domains.operations.lockdown import LockdownSource
+from include.domains.documents.file_task_signals import watch_file_task
+from include.domains.operations.commands import audit
+from include.domains.operations.lockdown import (
+    LockdownSource,
+    LockdownState,
+    LockdownTransitionOutcome,
+    apply_automatic_lockdown,
+    apply_lockdown,
+    apply_scheduled_lockdown,
+    disable_scheduled_lockdown,
+    lockdown_state_manager,
+)
+from include.domains.operations.lockdown import commands as lockdown_commands
+from include.domains.operations.lockdown import state as lockdown_state
 from include.extensions.brute_force_lockdown import _extension as extension
+from include.providers.events.local import LocalEventBusProvider
+from include.providers.manager import ProviderManager
+from include.providers.scheduling.local import LocalSchedulingProvider
 from include.transport.request_handler import Result
 
 
@@ -78,33 +105,85 @@ def test_policy_direct_construction_uses_pydantic_validation():
 
 
 @pytest.fixture
-def detector_database(monkeypatch):
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(
-        engine,
-        tables=[User.__table__, AuditEntry.__table__],
-    )
-    testing_session = sessionmaker(bind=engine)
-    monkeypatch.setattr(extension, "Session", testing_session)
-    monkeypatch.setattr(extension, "_STARTED_AT", 0.0)
-    monkeypatch.setattr(
-        extension.lockdown_state_manager,
-        "get_last_disabled_at",
-        lambda: 0.0,
+def detector_context(monkeypatch, tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'detector.db'}", connect_args={"timeout": 30}
     )
 
-    with testing_session.begin() as session:
-        for username in ("alice", "bob"):
-            session.add(
+    @event.listens_for(engine, "connect")
+    def configure_sqlite(connection, _connection_record):
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
+
+    clock = SimpleNamespace(now=1000.0)
+    fixed_time = SimpleNamespace(time=lambda: clock.now, sleep=time.sleep)
+    for module in (extension, lockdown_commands, system_states):
+        monkeypatch.setattr(module, "time", fixed_time)
+    for module in (lockdown_commands, lockdown_state):
+        monkeypatch.setattr(module, "database_now", lambda _session: clock.now)
+    monkeypatch.setattr(
+        AuditEntry.__table__.c.logged_time,
+        "default",
+        ColumnDefault(lambda: clock.now),
+    )
+    monkeypatch.setattr(extension, "_STARTED_AT", 0.0)
+    monkeypatch.setattr(
+        extension,
+        "global_config",
+        _config(
+            window_seconds=100,
+            failure_threshold=3,
+            distinct_account_threshold=2,
+            distinct_ip_threshold=3,
+        ),
+    )
+
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            User.__table__,
+            AuditEntry.__table__,
+            SystemStateEntry.__table__,
+            File.__table__,
+            FileTask.__table__,
+        ],
+    )
+    sessions = sessionmaker(bind=engine)
+    for module in (extension, lockdown_commands, lockdown_state, audit):
+        monkeypatch.setattr(module, "Session", sessions)
+
+    provider_manager = ProviderManager()
+    monkeypatch.setattr(provider_manager, "_providers", {})
+    event_bus = LocalEventBusProvider()
+    scheduling = LocalSchedulingProvider(SchedulingPolicy())
+    provider_manager.register(event_bus)
+    provider_manager.register(scheduling)
+    events = []
+    for channel in (GLOBAL_BROADCAST_EVENT_CHANNEL, FILE_TASK_EVENT_CHANNEL):
+        event_bus.subscribe(
+            channel,
+            lambda message, channel=channel: events.append(
+                (channel, orjson.loads(message))
+            ),
+        )
+
+    try:
+        with sessions.begin() as session:
+            session.add_all(
                 User(
                     username=username,
                     pass_hash="unused",
-                    passwd_last_modified=0,
-                    created_time=0,
+                    passwd_last_modified=0.0,
+                    created_time=0.0,
                 )
+                for username in ("alice", "bob")
             )
-
-    return testing_session
+        yield SimpleNamespace(sessions=sessions, clock=clock, events=events)
+    finally:
+        scheduling.shutdown()
+        engine.dispose()
 
 
 def _audit_failure(session, username, ip_address, logged_time):
@@ -119,45 +198,153 @@ def _audit_failure(session, username, ip_address, logged_time):
     )
 
 
-def test_window_stats_include_current_audited_failure_once(detector_database):
-    with detector_database.begin() as session:
-        _audit_failure(session, "alice", "192.0.2.1", 950)
-        _audit_failure(session, "bob", "192.0.2.2", 960)
-        _audit_failure(session, "alice", "192.0.2.3", 1000)
+@pytest.mark.parametrize(
+    ("failures", "expected_counts"),
+    [
+        (
+            [("alice", "192.0.2.1"), ("bob", "192.0.2.2")],
+            None,
+        ),
+        (
+            [("alice", "192.0.2.1")] * 3,
+            None,
+        ),
+        (
+            [
+                ("alice", "192.0.2.1"),
+                ("bob", "192.0.2.1"),
+                ("alice", "192.0.2.1"),
+            ],
+            (3, 2, 1),
+        ),
+        (
+            [
+                ("alice", "192.0.2.1"),
+                ("alice", "192.0.2.2"),
+                ("alice", "192.0.2.3"),
+            ],
+            (3, 1, 3),
+        ),
+    ],
+    ids=["below-failure-threshold", "below-distinct-thresholds", "accounts", "ips"],
+)
+def test_detector_uses_failure_and_either_distinct_threshold(
+    detector_context, failures, expected_counts
+):
+    with detector_context.sessions.begin() as session:
+        for username, ip_address in failures:
+            _audit_failure(session, username, ip_address, 1000.0)
 
-    policy = extension.BruteForceLockdownPolicy(
-        window_seconds=100,
-        failure_threshold=3,
-        distinct_account_threshold=2,
-        distinct_ip_threshold=3,
+    extension.ext_post_request(
+        "login",
+        SimpleNamespace(data={}, remote_address="192.0.2.1"),
+        Result(code=401, target="alice"),
+        0.1,
     )
 
-    stats = extension._collect_window_stats("alice", policy, now=1000)
+    with detector_context.sessions() as session:
+        automatic_audit = session.scalars(
+            select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+        ).one_or_none()
+        if expected_counts is None:
+            assert lockdown_state_manager.get_state() == LockdownState()
+            assert automatic_audit is None
+            assert detector_context.events == []
+        else:
+            assert lockdown_state_manager.get_state() == LockdownState(
+                enabled=True, reason=extension.DEFAULT_REASON
+            )
+            assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+            assert automatic_audit is not None
+            assert (
+                automatic_audit.data["failure_count"],
+                automatic_audit.data["distinct_accounts"],
+                automatic_audit.data["distinct_ip_addresses"],
+            ) == expected_counts
+            assert detector_context.events == [
+                (
+                    GLOBAL_BROADCAST_EVENT_CHANNEL,
+                    {
+                        "event": "lockdown",
+                        "data": {
+                            "status": True,
+                            "reason": extension.DEFAULT_REASON,
+                        },
+                    },
+                )
+            ]
 
-    assert stats == extension.FailureWindowStats(
-        failure_count=3,
-        distinct_accounts=2,
-        distinct_ip_addresses=3,
-        window_started_at=900,
-        observed_at=1000,
+
+@pytest.mark.parametrize(
+    ("boundary", "window_started_at"),
+    [("rolling", 900.0), ("startup", 930.0), ("unlock", 950.0)],
+)
+def test_detector_excludes_failures_before_its_window(
+    detector_context, monkeypatch, boundary, window_started_at
+):
+    if boundary == "startup":
+        monkeypatch.setattr(extension, "_STARTED_AT", window_started_at)
+    elif boundary == "unlock":
+        apply_lockdown(True, "Earlier maintenance")
+        detector_context.clock.now = window_started_at
+        apply_lockdown(False)
+        assert lockdown_state_manager.get_last_disabled_at() == window_started_at
+        detector_context.clock.now = 1000.0
+        detector_context.events.clear()
+
+    with detector_context.sessions.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", window_started_at - 1)
+        _audit_failure(session, "alice", "192.0.2.1", window_started_at)
+        _audit_failure(session, "alice", "192.0.2.2", 1000.0)
+        _audit_failure(session, "unknown", "192.0.2.3", 1000.0)
+        for action, result in (
+            ("sso_oidc_callback", 401),
+            ("login", 200),
+            ("login", 429),
+        ):
+            session.add(
+                AuditEntry(
+                    action=action,
+                    result=result,
+                    target="bob",
+                    remote_address="192.0.2.3",
+                    logged_time=1000.0,
+                )
+            )
+
+    extension.ext_post_request(
+        "login",
+        SimpleNamespace(data={}, remote_address="192.0.2.2"),
+        Result(code=401, target="alice"),
+        0.1,
     )
-    assert stats.reaches(policy) is True
 
+    assert lockdown_state_manager.get_state() == LockdownState()
+    assert detector_context.events == []
+    with detector_context.sessions.begin() as session:
+        assert (
+            session.scalars(
+                select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+            ).one_or_none()
+            is None
+        )
+        _audit_failure(session, "bob", "192.0.2.3", 1000.0)
 
-def test_window_stats_exclude_expired_and_unknown_accounts(detector_database):
-    with detector_database.begin() as session:
-        _audit_failure(session, "alice", "192.0.2.1", 899)
-        _audit_failure(session, "unknown", "192.0.2.2", 950)
-        _audit_failure(session, "alice", "192.0.2.3", 1000)
+    extension.ext_post_request(
+        "login",
+        SimpleNamespace(data={}, remote_address="192.0.2.3"),
+        Result(code=401, target="bob"),
+        0.1,
+    )
 
-    policy = extension.BruteForceLockdownPolicy(window_seconds=100)
-
-    stats = extension._collect_window_stats("alice", policy, now=1000)
-
-    assert stats.failure_count == 1
-    assert stats.distinct_accounts == 1
-    assert stats.distinct_ip_addresses == 1
-    assert extension._collect_window_stats("unknown", policy, now=1000) is None
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+    with detector_context.sessions() as session:
+        automatic_audit = session.scalars(
+            select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+        ).one()
+        assert automatic_audit.data["failure_count"] == 3
+        assert automatic_audit.data["window_started_at"] == window_started_at
+        assert automatic_audit.data["observed_at"] == 1000.0
 
 
 @pytest.mark.parametrize(
@@ -167,15 +354,17 @@ def test_window_stats_exclude_expired_and_unknown_accounts(detector_database):
         ("login", Result(code=200, target="alice")),
         ("login", Result(code=202, target="alice")),
         ("login", Result(code=429, target="alice")),
+        ("login", Result(code=401)),
+        ("login", Result(code=401, target="")),
+        ("login", Result(code=401, target="unknown")),
         ("sso_oidc_callback", Result(code=401, target="alice")),
     ],
 )
-def test_detector_ignores_non_credential_failures(monkeypatch, action, callback):
-    monkeypatch.setattr(
-        extension,
-        "_collect_window_stats",
-        lambda *_args, **_kwargs: pytest.fail("unexpected detector query"),
-    )
+def test_detector_ignores_non_credential_failures(detector_context, action, callback):
+    with detector_context.sessions.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", 1000.0)
+        _audit_failure(session, "bob", "192.0.2.2", 1000.0)
+        _audit_failure(session, "alice", "192.0.2.3", 1000.0)
 
     extension.ext_post_request(
         action,
@@ -184,183 +373,258 @@ def test_detector_ignores_non_credential_failures(monkeypatch, action, callback)
         0.1,
     )
 
-
-def test_detector_triggers_once_at_threshold(monkeypatch):
-    policy = extension.BruteForceLockdownPolicy(
-        failure_threshold=3,
-        distinct_account_threshold=2,
-        distinct_ip_threshold=3,
-    )
-    stats = extension.FailureWindowStats(3, 2, 1, 900, 1000)
-    transitions = []
-    audits = []
-
-    monkeypatch.setattr(
-        extension.lockdown_state_manager,
-        "get_source",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        extension.BruteForceLockdownPolicy,
-        "from_config",
-        lambda _config: policy,
-    )
-    monkeypatch.setattr(
-        extension,
-        "_collect_window_stats",
-        lambda *_args, **_kwargs: stats,
-    )
-
-    def fake_apply(*args, **kwargs):
-        transitions.append((args, kwargs))
-        return SimpleNamespace(
-            applied=True,
-            cancelled_file_tasks=4,
-            previous_source=None,
+    assert lockdown_state_manager.get_state() == LockdownState()
+    assert detector_context.events == []
+    with detector_context.sessions() as session:
+        assert (
+            session.scalars(
+                select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+            ).one_or_none()
+            is None
         )
 
-    monkeypatch.setattr(extension, "apply_automatic_lockdown", fake_apply)
-    monkeypatch.setattr(
-        extension,
-        "_audit_automatic_lockdown",
-        lambda *args: audits.append(args),
-    )
 
-    extension.ext_post_request(
-        "login",
-        SimpleNamespace(data={}, remote_address="192.0.2.1"),
-        Result(code=401, target="alice"),
-        0.1,
-    )
-
-    assert transitions == [((extension.DEFAULT_REASON,), {})]
-    assert audits == [(policy, stats, 4, None)]
-
-
-@pytest.mark.parametrize(
-    "source",
-    [LockdownSource.AUTOMATIC, LockdownSource.UNKNOWN],
-)
-def test_detector_ignores_an_existing_protected_lockdown(monkeypatch, source):
-    monkeypatch.setattr(
-        extension.lockdown_state_manager,
-        "get_source",
-        lambda: source,
-    )
-    monkeypatch.setattr(
-        extension,
-        "_collect_window_stats",
-        lambda *_args, **_kwargs: pytest.fail("unexpected detector query"),
-    )
-
-    extension.ext_post_request(
-        "login",
-        SimpleNamespace(data={}, remote_address="192.0.2.1"),
-        Result(code=401, target="alice"),
-        0.1,
-    )
-
-
-@pytest.mark.parametrize(
-    "source",
-    [LockdownSource.MANUAL, LockdownSource.SCHEDULED],
-)
-def test_detector_takes_over_an_existing_releasable_lockdown(monkeypatch, source):
-    policy = extension.BruteForceLockdownPolicy(
-        failure_threshold=1,
-        distinct_account_threshold=1,
-        distinct_ip_threshold=1,
-    )
-    stats = extension.FailureWindowStats(1, 1, 1, 900, 1000)
-    transitions = []
-    audits = []
-    monkeypatch.setattr(
-        extension.lockdown_state_manager,
-        "get_source",
-        lambda: source,
-    )
-    monkeypatch.setattr(
-        extension.BruteForceLockdownPolicy,
-        "from_config",
-        lambda _config: policy,
-    )
-    monkeypatch.setattr(
-        extension,
-        "_collect_window_stats",
-        lambda *_args, **_kwargs: stats,
-    )
-
-    def fake_apply(*args, **kwargs):
-        transitions.append((args, kwargs))
-        return SimpleNamespace(
-            applied=True,
-            cancelled_file_tasks=0,
-            previous_source=source,
+def test_detector_cancels_file_tasks_and_audits_once(detector_context):
+    with detector_context.sessions.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", 950.0)
+        _audit_failure(session, "bob", "192.0.2.2", 960.0)
+        _audit_failure(session, "alice", "192.0.2.3", 1000.0)
+        session.add(File(id="file", path="unused", size=1, created_time=1.0))
+        session.add_all(
+            FileTask(
+                id=task_id,
+                file_id="file",
+                status=status,
+                mode=TransferMode.DOWNLOAD,
+                start_time=1.0,
+            )
+            for task_id, status in (
+                ("pending", FileTaskStatus.PENDING),
+                ("running", FileTaskStatus.IN_PROGRESS),
+                ("complete", FileTaskStatus.COMPLETED),
+            )
         )
 
-    monkeypatch.setattr(extension, "apply_automatic_lockdown", fake_apply)
-    monkeypatch.setattr(
-        extension,
-        "_audit_automatic_lockdown",
-        lambda *args: audits.append(args),
+    with watch_file_task("pending") as pending, watch_file_task("running") as running:
+        for _ in range(2):
+            extension.ext_post_request(
+                "login",
+                SimpleNamespace(data={}, remote_address="192.0.2.3"),
+                Result(code=401, target="alice"),
+                0.1,
+            )
+        assert pending.is_set()
+        assert running.is_set()
+
+    assert lockdown_state_manager.get_state() == LockdownState(
+        enabled=True, reason=extension.DEFAULT_REASON
     )
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+    with detector_context.sessions() as session:
+        assert session.get(FileTask, "pending").status == FileTaskStatus.CANCELLED
+        assert session.get(FileTask, "running").status == FileTaskStatus.CANCELLED
+        assert session.get(FileTask, "complete").status == FileTaskStatus.COMPLETED
+        automatic_audit = session.scalars(
+            select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+        ).one()
+        assert automatic_audit.result == 0
+        assert automatic_audit.logged_time == 1000.0
+        assert automatic_audit.username is None
+        assert automatic_audit.target is None
+        assert automatic_audit.remote_address is None
+        assert automatic_audit.data == {
+            "source_extension": "brute_force_lockdown",
+            "window_seconds": 100,
+            "window_started_at": 900.0,
+            "observed_at": 1000.0,
+            "failure_count": 3,
+            "distinct_accounts": 2,
+            "distinct_ip_addresses": 3,
+            "failure_threshold": 3,
+            "distinct_account_threshold": 2,
+            "distinct_ip_threshold": 3,
+            "cancelled_file_tasks": 2,
+            "scheduled_takeover": False,
+            "previous_lockdown_source": None,
+        }
 
-    extension.ext_post_request(
-        "login",
-        SimpleNamespace(data={}, remote_address="192.0.2.1"),
-        Result(code=401, target="alice"),
-        0.1,
-    )
+    cancellation_events = [
+        payload
+        for channel, payload in detector_context.events
+        if channel == FILE_TASK_EVENT_CHANNEL
+    ]
+    assert len(cancellation_events) == 1
+    assert set(cancellation_events[0]["cancelled"]) == {"pending", "running"}
+    assert [
+        payload
+        for channel, payload in detector_context.events
+        if channel == GLOBAL_BROADCAST_EVENT_CHANNEL
+    ] == [
+        {
+            "event": "lockdown",
+            "data": {"status": True, "reason": extension.DEFAULT_REASON},
+        }
+    ]
 
-    assert transitions == [((extension.DEFAULT_REASON,), {})]
-    assert audits == [(policy, stats, 0, source)]
+
+def test_concurrent_detector_callbacks_have_one_transition_and_audit(detector_context):
+    with detector_context.sessions.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", 950.0)
+        _audit_failure(session, "bob", "192.0.2.2", 960.0)
+        _audit_failure(session, "alice", "192.0.2.3", 1000.0)
+    barrier = Barrier(4)
+
+    def detect():
+        barrier.wait(timeout=5)
+        extension.ext_post_request(
+            "login",
+            SimpleNamespace(data={}, remote_address="192.0.2.3"),
+            Result(code=401, target="alice"),
+            0.1,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(detect) for _ in range(4)]
+        for future in futures:
+            future.result(timeout=10)
+
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+    assert len(detector_context.events) == 1
+    assert detector_context.events[0][0] == GLOBAL_BROADCAST_EVENT_CHANNEL
+    with detector_context.sessions() as session:
+        assert (
+            session.scalars(
+                select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+            )
+            .one()
+            .data["failure_count"]
+            == 3
+        )
 
 
-def test_window_stats_exclude_failures_before_last_unlock(
-    detector_database, monkeypatch
+@pytest.mark.parametrize("source", [LockdownSource.MANUAL, LockdownSource.SCHEDULED])
+def test_detector_takes_over_releasable_lockdown_without_changing_reason(
+    detector_context, source
 ):
-    with detector_database.begin() as session:
-        _audit_failure(session, "alice", "192.0.2.1", 949)
-        _audit_failure(session, "alice", "192.0.2.2", 950)
+    if source is LockdownSource.MANUAL:
+        apply_lockdown(True, "Existing maintenance")
+    else:
+        apply_scheduled_lockdown(
+            "scheduled-maintenance", 1100.0, "Existing maintenance"
+        )
+    detector_context.events.clear()
+    with detector_context.sessions.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", 950.0)
+        _audit_failure(session, "bob", "192.0.2.2", 960.0)
+        _audit_failure(session, "alice", "192.0.2.3", 1000.0)
 
-    monkeypatch.setattr(
-        extension.lockdown_state_manager,
-        "get_last_disabled_at",
-        lambda: 950.0,
+    extension.ext_post_request(
+        "login",
+        SimpleNamespace(data={}, remote_address="192.0.2.3"),
+        Result(code=401, target="alice"),
+        0.1,
     )
 
-    stats = extension._collect_window_stats(
-        "alice",
-        extension.BruteForceLockdownPolicy(window_seconds=100),
-        now=1000,
+    assert lockdown_state_manager.get_state() == LockdownState(
+        enabled=True, reason="Existing maintenance"
+    )
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+    assert lockdown_state_manager.get_scheduled_activation() is None
+    assert detector_context.events == []
+    assert (
+        disable_scheduled_lockdown().outcome
+        is LockdownTransitionOutcome.CONDITION_NOT_MET
+    )
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+    with detector_context.sessions() as session:
+        automatic_audit = session.scalars(
+            select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+        ).one()
+        assert automatic_audit.data["previous_lockdown_source"] == source.value
+        assert automatic_audit.data["scheduled_takeover"] is (
+            source is LockdownSource.SCHEDULED
+        )
+        assert automatic_audit.data["cancelled_file_tasks"] == 0
+
+
+@pytest.mark.parametrize("source", [LockdownSource.AUTOMATIC, LockdownSource.UNKNOWN])
+def test_detector_preserves_existing_protected_lockdown(detector_context, source):
+    if source is LockdownSource.AUTOMATIC:
+        apply_automatic_lockdown("Existing protection")
+    else:
+        with detector_context.sessions.begin() as session:
+            session.add(
+                SystemStateEntry(
+                    owner="core",
+                    state_key="lockdown",
+                    schema_version=1,
+                    revision=1,
+                    payload={
+                        "enabled": True,
+                        "reason": "Existing protection",
+                        "last_disabled_at": 0.0,
+                    },
+                    updated_at=1.0,
+                )
+            )
+    detector_context.events.clear()
+    with detector_context.sessions.begin() as session:
+        _audit_failure(session, "alice", "192.0.2.1", 950.0)
+        _audit_failure(session, "bob", "192.0.2.2", 960.0)
+        _audit_failure(session, "alice", "192.0.2.3", 1000.0)
+
+    extension.ext_post_request(
+        "login",
+        SimpleNamespace(data={}, remote_address="192.0.2.3"),
+        Result(code=401, target="alice"),
+        0.1,
     )
 
-    assert stats.failure_count == 1
-    assert stats.window_started_at == 950.0
-
-
-def test_automatic_audit_contains_only_aggregate_details(monkeypatch):
-    calls = []
-    policy = extension.BruteForceLockdownPolicy()
-    stats = extension.FailureWindowStats(50, 10, 4, 900, 1000)
-    monkeypatch.setattr(
-        extension,
-        "log_audit",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
+    assert lockdown_state_manager.get_state() == LockdownState(
+        enabled=True, reason="Existing protection"
     )
+    assert lockdown_state_manager.get_source() is source
+    assert detector_context.events == []
+    with detector_context.sessions() as session:
+        assert (
+            session.scalars(
+                select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+            ).one_or_none()
+            is None
+        )
 
-    extension._audit_automatic_lockdown(
-        policy,
-        stats,
-        2,
-        LockdownSource.SCHEDULED,
+
+def test_detector_database_failure_does_not_break_login(detector_context, monkeypatch):
+    callback = Result(code=401, target="alice")
+    records = []
+    sink = extension.logger.add(lambda message: records.append(message.record))
+
+    def unavailable_session():
+        raise OperationalError("SELECT", {}, RuntimeError("database unavailable"))
+
+    try:
+        monkeypatch.setattr(extension, "Session", unavailable_session)
+        extension.ext_post_request(
+            "login",
+            SimpleNamespace(data={}, remote_address="192.0.2.1"),
+            callback,
+            0.1,
+        )
+    finally:
+        extension.logger.remove(sink)
+
+    assert callback == Result(code=401, target="alice")
+    assert lockdown_state_manager.get_state() == LockdownState()
+    assert detector_context.events == []
+    assert any(
+        record["message"] == "Failed to evaluate automatic brute-force lockdown"
+        and record["exception"].type is OperationalError
+        for record in records
     )
-
-    args, kwargs = calls[0]
-    assert args == ("automatic_lockdown", 0)
-    assert kwargs["data"]["failure_count"] == 50
-    assert kwargs["data"]["distinct_accounts"] == 10
-    assert kwargs["data"]["scheduled_takeover"] is True
-    assert kwargs["data"]["previous_lockdown_source"] == "scheduled"
-    assert "username" not in kwargs["data"]
-    assert "ip_address" not in kwargs["data"]
+    with detector_context.sessions() as session:
+        assert (
+            session.scalars(
+                select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+            ).one_or_none()
+            is None
+        )

@@ -19,7 +19,7 @@ required test check is introduced, replace the event-level filter with a
 lightweight required job and conditionally skip only the expensive test jobs.
 
 ### What it does:
-1. Sets up a Python 3.14 environment
+1. Sets up the Python 3.15 environment selected by the workflow
 2. Installs project dependencies and test requirements
 3. Requires a Towncrier fragment on pull requests unless the pull request has
    the `skip-changelog` label
@@ -27,14 +27,35 @@ lightweight required job and conditionally skip only the expensive test jobs.
 5. Runs the full test suite with pytest
 6. Runs focused SQLite-to-MySQL and MySQL-to-SQLite migration tests against
    MySQL 8.4 and 9.7 LTS services
-7. Uploads test results and logs as artifacts (retained for 7 days)
+7. Verifies rate-limit Lua and scheduler lease behavior against Redis 8.2.10
+8. Uploads test results and logs as artifacts (retained for 7 days)
 
 ### Configuration:
 - **Timeout**: 10 minutes per test run
-- **Python version**: Tests run on Python 3.14
+- **Python version**: Tests run on Python 3.15
 - **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
   9.7 LTS
 - **Artifacts**: Test cache and server logs are uploaded for debugging
+
+### Real Redis behavior tests
+
+The `redis-provider-behavior` job always runs with a disposable
+`redis:8.2.10-alpine` service. It covers token refill, shared quota races, server
+time, key expiration, script errors, and scheduler lease ownership. Lease tests
+execute the production Lua payloads directly; the shared-database scheduler
+runtime is covered separately.
+
+Locally these tests skip unless `CFMS_TEST_REDIS_URL` is set. Use a dedicated
+Redis test service and a plain `redis://[:password]@host:port/db` URL; ACL
+usernames, TLS URLs, and query options are outside the provider constructor's
+configuration contract. A configured but unavailable service fails the tests.
+Each test deletes only its unique key namespace and closes its clients.
+
+```powershell
+uv sync --locked --dev --extra cluster --extra ext-scheduling-cluster
+$env:CFMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
+uv run --locked pytest tests/providers/test_redis_lua_integration.py -q
+```
 
 ### Viewing Results:
 - Check the "Actions" tab in the GitHub repository
