@@ -101,10 +101,12 @@ def config_lifecycle(tmp_path):
     )
 
 
+@pytest.mark.unit
 def test_valid_configuration_is_accepted():
     validate_config(_valid_config())
 
 
+@pytest.mark.unit
 def test_registered_extension_validates_configuration():
     from include.extensions.manager import hookimpl, pm
 
@@ -124,6 +126,7 @@ def test_registered_extension_validates_configuration():
         pm.unregister(name="test_config_validator")
 
 
+@pytest.mark.unit
 def test_enabled_extensions_preserve_configuration_order():
     config = _valid_config()
     config["extensions"]["enabled"] = ["first_ext", "second_ext"]
@@ -131,6 +134,7 @@ def test_enabled_extensions_preserve_configuration_order():
     assert get_enabled_extensions(config) == ("first_ext", "second_ext")
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("value", "message"),
     [
@@ -153,6 +157,7 @@ def test_invalid_enabled_extensions_are_rejected(value, message):
         get_enabled_extensions(config)
 
 
+@pytest.mark.unit
 def test_maximum_length_extension_identifier_is_accepted():
     identifier = "a" + "x" * 254
     config = _valid_config()
@@ -161,6 +166,7 @@ def test_maximum_length_extension_identifier_is_accepted():
     assert get_enabled_extensions(config) == (identifier,)
 
 
+@pytest.mark.unit
 def test_extensions_enabled_is_required():
     config = _valid_config()
     del config["extensions"]["enabled"]
@@ -169,6 +175,7 @@ def test_extensions_enabled_is_required():
         get_enabled_extensions(config)
 
 
+@pytest.mark.unit
 def test_invalid_proxy_network_is_rejected():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = ["not-a-cidr"]
@@ -177,6 +184,7 @@ def test_invalid_proxy_network_is_rejected():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_proxy_networks_must_be_an_array():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = "10.0.0.0/8"
@@ -185,6 +193,7 @@ def test_proxy_networks_must_be_an_array():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_proxy_network_entries_must_be_strings():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = [10]
@@ -193,6 +202,7 @@ def test_proxy_network_entries_must_be_strings():
         validate_config(config)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("value", [True, 0, -1, 1.5, "65536"])
 def test_file_chunk_size_must_be_a_positive_integer(value):
     config = _valid_config()
@@ -204,6 +214,7 @@ def test_file_chunk_size_must_be_a_positive_integer(value):
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_file_chunk_size_is_required():
     config = _valid_config()
     del config["server"]["file_chunk_size"]
@@ -212,6 +223,7 @@ def test_file_chunk_size_is_required():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_auth_throttle_values_are_validated():
     config = _valid_config()
     config["security"]["auth_throttle"] = {"ip_failure_threshold": 0}
@@ -222,6 +234,7 @@ def test_auth_throttle_values_are_validated():
     assert "security.auth_throttle.ip_failure_threshold" in str(error.value)
 
 
+@pytest.mark.unit
 def test_auth_throttle_delay_range_is_validated():
     config = _valid_config()
     config["security"]["auth_throttle"] = {
@@ -233,6 +246,7 @@ def test_auth_throttle_delay_range_is_validated():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_request_rate_control_defaults_to_observation_mode():
     config = _valid_config()
 
@@ -242,6 +256,7 @@ def test_request_rate_control_defaults_to_observation_mode():
     assert policy.cost_for("unconfigured") == 1
 
 
+@pytest.mark.unit
 def test_admission_control_uses_default_connection_and_request_limits():
     config = _valid_config()
 
@@ -251,6 +266,7 @@ def test_admission_control_uses_default_connection_and_request_limits():
     assert admission_policy.max_inflight_requests == 12
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("pool", "expected"),
     [
@@ -275,6 +291,7 @@ def test_database_pool_policy_uses_configured_values_or_defaults(pool, expected)
     assert policy == expected
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("setting", "value"),
     [
@@ -299,6 +316,7 @@ def test_database_pool_policy_rejects_invalid_values(setting, value):
     assert f"database.pool.{setting}" in str(error.value)
 
 
+@pytest.mark.unit
 def test_database_pool_capacity_mismatch_emits_warning():
     config = _valid_config()
     config["server"]["admission_control"] = {"max_inflight_requests": 16}
@@ -313,6 +331,7 @@ def test_database_pool_capacity_mismatch_emits_warning():
     assert "database pool capacity" in warnings[0]
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("settings", "expected"),
     [
@@ -339,6 +358,7 @@ def test_identity_permission_retention_uses_configured_values_or_defaults(
     ) == expected
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("settings", "expected"),
     [
@@ -357,6 +377,7 @@ def test_audit_retention_uses_configured_values_or_defaults(settings, expected):
     assert (policy.retention_days, policy.batch_size) == expected
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("setting", "value"),
     [
@@ -376,6 +397,7 @@ def test_audit_retention_rejects_invalid_values(setting, value):
     assert f"maintenance.audit_retention.{setting}" in str(error.value)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("setting", "value"),
     [
@@ -394,6 +416,7 @@ def test_identity_permission_retention_rejects_invalid_values(setting, value):
     assert f"identity.permission_retention.{setting}" in str(error.value)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("setting", "value", "expected_fragment"),
     [
@@ -422,6 +445,7 @@ def test_request_rate_control_values_are_validated(setting, value, expected_frag
     assert expected_fragment in str(error.value)
 
 
+@pytest.mark.unit
 def test_request_rate_control_action_cost_overrides_handler_default():
     config = _valid_config()
     config["security"]["request_rate_control"] = {"action_costs": {"search": 5}}
@@ -432,6 +456,7 @@ def test_request_rate_control_action_cost_overrides_handler_default():
     assert policy.cost_for("list_users", 2) == 2
 
 
+@pytest.mark.unit
 def test_admission_control_rejects_per_identity_limit_above_global_limit():
     config = _valid_config()
     config["server"]["admission_control"] = {
@@ -443,6 +468,7 @@ def test_admission_control_rejects_per_identity_limit_above_global_limit():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_rate_limit_provider_selection_is_validated():
     config = _valid_config()
     config["provider"] = {"rate_limit": "database"}
@@ -451,6 +477,7 @@ def test_rate_limit_provider_selection_is_validated():
         validate_config(config)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("settings", "expected"),
     [
@@ -479,6 +506,7 @@ def test_scheduling_policy_uses_configured_values_or_defaults(settings, expected
     ) == expected
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("provider", ["database", "dramatiq"])
 def test_scheduling_provider_selection_is_validated(provider):
     config = _valid_config()
@@ -488,6 +516,7 @@ def test_scheduling_provider_selection_is_validated(provider):
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_redis_scheduling_requires_shared_database():
     config = _valid_config()
     config["provider"] = {"scheduling": "redis"}
@@ -497,6 +526,7 @@ def test_redis_scheduling_requires_shared_database():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_redis_scheduling_requires_explicit_deployment_namespace():
     config = _valid_config()
     config["provider"] = {"scheduling": "redis"}
@@ -506,6 +536,7 @@ def test_redis_scheduling_requires_explicit_deployment_namespace():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_redis_scheduling_accepts_explicit_deployment_namespace():
     config = _valid_config()
     config["provider"] = {"scheduling": "redis"}
@@ -515,6 +546,7 @@ def test_redis_scheduling_accepts_explicit_deployment_namespace():
     validate_config(config)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "namespace",
     ["", "Uppercase", "contains.space", "x" * 64, "namespace:part"],
@@ -527,6 +559,7 @@ def test_redis_scheduling_namespace_is_validated(namespace):
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_local_scheduling_does_not_require_redis_namespace():
     config = _valid_config()
     config["provider"] = {"scheduling": "local"}
@@ -534,6 +567,7 @@ def test_local_scheduling_does_not_require_redis_namespace():
     validate_config(config)
 
 
+@pytest.mark.unit
 def test_scheduling_lease_refresh_must_precede_expiry():
     config = _valid_config()
     config["scheduling"] = {
@@ -545,6 +579,7 @@ def test_scheduling_lease_refresh_must_precede_expiry():
         validate_config(config)
 
 
+@pytest.mark.component
 def test_client_certificate_ca_directory_is_validated(tmp_path):
     config = _valid_config()
     config["security"].update(
@@ -558,6 +593,7 @@ def test_client_certificate_ca_directory_is_validated(tmp_path):
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_client_certificate_flag_must_be_boolean():
     config = _valid_config()
     config["security"]["require_client_cert"] = "false"
@@ -566,6 +602,7 @@ def test_client_certificate_flag_must_be_boolean():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_proxy_networks_follow_config_changes():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = ["10.0.0.0/8"]
@@ -578,6 +615,7 @@ def test_proxy_networks_follow_config_changes():
     assert str(reloaded_networks[0]) == "192.0.2.0/24"
 
 
+@pytest.mark.unit
 @pytest.mark.usefixtures("_clear_proxy_network_cache")
 def test_unchanged_proxy_networks_reuse_parse_cache():
     config = _valid_config()
@@ -592,6 +630,7 @@ def test_unchanged_proxy_networks_reuse_parse_cache():
     assert cache_info.misses == 1
 
 
+@pytest.mark.unit
 def test_policy_is_built_from_validated_config():
     config = _valid_config()
     config["security"]["auth_throttle"] = {"ip_failure_threshold": 42}
@@ -601,6 +640,7 @@ def test_policy_is_built_from_validated_config():
     assert policy.ip_failure_threshold == 42
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("policy_type", "section"),
     [
@@ -615,6 +655,7 @@ def test_policy_sources_require_their_root_section(policy_type, section):
         policy_type.from_config({})
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("policy_type", "config"),
     [
@@ -633,6 +674,7 @@ def test_document_policy_sources_default_optional_sections(policy_type, config):
     assert policy == policy_type()
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("policy_type", "config", "path"),
     [
@@ -679,6 +721,7 @@ def test_policy_positive_integer_fields_reject_booleans(policy_type, config, pat
     assert path in str(error.value)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("policy_type", "config", "path"),
     [
@@ -709,6 +752,7 @@ def test_declarative_policy_fields_do_not_coerce_values(policy_type, config, pat
     assert path in str(error.value)
 
 
+@pytest.mark.unit
 def test_policy_mapping_conversion_and_unknown_fields_preserve_compatibility():
     policy = RequestRateControlPolicy.from_config(
         {
@@ -724,6 +768,7 @@ def test_policy_mapping_conversion_and_unknown_fields_preserve_compatibility():
     assert policy.action_costs == (("login", 2), ("search", 5))
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("settings", "expected_pending"),
     [
@@ -743,6 +788,7 @@ def test_document_upload_policy_uses_configured_values_or_defaults(
     assert policy.max_pending_documents_per_creator == expected_pending
 
 
+@pytest.mark.unit
 def test_document_creation_risk_policy_defaults():
     policy = DocumentCreationRiskPolicy.from_config(_valid_config())
 
@@ -753,6 +799,7 @@ def test_document_creation_risk_policy_defaults():
     assert policy.ip_refill_tokens == 1000
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("settings", "expected_mode", "expected_capacity"),
     [
@@ -777,6 +824,7 @@ def test_document_download_risk_policy_uses_configured_values_or_defaults(
     assert policy.task_refill_tokens == 10
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("setting", "value", "expected_fragment"),
     [
@@ -802,6 +850,7 @@ def test_download_risk_policy_validates_settings(setting, value, expected_fragme
     assert expected_fragment in str(error.value)
 
 
+@pytest.mark.unit
 def test_legacy_creation_rate_settings_are_ignored():
     config = _valid_config()
     config["document"] = {
@@ -819,6 +868,7 @@ def test_legacy_creation_rate_settings_are_ignored():
     assert get_config_warnings(config) == ()
 
 
+@pytest.mark.unit
 def test_new_creation_risk_settings_override_ignored_legacy_settings():
     config = _valid_config()
     config["document"] = {
@@ -839,6 +889,7 @@ def test_new_creation_risk_settings_override_ignored_legacy_settings():
     assert get_config_warnings(config) == ()
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("setting", "value", "expected_fragment"),
     [
@@ -870,6 +921,7 @@ def test_creation_risk_policy_validates_settings(setting, value, expected_fragme
     assert expected_fragment in str(error.value)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "upload",
     [
@@ -887,6 +939,7 @@ def test_document_upload_policy_rejects_invalid_values(upload):
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_empty_pepper_warning_is_centralized():
     config = _valid_config()
     config["security"]["pepper"] = ""
@@ -894,6 +947,7 @@ def test_empty_pepper_warning_is_centralized():
     assert "`pepper`" in get_config_warnings(config)[0]
 
 
+@pytest.mark.unit
 def test_obsolete_document_name_duplicate_option_warns_and_is_ignored():
     config = _valid_config()
     config["document"] = {"allow_name_duplicate": True}
@@ -905,6 +959,7 @@ def test_obsolete_document_name_duplicate_option_warns_and_is_ignored():
     assert "unique names" in warnings[0]
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("invalid_source", ["[server", "invalid-cidr"])
 def test_invalid_reload_keeps_previous_configuration(config_lifecycle, invalid_source):
     config_lifecycle.run_check(
@@ -930,6 +985,7 @@ def test_invalid_reload_keeps_previous_configuration(config_lifecycle, invalid_s
     )
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("sentinel_in_config_directory", [True, False])
 def test_secret_initialization_uses_config_directory_sentinel(
     config_lifecycle, sentinel_in_config_directory
@@ -957,6 +1013,7 @@ def test_secret_initialization_uses_config_directory_sentinel(
     )
 
 
+@pytest.mark.integration
 def test_global_config_implements_read_only_mapping_contract(config_lifecycle):
     config_lifecycle.run_check(
         """
@@ -977,6 +1034,7 @@ def test_global_config_implements_read_only_mapping_contract(config_lifecycle):
     )
 
 
+@pytest.mark.unit
 def test_invalid_toml_is_reported_as_configuration_error():
     with pytest.raises(ConfigValidationError, match="Invalid TOML configuration"):
         parse_config_document("[server")
@@ -998,6 +1056,7 @@ def _valid_s3_config() -> dict:
     return config
 
 
+@pytest.mark.unit
 def test_s3_configuration_accepts_sdk_default_resolution():
     config = _valid_s3_config()
 
@@ -1009,6 +1068,7 @@ def test_s3_configuration_accepts_sdk_default_resolution():
     assert policy.max_pool_connections == 64
 
 
+@pytest.mark.unit
 def test_s3_configuration_allows_omitting_connection_pool():
     config = _valid_s3_config()
     del config["s3"]["max_pool_connections"]
@@ -1023,6 +1083,7 @@ def test_s3_configuration_allows_omitting_connection_pool():
     assert policy.max_pool_connections is None
 
 
+@pytest.mark.unit
 def test_s3_policy_hides_explicit_credentials_from_its_representation():
     config = _valid_s3_config()
     config["s3"].update(
@@ -1042,6 +1103,7 @@ def test_s3_policy_hides_explicit_credentials_from_its_representation():
     assert "token-value" not in repr(policy)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("addressing_style", ["auto", "virtual", "path"])
 def test_s3_configuration_accepts_supported_addressing_styles(addressing_style):
     config = _valid_s3_config()
@@ -1050,6 +1112,7 @@ def test_s3_configuration_accepts_supported_addressing_styles(addressing_style):
     validate_config(config)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("max_pool_connections", [0, -1, True, "64"])
 def test_s3_configuration_rejects_invalid_connection_pool(max_pool_connections):
     config = _valid_s3_config()
@@ -1059,6 +1122,7 @@ def test_s3_configuration_rejects_invalid_connection_pool(max_pool_connections):
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_s3_configuration_rejects_invalid_addressing_style():
     config = _valid_s3_config()
     config["s3"]["addressing_style"] = "custom"
@@ -1067,6 +1131,7 @@ def test_s3_configuration_rejects_invalid_addressing_style():
         validate_config(config)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("access_key_id", "secret_access_key", "session_token", "message"),
     [
@@ -1091,6 +1156,7 @@ def test_s3_configuration_rejects_incomplete_explicit_credentials(
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_s3_configuration_requires_non_empty_bucket():
     config = _valid_s3_config()
     config["s3"]["bucket"] = ""
@@ -1099,6 +1165,7 @@ def test_s3_configuration_requires_non_empty_bucket():
         validate_config(config)
 
 
+@pytest.mark.unit
 def test_storage_provider_rejects_unknown_backend():
     config = _valid_config()
     config["provider"] = {"storage": "unknown"}

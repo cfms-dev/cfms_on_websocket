@@ -42,6 +42,8 @@ from include.transport.request_handler import (
     validate_request_handler_models,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class IntegerRequest(RequestDataModel):
     value: JsonInteger

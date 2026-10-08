@@ -8,6 +8,8 @@ from .support import (
     _write_jsonl,
 )
 
+pytestmark = pytest.mark.component
+
 
 def test_legacy_rule_data_rejects_malformed_embedded_json(backup_context) -> None:
     from maintenance.backup.legacy import _coerce_legacy_rule_data

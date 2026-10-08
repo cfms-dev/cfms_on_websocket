@@ -2,7 +2,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from include.database.models.operations import SystemStateEntry
@@ -13,25 +12,16 @@ from include.database.system_states import (
     update_system_state,
 )
 
+pytestmark = pytest.mark.component
+
 
 @pytest.fixture
-def state_database(tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'system-states.db'}",
-        connect_args={"timeout": 30},
-    )
-
-    @event.listens_for(engine, "connect")
-    def _configure_sqlite(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
+def state_database(tmp_path, sqlite_engine_factory):
+    engine = sqlite_engine_factory(tmp_path / "system-states.db", timeout_seconds=30)
 
     SystemStateEntry.__table__.create(engine)
     sessions = sessionmaker(bind=engine)
-    yield sessions
-    engine.dispose()
+    return sessions
 
 
 @pytest.fixture

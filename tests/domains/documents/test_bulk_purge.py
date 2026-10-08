@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from include.database import models
@@ -13,14 +13,12 @@ from include.domains.documents.queries.file_references import (
     _clear_file_references_cache,
 )
 
+pytestmark = pytest.mark.component
+
 
 @pytest.fixture
-def purge_context(monkeypatch, tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'bulk-purge.db'}")
-
-    @event.listens_for(engine, "connect")
-    def enable_foreign_keys(connection, _record):
-        connection.execute("PRAGMA foreign_keys=ON")
+def purge_context(monkeypatch, tmp_path, sqlite_engine_factory):
+    engine = sqlite_engine_factory(tmp_path / "bulk-purge.db")
 
     try:
         Base.metadata.create_all(engine)
@@ -38,7 +36,6 @@ def purge_context(monkeypatch, tmp_path):
             session.add(models.Folder(id="/", name="/", inherit=False))
         yield SimpleNamespace(sessions=sessions, queued=queued)
     finally:
-        engine.dispose()
         _clear_file_references_cache()
 
 

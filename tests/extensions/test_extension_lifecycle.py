@@ -6,6 +6,8 @@ import pytest
 from include.domains.access.permissions import Permissions
 from include.extensions import manager as extension_manager
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def builtin_extension(monkeypatch, protected_test_config):
@@ -19,7 +21,6 @@ def builtin_extension(monkeypatch, protected_test_config):
     )
     yield _extension
     _extension.ext_on_shutdown()
-    _extension.global_config.stop()
 
 
 class _FakeServer:

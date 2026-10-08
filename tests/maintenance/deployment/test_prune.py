@@ -17,6 +17,8 @@ from maintenance.operations.exceptions import MaintenanceOperationError
 
 from .support import _prepare_deployment, _write_release
 
+pytestmark = pytest.mark.component
+
 
 def test_prune_removes_only_inactive_stored_releases(tmp_path: Path) -> None:
     root = tmp_path / "deployment"

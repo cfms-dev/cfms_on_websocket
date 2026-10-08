@@ -1,8 +1,9 @@
 import ast
 from pathlib import Path
-from shutil import copyfile
 
 import pytest
+
+pytestmark = pytest.mark.unit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -99,11 +100,6 @@ EXPECTED_EXTRA_HANDLER_COSTS = {
 }
 
 
-def _prepare_config(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-
 def _declared_handler_costs(path: Path) -> dict[str, int]:
     module = ast.parse(path.read_text(encoding="utf-8"))
     costs = {}
@@ -129,9 +125,7 @@ def _declared_handler_costs(path: Path) -> dict[str, int]:
     return costs
 
 
-def test_core_action_costs_match_business_contract(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_core_action_costs_match_business_contract(monkeypatch):
     from include.transport.request_handler import validate_request_handler_models
     from include.transport.router import available_functions
 
@@ -174,10 +168,8 @@ def test_all_known_costs_fit_default_request_buckets():
 
 @pytest.mark.parametrize("declared_cost", [True, 0, -1, 1.5, 121])
 def test_handler_cost_validation_rejects_invalid_declared_cost_even_when_overridden(
-    monkeypatch, tmp_path, declared_cost
+    monkeypatch, declared_cost
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.config.validation import RequestRateControlPolicy
     from include.domains.security.guards import request_rate_control
 
@@ -195,11 +187,7 @@ def test_handler_cost_validation_rejects_invalid_declared_cost_even_when_overrid
         )
 
 
-def test_handler_cost_validation_reports_configured_unknown_actions(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_handler_cost_validation_reports_configured_unknown_actions(monkeypatch):
     from include.config.validation import RequestRateControlPolicy
     from include.domains.security.guards import request_rate_control
 

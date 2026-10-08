@@ -11,6 +11,8 @@ from include.providers.scheduling import redis as scheduling_redis
 from include.providers.scheduling.redis import RedisSchedulingProvider
 from include.scheduling.registry import ScheduledTaskRegistry
 
+pytestmark = pytest.mark.unit
+
 
 class _FakeRedis:
     def __init__(self):

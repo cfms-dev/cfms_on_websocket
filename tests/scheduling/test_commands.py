@@ -1,9 +1,9 @@
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from include.database.models.scheduling import Schedule, ScheduleExecution
+from include.database.models.scheduling import Schedule
 from include.domains.access.permissions import Permissions
 from include.scheduling import ScheduledTaskRegistration, ScheduledTaskRegistry
 from include.scheduling import commands as scheduling_commands
@@ -14,6 +14,8 @@ from include.scheduling.commands import (
     schedule_response,
     update_schedule,
 )
+
+pytestmark = pytest.mark.component
 
 
 class _Payload(BaseModel):
@@ -43,14 +45,8 @@ def registry():
 
 
 @pytest.fixture
-def schedule_sessions():
-    database = create_engine("sqlite://")
-    Schedule.__table__.create(database)
-    ScheduleExecution.__table__.create(database)
-    try:
-        yield sessionmaker(bind=database, expire_on_commit=False)
-    finally:
-        database.dispose()
+def schedule_sessions(schedule_database):
+    return sessionmaker(bind=schedule_database, expire_on_commit=False)
 
 
 @pytest.fixture

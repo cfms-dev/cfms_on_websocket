@@ -20,6 +20,8 @@ from tests.support.config import (
 from tests.support.server import start_server, stop_server
 from tests.support.utils import assert_success
 
+pytest_plugins = ("tests.support.collection",)
+
 _TEST_CONFIG_MANAGER = pytest.StashKey[ExitStack]()
 _TEST_SERVER_SETTINGS = pytest.StashKey[ServerTestSettings]()
 

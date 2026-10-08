@@ -5,6 +5,8 @@ import tarfile
 
 import pytest
 
+pytestmark = pytest.mark.component
+
 
 def test_legacy_banned_subnet_times_are_upgraded(backup_context):
     table = backup_context.Base.metadata.tables["banned_subnets"]

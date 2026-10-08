@@ -3,12 +3,16 @@ import threading
 import time
 from types import SimpleNamespace
 
-from tests.domains.documents.test_file_task_lifecycle import (
+import pytest
+
+from tests.domains.documents.support import (
     _create_file_task,
     _FakeUploadStream,
     _new_transfer_handler,
     _sent_json_messages,
 )
+
+pytestmark = pytest.mark.component
 
 
 def test_upload_confirms_before_releasing_deduplication(file_task_context, monkeypatch):

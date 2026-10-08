@@ -4,6 +4,9 @@ from types import SimpleNamespace
 import pytest
 
 from tests.maintenance.backup.support import _SRC_PATH, _new_database, _write_config
+from tests.support.database import sqlite_engine_factory
+
+__all__ = ["sqlite_engine_factory"]
 
 
 @pytest.fixture

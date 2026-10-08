@@ -14,6 +14,8 @@ from .support import (
     _seed_permission_entries,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def test_permission_purge_dry_run_reports_eligible_entries_without_changes(tmp_path):
     src_dir = _make_src_dir(tmp_path)

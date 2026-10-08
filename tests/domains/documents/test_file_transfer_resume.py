@@ -2,7 +2,7 @@ import hashlib
 
 import pytest
 
-from tests.domains.documents.test_file_task_lifecycle import (
+from tests.domains.documents.support import (
     _create_file_task,
     _DisconnectBeforeCompletionStream,
     _DisconnectingUploadStream,
@@ -14,6 +14,8 @@ from tests.domains.documents.test_file_task_lifecycle import (
     _new_transfer_handler,
     _sent_json_messages,
 )
+
+pytestmark = pytest.mark.component
 
 
 @pytest.mark.parametrize(

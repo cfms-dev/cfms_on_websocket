@@ -1,5 +1,9 @@
-def test_database_models_register_core_tables(monkeypatch, protected_test_config):
-    monkeypatch.chdir(protected_test_config.src_dir)
+import pytest
+
+pytestmark = pytest.mark.unit
+
+
+def test_database_models_register_core_tables():
 
     import include.database.models  # noqa: F401
     from include.database.session import Base
@@ -21,8 +25,7 @@ def test_database_models_register_core_tables(monkeypatch, protected_test_config
     assert expected_tables <= set(Base.metadata.tables)
 
 
-def test_database_models_export_node_only(monkeypatch, protected_test_config):
-    monkeypatch.chdir(protected_test_config.src_dir)
+def test_database_models_export_node_only():
 
     from include.database import models
     from include.database.models import documents

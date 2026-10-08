@@ -3,6 +3,8 @@ import pytest
 from tests.support import server
 from tests.support.config import ServerTestSettings
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def started_processes(monkeypatch):

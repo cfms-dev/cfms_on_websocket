@@ -1,6 +1,11 @@
 import ast
 import pathlib
 
+import pytest
+
+pytestmark = pytest.mark.component
+
+
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PYTHON_SOURCE_ROOTS = (
     PROJECT_ROOT / "src",

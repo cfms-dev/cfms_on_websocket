@@ -18,6 +18,8 @@ from include.scheduling.triggers import (
     first_run_at,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class _Payload(BaseModel):
     value: int

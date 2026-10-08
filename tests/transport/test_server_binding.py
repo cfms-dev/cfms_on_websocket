@@ -31,6 +31,7 @@ def _set_trusted_proxy_networks(monkeypatch, client_address, values) -> None:
     )
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
 def test_ipv4_address_uses_ipv4_only_bind_options(client_address, host: str):
     family, dualstack_ipv6 = client_address.get_bind_options(host, dualstack_ipv6=True)
@@ -39,6 +40,7 @@ def test_ipv4_address_uses_ipv4_only_bind_options(client_address, host: str):
     assert dualstack_ipv6 is False
 
 
+@pytest.mark.integration
 def test_ipv4_bind_options_create_ipv4_listener(client_address):
     family, dualstack_ipv6 = client_address.get_bind_options(
         "127.0.0.1", dualstack_ipv6=True
@@ -52,6 +54,7 @@ def test_ipv4_bind_options_create_ipv4_listener(client_address):
         assert listener.family == socket.AF_INET
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("dualstack_ipv6", "expected_dualstack_ipv6"),
     [(False, False), (True, True)],
@@ -67,6 +70,7 @@ def test_ipv6_address_preserves_dualstack_setting(
     assert actual_dualstack_ipv6 is expected_dualstack_ipv6
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6])
 def test_hostname_uses_system_resolver_family(monkeypatch, client_address, family):
     def resolve(host, port, *, type, flags):
@@ -96,6 +100,7 @@ def _websocket(peer_ip: str, headers: dict[str, str]):
     )
 
 
+@pytest.mark.unit
 def test_untrusted_peer_cannot_spoof_forwarded_address(monkeypatch, client_address):
     _set_trusted_proxy_networks(monkeypatch, client_address, [])
     websocket = _websocket("198.51.100.20", {"X-Forwarded-For": "203.0.113.99"})
@@ -103,6 +108,7 @@ def test_untrusted_peer_cannot_spoof_forwarded_address(monkeypatch, client_addre
     assert client_address.get_client_ip(websocket) == "198.51.100.20"
 
 
+@pytest.mark.unit
 def test_forwarded_chain_uses_rightmost_untrusted_address(monkeypatch, client_address):
     _set_trusted_proxy_networks(monkeypatch, client_address, ["10.0.0.0/8"])
     websocket = _websocket(
@@ -113,6 +119,7 @@ def test_forwarded_chain_uses_rightmost_untrusted_address(monkeypatch, client_ad
     assert client_address.get_client_ip(websocket) == "198.51.100.7"
 
 
+@pytest.mark.unit
 def test_invalid_forwarded_chain_falls_back_to_peer(monkeypatch, client_address):
     _set_trusted_proxy_networks(monkeypatch, client_address, ["10.0.0.0/8"])
     websocket = _websocket("10.0.0.2", {"X-Forwarded-For": "not-an-ip"})
@@ -120,6 +127,7 @@ def test_invalid_forwarded_chain_falls_back_to_peer(monkeypatch, client_address)
     assert client_address.get_client_ip(websocket) == "10.0.0.2"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("real_ip", "expected"),
     [("198.51.100.9", "198.51.100.9"), ("not-an-ip", "10.0.0.2")],
@@ -133,6 +141,7 @@ def test_real_ip_from_trusted_peer_is_validated(
     assert client_address.get_client_ip(websocket) == expected
 
 
+@pytest.mark.unit
 def test_ipv4_mapped_ipv6_address_is_canonicalized(monkeypatch, client_address):
     _set_trusted_proxy_networks(monkeypatch, client_address, [])
     websocket = _websocket("::ffff:192.0.2.10", {})
@@ -140,6 +149,7 @@ def test_ipv4_mapped_ipv6_address_is_canonicalized(monkeypatch, client_address):
     assert client_address.get_client_ip(websocket) == "192.0.2.10"
 
 
+@pytest.mark.unit
 def test_ipv4_mapped_forwarded_address_uses_ipv4_trust_rules(
     monkeypatch, client_address
 ):
@@ -154,6 +164,7 @@ def test_ipv4_mapped_forwarded_address_uses_ipv4_trust_rules(
     assert client_address.get_client_ip(websocket) == "198.51.100.9"
 
 
+@pytest.mark.unit
 def test_connection_handler_audits_effective_client_address(
     monkeypatch, client_address
 ):
@@ -176,6 +187,7 @@ def test_connection_handler_audits_effective_client_address(
     assert handler.remote_address == "198.51.100.9"
 
 
+@pytest.mark.unit
 def test_connection_handler_rejects_forwarding_from_untrusted_peer(
     monkeypatch, client_address
 ):

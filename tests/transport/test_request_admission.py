@@ -1,9 +1,13 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from include.config.validation import AdmissionControlPolicy
 from include.transport import admission as admission_module
 from include.transport.admission import AdmissionController
+
+pytestmark = pytest.mark.unit
 
 
 def _policy(**overrides: int) -> AdmissionControlPolicy:

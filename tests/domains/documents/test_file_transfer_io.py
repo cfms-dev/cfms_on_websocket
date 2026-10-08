@@ -1,11 +1,13 @@
 import hashlib
 import os
 import re
+from types import SimpleNamespace
 
 import orjson
 import pytest
 
-from tests.domains.documents.test_file_task_lifecycle import (
+from include.transport.multiplexing import Frame, FrameType
+from tests.domains.documents.support import (
     _AssertingDownloadStream,
     _AssertingUploadStream,
     _create_file_task,
@@ -18,11 +20,12 @@ from tests.domains.documents.test_file_task_lifecycle import (
     _set_revision_file_size,
     _TrackingSessionFactory,
 )
-from tests.support.client import CFMSTestClient, calculate_sha256
+from tests.support.client import AsyncStream, CFMSTestClient, calculate_sha256
 from tests.support.utils import assert_success
 
 
 class TestFileTransfer:
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_upload_and_download_file(
         self,
@@ -78,6 +81,7 @@ class TestFileTransfer:
         )
         assert _get_file_task_status(database_path, dl_task_id) == 1
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_download_invalid_task_id_raises_runtime_error(
         self, authenticated_client: CFMSTestClient, tmp_path
@@ -92,85 +96,58 @@ class TestFileTransfer:
                 "missing-download-task-id", download_dest
             )
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_download_aborted_by_server_hook(
-        self, authenticated_client: CFMSTestClient, monkeypatch, tmp_path
-    ):
-        class FakeFrame:
-            def __init__(self, data):
-                self.data = data
+    async def test_download_aborted_by_server_hook(self, tmp_path):
+        sent = []
 
-        class FakeStream:
-            def __init__(self):
-                self.sent_payloads = []
-                self.responses = [
-                    FakeFrame(
-                        b'{"action":"transfer_file","data":{"file_size":1,'
-                        b'"chunk_size":65536}}'
-                    ),
-                    FakeFrame(b'{"action":"abort"}'),
-                ]
+        async def send(_stream_id, _frame_type, data):
+            sent.append(data)
 
-            async def send(self, data):
-                self.sent_payloads.append(data)
-
-            async def recv(self):
-                return self.responses.pop(0)
-
-        fake_stream = FakeStream()
-        monkeypatch.setattr(
-            authenticated_client.multiplexer, "open_stream", lambda: fake_stream
-        )
+        stream = AsyncStream(SimpleNamespace(_send_frame=send), 1)
+        for response in (
+            {"action": "transfer_file", "data": {"file_size": 1, "chunk_size": 65536}},
+            {"action": "abort"},
+        ):
+            stream._put_incoming_frame(
+                Frame(1, FrameType.PROCESS, orjson.dumps(response))
+            )
+        test_client = CFMSTestClient()
+        test_client.multiplexer = SimpleNamespace(open_stream=lambda: stream)
 
         dest = tmp_path / "aborted.bin"
         with pytest.raises(RuntimeError, match="Server aborted file transfer"):
-            await authenticated_client.download_file_from_server(
-                "fake-task-id", str(dest)
-            )
+            await test_client.download_file_from_server("fake-task-id", str(dest))
 
         assert not dest.exists() or dest.stat().st_size == 0
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_empty_download_confirms_completion(
-        self, authenticated_client: CFMSTestClient, monkeypatch, tmp_path
-    ):
-        class FakeFrame:
-            def __init__(self, data):
-                self.data = data
+    async def test_empty_download_confirms_completion(self, tmp_path):
+        sent = []
 
-        class FakeStream:
-            def __init__(self):
-                self.sent_payloads = []
-                self.responses = [
-                    FakeFrame(
-                        b'{"action":"transfer_file","data":{"file_size":0,'
-                        b'"chunk_size":65536}}'
-                    ),
-                    FakeFrame(
-                        b'{"action":"transfer_file","data":{"flag":"empty_file"}}'
-                    ),
-                    FakeFrame(b'{"action":"transfer_complete","data":{}}'),
-                ]
+        async def send(_stream_id, _frame_type, data):
+            sent.append(data)
 
-            async def send(self, data):
-                self.sent_payloads.append(data)
-
-            async def recv(self):
-                return self.responses.pop(0)
-
-        fake_stream = FakeStream()
-        monkeypatch.setattr(
-            authenticated_client.multiplexer, "open_stream", lambda: fake_stream
-        )
+        stream = AsyncStream(SimpleNamespace(_send_frame=send), 1)
+        for response in (
+            {"action": "transfer_file", "data": {"file_size": 0, "chunk_size": 65536}},
+            {"action": "transfer_file", "data": {"flag": "empty_file"}},
+            {"action": "transfer_complete", "data": {}},
+        ):
+            stream._put_incoming_frame(
+                Frame(1, FrameType.PROCESS, orjson.dumps(response))
+            )
+        test_client = CFMSTestClient()
+        test_client.multiplexer = SimpleNamespace(open_stream=lambda: stream)
 
         dest = tmp_path / "empty-download.bin"
-        await authenticated_client.download_file_from_server(
-            "empty-download-task", str(dest)
-        )
+        await test_client.download_file_from_server("empty-download-task", str(dest))
 
         assert dest.read_bytes() == b""
-        assert fake_stream.sent_payloads[-2:] == [b"ready", b"complete"]
+        assert sent[-2:] == [b"ready", b"complete"]
 
+    @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_upload_missing_source_file_raises_clear_error(
         self, authenticated_client: CFMSTestClient, document_factory
@@ -187,6 +164,7 @@ class TestFileTransfer:
             )
 
 
+@pytest.mark.component
 def test_empty_download_marks_file_task_completed(file_task_context, tmp_path):
     relative_path = "empty-download.bin"
     (tmp_path / relative_path).write_bytes(b"")
@@ -220,6 +198,7 @@ def test_empty_download_marks_file_task_completed(file_task_context, tmp_path):
     assert stream.sent_payloads[-1].frame_type == file_task_context.FrameType.CONCLUSION
 
 
+@pytest.mark.component
 def test_download_completion_is_committed_before_response(file_task_context, tmp_path):
     relative_path = "download-commit-order.bin"
     (tmp_path / relative_path).write_bytes(b"payload")
@@ -239,6 +218,7 @@ def test_download_completion_is_committed_before_response(file_task_context, tmp
     handler.send_file(task_id, offset=0, max_chunk_size=64 * 1024)
 
 
+@pytest.mark.component
 def test_download_does_not_hold_db_session_while_waiting_for_client(
     file_task_context, monkeypatch, tmp_path
 ):
@@ -259,6 +239,7 @@ def test_download_does_not_hold_db_session_while_waiting_for_client(
     assert tracker.active == 0
 
 
+@pytest.mark.component
 def test_exact_chunk_upload_marks_file_task_completed(
     file_task_context,
 ):
@@ -297,6 +278,7 @@ def test_exact_chunk_upload_marks_file_task_completed(
     )
 
 
+@pytest.mark.component
 def test_upload_completion_is_committed_before_response(file_task_context):
     relative_path = "uploads/commit-order.bin"
     task_id, file_id = _create_file_task(file_task_context, relative_path, mode=1)
@@ -328,6 +310,7 @@ def test_upload_completion_is_committed_before_response(file_task_context):
     )
 
 
+@pytest.mark.component
 def test_upload_does_not_hold_db_session_while_receiving_chunks(
     file_task_context, monkeypatch
 ):

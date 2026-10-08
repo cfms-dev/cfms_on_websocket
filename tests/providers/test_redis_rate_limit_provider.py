@@ -9,6 +9,8 @@ from include.providers.rate_limits.redis import (
     RedisRateLimitProvider,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def test_redis_rate_limit_provider_uses_one_atomic_multi_bucket_script(monkeypatch):
     calls = []

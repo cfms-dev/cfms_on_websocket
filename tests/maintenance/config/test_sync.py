@@ -11,6 +11,8 @@ from maintenance.operations.config import (
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
 
+pytestmark = pytest.mark.component
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _SAMPLE_SOURCE = (_PROJECT_ROOT / "src" / "config.toml.sample").read_text(
     encoding="utf-8"

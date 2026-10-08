@@ -8,6 +8,8 @@ from maintenance.operations.extensions import packages as extension_packages
 
 from .support import _enabled, _prepare_src, _write_installed_extension, _write_package
 
+pytestmark = pytest.mark.component
+
 
 def test_enable_adds_dependencies_before_the_requested_extension(tmp_path, monkeypatch):
     src, root = _prepare_src(tmp_path, monkeypatch)

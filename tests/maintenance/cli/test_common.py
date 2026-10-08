@@ -8,6 +8,7 @@ from rich.console import Console
 from .support import _make_src_dir, _normalize_cli_output, _run_maintain
 
 
+@pytest.mark.unit
 def test_run_prints_error_after_status_exits(monkeypatch):
     from maintenance.cli import common as cli
     from maintenance.operations.exceptions import MaintenanceOperationError
@@ -48,6 +49,7 @@ def test_run_prints_error_after_status_exits(monkeypatch):
     assert events == ["enter", "exit", "error:boom"]
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("width", [80, 120], ids=["narrow-console", "wide-console"])
 def test_backup_progress_renders_long_description_without_wrapping_on_error_console(
     monkeypatch, width
@@ -74,6 +76,7 @@ def test_backup_progress_renders_long_description_without_wrapping_on_error_cons
     assert len(lines[0]) <= width
 
 
+@pytest.mark.integration
 def test_command_finds_server_root_from_deployment_root(tmp_path):
     src_dir = _make_src_dir(tmp_path)
 
@@ -84,6 +87,7 @@ def test_command_finds_server_root_from_deployment_root(tmp_path):
     assert len(config["security"]["pepper"]) == 64
 
 
+@pytest.mark.integration
 def test_command_supports_flat_bundle_and_nested_workdir(tmp_path):
     server_root = _make_src_dir(tmp_path, "release-bundle")
     nested_workdir = server_root / "content" / "operations"
@@ -96,6 +100,7 @@ def test_command_supports_flat_bundle_and_nested_workdir(tmp_path):
     assert len(config["security"]["pepper"]) == 64
 
 
+@pytest.mark.integration
 def test_command_rejects_unrelated_workdir(tmp_path):
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
@@ -106,6 +111,7 @@ def test_command_rejects_unrelated_workdir(tmp_path):
     assert "Unable to locate a CFMS server root" in result.stdout + result.stderr
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("command", "present_options", "absent_options"),
     [
@@ -132,6 +138,7 @@ def test_deployment_command_help_exposes_current_confirmation_options(
         assert option not in output
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("digest_args", "warns"),
     [
@@ -161,6 +168,7 @@ def test_deployment_upgrade_warns_only_without_external_digest(
     assert (warning in output) is warns
 
 
+@pytest.mark.integration
 def test_backup_import_requires_exactly_one_key_source(tmp_path):
     result = _run_maintain(
         tmp_path,

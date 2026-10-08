@@ -1,11 +1,11 @@
 import time
 
+import pytest
 from sqlalchemy import event
 
-from tests.domains.access.test_compiled_access_rules_matching import _make_rule_user
-from tests.domains.access.test_compiled_access_rules_synchronization import (
-    _make_access_rule_user,
-)
+from tests.domains.access.support import _make_access_rule_user, _make_rule_user
+
+pytestmark = pytest.mark.component
 
 
 def test_fetch_subtree_deletion_prefetches_compiled_rules_once(

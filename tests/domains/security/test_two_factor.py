@@ -20,6 +20,7 @@ async def enabled_totp(user_client: CFMSTestClient, pending_totp):
     return pending_totp
 
 
+@pytest.mark.integration
 class TestTwoFactorAuth:
     @pytest.mark.asyncio
     async def test_disable_2fa_does_not_disclose_cross_user_target(
@@ -165,6 +166,7 @@ class TestTwoFactorAuth:
         assert error["message"] == "2FA not enabled or user not found"
 
 
+@pytest.mark.integration
 class TestTwoFactorAuthLogin:
     @pytest.mark.asyncio
     async def test_login_with_2fa_enabled_returns_202(

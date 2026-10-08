@@ -26,6 +26,8 @@ from include.transport.multiplexing import (
 )
 from tests.support.client import AsyncMultiplexConnection
 
+pytestmark = pytest.mark.unit
+
 _ORIGINAL_QUEUE = queue.Queue
 
 

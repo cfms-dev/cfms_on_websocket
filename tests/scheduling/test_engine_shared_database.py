@@ -22,6 +22,8 @@ from include.scheduling import engine as scheduling_engine
 from include.scheduling import outcomes as scheduling_outcomes
 from include.scheduling.commands import delete_schedule
 
+pytestmark = pytest.mark.integration
+
 _DATABASE_URL_ENVIRONMENTS = (
     "CFMS_TEST_MYSQL_URL",
     "CFMS_TEST_POSTGRESQL_URL",

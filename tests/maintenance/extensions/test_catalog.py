@@ -14,6 +14,8 @@ from .support import (
     _write_package,
 )
 
+pytestmark = pytest.mark.component
+
 
 def test_catalog_reports_invalid_activation_without_importing(tmp_path, monkeypatch):
     _, _ = _prepare_src(tmp_path, monkeypatch, enabled=("missing_ext",))

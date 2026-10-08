@@ -1,6 +1,4 @@
 import os
-import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -15,16 +13,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_record_ip_account_refreshes_row_created_after_snapshot(monkeypatch, tmp_path):
-    shutil.copy(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    (tmp_path / "init").write_text("", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
+@pytest.mark.integration
+def test_record_ip_account_refreshes_row_created_after_snapshot():
     from include.database.models.operations import RiskIPAccount
-    from include.database.session import global_config
     from include.domains.security.guards.rate_limits import record_ip_account
 
     engine = create_engine(
@@ -55,6 +46,5 @@ def test_record_ip_account_refreshes_row_created_after_snapshot(monkeypatch, tmp
             assert len(rows) == 1
             assert rows[0].last_attempt == 2.0
     finally:
-        global_config.stop()
         RiskIPAccount.__table__.drop(engine, checkfirst=True)
         engine.dispose()

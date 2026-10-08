@@ -8,6 +8,7 @@ from tools import explain_query_plans
 from tools.explain_query_plans import EXPECTED_INDEXES, QUERIES, explain, time_query
 
 
+@pytest.mark.unit
 def test_expected_indexes_match_document_models():
     assert EXPECTED_INDEXES["documents"] <= {
         index.name for index in Document.__table__.indexes
@@ -54,6 +55,7 @@ def query_engine():
         engine.dispose()
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("query_name", QUERIES)
 def test_query_can_be_explained_against_node_schema(query_engine, query_name):
     params = {
@@ -69,6 +71,7 @@ def test_query_can_be_explained_against_node_schema(query_engine, query_name):
     assert plan
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("query_name", "expected_rows"),
     [
@@ -106,6 +109,7 @@ def test_time_query_reports_rows_from_seeded_node_schema(
     assert max_ms == 125.0
 
 
+@pytest.mark.component
 def test_time_query_reports_mean_and_max_across_runs(query_engine, monkeypatch):
     clock = iter((10.0, 10.125, 11.0, 11.25, 12.0, 12.375))
     monkeypatch.setattr(

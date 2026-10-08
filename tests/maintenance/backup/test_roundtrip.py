@@ -1,5 +1,6 @@
 import logging
 
+import pytest
 import tomlkit
 from sqlalchemy import select
 
@@ -10,6 +11,8 @@ from .support import (
     _test_progress,
     _write_config,
 )
+
+pytestmark = pytest.mark.component
 
 
 def test_backup_header_and_roundtrip_restore(

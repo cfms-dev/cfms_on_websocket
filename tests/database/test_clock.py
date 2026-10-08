@@ -1,13 +1,14 @@
 import datetime as dt
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.orm import sessionmaker
 
 from include.database.clock import _database_time_expression, database_now
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("dialect_name", "dialect", "expected_clause"),
     [
@@ -42,13 +43,15 @@ def test_database_time_expression_uses_supported_dialect_clock(
     assert expected_clause in sql
 
 
+@pytest.mark.unit
 def test_database_time_expression_rejects_unsupported_dialect():
     with pytest.raises(ValueError, match="Unsupported database dialect: oracle"):
         _database_time_expression("oracle")
 
 
-def test_database_now_returns_sqlite_utc_unix_seconds():
-    database = create_engine("sqlite://")
+@pytest.mark.component
+def test_database_now_returns_sqlite_utc_unix_seconds(sqlite_engine_factory):
+    database = sqlite_engine_factory(":memory:")
     factory = sessionmaker(bind=database)
     before = dt.datetime.now(dt.UTC).timestamp()
 

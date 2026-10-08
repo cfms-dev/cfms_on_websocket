@@ -4,6 +4,8 @@ import pytest
 
 from tools.run_performance_comparison import build_load_command, parse_args
 
+pytestmark = pytest.mark.unit
+
 
 def test_orchestrator_accepts_only_local_disposable_target(tmp_path):
     args = parse_args(

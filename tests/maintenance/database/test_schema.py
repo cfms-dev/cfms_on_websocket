@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 
 import include.database.models  # noqa: F401
 from include.database.session import Base
@@ -11,14 +11,12 @@ from maintenance.operations.database.schema import (
     upgrade_database_schema,
 )
 
+pytestmark = pytest.mark.component
+
 
 @pytest.fixture
-def schema_engine(tmp_path: Path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'schema.db'}")
-    try:
-        yield engine
-    finally:
-        engine.dispose()
+def schema_engine(tmp_path: Path, sqlite_engine_factory):
+    return sqlite_engine_factory(tmp_path / "schema.db")
 
 
 def test_empty_database_is_created_and_stamped(schema_engine) -> None:

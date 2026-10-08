@@ -1,12 +1,11 @@
 import time
 from pathlib import Path
-from shutil import copyfile
 from types import SimpleNamespace
 
 import orjson
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -29,9 +28,7 @@ class FakeHandler:
 
 
 @pytest.fixture
-def security_admin_context(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
+def security_admin_context(monkeypatch, tmp_path, sqlite_engine_factory):
 
     import include.database.models  # noqa: F401
     from include.config.constants import LOGIN_GUARD_EVENT_CHANNEL
@@ -50,7 +47,7 @@ def security_admin_context(monkeypatch, tmp_path):
     from include.providers.caching.memory import MemoryCachingProvider
     from include.providers.events.local import LocalEventBusProvider
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'security-admin.db'}")
+    engine = sqlite_engine_factory(tmp_path / "security-admin.db")
     Base.metadata.create_all(engine)
     test_session = sessionmaker(bind=engine)
     monkeypatch.setattr(access_control, "Session", test_session)
@@ -86,7 +83,7 @@ def security_admin_context(monkeypatch, tmp_path):
         session.add(admin)
         session.add(User(username="viewer", pass_hash="hash", created_time=0.0))
 
-    yield SimpleNamespace(
+    return SimpleNamespace(
         handlers=access_control,
         login=login,
         Session=test_session,
@@ -97,7 +94,6 @@ def security_admin_context(monkeypatch, tmp_path):
         Comment=Comment,
         published_events=published_events,
     )
-    engine.dispose()
 
 
 def _call(handler_class, data, username="admin"):
@@ -107,6 +103,7 @@ def _call(handler_class, data, username="admin"):
     return result, connection.responses[-1]
 
 
+@pytest.mark.component
 def test_banned_subnet_crud_and_filters(security_admin_context):
     handlers = security_admin_context.handlers
     now = handlers.time.time()
@@ -161,6 +158,7 @@ def test_banned_subnet_crud_and_filters(security_admin_context):
         assert session.get(security_admin_context.BannedSubnet, "192.0.2.0/24") is None
 
 
+@pytest.mark.component
 def test_banned_subnets_reuse_equal_reason_comments(security_admin_context):
     handlers = security_admin_context.handlers
     for subnet in ("192.0.2.0/24", "198.51.100.0/24"):
@@ -192,6 +190,7 @@ def test_banned_subnets_reuse_equal_reason_comments(security_admin_context):
         assert retained.reason == "shared incident"
 
 
+@pytest.mark.component
 def test_banned_subnet_reason_only_update_skips_guard_refresh(
     security_admin_context,
 ):
@@ -216,6 +215,7 @@ def test_banned_subnet_reason_only_update_skips_guard_refresh(
     assert security_admin_context.published_events == []
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("operation", "request_data", "expected_allowed"),
     [
@@ -265,6 +265,7 @@ def test_banned_subnet_mutation_refreshes_guard_through_local_event(
     )
 
 
+@pytest.mark.component
 def test_banned_subnet_reload_waits_for_event_consumer(
     security_admin_context,
     monkeypatch,
@@ -294,6 +295,7 @@ def test_banned_subnet_reload_waits_for_event_consumer(
     assert guard.evaluate_subnet_access("192.0.2.10").allowed is False
 
 
+@pytest.mark.component
 def test_banned_subnet_publish_failure_keeps_committed_change(
     security_admin_context,
     monkeypatch,
@@ -331,6 +333,7 @@ def test_banned_subnet_publish_failure_keeps_committed_change(
         )
 
 
+@pytest.mark.component
 def test_banned_subnet_requires_explicit_self_block_confirmation(
     security_admin_context, monkeypatch
 ):
@@ -350,6 +353,7 @@ def test_banned_subnet_requires_explicit_self_block_confirmation(
     assert accepted["code"] == 200
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("handler_name", "request_data"),
     [
@@ -379,6 +383,7 @@ def test_security_admin_action_requires_its_permission(
     assert response["code"] == 403
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("handler_name", "request_data"),
     [
@@ -409,6 +414,7 @@ def test_security_admin_request_accepts_valid_data(
     assert request.model_dump(exclude_unset=True) == request_data
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("request_data", "error_field"),
     [
@@ -442,6 +448,7 @@ def test_banned_subnet_update_rejects_invalid_field(
     assert {error["loc"][0] for error in excinfo.value.errors()} == {error_field}
 
 
+@pytest.mark.component
 def test_unlock_request_rejects_duplicate_lock_selectors(security_admin_context):
     model = (
         security_admin_context.handlers.RequestUnlockAuthLockoutsHandler.request_model
@@ -486,6 +493,7 @@ def active_lockouts(security_admin_context):
     return context
 
 
+@pytest.mark.component
 def test_list_lockouts_cursor_returns_all_scopes(active_lockouts):
     handlers = active_lockouts.handlers
 
@@ -506,6 +514,7 @@ def test_list_lockouts_cursor_returns_all_scopes(active_lockouts):
     } == {"ip", "account", "account_ip"}
 
 
+@pytest.mark.component
 def test_unlock_all_scopes_clears_persisted_and_cached_denials(active_lockouts):
     context = active_lockouts
     guard = context.login.LoginGuard
@@ -537,6 +546,7 @@ def test_unlock_all_scopes_clears_persisted_and_cached_denials(active_lockouts):
         assert session.get(context.LoginThrottle, ("bob", "192.0.2.2")) is None
 
 
+@pytest.mark.component
 def test_unlock_missing_lockouts_reports_each_selector(security_admin_context):
     selectors = [
         {"scope": "ip", "ip_address": "192.0.2.1"},
@@ -553,6 +563,7 @@ def test_unlock_missing_lockouts_reports_each_selector(security_admin_context):
     assert response["data"] == {"cleared": [], "not_found": selectors}
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_security_admin_websocket_actions(authenticated_client):
     from tests.support.utils import assert_success
@@ -584,6 +595,7 @@ async def test_security_admin_websocket_actions(authenticated_client):
     assert_success(await authenticated_client.delete_banned_subnet("192.0.2.1/24"))
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_unlock_auth_lockouts_over_websocket(
     authenticated_client, unauthenticated_client

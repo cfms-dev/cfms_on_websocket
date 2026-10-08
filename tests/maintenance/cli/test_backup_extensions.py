@@ -13,6 +13,8 @@ from .support import (
     _run_maintain,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def test_backup_import_abort_uses_typer_abort_before_operation(tmp_path):
     src_dir = _make_src_dir(tmp_path)

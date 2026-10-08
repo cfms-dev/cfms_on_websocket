@@ -5,9 +5,7 @@ production schema verifies batch_count_other_revisions exclusions, references
 from other domains, and parameter chunk boundaries.
 """
 
-import sys
 import warnings
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -17,7 +15,6 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Text,
-    create_engine,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -25,13 +22,6 @@ from sqlalchemy.orm import (
     Session,
     mapped_column,
 )
-
-# ---------------------------------------------------------------------------
-# Keep production imports available when this module is run individually.
-# ---------------------------------------------------------------------------
-_src = str(Path(__file__).resolve().parents[3] / "src")
-if _src not in sys.path:
-    sys.path.insert(0, _src)
 
 from include.config.constants import MAX_PARAM_SIZE, QUERY_CHUNK_SIZE
 from include.database import models
@@ -43,6 +33,8 @@ from include.domains.documents.queries.file_references import (
 from include.domains.documents.queries.revisions import (
     batch_count_other_revisions,
 )
+
+pytestmark = pytest.mark.component
 
 # ========================== Mirror ORM models ==============================
 # These replicate ONLY the FK structure relevant to file reference counting.
@@ -107,15 +99,14 @@ class MFileTask(_Base):
 
 
 @pytest.fixture
-def engine():
+def engine(sqlite_engine_factory):
     """Create a fresh in-memory SQLite engine for each test."""
     _clear_file_references_cache()
-    eng = create_engine("sqlite:///:memory:")
+    eng = sqlite_engine_factory(":memory:")
     try:
         _Base.metadata.create_all(eng)
         yield eng
     finally:
-        eng.dispose()
         _clear_file_references_cache()
 
 
@@ -132,7 +123,10 @@ def session(engine):
 def _seed(session: Session, *objects) -> None:
     """Add objects to the session, commit, then clear the reflection cache
     so ``count_file_references`` re-reflects the (now visible) schema."""
-    session.add_all(objects)
+    parents = [obj for obj in objects if isinstance(obj, MFile | MDocument)]
+    session.add_all(parents)
+    session.flush()
+    session.add_all(obj for obj in objects if not isinstance(obj, MFile | MDocument))
     session.commit()
     _clear_file_references_cache()
 
@@ -327,9 +321,9 @@ class TestCountFileReferences:
 
     # ---------- Cache isolation --------------------------------------------
 
-    def test_cache_isolation_across_engines(self, tmp_path):
-        first = create_engine(f"sqlite:///{tmp_path / 'first.db'}")
-        second = create_engine(f"sqlite:///{tmp_path / 'second.db'}")
+    def test_cache_isolation_across_engines(self, tmp_path, sqlite_engine_factory):
+        first = sqlite_engine_factory(tmp_path / "first.db")
+        second = sqlite_engine_factory(tmp_path / "second.db")
         _clear_file_references_cache()
         try:
             for engine in (first, second):
@@ -358,8 +352,6 @@ class TestCountFileReferences:
             assert first_counts == {"f1": 1}
             assert second_counts == {"f1": 2}
         finally:
-            first.dispose()
-            second.dispose()
             _clear_file_references_cache()
 
     def test_cache_reset_discovers_new_reference_tables(self, engine, session):
@@ -407,8 +399,8 @@ class TestCountFileReferences:
 
 
 @pytest.fixture
-def production_reference_session(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'production-references.db'}")
+def production_reference_session(tmp_path, sqlite_engine_factory):
+    engine = sqlite_engine_factory(tmp_path / "production-references.db")
     try:
         Base.metadata.create_all(engine)
         _clear_file_references_cache()
@@ -417,7 +409,6 @@ def production_reference_session(tmp_path):
             session.commit()
             yield session
     finally:
-        engine.dispose()
         _clear_file_references_cache()
 
 

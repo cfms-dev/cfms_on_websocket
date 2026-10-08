@@ -5,6 +5,8 @@ from .support import (
     _write_jsonl,
 )
 
+pytestmark = pytest.mark.component
+
 
 def test_backup_with_nodes_and_legacy_subtype_names_is_upgraded(
     database_factory, backup_context, tmp_path

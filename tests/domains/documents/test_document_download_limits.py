@@ -1,31 +1,24 @@
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from shutil import copyfile
 from threading import Event
 
 import pytest
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
-def download_limit_context(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    (tmp_path / "init").touch()
-    monkeypatch.chdir(tmp_path)
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
+def download_limit_context(monkeypatch, sqlite_engine_factory):
     from include.config.validation import DocumentDownloadRiskPolicy
     from include.database import models
     from include.database.session import Base
     from include.domains.documents import download_limits
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = sqlite_engine_factory(":memory:")
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     policy = DocumentDownloadRiskPolicy(
@@ -58,8 +51,7 @@ def download_limit_context(monkeypatch, tmp_path):
         "from_config",
         classmethod(lambda _cls: policy),
     )
-    yield download_limits, models, session_factory, policy
-    engine.dispose()
+    return download_limits, models, session_factory, policy
 
 
 def _issue(download_limits, session, username="alice", ip="203.0.113.1", **kwargs):
@@ -230,7 +222,7 @@ def test_download_cleanup_removes_stale_state_from_both_namespaces(
 
 
 def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
-    download_limit_context, tmp_path
+    download_limit_context, tmp_path, sqlite_engine_factory
 ):
     from include.domains.documents.commands.file_tasks import (
         ClaimedFileTask,
@@ -242,26 +234,19 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
     )
 
     download_limits, models, _session_factory, policy = download_limit_context
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'download-concurrency.db'}",
-        connect_args={"timeout": 0.2},
+    engine = sqlite_engine_factory(
+        tmp_path / "download-concurrency.db", timeout_seconds=0.2
     )
-
-    @event.listens_for(engine, "connect")
-    def _configure_sqlite(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=200")
-        cursor.close()
 
     models.User.metadata.create_all(engine)
     concurrent_sessions = sessionmaker(bind=engine)
     with concurrent_sessions.begin() as session:
         download_file = models.File(id="download-file", path="download.bin")
         download_file.size = 1
+        session.add(models.User(username="alice", pass_hash="unused", created_time=0.0))
+        session.flush()
         session.add_all(
             [
-                models.User(username="alice", pass_hash="unused", created_time=0.0),
                 download_file,
                 models.File(id="issued-file", path="issued.bin"),
                 models.FileTask(
@@ -354,5 +339,3 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
         assert issued_task.status == models.FileTaskStatus.PENDING
         assert issue_bucket.tokens == policy.issue_account_capacity - 1
         assert transfer_bucket.tokens == policy.transfer_account_capacity - 1
-
-    engine.dispose()

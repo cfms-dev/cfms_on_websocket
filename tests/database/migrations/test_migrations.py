@@ -1,5 +1,4 @@
 from pathlib import Path
-from shutil import copyfile
 
 import pytest
 from alembic.config import Config
@@ -19,16 +18,12 @@ from sqlalchemy import (
 )
 
 from alembic import command
-from tests.support.config import reserve_local_port, write_test_config
+
+pytestmark = pytest.mark.component
 
 
-def test_document_lookup_indexes_round_trip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_document_lookup_indexes_round_trip(tmp_path: Path) -> None:
     src_dir = Path(__file__).resolve().parents[3] / "src"
-    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
-    write_test_config(tmp_path, reserve_local_port())
-    monkeypatch.chdir(tmp_path)
 
     from include.database import models as database_models
 
@@ -65,13 +60,8 @@ def test_document_lookup_indexes_round_trip(
         engine.dispose()
 
 
-def test_retained_revision_chain_round_trips_to_head(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_retained_revision_chain_round_trips_to_head(tmp_path: Path) -> None:
     src_dir = Path(__file__).resolve().parents[3] / "src"
-    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
-    write_test_config(tmp_path, reserve_local_port())
-    monkeypatch.chdir(tmp_path)
 
     from include.database import models as database_models
 
@@ -136,12 +126,9 @@ def test_retained_revision_chain_round_trips_to_head(
 
 
 def test_execution_contract_snapshot_migration_backfills_queued_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     src_dir = Path(__file__).resolve().parents[3] / "src"
-    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
-    write_test_config(tmp_path, reserve_local_port())
-    monkeypatch.chdir(tmp_path)
 
     from include.database import models as database_models
 
@@ -216,13 +203,8 @@ def test_execution_contract_snapshot_migration_backfills_queued_work(
         engine.dispose()
 
 
-def test_scheduling_permission_downgrade_preserves_other_grants(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_scheduling_permission_downgrade_preserves_other_grants(tmp_path: Path) -> None:
     src_dir = Path(__file__).resolve().parents[3] / "src"
-    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
-    write_test_config(tmp_path, reserve_local_port())
-    monkeypatch.chdir(tmp_path)
 
     from include.database import models as database_models
 
@@ -283,12 +265,9 @@ def test_scheduling_permission_downgrade_preserves_other_grants(
 
 
 def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     src_dir = Path(__file__).resolve().parents[3] / "src"
-    copyfile(src_dir / "config.toml.sample", tmp_path / "config.toml")
-    write_test_config(tmp_path, reserve_local_port())
-    monkeypatch.chdir(tmp_path)
 
     from include.database import models as database_models
 

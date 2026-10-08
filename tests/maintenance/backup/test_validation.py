@@ -18,6 +18,8 @@ from .support import (
     _write_jsonl,
 )
 
+pytestmark = pytest.mark.component
+
 
 def _write_audit_rows(extract_dir: Path, row_count: int) -> None:
     rows = [

@@ -1,15 +1,11 @@
 from pathlib import Path
-from shutil import copyfile
 from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _prepare_config(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
 
 
 def _use_policy(monkeypatch, guard, policy):
@@ -25,10 +21,8 @@ def _use_policy(monkeypatch, guard, policy):
     [("observe", True), ("enforce", False)],
 )
 def test_request_rate_control_observes_or_enforces_and_hashes_identities(
-    monkeypatch, tmp_path, mode, allowed
+    monkeypatch, mode, allowed
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.config.validation import RequestRateControlPolicy
     from include.domains.security.guards import request_rate_control as guard
     from include.providers.base import RateLimitDecision
@@ -82,9 +76,7 @@ def test_request_rate_control_observes_or_enforces_and_hashes_identities(
     assert all("192.0.2.55" not in charge.key for charge in provider.charges)
 
 
-def test_request_rate_control_bypass_skips_provider(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_request_rate_control_bypass_skips_provider(monkeypatch):
     from include.domains.security.guards import request_rate_control as guard
 
     monkeypatch.setattr(
@@ -101,9 +93,7 @@ def test_request_rate_control_bypass_skips_provider(monkeypatch, tmp_path):
     assert not decision.would_block
 
 
-def test_request_rate_control_provider_failure_fails_open(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_request_rate_control_provider_failure_fails_open(monkeypatch):
     from include.config.validation import RequestRateControlPolicy
     from include.domains.security.guards import request_rate_control as guard
 
@@ -124,9 +114,7 @@ def test_request_rate_control_provider_failure_fails_open(monkeypatch, tmp_path)
     assert decision.allowed
 
 
-def test_websocket_upgrade_rate_denial_returns_http_429(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_websocket_upgrade_rate_denial_returns_http_429(monkeypatch):
     from include.domains.security.guards.request_rate_control import (
         RequestRateControlDecision,
     )

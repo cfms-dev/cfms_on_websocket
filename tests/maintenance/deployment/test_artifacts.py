@@ -18,6 +18,8 @@ from maintenance.operations.exceptions import MaintenanceOperationError
 
 from .support import _write_release
 
+pytestmark = pytest.mark.component
+
 
 @pytest.mark.parametrize("git_metadata_kind", ["directory", "file"])
 def test_repository_deployment_rejects_release_switching(

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import orjson
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import ColumnDefault, create_engine, event, select
+from sqlalchemy import ColumnDefault, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -58,6 +58,7 @@ def _config(**overrides):
     }
 
 
+@pytest.mark.unit
 def test_policy_uses_defaults_when_extension_table_is_missing():
     policy = extension.BruteForceLockdownPolicy.from_config(
         {"extensions": {"enabled": ["brute_force_lockdown"]}}
@@ -66,6 +67,7 @@ def test_policy_uses_defaults_when_extension_table_is_missing():
     assert policy == extension.BruteForceLockdownPolicy()
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("overrides", "field"),
     [
@@ -87,6 +89,7 @@ def test_policy_rejects_invalid_values(overrides, field):
     assert field in message
 
 
+@pytest.mark.unit
 def test_policy_normalizes_configured_reason():
     policy = extension.BruteForceLockdownPolicy.from_config(
         _config(reason="  Automatic maintenance  ")
@@ -95,6 +98,7 @@ def test_policy_normalizes_configured_reason():
     assert policy.reason == "Automatic maintenance"
 
 
+@pytest.mark.unit
 def test_policy_direct_construction_uses_pydantic_validation():
     with pytest.raises(ValidationError) as error:
         extension.BruteForceLockdownPolicy(window_seconds=True)
@@ -105,17 +109,8 @@ def test_policy_direct_construction_uses_pydantic_validation():
 
 
 @pytest.fixture
-def detector_context(monkeypatch, tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'detector.db'}", connect_args={"timeout": 30}
-    )
-
-    @event.listens_for(engine, "connect")
-    def configure_sqlite(connection, _connection_record):
-        cursor = connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
+def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
+    engine = sqlite_engine_factory(tmp_path / "detector.db")
 
     clock = SimpleNamespace(now=1000.0)
     fixed_time = SimpleNamespace(time=lambda: clock.now, sleep=time.sleep)
@@ -140,16 +135,7 @@ def detector_context(monkeypatch, tmp_path):
         ),
     )
 
-    Base.metadata.create_all(
-        engine,
-        tables=[
-            User.__table__,
-            AuditEntry.__table__,
-            SystemStateEntry.__table__,
-            File.__table__,
-            FileTask.__table__,
-        ],
-    )
+    Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine)
     for module in (extension, lockdown_commands, lockdown_state, audit):
         monkeypatch.setattr(module, "Session", sessions)
@@ -183,7 +169,6 @@ def detector_context(monkeypatch, tmp_path):
         yield SimpleNamespace(sessions=sessions, clock=clock, events=events)
     finally:
         scheduling.shutdown()
-        engine.dispose()
 
 
 def _audit_failure(session, username, ip_address, logged_time):
@@ -198,6 +183,7 @@ def _audit_failure(session, username, ip_address, logged_time):
     )
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("failures", "expected_counts"),
     [
@@ -275,6 +261,7 @@ def test_detector_uses_failure_and_either_distinct_threshold(
             ]
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("boundary", "window_started_at"),
     [("rolling", 900.0), ("startup", 930.0), ("unlock", 950.0)],
@@ -347,6 +334,7 @@ def test_detector_excludes_failures_before_its_window(
         assert automatic_audit.data["observed_at"] == 1000.0
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("action", "callback"),
     [
@@ -384,6 +372,7 @@ def test_detector_ignores_non_credential_failures(detector_context, action, call
         )
 
 
+@pytest.mark.component
 def test_detector_cancels_file_tasks_and_audits_once(detector_context):
     with detector_context.sessions.begin() as session:
         _audit_failure(session, "alice", "192.0.2.1", 950.0)
@@ -467,6 +456,7 @@ def test_detector_cancels_file_tasks_and_audits_once(detector_context):
     ]
 
 
+@pytest.mark.component
 def test_concurrent_detector_callbacks_have_one_transition_and_audit(detector_context):
     with detector_context.sessions.begin() as session:
         _audit_failure(session, "alice", "192.0.2.1", 950.0)
@@ -502,6 +492,7 @@ def test_concurrent_detector_callbacks_have_one_transition_and_audit(detector_co
         )
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("source", [LockdownSource.MANUAL, LockdownSource.SCHEDULED])
 def test_detector_takes_over_releasable_lockdown_without_changing_reason(
     detector_context, source
@@ -547,6 +538,7 @@ def test_detector_takes_over_releasable_lockdown_without_changing_reason(
         assert automatic_audit.data["cancelled_file_tasks"] == 0
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("source", [LockdownSource.AUTOMATIC, LockdownSource.UNKNOWN])
 def test_detector_preserves_existing_protected_lockdown(detector_context, source):
     if source is LockdownSource.AUTOMATIC:
@@ -594,6 +586,7 @@ def test_detector_preserves_existing_protected_lockdown(detector_context, source
         )
 
 
+@pytest.mark.component
 def test_detector_database_failure_does_not_break_login(detector_context, monkeypatch):
     callback = Result(code=401, target="alice")
     records = []

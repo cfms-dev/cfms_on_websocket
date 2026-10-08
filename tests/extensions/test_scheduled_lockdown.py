@@ -7,6 +7,8 @@ from include.domains.access.permissions import Permissions
 from include.extensions.scheduled_lockdown import _extension as extension
 from include.scheduling import ScheduledTaskContext
 
+pytestmark = pytest.mark.unit
+
 
 def _context(execution_id: str, scheduled_for: float = 100.0):
     return ScheduledTaskContext(

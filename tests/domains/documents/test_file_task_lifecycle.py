@@ -1,343 +1,21 @@
 import hashlib
-import os
-import shutil
-import sqlite3
-import sys
 import time
-from dataclasses import FrozenInstanceError, dataclass
-from pathlib import Path
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
-from typing import cast
 
-import orjson
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import Table, create_engine
-from sqlalchemy.orm import sessionmaker
-from websockets.exceptions import ConnectionClosed
 
-_project_root = Path(__file__).resolve().parents[3]
-_src_path = _project_root / "src"
+from tests.domains.documents.support import (
+    _create_file_task,
+    _FakeDownloadStream,
+    _FakeUploadStream,
+    _new_transfer_handler,
+    _sent_json_messages,
+)
 
 
-def _get_revision_file_size(database_path: Path, revision_id: str) -> int | None:
-    with sqlite3.connect(database_path) as connection:
-        row = connection.execute(
-            """
-            SELECT files.size
-            FROM files
-            JOIN document_revisions ON document_revisions.file_id = files.id
-            WHERE document_revisions.id = ?
-            """,
-            (revision_id,),
-        ).fetchone()
-
-    return row[0] if row else None
-
-
-def _set_revision_file_size(database_path: Path, revision_id: str, size: int) -> None:
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            UPDATE files
-            SET size = ?
-            WHERE id = (
-                SELECT file_id
-                FROM document_revisions
-                WHERE id = ?
-            )
-            """,
-            (size, revision_id),
-        )
-        connection.commit()
-
-
-def _get_file_task_status(database_path: Path, task_id: str) -> int | None:
-    with sqlite3.connect(database_path) as connection:
-        row = connection.execute(
-            "SELECT status FROM file_tasks WHERE id = ?", (task_id,)
-        ).fetchone()
-
-    return row[0] if row else None
-
-
-class _FakeFrame:
-    def __init__(self, data):
-        self.data = data
-
-
-@dataclass
-class _SentPayload:
-    data: object
-    frame_type: object = None
-
-
-class _FakeLogger:
-    def bind(self, **_kwargs):
-        return self
-
-    def info(self, *_args, **_kwargs):
-        pass
-
-    def error(self, *_args, **_kwargs):
-        pass
-
-    def debug(self, *_args, **_kwargs):
-        pass
-
-
-class _FakeStorage:
-    def __init__(self, root):
-        self.root = root
-
-    def _resolve(self, path):
-        return self.root / path
-
-    def fopen(self, path, mode="rb"):
-        return open(self._resolve(path), mode)
-
-    def getsize(self, path):
-        return os.path.getsize(self._resolve(path))
-
-    def makedirs(self, path, mode=0o777, exist_ok=False):
-        os.makedirs(self._resolve(path), mode=mode, exist_ok=exist_ok)
-
-    def remove(self, path):
-        try:
-            os.remove(self._resolve(path))
-            return True
-        except FileNotFoundError:
-            return False
-
-    def open_resumable_upload(
-        self,
-        path,
-        *,
-        file_size,
-        chunk_size,
-        session_id=None,
-        checkpoint_size=None,
-        checkpoint_data=None,
-        checkpoint_callback=None,
-    ):
-        from include.providers.storage.local import LocalResumableUpload
-
-        return LocalResumableUpload(
-            str(self._resolve(path)),
-            file_size,
-            chunk_size,
-        )
-
-
-class _FakeProviderManager:
-    def __init__(self, storage):
-        self.storage = storage
-
-
-class _TrackingSession:
-    def __init__(self, tracker):
-        self._tracker = tracker
-        self._session = tracker.session_factory()
-
-    def __enter__(self):
-        session = self._session.__enter__()
-        self._tracker.active += 1
-        return session
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return self._session.__exit__(exc_type, exc_value, traceback)
-        finally:
-            self._tracker.active -= 1
-
-    def __getattr__(self, name):
-        return getattr(self._session, name)
-
-
-class _TrackingSessionFactory:
-    def __init__(self, session_factory):
-        self.session_factory = session_factory
-        self.active = 0
-
-    def __call__(self):
-        return _TrackingSession(self)
-
-
-class _FakeDownloadStream:
-    def __init__(self):
-        self.sent_payloads = []
-        self.responses = [_FakeFrame(b"ready"), _FakeFrame(b"complete")]
-
-    def send(self, data, frame_type=None, **_kwargs):
-        self.sent_payloads.append(_SentPayload(data, frame_type))
-
-    def recv(self, timeout=None):
-        return self.responses.pop(0)
-
-
-class _AssertingDownloadStream(_FakeDownloadStream):
-    def __init__(self, tracker):
-        super().__init__()
-        self.tracker = tracker
-
-    def recv(self, timeout=None):
-        assert self.tracker.active == 0
-        return super().recv(timeout)
-
-
-class _DisconnectBeforeCompletionStream(_FakeDownloadStream):
-    def recv(self, timeout=None):
-        if len(self.responses) == 1:
-            raise ConnectionClosed(None, None)
-        return super().recv(timeout)
-
-
-class _FakeUploadStream:
-    def __init__(self, frames):
-        self.sent_payloads = []
-        self.responses = [_FakeFrame(frame) for frame in frames]
-
-    def send(self, data, frame_type=None, **_kwargs):
-        self.sent_payloads.append(_SentPayload(data, frame_type))
-
-    def recv(self, timeout=None):
-        return self.responses.pop(0)
-
-
-class _AssertingUploadStream(_FakeUploadStream):
-    def __init__(self, frames, tracker):
-        super().__init__(frames)
-        self.tracker = tracker
-
-    def recv(self, timeout=None):
-        assert self.tracker.active == 0
-        return super().recv(timeout)
-
-
-class _DisconnectingUploadStream(_FakeUploadStream):
-    def recv(self, timeout=None):
-        if not self.responses:
-            raise ConnectionError("upload connection closed")
-        return super().recv(timeout)
-
-
-class _FailingUploadNegotiationStream(_FakeUploadStream):
-    def __init__(self):
-        super().__init__([])
-        self._failed = False
-
-    def send(self, data, frame_type=None, **kwargs):
-        if not self._failed:
-            self._failed = True
-            raise ConnectionError("upload connection closed")
-        return super().send(data, frame_type, **kwargs)
-
-
-def _new_transfer_handler(connection_handler_cls, stream):
-    handler = connection_handler_cls.__new__(connection_handler_cls)
-    handler.stream = stream
-    handler.logger = _FakeLogger()
-    handler.remote_address = "203.0.113.1"
-    return handler
-
-
-def _sent_json_messages(stream):
-    return [
-        orjson.loads(sent_payload.data)
-        for sent_payload in stream.sent_payloads
-        if isinstance(sent_payload.data, bytes | bytearray | memoryview)
-    ]
-
-
-@pytest.fixture
-def file_task_context(monkeypatch, tmp_path):
-    _src = str(_src_path)
-    if _src not in sys.path:
-        sys.path.insert(0, _src)
-
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    shutil.copy(_src_path / "config.toml.sample", config_dir / "config.toml")
-    (config_dir / "init").write_text("", encoding="utf-8")
-    monkeypatch.chdir(config_dir)
-
-    import include.transport.connection as connection_handler
-    from include.config.constants import UPLOAD_TRANSFER_MIN_CHUNK_SIZE
-    from include.database.models.files import File, FileDeduplicationTask, FileTask
-    from include.database.models.identity import User
-    from include.database.models.operations import RateLimitBucket, RiskIPAccount
-    from include.database.session import Base
-    from include.extensions.builtin.file_deduplication import (
-        schedule_file_deduplication,
-    )
-    from include.transport.multiplexing import FrameType
-
-    engine = create_engine(f"sqlite:///{tmp_path / 'file_tasks.db'}")
-    Base.metadata.create_all(
-        engine,
-        tables=[
-            cast(Table, User.__table__),
-            cast(Table, File.__table__),
-            cast(Table, FileTask.__table__),
-            cast(Table, FileDeduplicationTask.__table__),
-            cast(Table, RateLimitBucket.__table__),
-            cast(Table, RiskIPAccount.__table__),
-        ],
-    )
-    TestingSession = sessionmaker(bind=engine)
-
-    monkeypatch.setattr(connection_handler, "Session", TestingSession)
-    monkeypatch.setattr(
-        connection_handler,
-        "ProviderManager",
-        lambda: _FakeProviderManager(_FakeStorage(tmp_path)),
-    )
-    monkeypatch.setattr(
-        connection_handler,
-        "pm",
-        SimpleNamespace(
-            hook=SimpleNamespace(
-                ext_before_file_upload_finalize=lambda session, id, **_kwargs: (
-                    schedule_file_deduplication(session, id)
-                ),
-                ext_on_file_upload_completed=lambda **_kwargs: None,
-            )
-        ),
-    )
-
-    yield SimpleNamespace(
-        session=TestingSession,
-        connection=connection_handler,
-        ConnectionHandler=connection_handler.ConnectionHandler,
-        FrameType=FrameType,
-        File=File,
-        FileDeduplicationTask=FileDeduplicationTask,
-        FileTask=FileTask,
-        RateLimitBucket=RateLimitBucket,
-        User=User,
-        UPLOAD_TRANSFER_MIN_CHUNK_SIZE=UPLOAD_TRANSFER_MIN_CHUNK_SIZE,
-    )
-    engine.dispose()
-
-
-def _create_file_task(context, path, mode, status=0):
-    session_factory = context.session
-    with session_factory() as session:
-        file = context.File(id=f"file-{mode}-{path}", path=path)
-        task = context.FileTask(
-            id=f"task-{mode}-{path}",
-            file_id=file.id,
-            mode=mode,
-            status=status,
-            start_time=time.time(),
-            end_time=time.time() + 60,
-        )
-        session.add(file)
-        session.add(task)
-        session.commit()
-        return task.id, file.id
-
-
+@pytest.mark.component
 def test_create_file_task_participates_in_caller_transaction(
     file_task_context,
 ) -> None:
@@ -357,6 +35,7 @@ def test_create_file_task_participates_in_caller_transaction(
         assert session.get(file_task_context.FileTask, task_data["task_id"]) is None
 
 
+@pytest.mark.component
 def test_create_file_task_is_persisted_by_caller_commit(file_task_context) -> None:
     from include.domains.documents.handlers.documents import create_file_task
 
@@ -372,6 +51,7 @@ def test_create_file_task_is_persisted_by_caller_commit(file_task_context) -> No
         assert task.file_id == "committed-file"
 
 
+@pytest.mark.component
 def test_download_task_records_issuer_without_binding_bearer(file_task_context) -> None:
     from include.domains.documents.handlers.documents import create_file_task
 
@@ -394,6 +74,7 @@ def test_download_task_records_issuer_without_binding_bearer(file_task_context) 
         assert task.issued_by_username == "alice"
 
 
+@pytest.mark.component
 def test_upload_task_lifecycle_uses_two_stage_deadline(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
     from include.domains.documents.commands import file_tasks
@@ -444,6 +125,7 @@ def test_upload_task_lifecycle_uses_two_stage_deadline(file_task_context) -> Non
         assert task.end_time == hard_deadline
 
 
+@pytest.mark.component
 def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
     from include.domains.documents.commands.file_tasks import (
@@ -479,6 +161,7 @@ def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
         assert task.status == FileTaskStatus.IN_PROGRESS
 
 
+@pytest.mark.component
 def test_claim_rejects_invalid_or_competing_requests(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
     from include.domains.documents.commands.file_tasks import (
@@ -530,6 +213,7 @@ def test_claim_rejects_invalid_or_competing_requests(file_task_context) -> None:
         )
 
 
+@pytest.mark.component
 def test_claim_marks_due_task_expired(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
     from include.domains.documents.commands.file_tasks import (
@@ -557,6 +241,7 @@ def test_claim_marks_due_task_expired(file_task_context) -> None:
         )
 
 
+@pytest.mark.component
 def test_active_transfer_check_marks_due_task_expired(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
 
@@ -579,6 +264,7 @@ def test_active_transfer_check_marks_due_task_expired(file_task_context) -> None
         )
 
 
+@pytest.mark.component
 def test_transfer_claim_race_reports_expired_status(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
 
@@ -602,6 +288,7 @@ def test_transfer_claim_race_reports_expired_status(file_task_context) -> None:
         )
 
 
+@pytest.mark.component
 def test_missing_transfer_task_reports_non_enumerable_invalid_status(
     file_task_context,
 ) -> None:
@@ -617,6 +304,7 @@ def test_missing_transfer_task_reports_non_enumerable_invalid_status(
         assert session.query(file_task_context.RateLimitBucket).count() == 0
 
 
+@pytest.mark.component
 def test_download_limit_denial_releases_claimed_task(
     file_task_context, monkeypatch
 ) -> None:
@@ -667,6 +355,7 @@ def test_download_limit_denial_releases_claimed_task(
         )
 
 
+@pytest.mark.component
 def test_concurrent_upload_reports_conflict(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
 
@@ -686,6 +375,7 @@ def test_concurrent_upload_reports_conflict(file_task_context) -> None:
     assert response["data"] == {"task_status": "in_progress", "retryable": True}
 
 
+@pytest.mark.component
 def test_concurrent_download_reports_in_progress(file_task_context) -> None:
     from include.database.models.files import FileTaskStatus, TransferMode
 
@@ -707,6 +397,7 @@ def test_concurrent_download_reports_in_progress(file_task_context) -> None:
         assert session.query(file_task_context.RateLimitBucket).count() == 0
 
 
+@pytest.mark.component
 def test_claim_state_race_reports_retryable_conflict(
     file_task_context, monkeypatch
 ) -> None:
@@ -727,6 +418,7 @@ def test_claim_state_race_reports_retryable_conflict(
     assert response["data"] == {"retryable": True}
 
 
+@pytest.mark.component
 def test_wrong_mode_and_future_task_do_not_disclose_claim_details(
     file_task_context,
 ) -> None:
@@ -754,6 +446,7 @@ def test_wrong_mode_and_future_task_do_not_disclose_claim_details(
         assert response["data"] == {"retryable": False}
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("status", "expected_code", "expected_status"),
     [
@@ -785,9 +478,8 @@ def test_terminal_transfer_task_reports_specific_status(
     }
 
 
-def test_download_request_passes_offset_and_chunk_size_to_transfer(
-    file_task_context,
-) -> None:
+@pytest.mark.unit
+def test_download_request_passes_offset_and_chunk_size_to_transfer() -> None:
     from include.domains.documents.handlers.documents import RequestDownloadFileHandler
 
     transfers = []
@@ -803,9 +495,8 @@ def test_download_request_passes_offset_and_chunk_size_to_transfer(
     assert transfers == [("task", 64, 32 * 1024)]
 
 
-def test_upload_request_normalizes_digest_and_passes_transfer_metadata(
-    file_task_context,
-) -> None:
+@pytest.mark.unit
+def test_upload_request_normalizes_digest_and_passes_transfer_metadata() -> None:
     from include.domains.documents.handlers.documents import RequestUploadFileHandler
 
     transfers = []
@@ -825,6 +516,7 @@ def test_upload_request_normalizes_digest_and_passes_transfer_metadata(
     assert transfers == [("task", 1, "a" * 64, 32 * 1024, True)]
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "request_data",
     [
@@ -839,9 +531,7 @@ def test_upload_request_normalizes_digest_and_passes_transfer_metadata(
         ),
     ],
 )
-def test_download_request_rejects_missing_or_unbounded_chunk_size(
-    file_task_context, request_data
-) -> None:
+def test_download_request_rejects_missing_or_unbounded_chunk_size(request_data) -> None:
     from include.domains.documents.handlers.documents import RequestDownloadFileHandler
 
     with pytest.raises(ValidationError) as excinfo:
@@ -850,7 +540,8 @@ def test_download_request_rejects_missing_or_unbounded_chunk_size(
     assert {error["loc"] for error in excinfo.value.errors()} == {("max_chunk_size",)}
 
 
-def test_upload_request_accepts_required_transfer_metadata(file_task_context) -> None:
+@pytest.mark.unit
+def test_upload_request_accepts_required_transfer_metadata() -> None:
     from include.domains.documents.handlers.documents import RequestUploadFileHandler
 
     request_data = {
@@ -865,6 +556,7 @@ def test_upload_request_accepts_required_transfer_metadata(file_task_context) ->
     assert request.model_dump(exclude_unset=True) == request_data
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("request_data", "error_fields"),
     [
@@ -886,7 +578,7 @@ def test_upload_request_accepts_required_transfer_metadata(file_task_context) ->
     ],
 )
 def test_upload_request_rejects_invalid_transfer_metadata(
-    file_task_context, request_data, error_fields
+    request_data, error_fields
 ) -> None:
     from include.domains.documents.handlers.documents import RequestUploadFileHandler
 

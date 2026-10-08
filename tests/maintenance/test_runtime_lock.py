@@ -11,6 +11,7 @@ from include.runtime_lock import (
 )
 
 
+@pytest.mark.integration
 def test_runtime_lock_rejects_a_second_process(tmp_path: Path) -> None:
     lock_path = tmp_path / "run" / "server.lock"
     script = (
@@ -33,6 +34,7 @@ def test_runtime_lock_rejects_a_second_process(tmp_path: Path) -> None:
     assert result.returncode == 23
 
 
+@pytest.mark.component
 def test_server_runtime_lock_rejects_unfinished_deployment(tmp_path: Path) -> None:
     transaction_path = tmp_path / ".maintenance" / "transaction.json"
     transaction_path.parent.mkdir()
@@ -44,6 +46,7 @@ def test_server_runtime_lock_rejects_unfinished_deployment(tmp_path: Path) -> No
     assert not (tmp_path / ".maintenance" / "server.lock").exists()
 
 
+@pytest.mark.component
 def test_server_runtime_lock_allows_deployment_recovery(tmp_path: Path) -> None:
     transaction_path = tmp_path / ".maintenance" / "transaction.json"
     transaction_path.parent.mkdir()
@@ -53,6 +56,7 @@ def test_server_runtime_lock_allows_deployment_recovery(tmp_path: Path) -> None:
         assert (tmp_path / ".maintenance" / "server.lock").is_file()
 
 
+@pytest.mark.component
 def test_server_runtime_lock_blocks_maintenance_for_the_same_root(
     tmp_path: Path,
 ) -> None:

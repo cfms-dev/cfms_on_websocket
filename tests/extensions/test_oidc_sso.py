@@ -10,6 +10,8 @@ import pytest
 from include.extensions.oidc_sso import _extension as extension
 from include.providers.caching import memory
 
+pytestmark = pytest.mark.unit
+
 
 class _Connection:
     def __init__(self, data):

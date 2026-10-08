@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from include.domains.identity.commands.permission_cleanup import PermissionEntryCounts
@@ -11,6 +10,7 @@ from include.extensions.builtin import permission_cleanup, scheduled_tasks
 from include.scheduling import tasks
 
 
+@pytest.mark.unit
 def test_permission_cleanup_is_registered_as_a_system_interval_task(monkeypatch):
     monkeypatch.setattr(
         permission_cleanup.IdentityPermissionRetentionPolicy,
@@ -29,6 +29,7 @@ def test_permission_cleanup_is_registered_as_a_system_interval_task(monkeypatch)
     assert definition.trigger_data == {"seconds": 180}
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("counts", "expected_data", "audit_success"),
     [
@@ -71,6 +72,7 @@ def test_permission_cleanup_task_reports_counts_and_audit_policy(
     assert result.audit_success is audit_success
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("task_name", "seconds"),
     [
@@ -102,6 +104,7 @@ def test_builtin_system_task_interval_follows_policy(monkeypatch, task_name, sec
     assert registration.max_attempts == 1
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "registration", scheduled_tasks.BUILTIN_SCHEDULED_TASKS, ids=lambda item: item.name
 )
@@ -111,16 +114,13 @@ def test_builtin_system_task_rejects_payload_fields(registration):
 
 
 @pytest.fixture
-def _task_sessions(monkeypatch):
-    database = create_engine("sqlite://")
+def _task_sessions(monkeypatch, sqlite_engine_factory):
+    database = sqlite_engine_factory()
     monkeypatch.setattr(scheduled_tasks, "Session", sessionmaker(bind=database))
     monkeypatch.setattr(scheduled_tasks, "database_now", lambda _session: 123.0)
-    try:
-        yield
-    finally:
-        database.dispose()
 
 
+@pytest.mark.component
 @pytest.mark.usefixtures("_task_sessions")
 @pytest.mark.parametrize(
     ("task_name", "cleanup_name", "counts"),
@@ -193,6 +193,7 @@ def test_builtin_cleanup_task_reports_its_counts_and_audit_policy(
     assert result.audit_success is (not empty)
 
 
+@pytest.mark.unit
 def test_permission_cleanup_uses_database_clock(monkeypatch):
     session = object()
     policy = SimpleNamespace(retention_days=2, batch_size=10)
@@ -220,6 +221,7 @@ def test_permission_cleanup_uses_database_clock(monkeypatch):
     assert calls == [(session, 27_200.0, 10)]
 
 
+@pytest.mark.unit
 def test_core_schedule_history_cleanup_is_always_registered():
     registration = next(
         item
@@ -236,6 +238,7 @@ def test_core_schedule_history_cleanup_is_always_registered():
     assert definition.trigger_data == {"seconds": 3600}
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("deleted", [13, 0], ids=["nonempty", "empty"])
 def test_schedule_history_cleanup_reports_count_and_audit_policy(monkeypatch, deleted):
     policy = object()

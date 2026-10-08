@@ -1,8 +1,12 @@
-import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from include.providers.base import RateLimitCharge
 from include.providers.rate_limits.memory import MemoryRateLimitProvider
+
+pytestmark = pytest.mark.unit
 
 
 def _charge(
@@ -62,22 +66,16 @@ def test_memory_rate_limit_provider_returns_slowest_limiting_scope():
 def test_memory_rate_limit_provider_enforces_capacity_concurrently():
     provider = MemoryRateLimitProvider()
     charge = _charge(capacity=5, refill_tokens=5)
-    barrier = threading.Barrier(20)
-    outcomes: queue.SimpleQueue[bool] = queue.SimpleQueue()
+    barrier = threading.Barrier(20, timeout=5)
 
-    def consume() -> None:
+    def consume() -> bool:
         barrier.wait()
         decision = provider.consume((charge,), retention_seconds=60, now=100.0)
-        outcomes.put(decision.allowed)
+        return decision.allowed
 
-    threads = [threading.Thread(target=consume) for _ in range(20)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=2)
-        assert not thread.is_alive()
-
-    assert sum(outcomes.get() for _ in threads) == 5
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [executor.submit(consume) for _ in range(20)]
+        assert sum(future.result(timeout=5) for future in futures) == 5
 
 
 def test_memory_rate_limit_provider_expires_stale_state():

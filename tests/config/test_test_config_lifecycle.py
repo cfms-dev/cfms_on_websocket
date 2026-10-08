@@ -12,6 +12,8 @@ from tests.support.config import (
     write_test_config,
 )
 
+pytestmark = pytest.mark.component
+
 
 def _copy_config_sample(src_dir):
     src_dir.mkdir()

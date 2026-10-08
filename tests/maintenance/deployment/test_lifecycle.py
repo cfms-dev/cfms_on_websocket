@@ -32,6 +32,8 @@ from .support import (
     _write_release,
 )
 
+pytestmark = pytest.mark.component
+
 
 def test_upgrade_rejects_incompatible_python_before_database_preflight(
     tmp_path: Path,

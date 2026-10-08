@@ -5,6 +5,8 @@ import pytest
 from tests.stress.ws_load import write_unique_payload
 from tools.compare_upload_benchmarks import compare_results, main
 
+pytestmark = pytest.mark.unit
+
 
 def _result(
     scenario,

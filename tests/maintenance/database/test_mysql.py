@@ -15,15 +15,18 @@ from maintenance.operations.database.schema import (
 )
 from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
 from tests.maintenance.backup.roundtrip_support import _seed_source
-from tests.maintenance.database.test_migration import (
+from tests.maintenance.database.support import (
     _script_directory,
     _seed_runtime_tables,
 )
 
-pytestmark = pytest.mark.skipif(
-    "CFMS_TEST_MYSQL_URL" not in os.environ,
-    reason="CFMS_TEST_MYSQL_URL is required for MySQL migration integration tests",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        "CFMS_TEST_MYSQL_URL" not in os.environ,
+        reason="CFMS_TEST_MYSQL_URL is required for MySQL migration integration tests",
+    ),
+]
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 

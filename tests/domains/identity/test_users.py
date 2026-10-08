@@ -7,6 +7,8 @@ from include.config.constants import (
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success, permission_entry
 
+pytestmark = pytest.mark.integration
+
 
 class TestUserOperations:
     @pytest.mark.asyncio

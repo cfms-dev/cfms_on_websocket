@@ -1,6 +1,4 @@
 import os
-import shutil
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,17 +14,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_abandoned_upload_cleanup_runs_on_mysql(monkeypatch, tmp_path):
-    shutil.copy(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    (tmp_path / "init").write_text("", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
+@pytest.mark.integration
+def test_abandoned_upload_cleanup_runs_on_mysql(monkeypatch):
     from include.database import models
     from include.database.models import files as file_models
-    from include.database.session import Base, global_config
+    from include.database.session import Base
     from include.domains.documents.commands import upload_cleanup
 
     engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
@@ -71,7 +63,6 @@ def test_abandoned_upload_cleanup_runs_on_mysql(monkeypatch, tmp_path):
         with session_factory() as session:
             assert session.get(models.FileTask, "task") is None
     finally:
-        global_config.stop()
         _clear_mysql_database(engine)
         engine.dispose()
 

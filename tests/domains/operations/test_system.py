@@ -13,6 +13,8 @@ from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings
 from tests.support.utils import assert_error, assert_success, permission_entry
 
+pytestmark = pytest.mark.integration
+
 
 def _format_ws_host(host: str) -> str:
     if ":" in host and not host.startswith("["):

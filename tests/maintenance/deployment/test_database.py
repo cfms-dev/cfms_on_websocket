@@ -12,6 +12,8 @@ from maintenance.operations.exceptions import MaintenanceOperationError
 
 from .support import _prepare_database_releases
 
+pytestmark = pytest.mark.component
+
 
 def test_database_upgrade_rejects_unversioned_database_without_stamping(
     tmp_path: Path,

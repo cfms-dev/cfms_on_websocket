@@ -2,30 +2,26 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateTable
 
 
-@pytest.fixture(autouse=True)
-def _run_from_src(monkeypatch, protected_test_config) -> None:
-    monkeypatch.chdir(protected_test_config.src_dir)
-
-
-def _make_session() -> Session:
+def _make_session(sqlite_engine_factory) -> Session:
     from include.database.models.comments import Comment
     from include.database.session import Base
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = sqlite_engine_factory(":memory:")
     Base.metadata.create_all(engine, tables=[Comment.__table__])
     return Session(engine)
 
 
-def test_comment_store_reuses_equal_comments() -> None:
+@pytest.mark.component
+def test_comment_store_reuses_equal_comments(sqlite_engine_factory) -> None:
     from include.database.models.comments import Comment
     from include.domains.operations.comments import CommentStore
 
-    with _make_session() as session:
+    with _make_session(sqlite_engine_factory) as session:
         first = CommentStore.get_or_create(
             session, "Routine maintenance", {"actor": "admin", "ticket": 42}
         )
@@ -37,11 +33,12 @@ def test_comment_store_reuses_equal_comments() -> None:
         assert len(session.scalars(select(Comment)).all()) == 1
 
 
-def test_comment_store_persists_stable_binary_digest() -> None:
+@pytest.mark.component
+def test_comment_store_persists_stable_binary_digest(sqlite_engine_factory) -> None:
     from include.database.models.comments import Comment
     from include.domains.operations.comments import CommentStore
 
-    with _make_session() as session:
+    with _make_session(sqlite_engine_factory) as session:
         comment_id = CommentStore.get_or_create_id(
             session, "Routine maintenance", {"actor": "admin", "ticket": 42}
         )
@@ -55,10 +52,13 @@ def test_comment_store_persists_stable_binary_digest() -> None:
         )
 
 
-def test_comment_id_store_uses_one_statement_for_new_sqlite_comment() -> None:
+@pytest.mark.component
+def test_comment_id_store_uses_one_statement_for_new_sqlite_comment(
+    sqlite_engine_factory,
+) -> None:
     from include.domains.operations.comments import CommentStore
 
-    with _make_session() as session:
+    with _make_session(sqlite_engine_factory) as session:
         statements = []
 
         @event.listens_for(session.bind, "before_cursor_execute")
@@ -79,10 +79,13 @@ def test_comment_id_store_uses_one_statement_for_new_sqlite_comment() -> None:
         assert statements[0].lstrip().upper().startswith("INSERT")
 
 
-def test_comment_id_store_uses_insert_and_validation_for_duplicate() -> None:
+@pytest.mark.component
+def test_comment_id_store_uses_insert_and_validation_for_duplicate(
+    sqlite_engine_factory,
+) -> None:
     from include.domains.operations.comments import CommentStore
 
-    with _make_session() as session:
+    with _make_session(sqlite_engine_factory) as session:
         first_id = CommentStore.get_or_create_id(session, "Repeated reason")
         statements = []
 
@@ -106,7 +109,10 @@ def test_comment_id_store_uses_insert_and_validation_for_duplicate() -> None:
         assert "FOR UPDATE" not in statements[1].upper()
 
 
-def test_comment_store_rejects_digest_collisions(monkeypatch) -> None:
+@pytest.mark.component
+def test_comment_store_rejects_digest_collisions(
+    monkeypatch, sqlite_engine_factory
+) -> None:
     from include.database.models.comments import Comment
     from include.domains.operations.comments import (
         CommentDigestCollisionError,
@@ -115,7 +121,7 @@ def test_comment_store_rejects_digest_collisions(monkeypatch) -> None:
 
     monkeypatch.setattr(CommentStore, "_digest", lambda serialized: b"\0" * 32)
 
-    with _make_session() as session:
+    with _make_session(sqlite_engine_factory) as session:
         CommentStore.get_or_create_id(session, "First reason")
 
         with pytest.raises(CommentDigestCollisionError):
@@ -124,6 +130,7 @@ def test_comment_store_rejects_digest_collisions(monkeypatch) -> None:
         assert len(session.scalars(select(Comment)).all()) == 1
 
 
+@pytest.mark.unit
 def test_comment_content_digest_constraint_is_unique() -> None:
     from include.database.models.comments import Comment
 
@@ -136,6 +143,7 @@ def test_comment_content_digest_constraint_is_unique() -> None:
     assert list(constraint.columns.keys()) == ["digest_version", "content_digest"]
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("dialect_name", "expected_clauses"),
     [
@@ -187,6 +195,7 @@ def test_comment_store_builds_supported_upserts(
         assert expected_clause in compiled
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("dialect_name", "expected_type"),
     [
@@ -213,15 +222,15 @@ def test_comment_digest_uses_compact_binary_type(
     assert expected_type in ddl
 
 
-def test_comment_store_deduplicates_concurrent_transactions(tmp_path) -> None:
+@pytest.mark.component
+def test_comment_store_deduplicates_concurrent_transactions(
+    tmp_path, sqlite_engine_factory
+) -> None:
     from include.database.models.comments import Comment
     from include.database.session import Base
     from include.domains.operations.comments import CommentStore
 
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'comments.db'}",
-        connect_args={"timeout": 10},
-    )
+    engine = sqlite_engine_factory(tmp_path / "comments.db", timeout_seconds=10)
     Base.metadata.create_all(engine, tables=[Comment.__table__])
     barrier = Barrier(2, timeout=10)
 

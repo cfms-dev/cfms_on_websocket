@@ -1,46 +1,35 @@
-import os
 import sqlite3
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event, literal
+from sqlalchemy import event, literal
 from sqlalchemy.orm import joinedload, raiseload, sessionmaker
+
+pytestmark = pytest.mark.component
 
 
 @pytest.fixture(scope="module")
-def directory_models(protected_test_config):
-    repo_root = Path(__file__).resolve().parents[3]
-    src_path = repo_root / "src"
-    if str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
-
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(protected_test_config.src_dir)
-        import include.database.models.access as blocking
-        import include.database.models.keyrings as keyring
-        import include.domains.documents.handlers.documents as document_handlers
-        from include.database.models.documents import (
-            Document,
-            DocumentRevision,
-            EntityStatus,
-            Folder,
-            Node,
-        )
-        from include.database.models.files import File
-        from include.database.session import Base
-        from include.domains.documents.queries.listing import (
-            _node_rules_allow,
-            count_active_directory_children,
-            directory_cursor_key,
-            fetch_deleted_listing_items,
-            fetch_directory_listing_items,
-            fetch_latest_active_revisions_by_document,
-        )
-    finally:
-        os.chdir(original_cwd)
+def directory_models():
+    import include.database.models.access as blocking
+    import include.database.models.keyrings as keyring
+    import include.domains.documents.handlers.documents as document_handlers
+    from include.database.models.documents import (
+        Document,
+        DocumentRevision,
+        EntityStatus,
+        Folder,
+        Node,
+    )
+    from include.database.models.files import File
+    from include.database.session import Base
+    from include.domains.documents.queries.listing import (
+        _node_rules_allow,
+        count_active_directory_children,
+        directory_cursor_key,
+        fetch_deleted_listing_items,
+        fetch_directory_listing_items,
+        fetch_latest_active_revisions_by_document,
+    )
 
     _ = (blocking, keyring)
 
@@ -68,23 +57,9 @@ def directory_models(protected_test_config):
 
 
 @pytest.fixture
-def directory_session(directory_models):
-    engine = create_engine("sqlite:///:memory:")
-    directory_models.Base.metadata.create_all(
-        engine,
-        tables=[
-            directory_models.File.__table__,
-            directory_models.CompiledAccessRuleSet.__table__,
-            directory_models.CompiledAccessRule.__table__,
-            directory_models.CompiledAccessRuleGroup.__table__,
-            directory_models.CompiledAccessRuleRight.__table__,
-            directory_models.CompiledAccessRuleMembership.__table__,
-            directory_models.Node.__table__,
-            directory_models.Folder.__table__,
-            directory_models.Document.__table__,
-            directory_models.DocumentRevision.__table__,
-        ],
-    )
+def directory_session(directory_models, sqlite_engine_factory):
+    engine = sqlite_engine_factory(":memory:")
+    directory_models.Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     with SessionLocal() as session:
         session.add(directory_models.Folder(id="/", name="/", inherit=False))
@@ -104,6 +79,7 @@ def _file(models, file_id: str, *, active: bool, size: int = 1):
 
 
 def _document(models, session, doc_id: str, folder_id: str):
+    session.flush()
     document = models.Document(id=doc_id, title=doc_id, folder_id=folder_id)
     session.add(document)
     session.flush()
@@ -176,29 +152,16 @@ def test_document_active_does_not_load_all_revisions_when_current_is_active(
 
 
 def test_document_info_reads_revision_and_file_consistently_during_deduplication(
-    directory_models, tmp_path, monkeypatch
+    directory_models, tmp_path, monkeypatch, sqlite_engine_factory
 ):
     database_path = tmp_path / "document-info.db"
-    engine = create_engine(f"sqlite:///{database_path}")
-    directory_models.Base.metadata.create_all(
-        engine,
-        tables=[
-            directory_models.File.__table__,
-            directory_models.CompiledAccessRuleSet.__table__,
-            directory_models.CompiledAccessRule.__table__,
-            directory_models.CompiledAccessRuleGroup.__table__,
-            directory_models.CompiledAccessRuleRight.__table__,
-            directory_models.CompiledAccessRuleMembership.__table__,
-            directory_models.Node.__table__,
-            directory_models.Folder.__table__,
-            directory_models.Document.__table__,
-            directory_models.DocumentRevision.__table__,
-        ],
-    )
+    engine = sqlite_engine_factory(database_path)
+    directory_models.Base.metadata.create_all(engine)
     testing_session = sessionmaker(bind=engine)
 
     with testing_session() as session, session.begin():
         session.add(directory_models.Folder(id="/", name="/", inherit=False))
+        session.flush()
         document = directory_models.Document(id="doc", title="doc")
         canonical = _file(directory_models, "canonical", active=True, size=7)
         source = _file(directory_models, "source", active=True, size=7)
@@ -260,7 +223,6 @@ def test_document_info_reads_revision_and_file_consistently_during_deduplication
     assert remapped is True
     assert responses[0]["code"] == 200
     assert responses[0]["data"]["size"] == 7
-    engine.dispose()
 
 
 def test_fetch_latest_active_revisions_batches_without_lazy_revision_loads(
@@ -413,14 +375,17 @@ def test_count_active_directory_children_uses_aggregate_queries(
     parent_id = "count-parent"
     parent = directory_models.Folder(id=parent_id, name="count-parent")
     directory_session.add(parent)
+    directory_session.flush()
+    active_child = directory_models.Folder(
+        id="active-child",
+        name="active-child",
+        parent=parent,
+        status=directory_models.EntityStatus.OK,
+    )
+    directory_session.add(active_child)
+    directory_session.flush()
     directory_session.add_all(
         [
-            directory_models.Folder(
-                id="active-child",
-                name="active-child",
-                parent_id=parent_id,
-                status=directory_models.EntityStatus.OK,
-            ),
             directory_models.Folder(
                 id="deleted-child",
                 name="deleted-child",
@@ -517,6 +482,7 @@ def test_directory_listing_query_limits_candidates(
 ):
     parent = directory_models.Folder(id="parent", name="parent")
     directory_session.add(parent)
+    directory_session.flush()
     for index in range(3):
         directory_session.add(
             directory_models.Folder(
@@ -567,6 +533,7 @@ def test_deleted_listing_query_limits_candidates(
 ):
     parent = directory_models.Folder(id="deleted-parent", name="deleted-parent")
     directory_session.add(parent)
+    directory_session.flush()
     for index in range(3):
         directory_session.add(
             directory_models.Folder(

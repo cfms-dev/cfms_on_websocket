@@ -16,6 +16,8 @@ from .support import (
     _write_package,
 )
 
+pytestmark = pytest.mark.component
+
 
 def test_install_preview_validates_digest_without_importing_or_writing(
     tmp_path, monkeypatch

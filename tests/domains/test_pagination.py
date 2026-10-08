@@ -6,6 +6,8 @@ from cryptography import fernet as fernet_module
 
 from include.domains import pagination as pagination_module
 
+pytestmark = pytest.mark.unit
+
 # Independently encrypted v2 fixtures use pagination-test-secret and timestamp
 # 1700000000. The valid fixture shares the key and binding with every invalid one.
 _VALID_CURSOR_V2 = (

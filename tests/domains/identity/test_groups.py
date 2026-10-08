@@ -3,6 +3,8 @@ import pytest
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success, permission_entry
 
+pytestmark = pytest.mark.integration
+
 
 class TestGroupOperations:
     @pytest.mark.asyncio

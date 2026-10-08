@@ -1,5 +1,6 @@
 import re
 
+import pytest
 import tomlkit
 
 from .support import (
@@ -10,6 +11,8 @@ from .support import (
     _run_maintain,
     _seed_users,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def test_fill_pepper_initializes_empty_pepper(tmp_path):

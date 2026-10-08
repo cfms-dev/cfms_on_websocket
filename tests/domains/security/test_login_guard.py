@@ -1,19 +1,17 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from shutil import copyfile
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
-def guard_context(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
+def guard_context(monkeypatch, tmp_path, sqlite_engine_factory):
 
     from include.database.models.comments import Comment
     from include.database.models.security import (
@@ -26,7 +24,7 @@ def guard_context(monkeypatch, tmp_path):
     from include.domains.security.guards import login
     from include.providers.caching.memory import MemoryCachingProvider
 
-    test_engine = create_engine(f"sqlite:///{tmp_path / 'guard.db'}")
+    test_engine = sqlite_engine_factory(tmp_path / "guard.db")
     Base.metadata.create_all(
         test_engine,
         tables=[
@@ -66,7 +64,7 @@ def guard_context(monkeypatch, tmp_path):
     monkeypatch.setattr(login.LoginGuard, "_banned_rules", [])
     monkeypatch.setattr(login.LoginGuard, "_networks_loaded", True)
 
-    yield SimpleNamespace(
+    return SimpleNamespace(
         login=login,
         policy=policy,
         Session=test_session,
@@ -75,7 +73,6 @@ def guard_context(monkeypatch, tmp_path):
         LoginThrottle=LoginThrottle,
         TrafficThrottle=TrafficThrottle,
     )
-    test_engine.dispose()
 
 
 def test_distributed_failures_trigger_account_throttle(guard_context):

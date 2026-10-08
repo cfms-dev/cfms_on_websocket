@@ -8,6 +8,8 @@ from include.providers.scheduling import local
 from include.providers.scheduling.local import LocalSchedulingProvider
 from include.scheduling.registry import ScheduledTaskRegistry
 
+pytestmark = pytest.mark.unit
+
 
 def test_local_provider_starts_scheduler_and_workers_and_stops(monkeypatch):
     scheduler_ran = threading.Event()

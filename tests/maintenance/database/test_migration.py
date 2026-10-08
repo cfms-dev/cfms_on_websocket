@@ -3,16 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 import tomlkit
-from alembic.config import Config
 from alembic.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from sqlalchemy import (
     Column,
     Integer,
     MetaData,
     String,
     Table,
-    create_engine,
     insert,
     inspect,
     select,
@@ -34,12 +31,11 @@ from maintenance.operations.database.migration import (
 from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
 from maintenance.operations.exceptions import MaintenanceOperationError
 from tests.maintenance.backup.roundtrip_support import _seed_source
+from tests.maintenance.database.support import _script_directory, _seed_runtime_tables
+
+pytestmark = pytest.mark.component
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _script_directory() -> ScriptDirectory:
-    return ScriptDirectory.from_config(Config(_PROJECT_ROOT / "src" / "alembic.ini"))
 
 
 def test_mysql_schema_preserves_python_float_precision(backup_context) -> None:
@@ -57,7 +53,7 @@ def test_mysql_schema_preserves_python_float_precision(backup_context) -> None:
     assert "file_tasks.end_time" in float_columns
 
 
-def test_table_signature_scopes_streaming_to_its_select() -> None:
+def test_table_signature_scopes_streaming_to_its_select(sqlite_engine_factory) -> None:
     metadata = MetaData()
     items = Table(
         "items",
@@ -65,24 +61,21 @@ def test_table_signature_scopes_streaming_to_its_select() -> None:
         Column("id", Integer, primary_key=True),
         Column("value", String(32), nullable=False),
     )
-    engine = create_engine("sqlite:///:memory:")
-    try:
-        metadata.create_all(engine)
-        with engine.begin() as connection:
-            connection.execute(
-                insert(items),
-                [
-                    {"id": 1, "value": "first"},
-                    {"id": 2, "value": "second"},
-                ],
-            )
+    engine = sqlite_engine_factory()
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(items),
+            [
+                {"id": 1, "value": "first"},
+                {"id": 2, "value": "second"},
+            ],
+        )
 
-            row_count, _digest = _table_signature(connection, items)
+        row_count, _digest = _table_signature(connection, items)
 
-            assert row_count == 2
-            assert "stream_results" not in connection.get_execution_options()
-    finally:
-        engine.dispose()
+        assert row_count == 2
+        assert "stream_results" not in connection.get_execution_options()
 
 
 def test_transfer_clones_every_application_table(
@@ -127,102 +120,46 @@ def test_transfer_clones_every_application_table(
         target_engine.dispose()
 
 
-def _seed_runtime_tables(base, source_engine) -> None:
-    tables = base.metadata.tables
-    with source_engine.begin() as connection:
-        connection.execute(
-            insert(tables["account_throttles"]),
-            {
-                "username": "alice",
-                "factor": "password",
-                "failed_attempts": 2,
-                "last_attempt": 1_700_000_000.0,
-                "locked_until": None,
-            },
-        )
-        connection.execute(
-            insert(tables["rate_limit_buckets"]),
-            {
-                "namespace": "request",
-                "scope": "account",
-                "identity": "alice",
-                "tokens": 3.5,
-                "last_refill_at": 1_700_000_000.0,
-                "denial_count": 1,
-                "last_denied_at": None,
-                "last_attempt": 1_700_000_000.0,
-            },
-        )
-        connection.execute(
-            insert(tables["risk_ip_accounts"]),
-            {
-                "namespace": "request",
-                "ip_address": "192.0.2.10",
-                "username": "alice",
-                "last_attempt": 1_700_000_000.0,
-            },
-        )
-        connection.execute(
-            insert(tables["file_deduplication_tasks"]),
-            {
-                "file_id": "file-doc",
-                "phase": 0,
-                "available_at": 1_700_000_000.0,
-                "lease_owner": None,
-                "lease_expires_at": None,
-                "attempts": 0,
-                "last_error": None,
-                "created_time": 1_700_000_000.0,
-            },
-        )
-
-
 def test_transfer_cleans_target_when_verification_fails(
     database_factory,
     backup_context,
     tmp_path,
     monkeypatch,
+    sqlite_engine_factory,
 ) -> None:
     from maintenance.operations.database import migration as database_migration
 
     base = backup_context.Base
     source_engine, _source_session = database_factory(base, tmp_path / "source.db")
-    target_engine = create_engine(f"sqlite:///{tmp_path / 'target.db'}")
-    try:
-        scripts = _script_directory()
-        head = scripts.get_current_head()
-        assert head is not None
+    target_engine = sqlite_engine_factory(tmp_path / "target.db")
+    scripts = _script_directory()
+    head = scripts.get_current_head()
+    assert head is not None
 
-        def fail_verification(*_args, **_kwargs):
-            raise DatabaseMigrationError("verification failed")
+    def fail_verification(*_args, **_kwargs):
+        raise DatabaseMigrationError("verification failed")
 
-        monkeypatch.setattr(database_migration, "_verify_tables", fail_verification)
-        with pytest.raises(DatabaseMigrationError, match="verification failed"):
-            transfer_database_contents(
-                source_engine,
-                target_engine,
-                base.metadata,
-                scripts,
-                head,
-            )
+    monkeypatch.setattr(database_migration, "_verify_tables", fail_verification)
+    with pytest.raises(DatabaseMigrationError, match="verification failed"):
+        transfer_database_contents(
+            source_engine,
+            target_engine,
+            base.metadata,
+            scripts,
+            head,
+        )
 
-        assert inspect(target_engine).get_table_names() == []
-    finally:
-        target_engine.dispose()
+    assert inspect(target_engine).get_table_names() == []
 
 
-def test_public_migration_rejects_same_database_engine() -> None:
-    source_engine = create_engine("sqlite:///:memory:")
-    target_engine = create_engine("sqlite:///:memory:")
-    try:
-        with pytest.raises(
-            DatabaseMigrationError,
-            match="Source and target database engines must be different",
-        ):
-            migrate_database(source_engine, target_engine, object(), object())
-    finally:
-        target_engine.dispose()
-        source_engine.dispose()
+def test_public_migration_rejects_same_database_engine(sqlite_engine_factory) -> None:
+    source_engine = sqlite_engine_factory()
+    target_engine = sqlite_engine_factory()
+    with pytest.raises(
+        DatabaseMigrationError,
+        match="Source and target database engines must be different",
+    ):
+        migrate_database(source_engine, target_engine, object(), object())
 
 
 @pytest.mark.parametrize("version", [(8, 4, 12), (9, 7, 3)])

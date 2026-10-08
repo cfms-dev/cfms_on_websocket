@@ -2,6 +2,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.component
+
 
 def _make_user(models, session, *, username="alice", memberships=()):
     created_at = time.time()

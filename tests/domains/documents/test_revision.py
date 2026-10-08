@@ -6,6 +6,8 @@ import pytest_asyncio
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
+pytestmark = pytest.mark.integration
+
 
 @pytest_asyncio.fixture
 async def revision_history(authenticated_client, document_factory, tmp_path: Path):

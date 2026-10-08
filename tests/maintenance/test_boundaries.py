@@ -36,6 +36,7 @@ COMMANDS = {
 }
 
 
+@pytest.mark.unit
 def test_cli_registration_matches_the_public_command_tree() -> None:
     registered = {
         group.name: tuple(
@@ -47,6 +48,7 @@ def test_cli_registration_matches_the_public_command_tree() -> None:
     assert registered == COMMANDS
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("group", [None, *COMMANDS])
 def test_every_cli_group_has_a_help_entry(group: str | None) -> None:
     arguments = ["--help"] if group is None else [group, "--help"]
@@ -57,6 +59,7 @@ def test_every_cli_group_has_a_help_entry(group: str | None) -> None:
     assert "Usage:" in result.stdout
 
 
+@pytest.mark.integration
 def test_cli_import_does_not_eagerly_load_backup_providers_or_models() -> None:
     code = """
 import sys
@@ -78,6 +81,7 @@ assert not any(name.startswith("include.database.models.") for name in sys.modul
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.component
 def test_maintenance_import_graph_is_acyclic_and_operations_is_not_a_barrel() -> None:
     source_root = Path(__file__).resolve().parents[2] / "src"
     maintenance_root = source_root / "maintenance"

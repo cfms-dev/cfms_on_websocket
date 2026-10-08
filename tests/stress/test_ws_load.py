@@ -32,6 +32,7 @@ from tests.support import client as client_module
 from tests.support.client import CFMSTestClient
 
 
+@pytest.mark.component
 def test_managed_load_test_disables_debug_by_default(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ws_load.py", "--managed-reset"])
 
@@ -41,6 +42,7 @@ def test_managed_load_test_disables_debug_by_default(monkeypatch):
     assert args.users == 2
 
 
+@pytest.mark.component
 def test_managed_load_test_can_enable_debug(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ws_load.py", "--managed-reset", "--debug"])
 
@@ -49,6 +51,7 @@ def test_managed_load_test_can_enable_debug(monkeypatch):
     assert args.debug is True
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -67,6 +70,7 @@ def test_load_test_rejects_invalid_parameters(monkeypatch, arguments):
         parse_args()
 
 
+@pytest.mark.unit
 def test_load_stats_report_total_and_per_action_metrics():
     stats = LoadStats()
     stats.record_success("server_info", 10)
@@ -85,6 +89,7 @@ def test_load_stats_report_total_and_per_action_metrics():
     assert result["actions"]["list_users"]["latency_ms"]["p95"] == 30
 
 
+@pytest.mark.unit
 def test_upload_action_metrics_can_be_separate_from_iteration_metrics():
     stats = LoadStats()
     stats.record_success("create_document", 10, include_in_total=False)
@@ -99,6 +104,7 @@ def test_upload_action_metrics_can_be_separate_from_iteration_metrics():
     assert result["actions"]["upload_file"]["latency_ms"]["p95"] == 20
 
 
+@pytest.mark.unit
 def test_fixed_rate_pacer_reports_saturated_slots():
     pacer = FixedRatePacer(next_start=10, interval=1, deadline=15)
 
@@ -108,6 +114,7 @@ def test_fixed_rate_pacer_reports_saturated_slots():
     assert pacer.next_slot(15) == (None, 0)
 
 
+@pytest.mark.unit
 def test_fixed_rate_pacer_excludes_floating_point_deadline_slot():
     pacer = FixedRatePacer(next_start=100, interval=0.2, deadline=101)
     scheduled = []
@@ -121,6 +128,7 @@ def test_fixed_rate_pacer_excludes_floating_point_deadline_slot():
     assert len(scheduled) == 5
 
 
+@pytest.mark.unit
 def test_fixed_global_arrival_rate_uses_the_full_scheduling_window():
     pacers = [
         FixedRatePacer(next_start=100 + worker / 10, interval=0.2, deadline=102)
@@ -140,6 +148,7 @@ def test_fixed_global_arrival_rate_uses_the_full_scheduling_window():
     assert result["throughput_rps"] == 10
 
 
+@pytest.mark.unit
 def test_remote_credentials_come_from_explicit_non_secret_inputs(monkeypatch):
     monkeypatch.setenv("CFMS_LOAD_USERNAME", "load-user")
     monkeypatch.setenv("PRIVATE_LOAD_PASSWORD", "secret")
@@ -158,6 +167,7 @@ def test_remote_credentials_come_from_explicit_non_secret_inputs(monkeypatch):
     assert "secret" not in repr(credentials)
 
 
+@pytest.mark.unit
 def test_remote_authenticated_scenario_requires_credentials(monkeypatch):
     monkeypatch.delenv("CFMS_LOAD_USERNAME", raising=False)
     monkeypatch.delenv("CFMS_LOAD_PASSWORD", raising=False)
@@ -172,6 +182,7 @@ def test_remote_authenticated_scenario_requires_credentials(monkeypatch):
         resolve_credentials(args, managed=False, src_dir=Path("src"))
 
 
+@pytest.mark.unit
 def test_remote_tls_verification_is_enabled_by_default():
     context = create_load_ssl_context(
         use_ssl=True,
@@ -185,6 +196,7 @@ def test_remote_tls_verification_is_enabled_by_default():
     assert context.verify_mode == ssl.CERT_REQUIRED
 
 
+@pytest.mark.unit
 def test_managed_tls_allows_the_disposable_self_signed_certificate():
     context = create_load_ssl_context(
         use_ssl=True,
@@ -198,6 +210,7 @@ def test_managed_tls_allows_the_disposable_self_signed_certificate():
     assert context.verify_mode == ssl.CERT_NONE
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_client_uses_caller_owned_ssl_context(monkeypatch):
     observed = {}
@@ -225,6 +238,7 @@ async def test_client_uses_caller_owned_ssl_context(monkeypatch):
     assert observed["ssl"] is expected_context
 
 
+@pytest.mark.component
 def test_required_profiles_are_valid_and_normalized():
     profiles = load_profiles()
 
@@ -235,6 +249,7 @@ def test_required_profiles_are_valid_and_normalized():
     assert profiles["soak"].duration_seconds == 8 * 60 * 60
 
 
+@pytest.mark.component
 def test_explicit_cli_values_override_profile_values():
     args = parse_args(
         [
@@ -264,6 +279,7 @@ def test_explicit_cli_values_override_profile_values():
     assert args.seed == 9
 
 
+@pytest.mark.component
 def test_rate_override_replaces_spike_shape():
     args = parse_args(["--profile", "spike", "--rate", "25"])
 
@@ -275,6 +291,7 @@ def test_rate_override_replaces_spike_shape():
     assert args.spike_duration is None
 
 
+@pytest.mark.component
 def test_action_weight_override_preserves_other_profile_weights():
     args = parse_args(["--profile", "peak", "--action-weight", "read=60"])
 
@@ -286,6 +303,7 @@ def test_action_weight_override_preserves_other_profile_weights():
     }
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("replacement", "message"),
     [
@@ -313,6 +331,7 @@ def test_profile_loader_rejects_unknown_invalid_and_contradictory_values(
         load_profiles(profile_path)
 
 
+@pytest.mark.component
 def test_remote_mutating_scenario_requires_explicit_performance_target():
     with pytest.raises(SystemExit):
         parse_args(
@@ -331,6 +350,7 @@ def test_remote_mutating_scenario_requires_explicit_performance_target():
         )
 
 
+@pytest.mark.component
 def test_normalized_parameters_do_not_contain_credentials(monkeypatch):
     monkeypatch.setenv("CFMS_LOAD_PASSWORD", "do-not-serialize")
     args = parse_args(
@@ -362,6 +382,7 @@ def test_normalized_parameters_do_not_contain_credentials(monkeypatch):
     assert result["target_config_id"] == "perf-a"
 
 
+@pytest.mark.component
 def test_account_pool_loads_distinct_accounts_without_exposing_passwords(
     monkeypatch, tmp_path
 ):
@@ -387,6 +408,7 @@ password_env = "PERF_PASSWORD_B"
     assert "secret-b" not in repr(credentials)
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_expected_rate_rejection_is_separate_from_errors():
     stats = LoadStats()
@@ -408,6 +430,7 @@ async def test_expected_rate_rejection_is_separate_from_errors():
     assert result["valid_outcome_rate"] == 1
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_invalid_rate_rejection_contract_is_an_error():
     stats = LoadStats()
@@ -428,6 +451,7 @@ async def _response(code, data):
     return {"code": code, "data": data}
 
 
+@pytest.mark.unit
 def test_latency_histogram_has_bounded_storage_and_reports_percentiles():
     histogram = BoundedLatencyHistogram()
     for value in range(20_000):
@@ -441,6 +465,7 @@ def test_latency_histogram_has_bounded_storage_and_reports_percentiles():
     assert summary["max"] == pytest.approx(1999.9)
 
 
+@pytest.mark.unit
 def test_connection_metrics_report_success_latency_and_peak():
     stats = ConnectionStats()
     stats.connected(12)
@@ -455,10 +480,12 @@ def test_connection_metrics_report_success_latency_and_peak():
     assert result["peak_connections"] == 2
 
 
+@pytest.mark.component
 def test_generator_rss_metric_reads_current_process_memory():
     assert current_rss_bytes() > 0
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_generator_monitor_stops_without_waiting_for_sample_interval():
     waiting = asyncio.Event()
@@ -486,6 +513,7 @@ async def test_generator_monitor_stops_without_waiting_for_sample_interval():
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.component
 def test_step_profile_builds_one_phase_per_rate():
     args = parse_args(["--profile", "stress", "--duration", "8s", "--ramp-up", "0s"])
 
@@ -508,7 +536,7 @@ class _Stream:
     async def send(self, data, frame_type=None):
         self.sent.append(data)
 
-    async def recv(self):
+    async def recv(self, timeout=None):
         return self.responses.pop(0)
 
 
@@ -520,6 +548,7 @@ class _Multiplexer:
         return self.stream
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_upload_client_returns_resume_offset_and_sends_complete_chunks(tmp_path):
     source = tmp_path / "resume-upload.bin"
@@ -553,6 +582,7 @@ async def test_upload_client_returns_resume_offset_and_sends_complete_chunks(tmp
     assert len(stream.sent[1]) == 65_536
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_download_client_returns_checkpoint_for_nonzero_resume():
     encoded = base64.b64encode(b"x").decode()

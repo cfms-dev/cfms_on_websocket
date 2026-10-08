@@ -3,6 +3,8 @@ import pytest
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
+pytestmark = pytest.mark.integration
+
 _SEARCH_USER_GROUPS = [{"group_name": "user", "start_time": 0}]
 
 

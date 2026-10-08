@@ -6,6 +6,8 @@ import pytest
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
+pytestmark = pytest.mark.integration
+
 
 class TestDocumentOperations:
     @pytest.mark.asyncio

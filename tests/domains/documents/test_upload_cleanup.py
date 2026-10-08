@@ -1,36 +1,23 @@
-import shutil
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
-def upload_cleanup_context(monkeypatch, tmp_path):
-    shutil.copy(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    (tmp_path / "init").write_text("", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
+def upload_cleanup_context(monkeypatch, sqlite_engine_factory):
     from include.database import models
     from include.database.models import files as file_models
-    from include.database.session import Base, global_config
+    from include.database.session import Base
     from include.domains.documents.commands import upload_cleanup
 
-    engine = create_engine("sqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    engine = sqlite_engine_factory(":memory:")
 
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
@@ -44,15 +31,12 @@ def upload_cleanup_context(monkeypatch, tmp_path):
         upload_cleanup, "publish_cancelled_file_tasks", lambda _task_ids: None
     )
 
-    yield SimpleNamespace(
+    return SimpleNamespace(
         cleanup=upload_cleanup,
         models=models,
         removed_paths=removed_paths,
         session=session_factory,
     )
-
-    global_config.stop()
-    engine.dispose()
 
 
 def _add_pending_document(context, *, status):

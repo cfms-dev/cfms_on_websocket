@@ -17,6 +17,8 @@ from include.providers.base import RateLimitCharge, RateLimitDecision
 lazy from include.providers.rate_limits.redis import RedisRateLimitProvider
 lazy from include.providers.scheduling.redis import _RELEASE_LEASE, _RENEW_LEASE
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def redis_integration(monkeypatch):

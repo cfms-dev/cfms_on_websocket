@@ -9,6 +9,8 @@ import include.extensions.manager as extension_manager
 from include.config.constants import CORE_VERSION
 from include.config.version import Version
 
+pytestmark = pytest.mark.component
+
 EXTENSION_MODULE_NAMES = {
     "builtin",
     "compatible_ext",

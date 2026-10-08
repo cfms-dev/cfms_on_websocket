@@ -5,6 +5,8 @@ import pytest
 from include.config import paths
 from maintenance.runtime import MaintenanceRuntimeError, enter_server_root
 
+pytestmark = pytest.mark.component
+
 
 @pytest.fixture(autouse=True)
 def _restore_application_paths(monkeypatch: pytest.MonkeyPatch) -> None:
