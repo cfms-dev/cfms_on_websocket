@@ -1,9 +1,16 @@
 """Public two-factor setup, validation, disabling, and login contracts."""
 
+import orjson
 import pyotp
 import pytest
 import pytest_asyncio
+from argon2 import PasswordHasher
+from sqlalchemy.orm import sessionmaker
 
+import include.database.models  # noqa: F401
+from include.database.models import identity
+from include.database.models.identity import User
+from include.database.session import Base
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
@@ -212,18 +219,99 @@ class TestTwoFactorAuthLogin:
         assert_error(response, 401)
 
     @pytest.mark.asyncio
-    async def test_verify_2fa_login_with_backup_code(
+    async def test_verify_2fa_login_consumes_backup_code_once(
         self,
         client: CFMSTestClient,
+        user_client: CFMSTestClient,
         test_user,
         enabled_totp,
     ):
+        backup_code = enabled_totp["backup_codes"][0]
+        before = assert_success(await user_client.get_2fa_status())
+        assert before["backup_codes_count"] == 10
+
         data = assert_success(
             await client.login(
                 test_user["username"],
                 test_user["password"],
-                two_fa_token=enabled_totp["backup_codes"][0],
+                two_fa_token=backup_code,
             )
         )
 
         assert data["token"]
+        after = assert_success(await user_client.get_2fa_status())
+        assert after["backup_codes_count"] == 9
+
+        replay = await client.login(
+            test_user["username"], test_user["password"], two_fa_token=backup_code
+        )
+
+        error = assert_error(replay, 401)
+        assert error["data"] == {}
+        assert error["message"] == "Invalid two-factor authentication token"
+        remaining = assert_success(await user_client.get_2fa_status())
+        assert remaining["backup_codes_count"] == 9
+        assert remaining["enabled"] is True
+
+
+@pytest.fixture
+def backup_code_sessions(monkeypatch, sqlite_engine_factory):
+    database = sqlite_engine_factory()
+    Base.metadata.create_all(database)
+    sessions = sessionmaker(bind=database)
+    pepper = "backup-code-test-pepper"
+    monkeypatch.setattr(identity, "global_config", {"security": {"pepper": pepper}})
+    hasher = PasswordHasher()
+    hashes = [hasher.hash(code + pepper) for code in ("deadbeef", "cafebabe")]
+    with sessions.begin() as session:
+        session.add(
+            User(
+                username="alice",
+                pass_hash="unused",
+                created_time=0.0,
+                totp_secret=pyotp.random_base32(),
+                totp_enabled=True,
+                totp_backup_codes=orjson.dumps(hashes).decode("utf-8"),
+            )
+        )
+    return sessions, hashes[1]
+
+
+@pytest.mark.component
+def test_backup_code_consumption_is_committed_and_reuse_preserves_remaining_codes(
+    backup_code_sessions,
+):
+    sessions, remaining_hash = backup_code_sessions
+
+    with sessions() as session:
+        assert session.get(User, "alice").verify_totp("deadbeef") is True
+
+    with sessions() as session:
+        persisted = session.get(User, "alice")
+        assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
+        assert persisted.verify_totp("deadbeef") is False
+
+    with sessions() as session:
+        persisted = session.get(User, "alice")
+        assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
+        assert persisted.totp_enabled is True
+
+
+@pytest.mark.component
+def test_consuming_last_backup_code_commits_empty_list_and_keeps_totp_enabled(
+    backup_code_sessions,
+):
+    sessions, remaining_hash = backup_code_sessions
+    with sessions.begin() as session:
+        session.get(User, "alice").totp_backup_codes = orjson.dumps(
+            [remaining_hash]
+        ).decode("utf-8")
+
+    with sessions() as session:
+        assert session.get(User, "alice").verify_totp("cafebabe") is True
+
+    with sessions() as session:
+        persisted = session.get(User, "alice")
+        assert orjson.loads(persisted.totp_backup_codes) == []
+        assert persisted.totp_enabled is True
+        assert persisted.verify_totp("cafebabe") is False

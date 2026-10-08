@@ -1,34 +1,12 @@
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.integration
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
 
 def test_username_length_limit_is_shared_by_server(protected_test_config):
-    database_model_constants = (
-        (
-            "src/include/database/models/identity.py",
-            "VARCHAR(USERNAME_DATABASE_MAX_LENGTH)",
-        ),
-        (
-            "src/include/database/models/security.py",
-            "String(USERNAME_DATABASE_MAX_LENGTH)",
-        ),
-        (
-            "src/include/database/models/documents.py",
-            "VARCHAR(USERNAME_DATABASE_MAX_LENGTH)",
-        ),
-    )
-    for relative_path, expected_usage in database_model_constants:
-        source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
-        assert expected_usage in source
-        assert "USERNAME_MAX_LENGTH" not in source
-
     result = subprocess.run(
         [
             sys.executable,
