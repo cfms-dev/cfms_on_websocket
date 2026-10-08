@@ -218,6 +218,8 @@ class CFMSTestClient:
         port: int | None = None,
         use_ssl: bool | None = None,
         ssl_context: ssl.SSLContext | None = None,
+        *,
+        response_timeout: float = 10.0,
     ):
         """
         Initialize the test client.
@@ -236,6 +238,7 @@ class CFMSTestClient:
             use_ssl if use_ssl is not None else _env_bool("CFMS_TEST_USE_SSL", True)
         )
         self.ssl_context = ssl_context
+        self.response_timeout = response_timeout
         self.websocket: ClientConnection | None = None
         self.multiplexer: AsyncMultiplexConnection | None = None
         self.username: str | None = None
@@ -347,7 +350,7 @@ class CFMSTestClient:
                 request["timestamp"] = time.time()
 
         await stream.send(orjson.dumps(request))
-        frame = await stream.recv()
+        frame = await stream.recv(timeout=self.response_timeout)
         return frame
 
     async def send_request(
@@ -402,6 +405,8 @@ class CFMSTestClient:
         if self.multiplexer is None:
             raise RuntimeError("Not connected to server. Call connect() first.")
 
+        if timeout is None:
+            timeout = self.response_timeout
         stream = await self.multiplexer.accept_stream(timeout=timeout)
         if stream is None:
             raise ConnectionError("Connection closed before receiving server event")
@@ -423,7 +428,7 @@ class CFMSTestClient:
         stream = self.multiplexer.open_stream()
         await stream.send(orjson.dumps(request))
 
-        frame = await stream.recv()
+        frame = await stream.recv(timeout=self.response_timeout)
         payload = await self._parse_frame_data(frame)
 
         if isinstance(payload, dict):
@@ -948,7 +953,7 @@ class CFMSTestClient:
         empty_file = False
 
         while True:
-            recv_frame = await stream.recv()
+            recv_frame = await stream.recv(timeout=self.response_timeout)
             if recv_frame is None:
                 break
             raw_reply = recv_frame.data
@@ -1002,7 +1007,9 @@ class CFMSTestClient:
                     f.write(decrypted_chunk)
 
         await stream.send(b"complete")
-        completion = await self._parse_frame_data(await stream.recv())
+        completion = await self._parse_frame_data(
+            await stream.recv(timeout=self.response_timeout)
+        )
         if (
             not isinstance(completion, dict)
             or completion.get("action") != "transfer_complete"
@@ -1090,7 +1097,7 @@ class CFMSTestClient:
                 ):
                     return offset
 
-        server_frame = await stream.recv()
+        server_frame = await stream.recv(timeout=self.response_timeout)
         return await self._parse_frame_data(server_frame)
 
     # def receive_file_from_server(

@@ -120,7 +120,7 @@ async def client_factory(
                 use_ssl=test_server_settings.use_ssl,
             )
             connections.push_async_callback(test_client.disconnect)
-            await test_client.connect()
+            await test_client.connect(max_retries=1)
             return test_client
 
         yield create_client
