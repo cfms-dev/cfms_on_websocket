@@ -23,19 +23,43 @@ lightweight required job and conditionally skip only the expensive test jobs.
 2. Installs project dependencies and test requirements
 3. Requires a Towncrier fragment on pull requests unless the pull request has
    the `skip-changelog` label
-4. Creates necessary directories for the server
-5. Runs the full test suite with pytest
+4. Collects tests against an isolated temporary server tree
+5. Runs unit, component, and integration phases separately with strict markers
 6. Runs focused SQLite-to-MySQL and MySQL-to-SQLite migration tests against
    MySQL 8.4 and 9.7 LTS services
 7. Verifies rate-limit Lua and scheduler lease behavior against Redis 8.2.10
-8. Uploads test results and logs as artifacts (retained for 7 days)
+8. Runs PostgreSQL scheduler concurrency/atomic initialization and platform smoke checks
+9. Uploads JUnit results and logs as artifacts (retained for 7 days)
 
 ### Configuration:
-- **Timeout**: 10 minutes per test run
+- **Timeout**: 10 minutes per main-layer test step; pytest's 120-second watchdog
+  includes individual-case setup and teardown
 - **Python version**: Tests run on Python 3.15
 - **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
   9.7 LTS
-- **Artifacts**: Test cache and server logs are uploaded for debugging
+- **Artifacts**: JUnit XML, test cache and server logs are uploaded for debugging;
+  `--durations=25` records the slowest cases in the job output
+
+### Layer and backend guarantees
+
+The main job runs `-m "unit and not stress"`, `-m "component and not stress"`,
+and `-m "integration and not stress"` in separate pytest sessions. Every case
+has exactly one layer marker, verified during
+collection. Layer selection follows actual resources rather than its folder;
+the load-tool tests under `tests/stress/` remain ordinary unit/component cases.
+The [test guide](../../tests/README.md) describes fixture ownership, safe local
+execution, criteria for writing tests, and coverage destinations.
+
+Dedicated backend jobs retain their real Redis, MySQL, and PostgreSQL services.
+Each first verifies its connection environment is nonempty, runs focused paths
+with JUnit XML, and verifies at least one case executed and none skipped. Missing
+configuration, an unavailable service, zero selected tests, and unexpected skips
+therefore fail those channels instead of yielding a green optional-backend run.
+MySQL/PostgreSQL use `-k mysql` / `-k postgresql` to select only that backend's
+parameters in the shared scheduler modules. The MySQL job also retains upload
+cleanup, rate limits, and cross-engine migration cases on both MySQL versions.
+Backend XML is uploaded even on failure; normal local integration runs can still
+skip unconfigured opt-in services.
 
 ### Real Redis behavior tests
 

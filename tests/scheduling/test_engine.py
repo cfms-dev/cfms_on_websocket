@@ -144,12 +144,14 @@ def test_runtime_state_initialization_is_atomic(
 def test_runtime_state_initialization_is_atomic_on_shared_database(
     monkeypatch,
     database_url_environment,
+    request,
 ) -> None:
     database_url = os.environ.get(database_url_environment)
     if database_url is None:
         pytest.skip(f"{database_url_environment} is required")
 
     database = create_engine(database_url)
+    request.addfinalizer(database.dispose)
     table = SchedulingRuntimeState.__table__
     table.drop(database, checkfirst=True)
     table.create(database)
@@ -157,7 +159,6 @@ def test_runtime_state_initialization_is_atomic_on_shared_database(
         _assert_concurrent_runtime_initialization(monkeypatch, database)
     finally:
         table.drop(database)
-        database.dispose()
 
 
 def _schedule(

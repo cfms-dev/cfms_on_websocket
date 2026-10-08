@@ -15,13 +15,14 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.integration
-def test_abandoned_upload_cleanup_runs_on_mysql(monkeypatch):
+def test_abandoned_upload_cleanup_runs_on_mysql(monkeypatch, request):
     from include.database import models
     from include.database.models import files as file_models
     from include.database.session import Base
     from include.domains.documents.commands import upload_cleanup
 
     engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    request.addfinalizer(engine.dispose)
     _clear_mysql_database(engine)
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
@@ -64,7 +65,6 @@ def test_abandoned_upload_cleanup_runs_on_mysql(monkeypatch):
             assert session.get(models.FileTask, "task") is None
     finally:
         _clear_mysql_database(engine)
-        engine.dispose()
 
 
 def _clear_mysql_database(engine) -> None:

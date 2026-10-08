@@ -1,0 +1,1 @@
+The test suite now enforces execution layers, uses production SQLite constraints, bounds client waits, and checks OIDC callbacks and one-time backup codes; CI reports each layer separately and requires real backend tests to execute.

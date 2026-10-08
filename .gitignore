@@ -33,6 +33,7 @@ coverage.xml
 *.cover
 .hypothesis/
 test_logs/
+test-results/
 
 # Jupyter Notebook
 .ipynb_checkpoints

@@ -62,9 +62,19 @@ jobs:
       run: |
         uv run --locked towncrier check --compare-with "origin/${BASE_REF}"
     
-    - name: Run tests with pytest
+    - name: Run unit tests
       run: |
-        uv run pytest tests/ -v --tb=short
+        uv run --locked pytest tests/ -m "unit and not stress" --junitxml=test-results/unit.xml --durations=25
+      timeout-minutes: 10
+
+    - name: Run component tests
+      run: |
+        uv run --locked pytest tests/ -m "component and not stress" --junitxml=test-results/component.xml --durations=25
+      timeout-minutes: 10
+
+    - name: Run integration tests
+      run: |
+        uv run --locked pytest tests/ -m "integration and not stress" --junitxml=test-results/integration.xml --durations=25
       timeout-minutes: 10
 
     - name: Verify test configuration cleanup
@@ -84,6 +94,7 @@ jobs:
           .pytest_cache/
           src/content/logs/
           test_logs/
+          test-results/
         retention-days: 7
 
   redis-provider-behavior:
@@ -120,8 +131,22 @@ jobs:
     - name: Run real Redis provider behavior tests
       env:
         CFMS_TEST_REDIS_URL: "redis://127.0.0.1:6379/0"
-      run: uv run --locked pytest tests/providers/test_redis_lua_integration.py -q
+      run: |
+        test -n "$CFMS_TEST_REDIS_URL"
+        uv run --locked pytest tests/providers/test_redis_lua_integration.py -q --junitxml=test-results/redis.xml --durations=25
       timeout-minutes: 5
+
+    - name: Require executed Redis behavior tests
+      run: |
+        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/redis.xml').findall('.//testcase'); assert cases, 'No Redis tests executed'; assert all(case.find('skipped') is None for case in cases), 'Redis tests unexpectedly skipped'"
+
+    - name: Upload Redis test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: redis-test-results
+        path: test-results/
+        retention-days: 7
 
   mysql-database-migration:
     runs-on: ubuntu-26.04
@@ -167,11 +192,21 @@ jobs:
       env:
         CFMS_TEST_MYSQL_URL: "mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_migration?charset=utf8mb4"
       run: |
-        uv run --locked pytest tests/scheduling/test_engine_shared_database.py -q
-        uv run --locked pytest tests/domains/documents/test_upload_cleanup_mysql.py -q
-        uv run --locked pytest tests/domains/documents/test_rate_limits_mysql.py -q
-        uv run --locked pytest tests/maintenance/database/test_mysql.py -q
+        test -n "$CFMS_TEST_MYSQL_URL"
+        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database tests/domains/documents/test_upload_cleanup_mysql.py tests/domains/documents/test_rate_limits_mysql.py tests/maintenance/database/test_mysql.py -k mysql -q --junitxml=test-results/mysql.xml --durations=25
       timeout-minutes: 10
+
+    - name: Require executed MySQL integration tests
+      run: |
+        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/mysql.xml').findall('.//testcase'); assert cases, 'No MySQL tests executed'; assert all(case.find('skipped') is None for case in cases), 'MySQL tests unexpectedly skipped'"
+
+    - name: Upload MySQL test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: mysql-test-results-${{ matrix.mysql-version }}
+        path: test-results/
+        retention-days: 7
 
   postgresql-scheduling-concurrency:
     runs-on: ubuntu-26.04
@@ -211,8 +246,22 @@ jobs:
     - name: Run PostgreSQL scheduling concurrency tests
       env:
         CFMS_TEST_POSTGRESQL_URL: "postgresql+psycopg2://cfms:cfms-test-password@127.0.0.1:5432/cfms_scheduling"
-      run: uv run --locked pytest tests/scheduling/test_engine_shared_database.py -q
+      run: |
+        test -n "$CFMS_TEST_POSTGRESQL_URL"
+        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database -k postgresql -q --junitxml=test-results/postgresql.xml --durations=25
       timeout-minutes: 10
+
+    - name: Require executed PostgreSQL concurrency tests
+      run: |
+        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/postgresql.xml').findall('.//testcase'); assert cases, 'No PostgreSQL tests executed'; assert all(case.find('skipped') is None for case in cases), 'PostgreSQL tests unexpectedly skipped'"
+
+    - name: Upload PostgreSQL test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: postgresql-test-results
+        path: test-results/
+        retention-days: 7
 
   release-bundle-smoke:
     runs-on: ${{ matrix.os }}

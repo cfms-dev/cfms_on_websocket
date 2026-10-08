@@ -14,13 +14,14 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.integration
-def test_record_ip_account_refreshes_row_created_after_snapshot():
+def test_record_ip_account_refreshes_row_created_after_snapshot(request):
     from include.database.models.operations import RiskIPAccount
     from include.domains.security.guards.rate_limits import record_ip_account
 
     engine = create_engine(
         os.environ["CFMS_TEST_MYSQL_URL"], isolation_level="REPEATABLE READ"
     )
+    request.addfinalizer(engine.dispose)
     RiskIPAccount.__table__.drop(engine, checkfirst=True)
     RiskIPAccount.__table__.create(engine)
     session_factory = sessionmaker(bind=engine)
@@ -47,4 +48,3 @@ def test_record_ip_account_refreshes_row_created_after_snapshot():
             assert rows[0].last_attempt == 2.0
     finally:
         RiskIPAccount.__table__.drop(engine, checkfirst=True)
-        engine.dispose()

@@ -31,8 +31,11 @@ pytestmark = [
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_unversioned_mysql_schema_is_rejected_without_stamping(backup_context) -> None:
+def test_unversioned_mysql_schema_is_rejected_without_stamping(
+    backup_context, request
+) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
     try:
         backup_context.Base.metadata.create_all(mysql_engine)
@@ -45,11 +48,11 @@ def test_unversioned_mysql_schema_is_rejected_without_stamping(backup_context) -
             assert MigrationContext.configure(connection).get_current_revision() is None
     finally:
         _clear_mysql_database(mysql_engine)
-        mysql_engine.dispose()
 
 
-def test_document_lookup_indexes_round_trip_on_mysql(backup_context) -> None:
+def test_document_lookup_indexes_round_trip_on_mysql(backup_context, request) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
     config = Config(_PROJECT_ROOT / "src" / "alembic.ini")
     scripts = _script_directory()
@@ -114,11 +117,11 @@ def test_document_lookup_indexes_round_trip_on_mysql(backup_context) -> None:
                 }
     finally:
         _clear_mysql_database(mysql_engine)
-        mysql_engine.dispose()
 
 
-def test_system_schedule_revision_round_trips_on_mysql(backup_context) -> None:
+def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
     config = Config(_PROJECT_ROOT / "src" / "alembic.ini")
     scripts = _script_directory()
@@ -202,7 +205,6 @@ def test_system_schedule_revision_round_trips_on_mysql(backup_context) -> None:
             ).one() == (None, None)
     finally:
         _clear_mysql_database(mysql_engine)
-        mysql_engine.dispose()
 
 
 @pytest.mark.parametrize("direction", ["sqlite-to-mysql", "mysql-to-sqlite"])
@@ -210,13 +212,16 @@ def test_database_migration_round_trip_with_supported_mysql_lts(
     backup_context,
     tmp_path,
     direction,
+    request,
 ) -> None:
     base = backup_context.Base
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
     sqlite_engine = create_database_engine(
         {"type": "sqlite", "file": str(tmp_path / "migration.db")}
     )
+    request.addfinalizer(sqlite_engine.dispose)
     scripts = _script_directory()
     head = scripts.get_current_head()
     assert head is not None
@@ -263,9 +268,7 @@ def test_database_migration_round_trip_with_supported_mysql_lts(
             assert inserted.inserted_primary_key[0] > 3
             assert MigrationContext.configure(connection).get_current_heads() == (head,)
     finally:
-        sqlite_engine.dispose()
         _clear_mysql_database(mysql_engine)
-        mysql_engine.dispose()
 
 
 def _clear_mysql_database(mysql_engine) -> None:
