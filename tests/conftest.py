@@ -13,16 +13,12 @@ import pytest_asyncio
 
 from include.config import paths
 from tests.support.client import CFMSTestClient
-from tests.support.config import (
-    ServerTestSettings,
-    isolated_test_runtime,
-)
+from tests.support.config import ServerTestSettings, isolated_test_runtime
 from tests.support.server import start_server, stop_server
 from tests.support.utils import assert_success
 
 pytest_plugins = ("tests.support.collection",)
 
-_TEST_CONFIG_MANAGER = pytest.StashKey[ExitStack]()
 _TEST_SERVER_SETTINGS = pytest.StashKey[ServerTestSettings]()
 
 
@@ -37,9 +33,13 @@ def _close_imported_runtime() -> None:
             database_module.engine.dispose()
 
 
-@pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
+def pytest_plugin_registered(plugin: object) -> None:
+    if not isinstance(plugin, pytest.Config):
+        return
+
+    # This historic hook runs when the root conftest is registered, before children.
     manager = ExitStack()
+    plugin.add_cleanup(manager.close)
     try:
         settings = manager.enter_context(isolated_test_runtime())
         patch = pytest.MonkeyPatch()
@@ -50,25 +50,10 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
             paths, "EXTENSION_ROOT", settings.src_dir / "include" / "extensions"
         )
         manager.callback(_close_imported_runtime)
-        session.config.stash[_TEST_CONFIG_MANAGER] = manager
-        session.config.stash[_TEST_SERVER_SETTINGS] = settings
-        yield
+        plugin.stash[_TEST_SERVER_SETTINGS] = settings
     except BaseException:
         manager.close()
         raise
-
-
-@pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_sessionfinish(
-    session: pytest.Session,
-    exitstatus: int | pytest.ExitCode,
-) -> Generator[None]:
-    try:
-        yield
-    finally:
-        manager = session.config.stash.get(_TEST_CONFIG_MANAGER, None)
-        if manager is not None:
-            manager.close()
 
 
 @pytest.fixture(scope="session")

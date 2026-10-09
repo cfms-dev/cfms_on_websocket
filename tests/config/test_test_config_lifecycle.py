@@ -1,4 +1,7 @@
 import os
+import subprocess
+import sys
+from pathlib import Path
 from shutil import copyfile
 
 import pytest
@@ -6,6 +9,7 @@ from tomlkit import parse
 
 from include.config import paths
 from tests.support.config import (
+    PROJECT_ROOT,
     SOURCE_ROOT,
     isolated_test_runtime,
     managed_test_config,
@@ -13,6 +17,63 @@ from tests.support.config import (
 )
 
 pytestmark = pytest.mark.component
+
+
+@pytest.mark.parametrize("fail_import", [False, True])
+def test_runtime_is_ready_before_initial_conftest_import_and_cleaned_up(
+    tmp_path, fail_import
+):
+    copyfile(PROJECT_ROOT / "tests/conftest.py", tmp_path / "conftest.py")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    runtime_record = tmp_path / "runtime.txt"
+    conftest = (
+        "from pathlib import Path\n"
+        "from include.config import paths\n"
+        "from tests.support.config import SOURCE_ROOT\n"
+        "assert paths.EXECUTABLE_ABSPATH != SOURCE_ROOT\n"
+        "from include.database.models import User\n"
+        f"Path({str(runtime_record)!r}).write_text("
+        "str(paths.EXECUTABLE_ABSPATH), encoding='utf-8')\n"
+    )
+    if fail_import:
+        conftest += "raise RuntimeError('initial conftest failure')\n"
+    (nested / "conftest.py").write_text(conftest, encoding="utf-8")
+    (nested / "test_probe.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.component\n"
+        "def test_probe(protected_test_config):\n"
+        "    assert protected_test_config.config_path.is_file()\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-c",
+            str(PROJECT_ROOT / "pytest.ini"),
+            str(nested),
+            "-q",
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == (4 if fail_import else 0), output
+    if fail_import:
+        assert "initial conftest failure" in output
+    else:
+        assert "1 passed" in output
+    assert runtime_record.is_file(), output
+    runtime = Path(runtime_record.read_text(encoding="utf-8"))
+    assert runtime != SOURCE_ROOT
+    assert not runtime.parent.exists()
 
 
 def _copy_config_sample(src_dir):
