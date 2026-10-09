@@ -51,7 +51,7 @@ permissions:
   contents: read
 
 env:
-  PRIMARY_PYTHON_VERSION: "3.15.0-rc.2"
+  PRIMARY_PYTHON_VERSION: "3.15"
 
 concurrency:
   group: performance-${{ github.repository }}-${{ inputs.performance_runner_label }}
