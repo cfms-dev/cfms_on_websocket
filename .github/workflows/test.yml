@@ -25,7 +25,7 @@ on:
   workflow_call:
 
 env:
-  PRIMARY_PYTHON_VERSION: "3.15.0-rc.2"
+  PRIMARY_PYTHON_VERSION: "3.15"
 
 jobs:
   test:
@@ -33,7 +33,7 @@ jobs:
     
     strategy:
       matrix:
-        python-version: &python-versions ["3.15.0-rc.2"]
+        python-version: &python-versions ["3.15"]
     
     steps:
     - uses: actions/checkout@v7
