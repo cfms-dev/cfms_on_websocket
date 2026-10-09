@@ -1,29 +1,11 @@
-"""
-Unit tests for centralized file reference counting.
+"""File reference counts against disposable SQLite databases.
 
-Tests cover:
-  - count_file_references(): reflected-FK based counting across multiple tables
-  - CASCADE FK exclusion (file_tasks should not be counted)
-  - QUERY_CHUNK_SIZE chunking correctness
-  - The "total minus excluded" pattern used by _batch_count_other_revisions
-  - Cache isolation across different engines
-
-These tests are fully self-contained: they use an in-memory SQLite database
-with mirror models that replicate the production FK structure, so they do NOT
-require a running server or config.toml.
-
-NOTE: seed data is *committed* (not merely flushed) before counting because
-``count_file_references`` uses reflected Table objects from a separate
-``MetaData`` instance.  Reflected-table queries may open a different
-connection than the Session's ORM connection, so uncommitted data is
-invisible to them.  In production this is not a problem because references
-being counted were committed in earlier transactions.
+A minimal schema exercises reflected foreign keys and cache isolation. The
+production schema verifies batch_count_other_revisions exclusions, references
+from other domains, and parameter chunk boundaries.
 """
 
-import sys
 import warnings
-from itertools import batched
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -33,31 +15,26 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Text,
-    create_engine,
-    func,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
     Session,
     mapped_column,
-    sessionmaker,
 )
 
-# ---------------------------------------------------------------------------
-# Make ``include`` importable without the full project config.
-# file_references.py -> include.config.constants -> include.config.version (no config needed).
-# ---------------------------------------------------------------------------
-_src = str(Path(__file__).resolve().parents[3] / "src")
-if _src not in sys.path:
-    sys.path.insert(0, _src)
-
-from include.config.constants import MAX_PARAM_SIZE, QUERY_CHUNK_SIZE  # noqa: E402
-from include.domains.documents.queries.file_references import (  # noqa: E402
+from include.config.constants import MAX_PARAM_SIZE, QUERY_CHUNK_SIZE
+from include.database import models
+from include.database.session import Base
+from include.domains.documents.queries.file_references import (
     _clear_file_references_cache,
-    _get_file_references,
     count_file_references,
 )
+from include.domains.documents.queries.revisions import (
+    batch_count_other_revisions,
+)
+
+pytestmark = pytest.mark.component
 
 # ========================== Mirror ORM models ==============================
 # These replicate ONLY the FK structure relevant to file reference counting.
@@ -121,24 +98,23 @@ class MFileTask(_Base):
 # =========================== Pytest fixtures ===============================
 
 
-@pytest.fixture()
-def engine():
+@pytest.fixture
+def engine(sqlite_engine_factory):
     """Create a fresh in-memory SQLite engine for each test."""
     _clear_file_references_cache()
-    eng = create_engine("sqlite:///:memory:")
-    _Base.metadata.create_all(eng)
-    yield eng
-    eng.dispose()
-    _clear_file_references_cache()
+    eng = sqlite_engine_factory(":memory:")
+    try:
+        _Base.metadata.create_all(eng)
+        yield eng
+    finally:
+        _clear_file_references_cache()
 
 
-@pytest.fixture()
+@pytest.fixture
 def session(engine):
     """Provide a session bound to the in-memory engine."""
-    factory = sessionmaker(bind=engine)
-    sess = factory()
-    yield sess
-    sess.close()
+    with Session(engine) as sess:
+        yield sess
 
 
 # ======================== Helper: seed data ================================
@@ -147,7 +123,10 @@ def session(engine):
 def _seed(session: Session, *objects) -> None:
     """Add objects to the session, commit, then clear the reflection cache
     so ``count_file_references`` re-reflects the (now visible) schema."""
-    session.add_all(objects)
+    parents = [obj for obj in objects if isinstance(obj, MFile | MDocument)]
+    session.add_all(parents)
+    session.flush()
+    session.add_all(obj for obj in objects if not isinstance(obj, MFile | MDocument))
     session.commit()
     _clear_file_references_cache()
 
@@ -342,44 +321,54 @@ class TestCountFileReferences:
 
     # ---------- Cache isolation --------------------------------------------
 
-    def test_cache_isolation_across_engines(self, tmp_path):
-        """Different engines (different URLs) should each get their own
-        reflected FK list."""
+    def test_cache_isolation_across_engines(self, tmp_path, sqlite_engine_factory):
+        first = sqlite_engine_factory(tmp_path / "first.db")
+        second = sqlite_engine_factory(tmp_path / "second.db")
+        _clear_file_references_cache()
+        try:
+            for engine in (first, second):
+                _Base.metadata.create_all(engine)
+                with engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        "INSERT INTO files (id, path, created_time) VALUES ('f1', 'file', 0)"
+                    )
+                    connection.exec_driver_sql(
+                        "INSERT INTO users (username, avatar_id) VALUES ('alice', 'f1')"
+                    )
+            with second.begin() as connection:
+                connection.exec_driver_sql(
+                    "CREATE TABLE extra_refs (id INTEGER PRIMARY KEY, "
+                    "file_id VARCHAR(255) REFERENCES files(id))"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO extra_refs (id, file_id) VALUES (1, 'f1')"
+                )
+
+            with Session(first) as session:
+                first_counts = count_file_references(session, ["f1"])
+            with Session(second) as session:
+                second_counts = count_file_references(session, ["f1"])
+
+            assert first_counts == {"f1": 1}
+            assert second_counts == {"f1": 2}
+        finally:
+            _clear_file_references_cache()
+
+    def test_cache_reset_discovers_new_reference_tables(self, engine, session):
+        _seed(session, _file("f1"), _user("alice", avatar_id="f1"))
+        assert count_file_references(session, ["f1"]) == {"f1": 1}
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE extra_refs (id INTEGER PRIMARY KEY, "
+                "file_id VARCHAR(255) REFERENCES files(id))"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO extra_refs (id, file_id) VALUES (1, 'f1')"
+            )
+
         _clear_file_references_cache()
 
-        db1 = tmp_path / "db1.sqlite"
-        db2 = tmp_path / "db2.sqlite"
-        eng1 = create_engine(f"sqlite:///{db1}")
-        eng2 = create_engine(f"sqlite:///{db2}")
-        _Base.metadata.create_all(eng1)
-        _Base.metadata.create_all(eng2)
-
-        refs1 = _get_file_references(eng1)
-        refs2 = _get_file_references(eng2)
-
-        # Both should have results and be independent objects.
-        assert len(refs1) > 0
-        assert len(refs2) > 0
-        assert refs1 is not refs2
-
-        eng1.dispose()
-        eng2.dispose()
-        _clear_file_references_cache()
-
-    def test_cache_cleared(self):
-        """_clear_file_references_cache should empty the cache."""
-        _clear_file_references_cache()
-
-        eng = create_engine("sqlite:///:memory:")
-        _Base.metadata.create_all(eng)
-        _get_file_references(eng)
-
-        _clear_file_references_cache()
-        from include.domains.documents.queries.file_references import _CACHED_REFS
-
-        assert len(_CACHED_REFS) == 0
-
-        eng.dispose()
+        assert count_file_references(session, ["f1"]) == {"f1": 2}
 
     def test_unrelated_expression_index_does_not_warn(self, engine):
         with engine.begin() as connection:
@@ -392,11 +381,11 @@ class TestCountFileReferences:
             )
 
         _clear_file_references_cache()
-        with warnings.catch_warnings():
+        with warnings.catch_warnings(), Session(engine) as session:
             warnings.simplefilter("error")
-            refs = _get_file_references(engine)
+            counts = count_file_references(session, ["missing"])
 
-        assert refs
+        assert counts == {}
 
     # ---------- Return type guarantees ------------------------------------
 
@@ -409,155 +398,122 @@ class TestCountFileReferences:
             assert type(v) is int
 
 
-# ========= _batch_count_other_revisions algorithm pattern =================
-# The actual function lives in entity.py and has deep import dependencies
-# (config, handler, etc.) so we test the ALGORITHM here: total_refs minus
-# excluded_refs should yield the "other" reference count.
-# =========================================================================
+@pytest.fixture
+def production_reference_session(tmp_path, sqlite_engine_factory):
+    engine = sqlite_engine_factory(tmp_path / "production-references.db")
+    try:
+        Base.metadata.create_all(engine)
+        _clear_file_references_cache()
+        with Session(engine) as session:
+            session.add(models.Folder(id="/", name="/", inherit=False))
+            session.commit()
+            yield session
+    finally:
+        _clear_file_references_cache()
 
 
-class TestBatchCountOtherRevisionsPattern:
-    """Tests for the 'total minus excluded' pattern used by
-    _batch_count_other_revisions."""
+def _seed_other_references(session, file_ids, revisions, *, avatars=(), tasks=()):
+    session.add_all(
+        models.File(id=file_id, path=f"uploads/{file_id}", active=True)
+        for file_id in file_ids
+    )
+    document_ids = {document_id for document_id, _file_id in revisions}
+    session.add_all(
+        models.Document(id=document_id, title=document_id, inherit=False)
+        for document_id in document_ids
+    )
+    session.flush()
+    session.add_all(
+        models.DocumentRevision(document_id=document_id, file_id=file_id)
+        for document_id, file_id in revisions
+    )
+    session.add_all(
+        models.User(
+            username=username, pass_hash="hash", created_time=0, avatar_id=file_id
+        )
+        for username, file_id in avatars
+    )
+    session.add_all(
+        models.FileTask(
+            id=task_id,
+            file_id=file_id,
+            mode=1,
+            status=0,
+            start_time=0,
+            end_time=1000,
+        )
+        for task_id, file_id in tasks
+    )
+    session.commit()
 
-    @staticmethod
-    def _count_other_refs(
-        session: Session,
-        file_ids: list[str],
-        exclude_doc_ids: list[str],
-    ) -> dict:
-        """Local reimplementation of _batch_count_other_revisions's algorithm.
 
-        Uses count_file_references for total, then subtracts the references
-        from the excluded documents.
-        """
-        if not file_ids:
-            return {}
+class TestBatchCountOtherRevisions:
+    def test_excluded_doc_does_not_block_deletion(self, production_reference_session):
+        session = production_reference_session
+        _seed_other_references(session, ["f1"], [("d_excluded", "f1")])
 
-        total_refs = count_file_references(session, file_ids)
+        result = batch_count_other_revisions(session, ["f1"], ["d_excluded"])
 
-        # Count references from excluded documents (DocumentRevision only).
-        exclude_chunk_size = max(1, MAX_PARAM_SIZE - QUERY_CHUNK_SIZE)
-        excluded_counts: dict = {}
-        for f_chunk in batched(file_ids, QUERY_CHUNK_SIZE):
-            for e_chunk in batched(exclude_doc_ids, exclude_chunk_size):
-                rows = (
-                    session.query(
-                        MDocumentRevision.file_id,
-                        func.count(MDocumentRevision.id),
-                    )
-                    .filter(MDocumentRevision.file_id.in_(list(f_chunk)))
-                    .filter(MDocumentRevision.document_id.in_(list(e_chunk)))
-                    .group_by(MDocumentRevision.file_id)
-                    .all()
-                )
-                for file_id, count in rows:
-                    excluded_counts[file_id] = excluded_counts.get(file_id, 0) + count
+        assert result == {"f1": 0}
 
-        result = {}
-        for fid in file_ids:
-            total = total_refs.get(fid, 0)
-            excluded = excluded_counts.get(fid, 0)
-            result[fid] = max(0, total - excluded)
-        return result
-
-    def test_excluded_doc_does_not_block_deletion(self, session):
-        """A file referenced ONLY by an excluded document should have
-        other_count=0, meaning it is safe to delete."""
-        _seed(session, _file("f1"), _doc("d_excluded"), _rev("d_excluded", "f1"))
-
-        result = self._count_other_refs(session, ["f1"], ["d_excluded"])
-        assert result["f1"] == 0  # safe to delete
-
-    def test_other_doc_blocks_deletion(self, session):
-        """A file referenced by a non-excluded document should have
-        other_count > 0, blocking deletion."""
-        _seed(
-            session,
-            _file("f1"),
-            _doc("d_excluded"),
-            _doc("d_other"),
-            _rev("d_excluded", "f1"),
-            _rev("d_other", "f1"),
+    def test_other_doc_blocks_deletion(self, production_reference_session):
+        session = production_reference_session
+        _seed_other_references(
+            session, ["f1"], [("d_excluded", "f1"), ("d_other", "f1")]
         )
 
-        result = self._count_other_refs(session, ["f1"], ["d_excluded"])
-        assert result["f1"] == 1  # d_other still references it
+        result = batch_count_other_revisions(session, ["f1"], ["d_excluded"])
 
-    def test_avatar_blocks_deletion(self, session):
-        """A file used as User.avatar_id should block deletion even if
-        all DocumentRevision references are excluded."""
-        _seed(
-            session,
-            _file("f1"),
-            _doc("d_excluded"),
-            _rev("d_excluded", "f1"),
-            _user("alice", avatar_id="f1"),
+        assert result == {"f1": 1}
+
+    def test_avatar_blocks_deletion(self, production_reference_session):
+        session = production_reference_session
+        _seed_other_references(
+            session, ["f1"], [("d_excluded", "f1")], avatars=[("alice", "f1")]
         )
 
-        result = self._count_other_refs(session, ["f1"], ["d_excluded"])
-        # total = 2 (1 revision + 1 avatar), excluded = 1 → other = 1
-        assert result["f1"] == 1  # avatar blocks deletion
+        result = batch_count_other_revisions(session, ["f1"], ["d_excluded"])
 
-    def test_cascade_task_does_not_block(self, session):
-        """file_tasks (CASCADE FK) should NOT block deletion, even if
-        many tasks exist for the file."""
-        _seed(
+        assert result == {"f1": 1}
+
+    def test_cascade_task_does_not_block(self, production_reference_session):
+        session = production_reference_session
+        _seed_other_references(
             session,
-            _file("f1"),
-            _doc("d_excluded"),
-            _rev("d_excluded", "f1"),
-            _task("t1", "f1"),
-            _task("t2", "f1"),
+            ["f1"],
+            [("d_excluded", "f1")],
+            tasks=[("t1", "f1"), ("t2", "f1")],
         )
 
-        result = self._count_other_refs(session, ["f1"], ["d_excluded"])
-        # total = 1 (revision only, tasks excluded), excluded = 1 → other = 0
-        assert result["f1"] == 0  # safe to delete
+        result = batch_count_other_revisions(session, ["f1"], ["d_excluded"])
 
-    def test_multi_chunk_file_ids(self, session):
-        """Verify correct results when file_ids spans multiple chunks,
-        with a mix of deletable and non-deletable files."""
-        n = QUERY_CHUNK_SIZE + 20
+        assert result == {"f1": 0}
 
-        objs: list[Any] = [_doc("d_excluded"), _doc("d_other")]
+    def test_multi_chunk_file_ids(self, production_reference_session):
+        session = production_reference_session
+        count = QUERY_CHUNK_SIZE + 20
+        deletable_ids = [f"del_{index:04d}" for index in range(count // 2)]
+        kept_ids = [f"kept_{index:04d}" for index in range(count // 2, count)]
+        file_ids = deletable_ids + kept_ids
+        revisions = [("d_excluded", file_id) for file_id in file_ids]
+        revisions.extend(("d_other", file_id) for file_id in kept_ids)
+        _seed_other_references(session, file_ids, revisions)
 
-        # First half: referenced only by excluded doc → should be deletable
-        deletable_ids = [f"del_{i:04d}" for i in range(n // 2)]
-        for fid in deletable_ids:
-            objs.extend([_file(fid), _rev("d_excluded", fid)])
+        result = batch_count_other_revisions(session, file_ids, ["d_excluded"])
 
-        # Second half: also referenced by d_other → should NOT be deletable
-        kept_ids = [f"kept_{i:04d}" for i in range(n // 2, n)]
-        for fid in kept_ids:
-            objs.extend([_file(fid), _rev("d_excluded", fid), _rev("d_other", fid)])
+        assert result == {
+            **dict.fromkeys(deletable_ids, 0),
+            **dict.fromkeys(kept_ids, 1),
+        }
 
-        _seed(session, *objs)
+    def test_multi_chunk_exclude_doc_ids(self, production_reference_session):
+        session = production_reference_session
+        count = MAX_PARAM_SIZE - QUERY_CHUNK_SIZE + 10
+        document_ids = [f"d_excl_{index:04d}" for index in range(count)]
+        _seed_other_references(
+            session, ["f1"], [(document_id, "f1") for document_id in document_ids]
+        )
 
-        all_ids = deletable_ids + kept_ids
-        result = self._count_other_refs(session, all_ids, ["d_excluded"])
+        result = batch_count_other_revisions(session, ["f1"], document_ids)
 
-        for fid in deletable_ids:
-            assert result[fid] == 0, (
-                f"{fid} should be deletable but count={result[fid]}"
-            )
-        for fid in kept_ids:
-            assert result[fid] == 1, f"{fid} should be kept but count={result[fid]}"
-
-    def test_multi_chunk_exclude_doc_ids(self, session):
-        """Verify correct results when exclude_doc_ids exceeds the
-        exclude chunk size (MAX_PARAM_SIZE - QUERY_CHUNK_SIZE)."""
-        exclude_chunk = MAX_PARAM_SIZE - QUERY_CHUNK_SIZE
-        n_docs = exclude_chunk + 10  # force at least 2 chunks
-
-        objs: list[Any] = [_file("f1")]
-        doc_ids = []
-        for i in range(n_docs):
-            did = f"d_excl_{i:04d}"
-            doc_ids.append(did)
-            objs.extend([_doc(did), _rev(did, "f1")])
-        _seed(session, *objs)
-
-        result = self._count_other_refs(session, ["f1"], doc_ids)
-        # All references are from excluded docs → safe to delete
-        assert result["f1"] == 0
+        assert result == {"f1": 0}

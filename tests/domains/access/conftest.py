@@ -1,4 +1,4 @@
-from tests.domains.access.test_compiled_access_rules_matching import (
+from tests.domains.access.support import (
     access_rule_session,
 )
 

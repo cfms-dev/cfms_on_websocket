@@ -16,6 +16,7 @@ def _as_bytes(data: Buffer) -> bytes:
         return byte_view.tobytes()
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     "data",
     [bytearray(b"bytearray"), memoryview(b"memoryview"), array("I", [42])],
@@ -31,6 +32,7 @@ def test_local_file_object_writes_buffers(tmp_path, data: Buffer):
     assert path.read_bytes() == expected
 
 
+@pytest.mark.unit
 def test_s3_file_object_writes_buffers():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -53,6 +55,7 @@ def test_s3_file_object_writes_buffers():
     assert client.body_type is bytes
 
 
+@pytest.mark.unit
 def test_s3_read_file_object_opens_lazily_and_closes_body():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -80,58 +83,114 @@ def test_s3_read_file_object_opens_lazily_and_closes_body():
     assert client.body.closed is True
 
 
-def test_s3_read_file_object_uses_ranges_for_seeks():
+class _RangeClient:
+    def __init__(self):
+        self.head_request = None
+        self.get_requests = []
+        self.bodies = []
+
+    def head_object(self, **kwargs):
+        self.head_request = kwargs
+        return {"ContentLength": 10}
+
+    def get_object(self, **kwargs):
+        self.get_requests.append(kwargs)
+        start = int(kwargs.get("Range", "bytes=0-")[6:-1])
+        body = BytesIO(b"abcdefghij"[start:])
+        self.bodies.append(body)
+        response = {"Body": body, "ContentLength": 10 - start}
+        if start:
+            response["ContentRange"] = f"bytes {start}-9/10"
+        return response
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("initial_position", "offset", "whence", "position", "data", "request_range"),
+    [
+        pytest.param(0, 4, os.SEEK_SET, 4, b"efg", "bytes=4-", id="absolute"),
+        pytest.param(4, 0, os.SEEK_SET, 0, b"ab", None, id="rewind"),
+    ],
+)
+def test_s3_seek_reads_from_requested_position(
+    initial_position, offset, whence, position, data, request_range
+):
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
-
-    class FakeClient:
-        def __init__(self) -> None:
-            self.head_requests = []
-            self.get_requests = []
-            self.bodies = []
-
-        def head_object(self, **kwargs):
-            self.head_requests.append(kwargs)
-            return {"ContentLength": 10}
-
-        def get_object(self, **kwargs):
-            self.get_requests.append(kwargs)
-            start = int(kwargs.get("Range", "bytes=0-")[6:-1])
-            body = BytesIO(b"abcdefghij"[start:])
-            self.bodies.append(body)
-            response = {"Body": body, "ContentLength": 10 - start}
-            if start:
-                response["ContentRange"] = f"bytes {start}-9/10"
-            return response
-
-    client = FakeClient()
+    client = _RangeClient()
     with s3_module.S3FileObject(client, "bucket", "key", "rb") as file:
         assert file.seekable() is True
-        with pytest.raises(ValueError, match="negative seek position"):
-            file.seek(-1)
-        with pytest.raises(ValueError, match="invalid whence"):
-            file.seek(0, 99)
-        assert file.seek(4) == 4
-        assert file.read(3) == b"efg"
-        assert file.tell() == 7
-        assert file.seek(-2, os.SEEK_END) == 8
-        assert file.read() == b"ij"
-        requests_at_eof = len(client.get_requests)
-        assert file.seek(10) == 10
-        assert file.read() == b""
-        assert len(client.get_requests) == requests_at_eof
-        assert file.seek(0) == 0
-        assert file.read(2) == b"ab"
+        if initial_position:
+            file.seek(initial_position)
+            file.read(1)
 
-    assert client.head_requests == [{"Bucket": "bucket", "Key": "key"}]
-    assert [request.get("Range") for request in client.get_requests] == [
-        "bytes=4-",
-        "bytes=8-",
-        None,
-    ]
+        actual_position = file.seek(offset, whence)
+        actual_data = file.read(len(data))
+
+        assert actual_position == position
+        assert actual_data == data
+        assert file.tell() == position + len(data)
+        assert client.get_requests[-1].get("Range") == request_range
+
     assert all(body.closed for body in client.bodies)
 
 
+@pytest.mark.unit
+def test_s3_seek_from_end_reads_remaining_bytes_and_addresses_requested_object():
+    pytest.importorskip("boto3")
+    s3_module = import_module("include.providers.storage.s3")
+    client = _RangeClient()
+    with s3_module.S3FileObject(client, "bucket", "key", "rb") as file:
+        position = file.seek(-2, os.SEEK_END)
+        data = file.read()
+
+        assert position == 8
+        assert data == b"ij"
+        assert file.tell() == 10
+        assert client.head_request == {"Bucket": "bucket", "Key": "key"}
+        assert client.get_requests[-1] == {
+            "Bucket": "bucket",
+            "Key": "key",
+            "Range": "bytes=8-",
+        }
+
+    assert all(body.closed for body in client.bodies)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("offset", "whence", "message"),
+    [
+        pytest.param(-1, os.SEEK_SET, "negative seek position", id="negative-position"),
+        pytest.param(0, 99, "invalid whence", id="invalid-whence"),
+    ],
+)
+def test_s3_seek_rejects_invalid_position(offset, whence, message):
+    pytest.importorskip("boto3")
+    s3_module = import_module("include.providers.storage.s3")
+    with (
+        s3_module.S3FileObject(_RangeClient(), "bucket", "key", "rb") as file,
+        pytest.raises(ValueError, match=message),
+    ):
+        file.seek(offset, whence)
+
+
+@pytest.mark.unit
+def test_s3_read_at_end_does_not_request_a_range():
+    pytest.importorskip("boto3")
+    s3_module = import_module("include.providers.storage.s3")
+    client = _RangeClient()
+    with s3_module.S3FileObject(client, "bucket", "key", "rb") as file:
+        file.seek(10)
+
+        data = file.read()
+
+        assert data == b""
+        assert file.tell() == 10
+        assert client.get_requests == []
+
+
+@pytest.mark.unit
 def test_s3_read_file_object_rejects_invalid_range_response():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -154,6 +213,7 @@ def test_s3_read_file_object_rejects_invalid_range_response():
     assert client.body.closed is True
 
 
+@pytest.mark.unit
 def test_s3_storage_provider_uses_sdk_defaults_and_tuned_client_config(monkeypatch):
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -189,6 +249,7 @@ def test_s3_storage_provider_uses_sdk_defaults_and_tuned_client_config(monkeypat
     assert config.s3 == {"addressing_style": "path"}
 
 
+@pytest.mark.unit
 def test_provider_bootstrap_uses_validated_s3_policy_defaults(monkeypatch):
     pytest.importorskip("boto3")
     bootstrap_module = import_module("include.providers.bootstrap")
@@ -238,6 +299,7 @@ def test_provider_bootstrap_uses_validated_s3_policy_defaults(monkeypatch):
     }
 
 
+@pytest.mark.unit
 def test_s3_storage_provider_passes_explicit_temporary_credentials(monkeypatch):
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -262,6 +324,7 @@ def test_s3_storage_provider_passes_explicit_temporary_credentials(monkeypatch):
     assert captured["aws_session_token"] == "token"
 
 
+@pytest.mark.unit
 def test_s3_storage_provider_rejects_partial_explicit_credentials(monkeypatch):
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -286,6 +349,7 @@ def _s3_client_error(s3_module, status: int, code: str):
     )
 
 
+@pytest.mark.unit
 def test_s3_read_file_object_maps_missing_object_to_file_not_found():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -300,8 +364,28 @@ def test_s3_read_file_object_maps_missing_object_to_file_not_found():
         file.read()
 
 
-def test_s3_storage_provider_maps_only_missing_objects_to_absence():
+@pytest.fixture
+def s3_provider_factory(monkeypatch):
     pytest.importorskip("boto3")
+    s3_module = import_module("include.providers.storage.s3")
+
+    def build(client):
+        monkeypatch.setattr(s3_module.boto3, "client", lambda *_args, **_kwargs: client)
+        return s3_module.S3StorageProvider(
+            bucket_name="bucket",
+            endpoint_url=None,
+            aws_access_key_id=None,
+            aws_secret_access_key=None,
+        )
+
+    return build
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["exists", "remove"])
+def test_s3_storage_provider_returns_false_for_missing_object(
+    s3_provider_factory, method
+):
     s3_module = import_module("include.providers.storage.s3")
 
     class MissingClient:
@@ -311,51 +395,63 @@ def test_s3_storage_provider_maps_only_missing_objects_to_absence():
         def delete_object(self, **_kwargs):
             raise _s3_client_error(s3_module, 404, "NoSuchKey")
 
-    provider = object.__new__(s3_module.S3StorageProvider)
-    provider._bucket_name = "bucket"
-    provider._client = MissingClient()
+    provider = s3_provider_factory(MissingClient())
 
-    assert provider.exists("missing") is False
-    assert provider.remove("missing") is False
-    with pytest.raises(FileNotFoundError, match="missing"):
+    assert getattr(provider, method)("missing") is False
+
+
+@pytest.mark.unit
+def test_s3_storage_provider_getsize_raises_for_missing_object(s3_provider_factory):
+    s3_module = import_module("include.providers.storage.s3")
+    error = _s3_client_error(s3_module, 404, "NoSuchKey")
+
+    class MissingClient:
+        def head_object(self, **_kwargs):
+            raise error
+
+    provider = s3_provider_factory(MissingClient())
+
+    with pytest.raises(FileNotFoundError, match="missing") as raised:
         provider.getsize("missing")
 
+    assert raised.value.__cause__ is error
 
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["exists", "remove", "getsize"])
 @pytest.mark.parametrize(
     ("status", "code"),
     [
-        (403, "AccessDenied"),
-        (404, "NoSuchBucket"),
-        (429, "TooManyRequests"),
-        (500, "InternalError"),
+        pytest.param(403, "AccessDenied", id="access-denied"),
+        pytest.param(404, "NoSuchBucket", id="missing-bucket"),
+        pytest.param(429, "TooManyRequests", id="throttled"),
+        pytest.param(500, "InternalError", id="server-failure"),
     ],
 )
-def test_s3_storage_provider_propagates_operational_errors(status, code):
-    pytest.importorskip("boto3")
+def test_s3_storage_provider_propagates_operational_errors(
+    s3_provider_factory, method, status, code
+):
     s3_module = import_module("include.providers.storage.s3")
+    error = _s3_client_error(s3_module, status, code)
 
     class FailingClient:
         def head_object(self, **_kwargs):
-            raise _s3_client_error(s3_module, status, code)
+            raise error
 
         def delete_object(self, **_kwargs):
-            raise _s3_client_error(s3_module, status, code)
+            raise error
 
-    provider = object.__new__(s3_module.S3StorageProvider)
-    provider._bucket_name = "bucket"
-    provider._client = FailingClient()
+    provider = s3_provider_factory(FailingClient())
 
-    with pytest.raises(s3_module.ClientError):
-        provider.exists("file")
-    with pytest.raises(s3_module.ClientError):
-        provider.remove("file")
-    with pytest.raises(s3_module.ClientError):
-        provider.getsize("file")
+    with pytest.raises(s3_module.ClientError, match=code) as raised:
+        getattr(provider, method)("file")
+
+    assert raised.value is error
 
 
-def test_s3_storage_provider_propagates_network_errors():
-    pytest.importorskip("boto3")
-    s3_module = import_module("include.providers.storage.s3")
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["exists", "remove", "getsize"])
+def test_s3_storage_provider_propagates_network_errors(s3_provider_factory, method):
     from botocore.exceptions import EndpointConnectionError
 
     error = EndpointConnectionError(endpoint_url="https://storage.example")
@@ -367,18 +463,15 @@ def test_s3_storage_provider_propagates_network_errors():
         def delete_object(self, **_kwargs):
             raise error
 
-    provider = object.__new__(s3_module.S3StorageProvider)
-    provider._bucket_name = "bucket"
-    provider._client = FailingClient()
+    provider = s3_provider_factory(FailingClient())
 
-    with pytest.raises(EndpointConnectionError):
-        provider.exists("file")
-    with pytest.raises(EndpointConnectionError):
-        provider.remove("file")
-    with pytest.raises(EndpointConnectionError):
-        provider.getsize("file")
+    with pytest.raises(EndpointConnectionError, match=r"storage\.example") as raised:
+        getattr(provider, method)("file")
+
+    assert raised.value is error
 
 
+@pytest.mark.unit
 def test_s3_multipart_file_object_does_not_send_full_sha256_checksum():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -406,6 +499,7 @@ def test_s3_multipart_file_object_does_not_send_full_sha256_checksum():
     assert client.upload_body_types == [bytes, bytes]
 
 
+@pytest.mark.component
 def test_local_resumable_upload_reopens_at_complete_chunk(tmp_path: Path):
     provider = LocalStorageProvider()
     path = tmp_path / "resumable.bin"
@@ -421,6 +515,7 @@ def test_local_resumable_upload_reopens_at_complete_chunk(tmp_path: Path):
     assert path.read_bytes() == b"a" * 512 + b"b" * 512
 
 
+@pytest.mark.unit
 def test_local_resumable_upload_closes_file_when_initialization_fails(
     monkeypatch,
 ) -> None:
@@ -453,6 +548,7 @@ def test_local_resumable_upload_closes_file_when_initialization_fails(
     assert opened_file.closed is True
 
 
+@pytest.mark.unit
 def test_s3_resumable_upload_restores_committed_parts():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")
@@ -539,6 +635,7 @@ def test_s3_resumable_upload_restores_committed_parts():
     assert client.objects["key"] == (b"a" * checkpoint_size + b"b" * chunk_size)
 
 
+@pytest.mark.unit
 def test_s3_resumable_upload_retransmits_unpersisted_remote_parts():
     pytest.importorskip("boto3")
     s3_module = import_module("include.providers.storage.s3")

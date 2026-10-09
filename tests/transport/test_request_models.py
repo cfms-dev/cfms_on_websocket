@@ -1,355 +1,426 @@
-from pathlib import Path
-from shutil import copyfile
+from typing import ClassVar
 
 import pytest
+from pydantic import ValidationError
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from include.config.constants import (
+    DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
+    PAGINATION_MAX_PAGE_SIZE,
+)
+from include.domains.documents.handlers.directories import (
+    RequestCreateDirectoryHandler,
+    RequestRestoreDirectoryHandler,
+)
+from include.domains.documents.handlers.documents import (
+    RequestDownloadFileHandler,
+    RequestGetDocumentHandler,
+    RequestGetDocumentInfoHandler,
+)
+from include.domains.documents.handlers.search import RequestSearchHandler
+from include.domains.identity.handlers.auth import RequestLoginHandler
+from include.domains.identity.handlers.groups import (
+    RequestChangeGroupPermissionsHandler,
+    RequestCreateGroupHandler,
+    RequestRenameGroupHandler,
+)
+from include.domains.identity.handlers.users import (
+    RequestChangeUserPermissionsHandler,
+    RequestCreateUserHandler,
+    RequestListUsersHandler,
+    RequestManageUserStatusHandler,
+    RequestSetPasswdHandler,
+    RequestUpdateUserBlockHandler,
+)
+from include.domains.keyrings.handlers.keyrings import RequestListUserKeysHandler
+from include.transport.request_handler import (
+    REQUEST_UNSET,
+    JsonInteger,
+    NonEmptyString,
+    Omittable,
+    RequestDataModel,
+    RequestHandler,
+    validate_request_handler_models,
+)
 
-
-def _integer_request(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    from include.transport.request_handler import JsonInteger, RequestDataModel
-
-    class IntegerRequest(RequestDataModel):
-        value: JsonInteger
-
-    return IntegerRequest
-
-
-@pytest.mark.parametrize("value", [0, 1, 1.0, -2.0])
-def test_json_integer_accepts_json_schema_integer_values(
-    monkeypatch, tmp_path, value
-) -> None:
-    request_model = _integer_request(monkeypatch, tmp_path)
-
-    assert request_model.model_validate({"value": value}).value == int(value)
-
-
-@pytest.mark.parametrize("value", [True, False, "1", 1.5, None])
-def test_json_integer_rejects_non_integer_values(monkeypatch, tmp_path, value) -> None:
-    from pydantic import ValidationError
-
-    request_model = _integer_request(monkeypatch, tmp_path)
-
-    with pytest.raises(ValidationError):
-        request_model.model_validate({"value": value})
-
-
-def test_request_data_model_is_strict_and_forbids_extra_fields(
-    monkeypatch, tmp_path
-) -> None:
-    from pydantic import ValidationError
-
-    request_model = _integer_request(monkeypatch, tmp_path)
-
-    with pytest.raises(ValidationError) as type_error:
-        request_model.model_validate({"value": "1"})
-    with pytest.raises(ValidationError) as extra_error:
-        request_model.model_validate({"value": 1, "unexpected": True})
-
-    assert type_error.value.errors()[0]["type"] == "int_type"
-    assert extra_error.value.errors()[0]["type"] == "extra_forbidden"
+pytestmark = pytest.mark.unit
 
 
-def test_request_non_empty_string_preserves_whitespace(monkeypatch, tmp_path) -> None:
-    from pydantic import ValidationError
+class IntegerRequest(RequestDataModel):
+    value: JsonInteger
 
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
 
-    from include.transport.request_handler import (
-        NonEmptyString,
-        RequestDataModel,
+class TextRequest(RequestDataModel):
+    value: NonEmptyString
+
+
+class OptionalRequest(RequestDataModel):
+    value: Omittable[str] = REQUEST_UNSET
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(0, 0, id="zero"),
+        pytest.param(1, 1, id="integer"),
+        pytest.param(1.0, 1, id="integral-float"),
+        pytest.param(-2.0, -2, id="negative-integral-float"),
+    ],
+)
+def test_json_integer_accepts_json_schema_integer_values(value, expected):
+    request = IntegerRequest.model_validate({"value": value})
+
+    assert request.value == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(True, id="true"),
+        pytest.param(False, id="false"),
+        pytest.param("1", id="string"),
+        pytest.param(1.5, id="fraction"),
+        pytest.param(None, id="null"),
+    ],
+)
+def test_json_integer_rejects_non_integer_values(value):
+    with pytest.raises(ValidationError, match="value"):
+        IntegerRequest.model_validate({"value": value})
+
+
+@pytest.mark.parametrize(
+    ("offset", "count"),
+    [
+        pytest.param(0, 1, id="minimum"),
+        pytest.param(32767, PAGINATION_MAX_PAGE_SIZE, id="maximum"),
+        pytest.param(32767.0, float(PAGINATION_MAX_PAGE_SIZE), id="integral-floats"),
+    ],
+)
+def test_offset_pagination_request_accepts_protocol_boundaries(offset, count):
+    request = RequestListUsersHandler.request_model.model_validate(
+        {"offset": offset, "count": count}
     )
 
-    class TextRequest(RequestDataModel):
-        value: NonEmptyString
+    assert request.model_dump(exclude_unset=True) == {
+        "offset": int(offset),
+        "count": int(count),
+    }
 
-    assert TextRequest.model_validate({"value": "   "}).value == "   "
-    assert TextRequest.model_validate({"value": "  value  "}).value == "  value  "
-    with pytest.raises(ValidationError):
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("offset", -1, id="negative-offset"),
+        pytest.param("offset", 32768, id="excessive-offset"),
+        pytest.param("offset", True, id="boolean-offset"),
+        pytest.param("offset", "0", id="string-offset"),
+        pytest.param("offset", 1.5, id="fractional-offset"),
+        pytest.param("count", 0, id="zero-count"),
+        pytest.param("count", PAGINATION_MAX_PAGE_SIZE + 1, id="excessive-count"),
+        pytest.param("count", False, id="boolean-count"),
+        pytest.param("count", "1", id="string-count"),
+        pytest.param("count", 1.5, id="fractional-count"),
+    ],
+)
+def test_offset_pagination_request_rejects_invalid_values(field, value):
+    with pytest.raises(ValidationError, match=field):
+        RequestListUsersHandler.request_model.model_validate({field: value})
+
+
+def test_offset_pagination_request_preserves_omitted_values():
+    request = RequestListUsersHandler.request_model.model_validate({})
+
+    assert request.model_dump(exclude_unset=True) == {}
+
+
+def test_request_data_model_forbids_extra_fields():
+    with pytest.raises(ValidationError, match="unexpected") as error:
+        IntegerRequest.model_validate({"value": 1, "unexpected": True})
+
+    assert error.value.errors()[0]["type"] == "extra_forbidden"
+
+
+@pytest.mark.parametrize("value", ["   ", "  value  "], ids=["spaces", "padded"])
+def test_request_non_empty_string_preserves_whitespace(value):
+    request = TextRequest.model_validate({"value": value})
+
+    assert request.value == value
+
+
+def test_request_non_empty_string_rejects_empty_input():
+    with pytest.raises(ValidationError, match="value"):
         TextRequest.model_validate({"value": ""})
 
 
-def test_omittable_field_distinguishes_missing_from_null(monkeypatch, tmp_path) -> None:
-    from pydantic import ValidationError
-
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    from include.transport.request_handler import (
-        REQUEST_UNSET,
-        Omittable,
-        RequestDataModel,
-    )
-
-    class OptionalRequest(RequestDataModel):
-        value: Omittable[str] = REQUEST_UNSET
-
+def test_omittable_field_keeps_missing_value_unset():
     request = OptionalRequest.model_validate({})
-    assert "value" not in request.model_fields_set
 
-    with pytest.raises(ValidationError):
+    assert "value" not in request.model_fields_set
+    assert request.model_dump(exclude_unset=True) == {}
+
+
+def test_omittable_non_nullable_field_rejects_null():
+    with pytest.raises(ValidationError, match="value"):
         OptionalRequest.model_validate({"value": None})
 
 
-def test_identity_request_models_preserve_conditional_and_alias_rules(
-    monkeypatch, tmp_path
-) -> None:
-    from pydantic import ValidationError
-
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    from include.domains.identity.handlers.auth import RequestLoginHandler
-    from include.domains.identity.handlers.groups import RequestRenameGroupHandler
-    from include.domains.identity.handlers.users import (
-        RequestManageUserStatusHandler,
-        RequestUpdateUserBlockHandler,
-    )
-
-    RequestLoginHandler.request_model.model_validate(
+def test_login_request_accepts_protocol_two_factor_alias():
+    request = RequestLoginHandler.request_model.model_validate(
         {"username": "alice", "password": "secret", "2fa_token": "123456"}
     )
-    with pytest.raises(ValidationError):
+
+    assert request.two_factor_token == "123456"
+
+
+def test_login_request_rejects_internal_two_factor_field_name():
+    with pytest.raises(ValidationError, match="two_factor_token"):
         RequestLoginHandler.request_model.model_validate(
-            {
-                "username": "alice",
-                "password": "secret",
-                "two_factor_token": "123456",
-            }
+            {"username": "alice", "password": "secret", "two_factor_token": "123456"}
         )
 
-    RequestRenameGroupHandler.request_model.model_validate(
+
+def test_group_rename_request_accepts_null_display_name():
+    request = RequestRenameGroupHandler.request_model.model_validate(
         {"group_name": "staff", "display_name": None}
     )
-    with pytest.raises(ValidationError):
+
+    assert request.display_name is None
+    assert "display_name" in request.model_fields_set
+
+
+def test_group_rename_request_requires_display_name():
+    with pytest.raises(ValidationError, match="display_name"):
         RequestRenameGroupHandler.request_model.model_validate({"group_name": "staff"})
 
-    RequestManageUserStatusHandler.request_model.model_validate(
-        {"status": "disabled", "username": "alice", "reason": "incident"}
+
+@pytest.mark.parametrize("reason", ["incident", None], ids=["text", "null"])
+def test_disabled_user_status_accepts_optional_reason(reason):
+    request = RequestManageUserStatusHandler.request_model.model_validate(
+        {"status": "disabled", "username": "alice", "reason": reason}
     )
-    RequestManageUserStatusHandler.request_model.model_validate(
-        {"status": "disabled", "username": "alice", "reason": None}
-    )
-    RequestUpdateUserBlockHandler.request_model.model_validate(
-        {"block_id": "block", "reason": None}
-    )
-    RequestUpdateUserBlockHandler.request_model.model_validate(
-        {"block_id": "block", "reason": "x" * 1024}
-    )
-    with pytest.raises(ValidationError):
+
+    assert request.reason == reason
+
+
+@pytest.mark.parametrize("reason", ["resolved", None], ids=["text", "null"])
+def test_active_user_status_rejects_reason_field(reason):
+    with pytest.raises(ValidationError, match="reason"):
         RequestManageUserStatusHandler.request_model.model_validate(
-            {"status": "active", "username": "alice", "reason": "resolved"}
+            {"status": "active", "username": "alice", "reason": reason}
         )
-    with pytest.raises(ValidationError):
-        RequestManageUserStatusHandler.request_model.model_validate(
-            {"status": "active", "username": "alice", "reason": None}
-        )
-    with pytest.raises(ValidationError):
+
+
+@pytest.mark.parametrize("reason", [None, "x" * 1024], ids=["null", "maximum-length"])
+def test_update_user_block_accepts_nullable_or_maximum_reason(reason):
+    request = RequestUpdateUserBlockHandler.request_model.model_validate(
+        {"block_id": "block", "reason": reason}
+    )
+
+    assert request.reason == reason
+
+
+def test_update_user_block_rejects_empty_reason():
+    with pytest.raises(ValidationError, match="reason"):
         RequestUpdateUserBlockHandler.request_model.model_validate(
             {"block_id": "block", "reason": ""}
         )
 
 
-def test_set_password_request_preserves_compatible_mode_values(
-    monkeypatch, tmp_path
-) -> None:
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    from include.domains.identity.handlers.users import RequestSetPasswdHandler
-
-    request_data = {"username": "alice", "new_passwd": "NewPassword123!"}
-
-    omitted = RequestSetPasswdHandler.request_model.model_validate(request_data)
-    null = RequestSetPasswdHandler.request_model.model_validate(
-        {**request_data, "old_passwd": None}
-    )
-    empty = RequestSetPasswdHandler.request_model.model_validate(
-        {**request_data, "old_passwd": ""}
-    )
-    provided = RequestSetPasswdHandler.request_model.model_validate(
-        {**request_data, "old_passwd": "secret"}
+@pytest.mark.parametrize(
+    ("old_password_fields", "expected", "provided"),
+    [
+        pytest.param({}, None, False, id="omitted"),
+        pytest.param({"old_passwd": None}, None, True, id="null"),
+        pytest.param({"old_passwd": ""}, "", True, id="empty"),
+        pytest.param({"old_passwd": "secret"}, "secret", True, id="credential"),
+    ],
+)
+def test_password_request_preserves_old_password_mode(
+    old_password_fields, expected, provided
+):
+    request = RequestSetPasswdHandler.request_model.model_validate(
+        {"username": "alice", "new_passwd": "NewPassword123!", **old_password_fields}
     )
 
-    assert omitted.old_passwd is None
-    assert "old_passwd" not in omitted.model_fields_set
-    assert null.old_passwd is None
-    assert "old_passwd" in null.model_fields_set
-    assert empty.old_passwd == ""
-    assert "old_passwd" in empty.model_fields_set
-    assert provided.old_passwd == "secret"
-    assert "old_passwd" in provided.model_fields_set
+    assert request.old_passwd == expected
+    assert ("old_passwd" in request.model_fields_set) is provided
 
 
-def test_identity_permission_requests_require_complete_structured_entries(
-    monkeypatch, tmp_path
-) -> None:
-    from pydantic import ValidationError
-
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    from include.domains.identity.handlers.groups import (
-        RequestChangeGroupPermissionsHandler,
-        RequestCreateGroupHandler,
-    )
-    from include.domains.identity.handlers.users import (
-        RequestChangeUserPermissionsHandler,
+_PERMISSION = {
+    "permission": "read",
+    "granted": False,
+    "start_time": 10.0,
+    "end_time": None,
+}
+_PERMISSION_REQUESTS = [
+    pytest.param(
         RequestCreateUserHandler,
-    )
-    from include.domains.keyrings.handlers.keyrings import RequestListUserKeysHandler
+        {"username": "alice", "password": ""},
+        id="create-user",
+    ),
+    pytest.param(
+        RequestChangeUserPermissionsHandler,
+        {"username": "alice"},
+        id="change-user-permissions",
+    ),
+    pytest.param(RequestCreateGroupHandler, {"group_name": "staff"}, id="create-group"),
+    pytest.param(
+        RequestChangeGroupPermissionsHandler,
+        {"group_name": "staff"},
+        id="change-group-permissions",
+    ),
+]
 
-    permission = {
-        "permission": "read",
-        "granted": False,
-        "start_time": 10.0,
-        "end_time": None,
-    }
-    request_cases = (
-        (
-            RequestCreateUserHandler.request_model,
-            {"username": "alice", "password": ""},
-        ),
-        (
-            RequestChangeUserPermissionsHandler.request_model,
-            {"username": "alice"},
-        ),
-        (RequestCreateGroupHandler.request_model, {"group_name": "staff"}),
-        (
-            RequestChangeGroupPermissionsHandler.request_model,
-            {"group_name": "staff"},
-        ),
+
+@pytest.mark.parametrize(("handler_type", "base_data"), _PERMISSION_REQUESTS)
+def test_permission_request_accepts_complete_structured_entry(handler_type, base_data):
+    request = handler_type.request_model.model_validate(
+        {**base_data, "permissions": [_PERMISSION]}
     )
 
-    for request_model, base_data in request_cases:
-        request_model.model_validate({**base_data, "permissions": [permission]})
+    assert request.model_dump()["permissions"] == [_PERMISSION]
 
-        invalid_permissions = (
-            ["read"],
-            [{key: value for key, value in permission.items() if key != "granted"}],
-            [{**permission, "unexpected": True}],
-            [{**permission, "granted": "false"}],
-            [{**permission, "end_time": 9.0}],
+
+@pytest.mark.parametrize(("handler_type", "base_data"), _PERMISSION_REQUESTS)
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        pytest.param(["read"], id="bare-name"),
+        pytest.param(
+            [{"permission": "read", "start_time": 10.0, "end_time": None}],
+            id="missing-granted",
+        ),
+        pytest.param([{**_PERMISSION, "unexpected": True}], id="unknown-field"),
+        pytest.param([{**_PERMISSION, "granted": "false"}], id="string-boolean"),
+        pytest.param([{**_PERMISSION, "end_time": 9.0}], id="inverted-window"),
+    ],
+)
+def test_permission_request_rejects_invalid_entry(handler_type, base_data, permissions):
+    with pytest.raises(ValidationError, match="permissions"):
+        handler_type.request_model.model_validate(
+            {**base_data, "permissions": permissions}
         )
-        for invalid in invalid_permissions:
-            with pytest.raises(ValidationError):
-                request_model.model_validate({**base_data, "permissions": invalid})
 
-    RequestListUserKeysHandler.request_model.model_validate(
+
+def test_list_user_keys_accepts_integral_float_pagination():
+    request = RequestListUserKeysHandler.request_model.model_validate(
         {"offset": 1.0, "count": 10.0}
     )
-    with pytest.raises(ValidationError):
+
+    assert request.offset == 1
+    assert request.count == 10
+
+
+def test_list_user_keys_rejects_null_target_username():
+    with pytest.raises(ValidationError, match="target_username"):
         RequestListUserKeysHandler.request_model.model_validate(
             {"target_username": None}
         )
 
 
-def test_document_request_models_preserve_legacy_extra_field_rules(
-    monkeypatch, tmp_path
-) -> None:
-    from pydantic import ValidationError
+@pytest.mark.parametrize(
+    ("handler_type", "request_data"),
+    [
+        pytest.param(
+            RequestCreateDirectoryHandler, {"name": "reports"}, id="directory"
+        ),
+        pytest.param(
+            RequestGetDocumentInfoHandler,
+            {"document_id": "document"},
+            id="document-info",
+        ),
+    ],
+)
+def test_legacy_document_request_preserves_unknown_fields(handler_type, request_data):
+    request = handler_type.request_model.model_validate(
+        {**request_data, "legacy_option": True}
+    )
 
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
+    assert request.model_dump(exclude_unset=True) == {
+        **request_data,
+        "legacy_option": True,
+    }
 
-    from include.domains.documents.handlers.directories import (
-        RequestCreateDirectoryHandler,
-    )
-    from include.domains.documents.handlers.documents import (
-        RequestGetDocumentHandler,
-        RequestGetDocumentInfoHandler,
-    )
 
-    RequestCreateDirectoryHandler.request_model.model_validate(
-        {"name": "reports", "legacy_option": True}
-    )
-    RequestGetDocumentInfoHandler.request_model.model_validate(
-        {"document_id": "document", "legacy_option": True}
-    )
-    with pytest.raises(ValidationError):
+def test_get_document_request_rejects_unknown_fields():
+    with pytest.raises(ValidationError, match="legacy_option"):
         RequestGetDocumentHandler.request_model.model_validate(
             {"document_id": "document", "legacy_option": True}
         )
 
 
-def test_document_request_models_preserve_transfer_and_restore_constraints(
-    monkeypatch, tmp_path
-) -> None:
-    from pydantic import ValidationError
-
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    from include.config.constants import DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE
-    from include.domains.documents.handlers.directories import (
-        RequestRestoreDirectoryHandler,
-    )
-    from include.domains.documents.handlers.documents import RequestDownloadFileHandler
-
-    RequestDownloadFileHandler.request_model.model_validate(
+def test_download_request_accepts_integral_float_transfer_values():
+    request = RequestDownloadFileHandler.request_model.model_validate(
         {
             "task_id": "task",
             "offset": 1.0,
             "max_chunk_size": float(DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE),
         }
     )
-    RequestRestoreDirectoryHandler.request_model.model_validate(
+
+    assert request.offset == 1
+    assert request.max_chunk_size == DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE
+
+
+def test_restore_directory_request_accepts_null_parent():
+    request = RequestRestoreDirectoryHandler.request_model.model_validate(
         {"folder_id": "folder", "target_parent_id": None}
     )
-    with pytest.raises(ValidationError):
+
+    assert request.target_parent_id is None
+    assert "target_parent_id" in request.model_fields_set
+
+
+def test_restore_directory_request_rejects_empty_parent():
+    with pytest.raises(ValidationError, match="target_parent_id"):
         RequestRestoreDirectoryHandler.request_model.model_validate(
             {"folder_id": "folder", "target_parent_id": ""}
         )
 
 
-def test_search_query_length_matches_node_name_capacity(monkeypatch, tmp_path) -> None:
-    from pydantic import ValidationError
+def test_search_request_accepts_query_at_node_name_capacity():
+    request = RequestSearchHandler.request_model.model_validate({"query": "x" * 255})
 
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    from include.domains.documents.handlers.search import RequestSearchHandler
-
-    request_model = RequestSearchHandler.request_model
-    assert request_model.model_validate({"query": "x" * 255}).query == "x" * 255
-    with pytest.raises(ValidationError):
-        request_model.model_validate({"query": "x" * 256})
+    assert request.query == "x" * 255
 
 
-def test_handler_contract_requires_a_pydantic_request_model(
-    monkeypatch, tmp_path
-) -> None:
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
+def test_search_request_rejects_query_above_node_name_capacity():
+    with pytest.raises(ValidationError, match="query"):
+        RequestSearchHandler.request_model.model_validate({"query": "x" * 256})
 
-    from include.transport.request_handler import (
-        RequestDataModel,
-        RequestHandler,
-        validate_request_handler_models,
-    )
 
-    class EmptyRequest(RequestDataModel):
-        pass
+class EmptyRequest(RequestDataModel):
+    pass
 
-    class ValidHandler(RequestHandler):
-        request_model = EmptyRequest
 
-        def handle(self, _handler):
-            return None
+class ValidHandler(RequestHandler):
+    request_model = EmptyRequest
 
-    class LegacyHandler(RequestHandler):
-        schema = {"type": "object"}
+    def handle(self, _handler):
+        return None
 
-        def handle(self, _handler):
-            return None
 
-    validate_request_handler_models({"valid": ValidHandler})
+class LegacyHandler(RequestHandler):
+    schema: ClassVar[dict[str, str]] = {"type": "object"}
 
-    with pytest.raises(TypeError, match="legacy.*request_model"):
-        validate_request_handler_models({"legacy": LegacyHandler})
-    with pytest.raises(TypeError, match="plain.*inherit RequestHandler"):
-        validate_request_handler_models({"plain": object})
+    def handle(self, _handler):
+        return None
+
+
+def test_handler_contract_accepts_a_pydantic_request_model():
+    assert validate_request_handler_models({"valid": ValidHandler}) is None
+
+
+@pytest.mark.parametrize(
+    ("action", "handler", "message"),
+    [
+        pytest.param(
+            "legacy", LegacyHandler, "legacy.*request_model", id="legacy-schema"
+        ),
+        pytest.param(
+            "plain", object, "plain.*inherit RequestHandler", id="plain-class"
+        ),
+    ],
+)
+def test_handler_contract_rejects_invalid_handler_models(action, handler, message):
+    with pytest.raises(TypeError, match=message):
+        validate_request_handler_models({action: handler})

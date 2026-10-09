@@ -2,6 +2,7 @@ import os
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 
 import pytest
 from sqlalchemy import Column, MetaData, Table, create_engine, delete
@@ -22,6 +23,8 @@ from include.scheduling import engine as scheduling_engine
 from include.scheduling import outcomes as scheduling_outcomes
 from include.scheduling.commands import delete_schedule
 
+pytestmark = pytest.mark.integration
+
 _DATABASE_URL_ENVIRONMENTS = (
     "CFMS_TEST_MYSQL_URL",
     "CFMS_TEST_POSTGRESQL_URL",
@@ -36,32 +39,33 @@ def shared_database(request):
     if database_url is None:
         pytest.skip(f"{environment_name} is required")
 
-    database = create_engine(database_url, pool_pre_ping=True)
-    support_metadata = MetaData()
-    users = Table(
-        "users",
-        support_metadata,
-        Column("username", User.__table__.c.username.type.copy(), primary_key=True),
-    )
-    tables = (
-        users,
-        SchedulingRuntimeState.__table__,
-        Schedule.__table__,
-        ScheduleExecution.__table__,
-    )
+    with ExitStack() as resources:
+        database = create_engine(database_url, pool_pre_ping=True)
+        resources.callback(database.dispose)
+        support_metadata = MetaData()
+        users = Table(
+            "users",
+            support_metadata,
+            Column("username", User.__table__.c.username.type.copy(), primary_key=True),
+        )
+        tables = (
+            users,
+            SchedulingRuntimeState.__table__,
+            Schedule.__table__,
+            ScheduleExecution.__table__,
+        )
 
-    for table in reversed(tables):
-        table.drop(database, checkfirst=True)
-    for table in tables:
-        table.create(database)
-    with database.begin() as connection:
-        connection.execute(users.insert().values(username=_SCHEDULE_ACTOR))
-    try:
-        yield database
-    finally:
         for table in reversed(tables):
             table.drop(database, checkfirst=True)
-        database.dispose()
+        for table in tables:
+            table.create(database)
+        with database.begin() as connection:
+            connection.execute(users.insert().values(username=_SCHEDULE_ACTOR))
+        try:
+            yield database
+        finally:
+            for table in reversed(tables):
+                table.drop(database, checkfirst=True)
 
 
 @pytest.fixture

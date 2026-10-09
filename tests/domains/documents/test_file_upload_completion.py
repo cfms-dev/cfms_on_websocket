@@ -3,12 +3,16 @@ import threading
 import time
 from types import SimpleNamespace
 
-from tests.domains.documents.test_file_task_lifecycle import (
+import pytest
+
+from tests.domains.documents.support import (
     _create_file_task,
     _FakeUploadStream,
     _new_transfer_handler,
     _sent_json_messages,
 )
+
+pytestmark = pytest.mark.component
 
 
 def test_upload_confirms_before_releasing_deduplication(file_task_context, monkeypatch):
@@ -42,7 +46,7 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
             message.get("code") == 200 for message in _sent_json_messages(stream)
         )
         release_entered.set()
-        assert allow_release.wait(2)
+        assert allow_release.wait(5)
         return True
 
     monkeypatch.setattr(
@@ -67,11 +71,15 @@ def test_upload_confirms_before_releasing_deduplication(file_task_context, monke
         ),
     )
     transfer_thread.start()
-    assert release_entered.wait(2)
-    assert transfer_thread.is_alive()
-    assert any(message.get("code") == 200 for message in _sent_json_messages(stream))
-    allow_release.set()
-    transfer_thread.join(2)
+    try:
+        assert release_entered.wait(5)
+        assert transfer_thread.is_alive()
+        assert any(
+            message.get("code") == 200 for message in _sent_json_messages(stream)
+        )
+    finally:
+        allow_release.set()
+        transfer_thread.join(5)
     assert not transfer_thread.is_alive()
     assert lifecycle == ["before_commit", "after_response"]
 

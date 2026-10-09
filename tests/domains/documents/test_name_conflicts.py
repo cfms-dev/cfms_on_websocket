@@ -1,14 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
-
-@pytest.fixture(autouse=True)
-def _run_from_src(monkeypatch, protected_test_config) -> None:
-    monkeypatch.chdir(protected_test_config.src_dir)
 
 
 class _OriginalError(Exception):
@@ -19,6 +14,7 @@ def _integrity_error(original: Exception) -> IntegrityError:
     return IntegrityError("INSERT INTO nodes", {}, original)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "original",
     [
@@ -44,6 +40,7 @@ def test_node_name_conflict_is_recognized_across_dialects(original) -> None:
     assert is_node_name_conflict(_integrity_error(original))
 
 
+@pytest.mark.unit
 def test_unrelated_integrity_error_is_not_a_name_conflict() -> None:
     from include.domains.documents.commands.name_conflicts import (
         is_node_name_conflict,
@@ -55,6 +52,7 @@ def test_unrelated_integrity_error_is_not_a_name_conflict() -> None:
     assert not is_node_name_conflict(_integrity_error(original))
 
 
+@pytest.mark.unit
 def test_name_mutation_rolls_back_and_translates_name_conflict() -> None:
     from include.domains.documents.commands.name_conflicts import (
         NodeNameConflictError,
@@ -72,30 +70,38 @@ def test_name_mutation_rolls_back_and_translates_name_conflict() -> None:
     )
     original.sqlite_errorname = "SQLITE_CONSTRAINT_UNIQUE"
 
-    with pytest.raises(NodeNameConflictError) as caught:
-        with node_name_mutation(session, "parent", "report"):
-            raise _integrity_error(original)
+    with (
+        pytest.raises(NodeNameConflictError) as caught,
+        node_name_mutation(session, "parent", "report"),
+    ):
+        raise _integrity_error(original)
 
     assert session.rollback_calls == 1
     assert caught.value.parent_id == "parent"
     assert caught.value.name == "report"
 
 
+@pytest.mark.unit
 def test_name_mutation_does_not_hide_other_integrity_errors() -> None:
     from include.domains.documents.commands.name_conflicts import node_name_mutation
 
     session = SimpleNamespace(rollback=lambda: None)
     error = _integrity_error(_OriginalError("NOT NULL constraint failed"))
 
-    with pytest.raises(IntegrityError) as caught:
-        with node_name_mutation(session, "parent", "report"):
-            raise error
+    with (
+        pytest.raises(IntegrityError) as caught,
+        node_name_mutation(session, "parent", "report"),
+    ):
+        raise error
 
     assert caught.value is error
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("readable", [False, True])
-def test_conflict_description_hides_unreadable_winner_id(monkeypatch, readable) -> None:
+def test_conflict_description_hides_unreadable_winner_id(
+    monkeypatch, readable, sqlite_engine_factory
+) -> None:
     import include.database.models  # noqa: F401
     from include.database.models.documents import Folder
     from include.database.session import Base
@@ -105,7 +111,7 @@ def test_conflict_description_hides_unreadable_winner_id(monkeypatch, readable) 
     )
     from include.messages import Messages as smsg
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = sqlite_engine_factory(":memory:")
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
         name_conflicts,
@@ -129,6 +135,7 @@ def test_conflict_description_hides_unreadable_winner_id(monkeypatch, readable) 
     assert message == smsg.DIRECTORY_NAME_DUPLICATE
 
 
+@pytest.mark.unit
 def test_conflict_description_rejects_unsupported_node_before_access_check(
     monkeypatch,
 ) -> None:
@@ -148,13 +155,16 @@ def test_conflict_description_rejects_unsupported_node_before_access_check(
         )
 
 
-def test_successful_name_mutation_does_not_prequery_sibling_names() -> None:
+@pytest.mark.component
+def test_successful_name_mutation_does_not_prequery_sibling_names(
+    sqlite_engine_factory,
+) -> None:
     import include.database.models  # noqa: F401
     from include.database.models.documents import Folder
     from include.database.session import Base
     from include.domains.documents.commands.name_conflicts import node_name_mutation
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = sqlite_engine_factory(":memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         root = Folder(id="/", name="/")
@@ -181,7 +191,10 @@ def test_successful_name_mutation_does_not_prequery_sibling_names() -> None:
     ]
 
 
-def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None:
+@pytest.mark.component
+def test_subtree_restore_conflict_reports_descendant_winner(
+    monkeypatch, sqlite_engine_factory
+) -> None:
     import include.database.models  # noqa: F401
     from include.database.models.documents import EntityStatus, Folder
     from include.database.session import Base
@@ -190,7 +203,7 @@ def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None
         describe_subtree_restore_name_conflict,
     )
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = sqlite_engine_factory(":memory:")
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
         name_conflicts,
@@ -222,6 +235,7 @@ def test_subtree_restore_conflict_reports_descendant_winner(monkeypatch) -> None
     assert payload["duplicate_id"] == "winner"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("duplicate_id", [None, "winner"])
 def test_conflict_response_hides_entity_and_propagates_visible_winner(
     duplicate_id,

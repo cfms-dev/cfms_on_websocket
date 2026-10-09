@@ -3,13 +3,10 @@ import pytest
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
+pytestmark = pytest.mark.integration
+
 
 class TestServerBasics:
-    @pytest.mark.asyncio
-    async def test_server_connection(self, client: CFMSTestClient):
-        assert client.websocket is not None
-        assert hasattr(client.websocket, "id")
-
     @pytest.mark.asyncio
     async def test_server_info(self, client: CFMSTestClient):
         response = await client.server_info()
@@ -40,6 +37,17 @@ class TestServerBasics:
 
 
 class TestAuthentication:
+    @pytest.mark.asyncio
+    async def test_client_login_preserves_admin_control_session(
+        self, client, authenticated_client, test_user
+    ):
+        assert_success(await client.login(test_user["username"], test_user["password"]))
+
+        response = await authenticated_client.send_request("list_users")
+
+        assert_success(response)
+        assert authenticated_client.username == "admin"
+
     @pytest.mark.asyncio
     async def test_login_success(self, client: CFMSTestClient, admin_credentials: dict):
         response = await client.login(

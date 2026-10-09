@@ -1,5 +1,3 @@
-import shutil
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -7,8 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 from loguru import logger as log
-from sqlalchemy import Column, ForeignKey, MetaData, String, Table, create_engine, event
+from sqlalchemy import Column, ForeignKey, MetaData, String, Table
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 _project_root = Path(__file__).resolve().parents[3]
 _src_path = _project_root / "src"
@@ -31,16 +31,7 @@ class _FakeStorage:
 
 
 @pytest.fixture
-def deduplication_context(monkeypatch, tmp_path):
-    src = str(_src_path)
-    if src not in sys.path:
-        sys.path.insert(0, src)
-
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    shutil.copy(_src_path / "config.toml.sample", config_dir / "config.toml")
-    (config_dir / "init").write_text("", encoding="utf-8")
-    monkeypatch.chdir(config_dir)
+def deduplication_context(monkeypatch, tmp_path, sqlite_engine_factory):
 
     from include.database.models.files import (
         File,
@@ -50,31 +41,15 @@ def deduplication_context(monkeypatch, tmp_path):
         FileTaskStatus,
         TransferMode,
     )
-    from include.database.models.identity import User
     from include.database.session import Base
     from include.domains.documents.queries.file_references import (
         _clear_file_references_cache,
     )
-    from include.extensions.builtin import file_deduplication as file_deduplication
+    from include.extensions.builtin import file_deduplication
 
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'deduplication.db'}",
-        connect_args={"timeout": 10},
-    )
+    engine = sqlite_engine_factory(tmp_path / "deduplication.db", timeout_seconds=10)
 
-    @event.listens_for(engine, "connect")
-    def _enable_foreign_keys(dbapi_connection, _connection_record):
-        dbapi_connection.execute("PRAGMA foreign_keys=ON")
-
-    Base.metadata.create_all(
-        engine,
-        tables=[
-            User.__table__,
-            File.__table__,
-            FileTask.__table__,
-            FileDeduplicationTask.__table__,
-        ],
-    )
+    Base.metadata.create_all(engine)
     owner_metadata = MetaData()
     Table("files", owner_metadata, autoload_with=engine)
     owners = Table(
@@ -109,7 +84,6 @@ def deduplication_context(monkeypatch, tmp_path):
     )
 
     _clear_file_references_cache()
-    engine.dispose()
 
 
 def _add_duplicate_pair(context, *, live_download=False):

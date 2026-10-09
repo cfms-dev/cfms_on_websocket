@@ -3,6 +3,8 @@ import pytest
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
+pytestmark = pytest.mark.integration
+
 _SEARCH_USER_GROUPS = [{"group_name": "user", "start_time": 0}]
 
 
@@ -199,8 +201,10 @@ class TestSearch:
     async def test_search_with_cursor_pagination(
         self, authenticated_client: CFMSTestClient, document_factory
     ):
-        for i in range(5):
-            await document_factory(f"CursorTestDoc_{i}")
+        expected_ids = {
+            (await document_factory(f"CursorTestDoc_{i}"))["document_id"]
+            for i in range(5)
+        }
 
         first_response = await authenticated_client.search(
             query="CursorTestDoc",
@@ -220,10 +224,13 @@ class TestSearch:
 
         assert len(first_page["items"]) == 3
         assert first_page["has_more"] is True
+        assert len(second_page["items"]) == 2
         assert second_page["has_more"] is False
+        assert second_page["next_cursor"] is None
         first_ids = {item["id"] for item in first_page["items"]}
         second_ids = {item["id"] for item in second_page["items"]}
         assert first_ids.isdisjoint(second_ids)
+        assert first_ids | second_ids == expected_ids
 
     @pytest.mark.asyncio
     async def test_search_no_results(self, authenticated_client: CFMSTestClient):
@@ -240,8 +247,6 @@ class TestSearch:
     async def test_search_sorting(
         self, authenticated_client: CFMSTestClient, document_factory
     ):
-        # We need docs with the same name root to sort by created_time
-        # Since document_factory makes the document, its created_time will be sequential.
         doc1 = await document_factory("SortTestDoc A")
         doc2 = await document_factory("SortTestDoc B")
         doc3 = await document_factory("SortTestDoc C")
@@ -256,7 +261,12 @@ class TestSearch:
         )
         data_desc = assert_success(response_desc)
         names_desc = [doc["name"] for doc in _documents(data_desc)]
-        assert names_desc == sorted(names_desc, reverse=True)
+        assert names_desc == ["SortTestDoc C", "SortTestDoc B", "SortTestDoc A"]
+        assert [doc["id"] for doc in _documents(data_desc)] == [
+            doc3["document_id"],
+            doc2["document_id"],
+            doc1["document_id"],
+        ]
 
         # Sort asc by name
         response_asc = await authenticated_client.search(
@@ -268,7 +278,12 @@ class TestSearch:
         )
         data_asc = assert_success(response_asc)
         names_asc = [doc["name"] for doc in _documents(data_asc)]
-        assert names_asc == sorted(names_asc)
+        assert names_asc == ["SortTestDoc A", "SortTestDoc B", "SortTestDoc C"]
+        assert [doc["id"] for doc in _documents(data_asc)] == [
+            doc1["document_id"],
+            doc2["document_id"],
+            doc3["document_id"],
+        ]
 
     @pytest.mark.asyncio
     async def test_search_with_no_targets_returns_empty_results(

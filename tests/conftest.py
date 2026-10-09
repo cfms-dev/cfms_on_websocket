@@ -2,75 +2,65 @@
 Pytest configuration and fixtures for CFMS test suite.
 """
 
-import asyncio
-import os
 import secrets
 import subprocess
 import sys
-from collections.abc import AsyncGenerator, Callable, Generator
-from contextlib import AbstractContextManager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from contextlib import AsyncExitStack, ExitStack
 
 import pytest
 import pytest_asyncio
 
+from include.config import paths
 from tests.support.client import CFMSTestClient
-from tests.support.config import (
-    ServerTestSettings,
-    managed_test_config,
-)
+from tests.support.config import ServerTestSettings, isolated_test_runtime
 from tests.support.server import start_server, stop_server
 from tests.support.utils import assert_success
 
-_TEST_CONFIG_MANAGER = pytest.StashKey[AbstractContextManager[ServerTestSettings]]()
+pytest_plugins = ("tests.support.collection",)
+
 _TEST_SERVER_SETTINGS = pytest.StashKey[ServerTestSettings]()
 
 
-@pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
-    manager = managed_test_config()
-    settings = manager.__enter__()
+def _close_imported_runtime() -> None:
+    settings_module = sys.modules.get("include.config.settings")
+    database_module = sys.modules.get("include.database.session")
     try:
-        session.config.stash[_TEST_CONFIG_MANAGER] = manager
-        session.config.stash[_TEST_SERVER_SETTINGS] = settings
-        yield
-    except BaseException:
-        manager.__exit__(*sys.exc_info())
-        raise
-
-
-@pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_sessionfinish(
-    session: pytest.Session,
-    exitstatus: int | pytest.ExitCode,
-) -> Generator[None]:
-    try:
-        yield
+        if settings_module is not None:
+            settings_module.global_config.stop()
     finally:
-        manager = session.config.stash.get(_TEST_CONFIG_MANAGER, None)
-        if manager is not None:
-            try:
-                settings_module = sys.modules.get("include.config.settings")
-                if settings_module is not None:
-                    settings_module.global_config.stop()
-            finally:
-                manager.__exit__(None, None, None)
+        if database_module is not None:
+            database_module.engine.dispose()
+
+
+def pytest_plugin_registered(plugin: object) -> None:
+    if not isinstance(plugin, pytest.Config):
+        return
+
+    # This historic hook runs when the root conftest is registered, before children.
+    manager = ExitStack()
+    plugin.add_cleanup(manager.close)
+    try:
+        settings = manager.enter_context(isolated_test_runtime())
+        patch = pytest.MonkeyPatch()
+        manager.callback(patch.undo)
+        patch.setattr(paths, "EXECUTABLE_ABSPATH", settings.src_dir)
+        patch.setattr(paths, "PROJECT_ABSPATH", settings.src_dir.parent)
+        patch.setattr(
+            paths, "EXTENSION_ROOT", settings.src_dir / "include" / "extensions"
+        )
+        manager.callback(_close_imported_runtime)
+        plugin.stash[_TEST_SERVER_SETTINGS] = settings
+    except BaseException:
+        manager.close()
+        raise
 
 
 @pytest.fixture(scope="session")
 def protected_test_config(
     request: pytest.FixtureRequest,
-) -> Generator[ServerTestSettings]:
-    settings = request.config.stash[_TEST_SERVER_SETTINGS]
-    src_dir = settings.src_dir
-    artifacts = ["init", "app.db", "admin_password.txt"]
-    for artifact in artifacts:
-        artifact_path = src_dir / artifact
-        if artifact_path.exists():
-            artifact_path.unlink()
-
-    (src_dir / "content" / "ssl").mkdir(parents=True, exist_ok=True)
-    (src_dir / "content" / "logs").mkdir(parents=True, exist_ok=True)
-    yield settings
+) -> ServerTestSettings:
+    return request.config.stash[_TEST_SERVER_SETTINGS]
 
 
 @pytest.fixture(scope="session")
@@ -86,51 +76,53 @@ def server_process(
 ) -> Generator[subprocess.Popen]:
     """Start the CFMS server subprocess."""
     process, logs = start_server(test_server_settings)
-    yield process
-    stop_server(process, logs)
+    try:
+        yield process
+    finally:
+        stop_server(process, logs)
 
 
 @pytest.fixture(scope="session")
-def admin_credentials(server_process) -> dict:
-    password_file = "src/admin_password.txt"
-    if not os.path.exists(password_file):
+def admin_credentials(server_process, test_server_settings: ServerTestSettings) -> dict:
+    password_file = test_server_settings.src_dir / "admin_password.txt"
+    if not password_file.is_file():
         raise RuntimeError("Admin password file not found after server started")
 
-    with open(password_file, encoding="utf-8") as f:
-        password = f.read().strip()
+    password = password_file.read_text(encoding="utf-8").strip()
     if not password:
         raise RuntimeError("Admin password file is empty")
     return {"username": "admin", "password": password}
 
 
 @pytest_asyncio.fixture
-async def client(
+async def client_factory(
     server_process, test_server_settings: ServerTestSettings
-) -> AsyncGenerator[CFMSTestClient]:
-    test_client = CFMSTestClient(
-        host=test_server_settings.host,
-        port=test_server_settings.port,
-        use_ssl=test_server_settings.use_ssl,
-    )
-    for attempt in range(5):
-        try:
-            await test_client.connect()
-            break
-        except (ConnectionRefusedError, TimeoutError, OSError) as e:
-            if attempt == 4:
-                raise RuntimeError(f"Failed to connect to server: {e}")
-            await asyncio.sleep(1)
-    yield test_client
-    try:
-        await test_client.disconnect()
-    except Exception:
-        pass
+) -> AsyncGenerator[Callable[[], Awaitable[CFMSTestClient]]]:
+    async with AsyncExitStack() as connections:
+
+        async def create_client() -> CFMSTestClient:
+            test_client = CFMSTestClient(
+                host=test_server_settings.host,
+                port=test_server_settings.port,
+                use_ssl=test_server_settings.use_ssl,
+            )
+            connections.push_async_callback(test_client.disconnect)
+            await test_client.connect(max_retries=1)
+            return test_client
+
+        yield create_client
+
+
+@pytest_asyncio.fixture
+async def client(client_factory) -> CFMSTestClient:
+    return await client_factory()
 
 
 @pytest_asyncio.fixture
 async def authenticated_client(
-    client: CFMSTestClient, admin_credentials: dict
+    client_factory, admin_credentials: dict
 ) -> CFMSTestClient:
+    client = await client_factory()
     response = await client.login(
         admin_credentials["username"], admin_credentials["password"]
     )
@@ -140,26 +132,16 @@ async def authenticated_client(
 
 @pytest_asyncio.fixture
 async def unauthenticated_client(
-    server_process, test_server_settings: ServerTestSettings
-) -> AsyncGenerator[CFMSTestClient]:
-    test_client = CFMSTestClient(
-        host=test_server_settings.host,
-        port=test_server_settings.port,
-        use_ssl=test_server_settings.use_ssl,
-    )
-    for attempt in range(5):
-        try:
-            await test_client.connect()
-            break
-        except (ConnectionRefusedError, TimeoutError, OSError) as e:
-            if attempt == 4:
-                raise RuntimeError(f"Failed to connect to server: {e}")
-            await asyncio.sleep(1)
-    yield test_client
-    try:
-        await test_client.disconnect()
-    except Exception:
-        pass
+    client_factory,
+) -> CFMSTestClient:
+    return await client_factory()
+
+
+@pytest_asyncio.fixture
+async def user_client(test_user: dict, client_factory) -> CFMSTestClient:
+    client = await client_factory()
+    assert_success(await client.login(test_user["username"], test_user["password"]))
+    return client
 
 
 @pytest_asyncio.fixture
@@ -201,11 +183,15 @@ async def user_factory(
 
     yield _creator
 
-    for user in created_users:
+    errors = []
+    for user in reversed(created_users):
         try:
-            await authenticated_client.delete_user(user)
-        except Exception:
-            pass
+            response = await authenticated_client.delete_user(user)
+            assert response["code"] in (200, 404), response
+        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned user
+            errors.append(exc)
+    if errors:
+        raise ExceptionGroup("User cleanup failed", errors)
 
 
 @pytest_asyncio.fixture
@@ -230,11 +216,17 @@ async def document_factory(
 
     yield _creator
 
-    for doc_id in created_docs:
+    errors = []
+    for doc_id in reversed(created_docs):
         try:
-            await authenticated_client.delete_document(doc_id)
-        except Exception:
-            pass
+            response = await authenticated_client.delete_document(doc_id)
+            assert response["code"] in (200, 404), response
+            response = await authenticated_client.purge_document(doc_id)
+            assert response["code"] in (200, 404), response
+        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned document
+            errors.append(exc)
+    if errors:
+        raise ExceptionGroup("Document cleanup failed", errors)
 
 
 @pytest_asyncio.fixture
@@ -258,13 +250,47 @@ async def group_factory(
 
     yield _creator
 
-    for group_name in created_groups:
+    errors = []
+    for group_name in reversed(created_groups):
         try:
-            await authenticated_client.send_request(
+            response = await authenticated_client.send_request(
                 "delete_group", {"group_name": group_name}
             )
-        except Exception:
-            pass
+            assert response["code"] in (200, 404), response
+        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned group
+            errors.append(exc)
+    if errors:
+        raise ExceptionGroup("Group cleanup failed", errors)
+
+
+@pytest_asyncio.fixture
+async def directory_factory(
+    authenticated_client: CFMSTestClient,
+) -> AsyncGenerator[Callable]:
+    created_directories = []
+
+    async def create_directory(name=None, parent_id=None):
+        if name is None:
+            name = f"Directory_{secrets.token_hex(4)}"
+        response = await authenticated_client.create_directory(name, parent_id)
+        data = assert_success(response)
+        folder_id = data["id"]
+        created_directories.append(folder_id)
+        return {"folder_id": folder_id, "name": name, "parent_id": parent_id}
+
+    yield create_directory
+
+    errors = []
+    for folder_id in reversed(created_directories):
+        try:
+            response = await authenticated_client.delete_directory(folder_id)
+            assert response["code"] in (200, 404), response
+            response = await authenticated_client.purge_directory(folder_id)
+            assert response["code"] in (200, 404), response
+        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned directory
+            errors.append(exc)
+    if errors:
+        raise ExceptionGroup("Directory cleanup failed", errors)
 
 
 @pytest_asyncio.fixture

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 
 import include.database.models  # noqa: F401
 from include.database.session import Base
@@ -11,9 +11,16 @@ from maintenance.operations.database.schema import (
     upgrade_database_schema,
 )
 
+pytestmark = pytest.mark.component
 
-def test_empty_database_is_created_and_stamped(tmp_path: Path) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
+
+@pytest.fixture
+def schema_engine(tmp_path: Path, sqlite_engine_factory):
+    return sqlite_engine_factory(tmp_path / "schema.db")
+
+
+def test_empty_database_is_created_and_stamped(schema_engine) -> None:
+    engine = schema_engine
 
     result = upgrade_database_schema(engine, Base.metadata)
 
@@ -26,8 +33,8 @@ def test_empty_database_is_created_and_stamped(tmp_path: Path) -> None:
         )
 
 
-def test_versioned_database_at_head_is_accepted(tmp_path: Path) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'versioned.db'}")
+def test_versioned_database_at_head_is_accepted(schema_engine) -> None:
+    engine = schema_engine
     initialized = upgrade_database_schema(engine, Base.metadata)
 
     result = upgrade_database_schema(engine, Base.metadata)
@@ -38,9 +45,9 @@ def test_versioned_database_at_head_is_accepted(tmp_path: Path) -> None:
 
 
 def test_unversioned_application_schema_is_rejected_without_changes(
-    tmp_path: Path,
+    schema_engine,
 ) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'unversioned.db'}")
+    engine = schema_engine
     Base.metadata.create_all(engine)
     with engine.connect() as connection:
         original_tables = set(inspect(connection).get_table_names())
@@ -54,9 +61,9 @@ def test_unversioned_application_schema_is_rejected_without_changes(
 
 
 def test_unknown_unversioned_schema_is_rejected_without_changes(
-    tmp_path: Path,
+    schema_engine,
 ) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'unknown.db'}")
+    engine = schema_engine
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE local_table (id INTEGER PRIMARY KEY)"))
 

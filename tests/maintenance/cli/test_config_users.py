@@ -1,15 +1,21 @@
+import re
+
+import pytest
 import tomlkit
 
 from .support import (
     _SRC_PATH,
     _make_src_dir,
+    _normalize_cli_output,
     _read_user_state,
     _run_maintain,
     _seed_users,
 )
 
+pytestmark = pytest.mark.integration
 
-def test_fill_pepper_updates_config_and_is_idempotent(tmp_path):
+
+def test_fill_pepper_initializes_empty_pepper(tmp_path):
     src_dir = _make_src_dir(tmp_path)
 
     result = _run_maintain(src_dir, ["config", "fill-pepper"])
@@ -18,9 +24,19 @@ def test_fill_pepper_updates_config_and_is_idempotent(tmp_path):
     assert result.returncode == 0
     assert len(config["security"]["pepper"]) == 64
 
+
+def test_fill_pepper_preserves_existing_pepper_and_config(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    config_path = src_dir / "config.toml"
+    config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    config["security"]["pepper"] = "existing-pepper"
+    config_path.write_text(tomlkit.dumps(config), encoding="utf-8")
+    original_source = config_path.read_bytes()
+
     result = _run_maintain(src_dir, ["config", "fill-pepper"])
 
     assert "already set" in result.stdout
+    assert config_path.read_bytes() == original_source
 
 
 def test_explicit_template_path_is_relative_to_invocation_directory(tmp_path):
@@ -57,7 +73,9 @@ def test_default_template_path_comes_from_server_root(tmp_path):
     assert result.returncode == 0
 
 
-def test_sync_template_check_then_apply_preserves_unknown_settings(tmp_path):
+def test_sync_template_check_reports_missing_settings_without_writing_or_disclosing_secrets(
+    tmp_path,
+):
     src_dir = _make_src_dir(tmp_path)
     config_path = src_dir / "config.toml"
     config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
@@ -78,6 +96,17 @@ def test_sync_template_check_then_apply_preserves_unknown_settings(tmp_path):
     assert list(src_dir.glob("config.toml.backup-*")) == []
     assert "must-not-be-printed" not in check_result.stdout + check_result.stderr
 
+
+def test_sync_template_applies_missing_settings_and_preserves_unknown_values(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    config_path = src_dir / "config.toml"
+    config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    del config["server"]["trusted_proxy_networks"]
+    config["server"]["local_setting"] = "keep"
+    config["server"]["secret_key"] = "must-not-be-printed"
+    config_path.write_text(tomlkit.dumps(config), encoding="utf-8")
+    original_source = config_path.read_bytes()
+
     apply_result = _run_maintain(
         src_dir,
         ["config", "sync-template", "--yes"],
@@ -90,7 +119,13 @@ def test_sync_template_check_then_apply_preserves_unknown_settings(tmp_path):
     ]
     assert synchronized["server"]["local_setting"] == "keep"
     assert "must-not-be-printed" not in apply_result.stdout + apply_result.stderr
-    assert len(list(src_dir.glob("config.toml.backup-*"))) == 1
+    backups = list(src_dir.glob("config.toml.backup-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original_source
+
+
+def test_sync_template_check_accepts_already_synchronized_config(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
 
     synchronized_check = _run_maintain(
         src_dir,
@@ -133,11 +168,11 @@ def test_sync_template_rejects_conflicting_options(tmp_path):
         check=False,
     )
 
-    assert result.returncode != 0
+    assert result.returncode == 2
     assert "cannot be combined" in result.stdout + result.stderr
 
 
-def test_reset_password_updates_hash_and_can_generate_password(tmp_path):
+def test_reset_password_persists_explicit_password_and_requires_login_update(tmp_path):
     src_dir = _make_src_dir(tmp_path)
     _seed_users(src_dir)
 
@@ -151,13 +186,24 @@ def test_reset_password_updates_hash_and_can_generate_password(tmp_path):
     assert state["alice"]["password_ok"] is True
     assert state["alice"]["passwd_last_modified"] == 0
 
+
+def test_reset_password_persists_the_generated_password_shown_to_operator(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_users(src_dir)
+
     result = _run_maintain(src_dir, ["user", "reset-password", "bob"])
 
     assert "Generated Password" in result.stdout
     assert "Store this password safely" in result.stdout
+    password_row = re.search(r"\bbob\s+(\S+)", _normalize_cli_output(result.stdout))
+    assert password_row is not None, result.stdout
+    generated_password = password_row.group(1)
+    state = _read_user_state(src_dir, generated_password)
+    assert state["bob"]["password_ok"] is True
+    assert state["bob"]["passwd_last_modified"] == 0
 
 
-def test_clear_totp_for_single_user_and_all_users(tmp_path):
+def test_clear_totp_for_single_user_preserves_other_users(tmp_path):
     src_dir = _make_src_dir(tmp_path)
     _seed_users(src_dir)
 
@@ -169,11 +215,18 @@ def test_clear_totp_for_single_user_and_all_users(tmp_path):
     assert state["alice"]["totp_backup_codes"] is None
     assert state["bob"]["totp_enabled"] is True
 
+
+def test_clear_totp_for_all_users_removes_secrets_and_backup_codes(tmp_path):
+    src_dir = _make_src_dir(tmp_path)
+    _seed_users(src_dir)
+
     _run_maintain(src_dir, ["user", "clear-totp", "--all", "--yes"])
     state = _read_user_state(src_dir, "OldPass123!")
 
-    assert state["alice"]["totp_enabled"] is False
-    assert state["bob"]["totp_enabled"] is False
+    for username in ("alice", "bob"):
+        assert state[username]["totp_enabled"] is False
+        assert state[username]["totp_secret"] is None
+        assert state[username]["totp_backup_codes"] is None
 
 
 def test_clear_totp_all_abort_uses_typer_abort_and_keeps_users(tmp_path):

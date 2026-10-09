@@ -15,6 +15,8 @@ import pytest
 
 from tests.support.client import CFMSTestClient
 
+pytestmark = pytest.mark.integration
+
 
 class TestReplayProtection:
     """Test replay attack protection mechanisms."""

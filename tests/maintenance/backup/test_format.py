@@ -5,6 +5,8 @@ import tarfile
 
 import pytest
 
+pytestmark = pytest.mark.component
+
 
 def test_legacy_banned_subnet_times_are_upgraded(backup_context):
     table = backup_context.Base.metadata.tables["banned_subnets"]
@@ -43,7 +45,9 @@ def test_comment_digest_backup_rejects_invalid_hex(backup_context) -> None:
 
     comments = backup_context.Base.metadata.tables["comments"]
 
-    with pytest.raises(backup_context.BackupFormatError):
+    with pytest.raises(
+        backup_context.BackupFormatError, match="Invalid comment digest"
+    ):
         _decode_row({"comment_id": 1, "content_digest": "not-a-digest"}, comments)
 
 
@@ -100,7 +104,7 @@ def test_file_digest_verification_accepts_valid_uppercase_hex(
 
 @pytest.mark.parametrize(
     "unsafe_path",
-    ("C:escape.bin", "content/file.bin:stream", r"content\escape.bin"),
+    ["C:escape.bin", "content/file.bin:stream", r"content\escape.bin"],
 )
 def test_storage_paths_reject_windows_drive_ads_and_separators(
     backup_context,
@@ -114,7 +118,7 @@ def test_storage_paths_reject_windows_drive_ads_and_separators(
 
 @pytest.mark.parametrize(
     "unsafe_path",
-    ("files/C:escape.bin", "files/data.bin:stream", r"files\escape.bin"),
+    ["files/C:escape.bin", "files/data.bin:stream", r"files\escape.bin"],
 )
 def test_archive_paths_reject_windows_drive_ads_and_separators(
     backup_context,
@@ -167,7 +171,6 @@ def test_backup_compression_rejects_oversized_staged_payload(
         backup_format,
         "MAX_BACKUP_UNCOMPRESSED_BYTES",
         4,
-        raising=False,
     )
 
     with pytest.raises(
@@ -203,7 +206,6 @@ def test_backup_decryption_rejects_oversized_ciphertext_before_writing(
         backup_format,
         "MAX_BACKUP_COMPRESSED_BYTES",
         4,
-        raising=False,
     )
 
     with pytest.raises(
@@ -232,18 +234,17 @@ def test_backup_key_uses_human_readable_format(backup_context):
     assert backup_context.decode_backup_key(encoded) == key
 
 
-def test_backup_key_decoder_rejects_invalid_human_keys(backup_context):
-    key = bytes(range(32))
-    encoded = backup_context.encode_backup_key(key)
-
-    with pytest.raises(ValueError, match="invalid character"):
-        backup_context.decode_backup_key(f"{encoded[:-1]}0")
-
-    with pytest.raises(ValueError, match="data characters"):
-        backup_context.decode_backup_key(encoded[:-1])
-
-    with pytest.raises(ValueError, match="out of range"):
-        backup_context.decode_backup_key("Z" * 52)
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        pytest.param("A" * 51 + "0", "invalid character", id="ambiguous-character"),
+        pytest.param("AAAA-" + "A" * 47, "data characters", id="wrong-length"),
+        pytest.param("Z" * 52, "out of range", id="out-of-range"),
+    ],
+)
+def test_backup_key_decoder_rejects_invalid_human_keys(backup_context, key, message):
+    with pytest.raises(ValueError, match=message):
+        backup_context.decode_backup_key(key)
 
 
 def test_backup_key_decoder_keeps_legacy_base64url_compatibility(backup_context):
@@ -288,7 +289,7 @@ def test_backup_row_rejects_invalid_datetime_as_format_error(
         _decode_row({"created_at": "not-a-datetime"}, table)
 
 
-@pytest.mark.parametrize("nonce", ("a", "AAAAAAAAAAAAAAAA!"))
+@pytest.mark.parametrize("nonce", ["a", "AAAAAAAAAAAAAAAA!"])
 def test_backup_header_rejects_malformed_base64_nonce(
     backup_context,
     nonce,
@@ -311,7 +312,7 @@ def test_backup_header_rejects_malformed_base64_nonce(
 
 @pytest.mark.parametrize(
     "created_at",
-    ("not-a-time", "2026-09-13T00:00:00"),
+    ["not-a-time", "2026-09-13T00:00:00"],
 )
 def test_backup_header_rejects_invalid_created_at(
     backup_context,
@@ -352,7 +353,7 @@ def test_backup_header_rejects_invalid_core_version(backup_context) -> None:
 
 @pytest.mark.parametrize(
     "layout",
-    ("current", "previous_compiled", "legacy_access_rules"),
+    ["current", "previous_compiled", "legacy_access_rules"],
 )
 def test_pre_scheduling_full_backup_manifest_is_accepted(
     backup_context, layout

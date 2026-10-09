@@ -2,6 +2,8 @@ import pytest
 
 from include.config.version import Version
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize(
     "version",

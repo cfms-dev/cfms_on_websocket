@@ -3,6 +3,8 @@ import pytest
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success, permission_entry
 
+pytestmark = pytest.mark.integration
+
 
 class TestGroupOperations:
     @pytest.mark.asyncio
@@ -128,7 +130,8 @@ class TestGroupOperations:
         response = await authenticated_client.get_group_info(
             "nonexistent_group_xyz_12345"
         )
-        assert response.get("code") in [400, 404]
+        error = assert_error(response, 404)
+        assert error["message"] == "Group does not exist"
 
     @pytest.mark.asyncio
     async def test_delete_group(
@@ -143,7 +146,7 @@ class TestGroupOperations:
         assert_success(delete_response)
 
         info_response = await authenticated_client.get_group_info(group_name)
-        assert info_response.get("code") != 200
+        assert_error(info_response, 404)
 
     @pytest.mark.asyncio
     async def test_create_group_with_duplicate_name(
@@ -152,7 +155,7 @@ class TestGroupOperations:
         response = await authenticated_client.create_group(
             group_name=test_group["group_name"], permissions=[]
         )
-        assert response.get("code") in [400, 409]
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_create_group_with_empty_name(

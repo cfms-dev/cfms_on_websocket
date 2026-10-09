@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import maintenance.operations.deployment as deployment
 from include.runtime_lock import RuntimeLock
 from maintenance.cli import app
+from maintenance.operations import deployment
 from maintenance.operations.deployment import (
     lifecycle as deployment_lifecycle,
 )
@@ -16,6 +16,8 @@ from maintenance.operations.deployment import (
 from maintenance.operations.exceptions import MaintenanceOperationError
 
 from .support import _prepare_deployment, _write_release
+
+pytestmark = pytest.mark.component
 
 
 def test_prune_removes_only_inactive_stored_releases(tmp_path: Path) -> None:

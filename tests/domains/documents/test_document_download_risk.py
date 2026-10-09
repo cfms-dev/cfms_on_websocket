@@ -1,9 +1,13 @@
+import pytest
+
 from include.config.validation import DocumentDownloadRiskPolicy
 from include.domains.documents.download_risk import (
     DownloadRiskLevel,
     DownloadRiskSignals,
     assess_download_risk,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _assess(**overrides):

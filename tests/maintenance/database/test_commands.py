@@ -1,7 +1,10 @@
+import pytest
 from typer.testing import CliRunner
 
 from maintenance.cli import app
 from maintenance.operations.database import DatabaseMigrationResult
+
+pytestmark = pytest.mark.component
 
 
 def test_database_migration_cli_reports_verified_result(monkeypatch, tmp_path) -> None:

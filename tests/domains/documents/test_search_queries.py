@@ -2,8 +2,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import tomlkit
-from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -19,15 +17,9 @@ _SYSOP_READ_RULES = {
 }
 
 
-@pytest.fixture()
-def search_query_context(monkeypatch, tmp_path):
-    config = tomlkit.parse((_SRC_PATH / "config.toml.sample").read_text("utf-8"))
-    config["database"]["type"] = "sqlite"
-    config["database"]["file"] = ":memory:"
-    (tmp_path / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-
-    import include.database.models as models
+@pytest.fixture
+def search_query_context(sqlite_engine_factory):
+    from include.database import models
     from include.database.session import Base
     from include.domains.access.authorization.access_rules import set_access_rules
     from include.domains.access.authorization.evaluation import (
@@ -40,30 +32,21 @@ def search_query_context(monkeypatch, tmp_path):
         fetch_visible_search_candidate_rows,
     )
 
-    engine = create_engine("sqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    engine = sqlite_engine_factory(":memory:")
 
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
-    try:
-        with session_factory() as session:
-            session.add(models.Folder(id="/", name="/", inherit=False))
-            session.commit()
-            yield SimpleNamespace(
-                check_access_for_object=check_access_for_object,
-                fetch_visible_search_candidate_rows=fetch_visible_search_candidate_rows,
-                load_folder_access_context=load_folder_access_context,
-                models=models,
-                session=session,
-                set_access_rules=set_access_rules,
-            )
-    finally:
-        engine.dispose()
+    with session_factory() as session:
+        session.add(models.Folder(id="/", name="/", inherit=False))
+        session.commit()
+        yield SimpleNamespace(
+            check_access_for_object=check_access_for_object,
+            fetch_visible_search_candidate_rows=fetch_visible_search_candidate_rows,
+            load_folder_access_context=load_folder_access_context,
+            models=models,
+            session=session,
+            set_access_rules=set_access_rules,
+        )
 
 
 def _make_user(context, *, permissions=(), username="alice"):
@@ -123,6 +106,7 @@ def _make_folder(
     return folder
 
 
+@pytest.mark.component
 def test_visible_search_query_honors_oae_direct_grant(search_query_context):
     context = search_query_context
     user = _make_user(context)
@@ -161,6 +145,7 @@ def test_visible_search_query_honors_oae_direct_grant(search_query_context):
     assert [item["id"] for item in rows] == [folder.id]
 
 
+@pytest.mark.component
 def test_visible_search_query_honors_compiled_rule_match_modes(
     search_query_context,
 ):
@@ -261,6 +246,7 @@ def test_visible_search_query_honors_compiled_rule_match_modes(
     assert sql_visible_ids == python_visible_ids == {visible_folder.id}
 
 
+@pytest.mark.component
 def test_visible_search_query_honors_inherit_false_boundary(search_query_context):
     context = search_query_context
     user = _make_user(context)
@@ -296,6 +282,7 @@ def test_visible_search_query_honors_inherit_false_boundary(search_query_context
     assert [item["id"] for item in rows] == [child.id]
 
 
+@pytest.mark.component
 def test_visible_search_query_honors_read_block(search_query_context):
     context = search_query_context
     user = _make_user(context)
@@ -332,6 +319,7 @@ def test_visible_search_query_honors_read_block(search_query_context):
     assert rows == []
 
 
+@pytest.mark.component
 def test_visible_search_query_filters_before_limit(search_query_context):
     context = search_query_context
     user = _make_user(context)

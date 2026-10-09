@@ -3,6 +3,8 @@ import uuid
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def s3_integration_provider():

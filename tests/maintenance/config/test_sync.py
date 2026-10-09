@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import tomlkit
 
+from include.config import paths
 from maintenance.operations.config import (
     fill_pepper,
     inspect_config_template,
@@ -10,26 +11,38 @@ from maintenance.operations.config import (
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
 
+pytestmark = pytest.mark.component
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _SAMPLE_SOURCE = (_PROJECT_ROOT / "src" / "config.toml.sample").read_text(
     encoding="utf-8"
 )
 
 
-def _prepare_src(tmp_path: Path, current, template=None) -> Path:
-    src_dir = tmp_path / "src"
-    src_dir.mkdir()
-    (src_dir / "main.py").write_text("", encoding="utf-8")
-    current_source = tomlkit.dumps(current) if not isinstance(current, str) else current
-    template_value = template if template is not None else _SAMPLE_SOURCE
-    template_source = (
-        tomlkit.dumps(template_value)
-        if not isinstance(template_value, str)
-        else template_value
-    )
-    (src_dir / "config.toml").write_text(current_source, encoding="utf-8")
-    (src_dir / "config.toml.sample").write_text(template_source, encoding="utf-8")
-    return src_dir
+@pytest.fixture
+def config_runtime(tmp_path, monkeypatch):
+    def prepare_runtime(current, template=None) -> Path:
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "main.py").write_text("", encoding="utf-8")
+        current_source = (
+            tomlkit.dumps(current) if not isinstance(current, str) else current
+        )
+        template_value = template if template is not None else _SAMPLE_SOURCE
+        template_source = (
+            tomlkit.dumps(template_value)
+            if not isinstance(template_value, str)
+            else template_value
+        )
+        (src_dir / "config.toml").write_text(current_source, encoding="utf-8")
+        (src_dir / "config.toml.sample").write_text(template_source, encoding="utf-8")
+        monkeypatch.setattr(paths, "EXECUTABLE_ABSPATH", src_dir)
+        monkeypatch.setattr(paths, "PROJECT_ABSPATH", src_dir.parent)
+        monkeypatch.setattr(paths, "EXTENSION_ROOT", src_dir / "include" / "extensions")
+        monkeypatch.chdir(src_dir)
+        return src_dir
+
+    return prepare_runtime
 
 
 def _move_oidc_config_to_legacy_section(current, *, enabled):
@@ -38,8 +51,37 @@ def _move_oidc_config_to_legacy_section(current, *, enabled):
     current["sso"] = {"oidc": oidc}
 
 
-def test_sync_adds_template_settings_preserves_values_and_is_idempotent(
-    monkeypatch, tmp_path
+def test_config_inspection_reports_unknown_settings(config_runtime):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    current["server"]["local_setting"] = "keep-me"
+    config_runtime(current)
+
+    inspection = inspect_config_template()
+
+    assert inspection.unknown_paths == ("server.local_setting",)
+
+
+def test_sync_preview_reports_missing_and_preserved_settings_without_writing(
+    config_runtime,
+):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    del current["server"]["trusted_proxy_networks"]
+    current["server"]["local_setting"] = "keep-me"
+    src_dir = config_runtime(current)
+    original_source = (src_dir / "config.toml").read_bytes()
+
+    preview = sync_config_template(write=False)
+
+    assert preview.changed is True
+    assert preview.backup_path is None
+    assert "server.trusted_proxy_networks" in preview.added_paths
+    assert preview.preserved_paths == ("server.local_setting",)
+    assert (src_dir / "config.toml").read_bytes() == original_source
+    assert list(src_dir.glob("config.toml.backup-*")) == []
+
+
+def test_sync_adds_template_settings_and_preserves_operator_values_and_comments(
+    config_runtime,
 ):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     del current["server"]["trusted_proxy_networks"]
@@ -47,18 +89,8 @@ def test_sync_adds_template_settings_preserves_values_and_is_idempotent(
     current["server"]["name"].comment("operator choice")
     current["server"]["local_setting"] = "keep-me"
     current["server"]["secret_key"] = "sensitive-value"
-    src_dir = _prepare_src(tmp_path, current)
+    src_dir = config_runtime(current)
     original_source = (src_dir / "config.toml").read_text(encoding="utf-8")
-    monkeypatch.chdir(src_dir)
-
-    inspection = inspect_config_template()
-    preview = sync_config_template(write=False)
-
-    assert inspection.unknown_paths == ("server.local_setting",)
-    assert preview.changed is True
-    assert preview.backup_path is None
-    assert "server.trusted_proxy_networks" in preview.added_paths
-    assert preview.preserved_paths == ("server.local_setting",)
 
     result = sync_config_template()
     synchronized_source = (src_dir / "config.toml").read_text(encoding="utf-8")
@@ -74,21 +106,35 @@ def test_sync_adds_template_settings_preserves_values_and_is_idempotent(
         "::1/128",
     ]
     assert 'name = "Operator Server" # operator choice' in synchronized_source
-    assert sync_config_template(write=False).changed is False
+
+
+def test_sync_is_idempotent_and_does_not_create_a_second_backup(config_runtime):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    del current["server"]["trusted_proxy_networks"]
+    src_dir = config_runtime(current)
+    sync_config_template()
+    synchronized_source = (src_dir / "config.toml").read_bytes()
+    existing_backups = list(src_dir.glob("config.toml.backup-*"))
+
+    repeated = sync_config_template()
+
+    assert repeated.changed is False
+    assert repeated.backup_path is None
+    assert (src_dir / "config.toml").read_bytes() == synchronized_source
+    assert list(src_dir.glob("config.toml.backup-*")) == existing_backups
 
 
 def test_fill_pepper_keeps_original_config_when_atomic_replace_fails(
     monkeypatch,
-    tmp_path,
+    config_runtime,
 ):
     from maintenance.operations.config import sync as config_sync
 
     current = tomlkit.parse(_SAMPLE_SOURCE)
     current["security"]["pepper"] = ""
-    src_dir = _prepare_src(tmp_path, current)
+    src_dir = config_runtime(current)
     config_path = src_dir / "config.toml"
     original_source = config_path.read_bytes()
-    monkeypatch.chdir(src_dir)
 
     def fail_replace(*_args) -> None:
         raise OSError("simulated atomic replace failure")
@@ -103,11 +149,9 @@ def test_fill_pepper_keeps_original_config_when_atomic_replace_fails(
 
 
 def test_fill_pepper_rejects_non_table_security_section(
-    monkeypatch,
-    tmp_path,
+    config_runtime,
 ) -> None:
-    src_dir = _prepare_src(tmp_path, 'security = "invalid"\n')
-    monkeypatch.chdir(src_dir)
+    config_runtime('security = "invalid"\n')
 
     with pytest.raises(MaintenanceOperationError, match="security must be a table"):
         fill_pepper()
@@ -148,7 +192,7 @@ def test_atomic_config_write_refuses_to_overwrite_same_timestamp_backup(
     assert config_path.read_bytes() == b"second\n"
 
 
-def test_sync_applies_all_known_legacy_migrations(monkeypatch, tmp_path):
+def test_sync_applies_all_known_legacy_migrations(config_runtime):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     current["database"]["db_name"] = "legacy_database"
     del current["database"]["name"]
@@ -167,8 +211,7 @@ def test_sync_applies_all_known_legacy_migrations(monkeypatch, tmp_path):
     current["security"]["passwd_must_contain"] = [["A", "B"], "01"]
     del current["security"]["passwd_rules"]
     del current["security"]["passwd_min_passed_count"]
-    src_dir = _prepare_src(tmp_path, current)
-    monkeypatch.chdir(src_dir)
+    src_dir = config_runtime(current)
 
     result = sync_config_template()
     synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
@@ -197,7 +240,7 @@ def test_sync_applies_all_known_legacy_migrations(monkeypatch, tmp_path):
 
 
 def test_sync_keeps_new_targets_and_warns_for_unconvertible_values(
-    monkeypatch, tmp_path
+    config_runtime,
 ):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     current["database"]["db_name"] = "legacy_database"
@@ -208,8 +251,7 @@ def test_sync_keeps_new_targets_and_warns_for_unconvertible_values(
     current["extensions"]["oidc_sso"] = {"issuer": "https://new.example"}
     current["security"]["passwd_must_contain"] = [["AB"]]
     current["document"]["upload"]["creation_rate_per_user"] = 0
-    src_dir = _prepare_src(tmp_path, current)
-    monkeypatch.chdir(src_dir)
+    src_dir = config_runtime(current)
 
     result = sync_config_template()
     synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
@@ -233,12 +275,11 @@ def test_sync_keeps_new_targets_and_warns_for_unconvertible_values(
     assert len(result.warnings) == 3
 
 
-def test_sync_preserves_other_settings_beside_legacy_oidc(monkeypatch, tmp_path):
+def test_sync_preserves_other_settings_beside_legacy_oidc(config_runtime):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     _move_oidc_config_to_legacy_section(current, enabled=False)
     current["sso"]["saml"] = {"metadata_url": "https://idp.example/metadata"}
-    src_dir = _prepare_src(tmp_path, current)
-    monkeypatch.chdir(src_dir)
+    src_dir = config_runtime(current)
 
     result = sync_config_template()
     synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
@@ -250,12 +291,13 @@ def test_sync_preserves_other_settings_beside_legacy_oidc(monkeypatch, tmp_path)
     assert result.preserved_paths == ("sso.saml",)
 
 
-def test_sync_removes_selected_unknown_paths_and_can_prune(monkeypatch, tmp_path):
+def test_sync_removes_selected_unknown_paths_and_preserves_other_unknowns(
+    config_runtime,
+):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     current["server"]["old_setting"] = 1
     current["custom"] = {"enabled": True}
-    src_dir = _prepare_src(tmp_path, current)
-    monkeypatch.chdir(src_dir)
+    src_dir = config_runtime(current)
 
     selected = sync_config_template(
         remove_paths=("server.old_setting",),
@@ -267,24 +309,41 @@ def test_sync_removes_selected_unknown_paths_and_can_prune(monkeypatch, tmp_path
     assert "old_setting" not in synchronized["server"]
     assert synchronized["custom"]["enabled"] is True
 
+
+def test_sync_prunes_all_unknown_settings(config_runtime):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    current["custom"] = {"enabled": True}
+    src_dir = config_runtime(current)
+
     pruned = sync_config_template(prune=True)
     synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
 
     assert pruned.removed_paths == ("custom",)
     assert "custom" not in synchronized
+
+
+def test_sync_rejects_remove_path_that_is_not_unknown_without_writing(
+    config_runtime,
+):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    src_dir = config_runtime(current)
+    original_source = (src_dir / "config.toml").read_bytes()
+
     with pytest.raises(MaintenanceOperationError, match="Unknown --remove"):
         sync_config_template(remove_paths=("server.not_present",), write=False)
 
+    assert (src_dir / "config.toml").read_bytes() == original_source
+    assert list(src_dir.glob("config.toml.backup-*")) == []
 
-def test_invalid_synchronized_config_does_not_write_or_back_up(monkeypatch, tmp_path):
+
+def test_invalid_synchronized_config_does_not_write_or_back_up(config_runtime):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     del current["server"]["file_chunk_size"]
     template = tomlkit.parse(_SAMPLE_SOURCE)
     template["server"]["file_chunk_size"] = 0
-    src_dir = _prepare_src(tmp_path, current, template)
+    src_dir = config_runtime(current, template)
     config_path = src_dir / "config.toml"
     original_source = config_path.read_text(encoding="utf-8")
-    monkeypatch.chdir(src_dir)
 
     with pytest.raises(MaintenanceOperationError, match="positive integer"):
         sync_config_template()
@@ -301,25 +360,23 @@ def test_invalid_synchronized_config_does_not_write_or_back_up(monkeypatch, tmp_
     ],
 )
 def test_sync_rejects_missing_or_invalid_template(
-    monkeypatch, tmp_path, template_source, message
+    config_runtime, template_source, message
 ):
     current = tomlkit.parse(_SAMPLE_SOURCE)
-    src_dir = _prepare_src(tmp_path, current)
+    src_dir = config_runtime(current)
     template_path = src_dir / "config.toml.sample"
     if template_source is None:
         template_path.unlink()
     else:
         template_path.write_text(template_source, encoding="utf-8")
-    monkeypatch.chdir(src_dir)
 
     with pytest.raises(MaintenanceOperationError, match=message):
         sync_config_template()
 
 
-def test_sync_rejects_invalid_current_document_without_writing(monkeypatch, tmp_path):
-    src_dir = _prepare_src(tmp_path, "[server")
+def test_sync_rejects_invalid_current_document_without_writing(config_runtime):
+    src_dir = config_runtime("[server")
     config_path = src_dir / "config.toml"
-    monkeypatch.chdir(src_dir)
 
     with pytest.raises(
         MaintenanceOperationError, match="Unable to read configuration documents"

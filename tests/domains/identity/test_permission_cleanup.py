@@ -1,35 +1,33 @@
 from pathlib import Path
-from shutil import copyfile
 
 import pytest
-from sqlalchemy import create_engine, event, select, update
+from sqlalchemy import event, select, update
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
-def permission_cleanup_context(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
+def permission_cleanup_context(tmp_path, sqlite_engine_factory):
     from include.database.models.identity import (
         User,
         UserGroup,
         UserGroupPermission,
         UserPermission,
     )
-    from include.database.session import Base, global_config
+    from include.database.session import Base
     from include.domains.identity.commands.permission_cleanup import (
         count_expired_permission_entries,
         purge_expired_permission_entries,
     )
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'permissions.db'}")
+    engine = sqlite_engine_factory(tmp_path / "permissions.db")
     Base.metadata.create_all(engine)
     test_session = sessionmaker(bind=engine)
 
-    yield {
+    return {
         "User": User,
         "UserGroup": UserGroup,
         "UserGroupPermission": UserGroupPermission,
@@ -38,9 +36,6 @@ def permission_cleanup_context(monkeypatch, tmp_path):
         "purge": purge_expired_permission_entries,
         "session": test_session,
     }
-
-    global_config.stop()
-    engine.dispose()
 
 
 def _seed_permission_entries(context) -> None:

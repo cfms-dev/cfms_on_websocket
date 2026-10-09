@@ -1,16 +1,9 @@
-from pathlib import Path
-from shutil import copyfile
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _prepare_config(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
+pytestmark = pytest.mark.unit
 
 
 def _allow_routed_request(monkeypatch, router):
@@ -62,9 +55,7 @@ def _capture_pool_overload(monkeypatch, router, retry_after_seconds):
     return responses, released
 
 
-def test_log_handler_result_maps_all_audit_fields(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_log_handler_result_maps_all_audit_fields(monkeypatch):
     from include.transport import router
     from include.transport.request_handler import Result
 
@@ -114,11 +105,7 @@ def test_log_handler_result_maps_all_audit_fields(monkeypatch, tmp_path):
     ]
 
 
-def test_router_returns_429_before_constructing_rate_limited_handler(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_router_returns_429_before_constructing_rate_limited_handler(monkeypatch):
     from include.domains.security.guards.request_rate_control import (
         RequestRateControlDecision,
     )
@@ -175,11 +162,7 @@ def test_router_returns_429_before_constructing_rate_limited_handler(
     ]
 
 
-def test_router_closes_multiplexer_with_policy_violation_for_denied_ip(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_router_closes_multiplexer_with_policy_violation_for_denied_ip(monkeypatch):
     from include.transport import router
 
     close_calls = []
@@ -210,11 +193,7 @@ def test_router_closes_multiplexer_with_policy_violation_for_denied_ip(
     ]
 
 
-def test_connection_handler_closes_websocket_before_post_disconnect(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_connection_handler_closes_websocket_before_post_disconnect(monkeypatch):
     from include.transport import router
 
     events = []
@@ -285,9 +264,7 @@ def test_connection_handler_closes_websocket_before_post_disconnect(
     ]
 
 
-def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
     import orjson
     from pydantic import Field, field_validator
 
@@ -402,11 +379,7 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch, tmp
     }
 
 
-def test_router_keeps_validated_request_data_as_the_original_dict(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_router_keeps_validated_request_data_as_the_original_dict(monkeypatch):
     from include.transport import router
     from include.transport.request_handler import RequestDataModel
 
@@ -464,9 +437,7 @@ def test_router_keeps_validated_request_data_as_the_original_dict(
     assert handled_data[0] is request_data
 
 
-def test_request_admission_is_released_when_handler_raises(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_request_admission_is_released_when_handler_raises(monkeypatch):
     from include.transport import router
 
     released = []
@@ -489,9 +460,7 @@ def test_request_admission_is_released_when_handler_raises(monkeypatch, tmp_path
     assert released == [connection]
 
 
-def test_authentication_pool_timeout_returns_retryable_503(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_authentication_pool_timeout_returns_retryable_503(monkeypatch):
     from include.transport import router
 
     class FakeConnectionHandler:
@@ -525,11 +494,7 @@ def test_authentication_pool_timeout_returns_retryable_503(monkeypatch, tmp_path
     assert released == [connection]
 
 
-def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(monkeypatch):
     from include.transport import router
 
     reported_errors = []
@@ -581,9 +546,7 @@ def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(
     assert released == [connection]
 
 
-def test_non_pool_handler_failure_keeps_generic_500_response(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_non_pool_handler_failure_keeps_generic_500_response(monkeypatch):
     from include.transport import router
 
     reported_errors = []
@@ -624,9 +587,7 @@ def test_non_pool_handler_failure_keeps_generic_500_response(monkeypatch, tmp_pa
     assert code == 500
 
 
-def test_login_throttled_response_returns_result(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_login_throttled_response_returns_result(monkeypatch):
     from include.domains.identity.handlers import auth
     from include.domains.identity.handlers.auth import RequestLoginHandler
     from include.domains.security.guards.login import (
@@ -672,11 +633,7 @@ def _throttled_decision():
     return ThrottleDecision(False, ThrottleScope.ACCOUNT, retry_after_seconds=45)
 
 
-def test_totp_setup_validation_does_not_use_authentication_throttle(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_totp_setup_validation_does_not_use_authentication_throttle(monkeypatch):
     from include.domains.security.handlers import two_factor
     from include.domains.security.handlers.two_factor import RequestValidate2FAHandler
 
@@ -747,9 +704,7 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
     ]
 
 
-def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
     from include.domains.security.handlers import two_factor
     from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
 
@@ -772,27 +727,30 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch, tm
     assert responses[0][0][1] == {"retry_after_seconds": 45}
 
 
-def test_disable_2fa_request_requires_a_credential(monkeypatch, tmp_path):
-    _prepare_config(monkeypatch, tmp_path)
+def test_disable_2fa_request_accepts_a_credential(monkeypatch):
+    from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
 
+    request = RequestDisable2FAHandler.request_model.model_validate(
+        {"password": "secret"}
+    )
+
+    assert request.password == "secret"
+
+
+@pytest.mark.parametrize(
+    "request_data", [{}, {"password": None}], ids=["missing", "null"]
+)
+def test_disable_2fa_request_requires_a_credential(monkeypatch, request_data):
     from pydantic import ValidationError
 
     from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
 
-    RequestDisable2FAHandler.request_model.model_validate({"password": "secret"})
-
-    with pytest.raises(ValidationError):
-        RequestDisable2FAHandler.request_model.model_validate({})
-    with pytest.raises(ValidationError):
-        RequestDisable2FAHandler.request_model.model_validate({"password": None})
+    with pytest.raises(ValidationError, match="password"):
+        RequestDisable2FAHandler.request_model.model_validate(request_data)
 
 
 @pytest.mark.parametrize("old_passwd", ["", "wrong"])
-def test_password_change_uses_authentication_throttle(
-    monkeypatch, tmp_path, old_passwd
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
     from include.transport.request_handler import Result
@@ -900,11 +858,7 @@ def _allow_password_authentication(monkeypatch, users):
     )
 
 
-def test_password_change_wrong_credentials_do_not_disclose_user_existence(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_password_change_wrong_credentials_do_not_disclose_user_existence(monkeypatch):
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
     from include.transport.request_handler import Result
@@ -968,14 +922,11 @@ def test_password_change_wrong_credentials_do_not_disclose_user_existence(
 )
 def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
     monkeypatch,
-    tmp_path,
     operator,
     token,
     expected_code,
     expected_message,
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
 
@@ -1004,10 +955,8 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
 
 
 def test_password_reset_reports_missing_target_after_operator_authorization(
-    monkeypatch, tmp_path
+    monkeypatch,
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.domains.access.permissions import Permissions
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
@@ -1031,11 +980,7 @@ def test_password_reset_reports_missing_target_after_operator_authorization(
     assert session.commit_count == 0
 
 
-def test_self_password_change_commits_and_attributes_audit_to_target(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_self_password_change_commits_and_attributes_audit_to_target(monkeypatch):
     from include.database.models.identity import UserStatus
     from include.domains.access.permissions import Permissions
     from include.domains.identity.handlers import users
@@ -1070,10 +1015,8 @@ def test_self_password_change_commits_and_attributes_audit_to_target(
 
 
 def test_self_password_change_rejects_privileged_flags_after_authentication(
-    monkeypatch, tmp_path
+    monkeypatch,
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
     from include.transport.request_handler import Result
@@ -1113,11 +1056,7 @@ def test_self_password_change_rejects_privileged_flags_after_authentication(
     assert session.commit_count == 0
 
 
-def test_privileged_password_reset_can_bypass_policy_and_force_expiration(
-    monkeypatch, tmp_path
-):
-    _prepare_config(monkeypatch, tmp_path)
-
+def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkeypatch):
     from include.domains.access.permissions import Permissions
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler

@@ -8,10 +8,10 @@ from maintenance.operations.extensions import packages as extension_packages
 
 from .support import _enabled, _prepare_src, _write_installed_extension, _write_package
 
+pytestmark = pytest.mark.component
 
-def test_enable_adds_dependencies_and_disable_cascades_to_dependents(
-    tmp_path, monkeypatch
-):
+
+def test_enable_adds_dependencies_before_the_requested_extension(tmp_path, monkeypatch):
     src, root = _prepare_src(tmp_path, monkeypatch)
     _write_installed_extension(root, "dependency")
     _write_installed_extension(root, "consumer", dependencies={"dependency": "1.0.0"})
@@ -23,7 +23,17 @@ def test_enable_adds_dependencies_and_disable_cascades_to_dependents(
     assert _enabled(src) == ("dependency", "consumer")
     assert enabled.config_backup_path is not None
 
-    extension_operations.enable_extension("unrelated", write=True)
+
+def test_disable_cascades_to_dependents_and_preserves_unrelated_extensions(
+    tmp_path, monkeypatch
+):
+    src, root = _prepare_src(
+        tmp_path, monkeypatch, enabled=("dependency", "consumer", "unrelated")
+    )
+    _write_installed_extension(root, "dependency")
+    _write_installed_extension(root, "consumer", dependencies={"dependency": "1.0.0"})
+    _write_installed_extension(root, "unrelated")
+
     disabled = extension_operations.disable_extension("dependency", write=True)
 
     assert disabled.enabled_removed == ("dependency", "consumer")
@@ -42,29 +52,42 @@ def test_enable_is_idempotent_without_creating_a_backup(tmp_path, monkeypatch):
     assert list(src.glob("config.toml.backup-*")) == []
 
 
-def test_enable_rejects_missing_low_version_cycles_and_core_incompatibility(
-    tmp_path, monkeypatch
-):
+def test_enable_rejects_missing_dependency(tmp_path, monkeypatch):
     _, root = _prepare_src(tmp_path, monkeypatch)
     _write_installed_extension(
         root, "missing_consumer", dependencies={"missing_dependency": "1.0.0"}
     )
+
+    with pytest.raises(MaintenanceOperationError, match="not installed"):
+        extension_operations.enable_extension("missing_consumer")
+
+
+def test_enable_rejects_dependency_below_required_version(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     _write_installed_extension(root, "old_dependency", version="1.0.0")
     _write_installed_extension(
         root, "version_consumer", dependencies={"old_dependency": "2.0.0"}
     )
-    _write_installed_extension(root, "cycle_a", dependencies={"cycle_b": "1.0.0"})
-    _write_installed_extension(root, "cycle_b", dependencies={"cycle_a": "1.0.0"})
-    _write_installed_extension(root, "future_ext", minimum_server_version="99.0.0")
 
-    with pytest.raises(MaintenanceOperationError, match="not installed"):
-        extension_operations.enable_extension("missing_consumer")
     with pytest.raises(MaintenanceOperationError, match="2.0.0 or newer"):
         extension_operations.enable_extension("version_consumer")
+
+
+def test_enable_rejects_dependency_cycle(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
+    _write_installed_extension(root, "cycle_a", dependencies={"cycle_b": "1.0.0"})
+    _write_installed_extension(root, "cycle_b", dependencies={"cycle_a": "1.0.0"})
+
     with pytest.raises(
         MaintenanceOperationError, match="cycle_a -> cycle_b -> cycle_a"
     ):
         extension_operations.enable_extension("cycle_a")
+
+
+def test_enable_rejects_extension_for_a_newer_server(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
+    _write_installed_extension(root, "future_ext", minimum_server_version="99.0.0")
+
     with pytest.raises(
         MaintenanceOperationError, match="requires server version 99.0.0"
     ):
@@ -188,16 +211,36 @@ def test_uninstall_restores_code_when_config_update_fails(tmp_path, monkeypatch)
     assert list(root.glob(".cfms-extension-*")) == []
 
 
-def test_builtin_is_immutable_and_stale_transactions_block_mutations(
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        pytest.param(
+            extension_operations.disable_extension, "always enabled", id="disable"
+        ),
+        pytest.param(
+            extension_operations.uninstall_extension,
+            "cannot be uninstalled",
+            id="uninstall",
+        ),
+    ],
+)
+def test_builtin_extension_cannot_be_disabled_or_uninstalled(
+    tmp_path, monkeypatch, operation, message
+):
+    src, root = _prepare_src(tmp_path, monkeypatch)
+    original_config = (src / "config.toml").read_bytes()
+
+    with pytest.raises(MaintenanceOperationError, match=message):
+        operation("builtin")
+
+    assert (root / "builtin").is_dir()
+    assert (src / "config.toml").read_bytes() == original_config
+
+
+def test_stale_transactions_block_mutations_but_allow_catalog_inspection(
     tmp_path, monkeypatch
 ):
     _, root = _prepare_src(tmp_path, monkeypatch)
-
-    with pytest.raises(MaintenanceOperationError, match="always enabled"):
-        extension_operations.disable_extension("builtin")
-    with pytest.raises(MaintenanceOperationError, match="cannot be uninstalled"):
-        extension_operations.uninstall_extension("builtin")
-
     stale = root / ".cfms-extension-rollback-sample-deadbeef"
     stale.mkdir()
     assert extension_operations.inspect_extensions().extensions

@@ -1,9 +1,13 @@
+import pytest
+
 from include.config.validation import DocumentCreationRiskPolicy
 from include.domains.documents.creation_risk import (
     CreationRiskLevel,
     CreationRiskSignals,
     assess_creation_risk,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _assess(**overrides):
