@@ -41,15 +41,11 @@ jobs:
         fetch-depth: 0
         submodules: recursive
     
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v7
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Set up uv
+    - name: Set up uv and Python ${{ matrix.python-version }}
       uses: astral-sh/setup-uv@v10.2.0
       with:
         version: "latest"
+        python-version: ${{ matrix.python-version }}
     
     - name: Install dependencies
       run: |
@@ -115,15 +111,11 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
-      uses: actions/setup-python@v7
-      with:
-        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
-
-    - name: Set up uv
+    - name: Set up uv and Python ${{ env.PRIMARY_PYTHON_VERSION }}
       uses: astral-sh/setup-uv@v10.2.0
       with:
         version: "latest"
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
     - name: Install Redis provider test dependencies
       run: uv sync --locked --dev --extra cluster --extra ext-scheduling-cluster
@@ -175,15 +167,11 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
-      uses: actions/setup-python@v7
-      with:
-        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
-
-    - name: Set up uv
+    - name: Set up uv and Python ${{ env.PRIMARY_PYTHON_VERSION }}
       uses: astral-sh/setup-uv@v10.2.0
       with:
         version: "latest"
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
     - name: Install test and MySQL dependencies
       run: uv sync --locked --dev --extra mysql
@@ -230,15 +218,11 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
-      uses: actions/setup-python@v7
-      with:
-        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
-
-    - name: Set up uv
+    - name: Set up uv and Python ${{ env.PRIMARY_PYTHON_VERSION }}
       uses: astral-sh/setup-uv@v10.2.0
       with:
         version: "latest"
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
     - name: Install test and PostgreSQL dependencies
       run: uv sync --locked --dev --extra postgresql
@@ -274,15 +258,11 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
-      uses: actions/setup-python@v7
-      with:
-        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
-
-    - name: Set up uv
+    - name: Set up uv and Python ${{ env.PRIMARY_PYTHON_VERSION }}
       uses: astral-sh/setup-uv@v10.2.0
       with:
         version: "latest"
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
     - name: Install release smoke dependencies
       run: uv sync --locked --dev

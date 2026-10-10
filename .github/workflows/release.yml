@@ -114,15 +114,11 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
-        uses: actions/setup-python@v7
-        with:
-          python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
-
-      - name: Set up uv
+      - name: Set up uv and Python ${{ env.PRIMARY_PYTHON_VERSION }}
         uses: astral-sh/setup-uv@v10.2.0
         with:
           version: "latest"
+          python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
       - name: Validate release tag
         shell: bash
@@ -135,7 +131,7 @@ jobs:
           fi
 
           version="${tag#v}"
-          project_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          project_version="$(uv run --locked --no-sync python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           if [[ "${version}" != "${project_version}" ]]; then
             echo "Tag version ${version} does not match project version ${project_version}" >&2
             exit 1
@@ -146,12 +142,12 @@ jobs:
 
       - name: Validate synchronized release metadata
         run: >-
-          python tools/manage_release.py check "${VERSION}"
+          uv run --locked --no-sync python tools/manage_release.py check "${VERSION}"
           --notes-output "${RUNNER_TEMP}/release-notes.md"
 
       - name: Build release archives
         run: >-
-          python tools/build_release.py
+          uv run --locked --no-sync python tools/build_release.py
           --version "${VERSION}"
           --source-date-epoch "${SOURCE_DATE_EPOCH}"
           --output-dir dist

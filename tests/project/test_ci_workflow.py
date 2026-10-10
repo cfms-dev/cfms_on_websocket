@@ -162,3 +162,22 @@ def test_backend_ci_requires_real_execution_without_skips(
     )
     assert artifact["if"] == "always()"
     assert artifact["with"]["path"] == "test-results/"
+
+
+@pytest.mark.parametrize(
+    "workflow_file",
+    ["test.yml", "performance.yml", "release.yml"],
+)
+def test_workflows_manage_python_via_setup_uv_without_setup_python(workflow_file):
+    workflow = yaml.safe_load(
+        (PROJECT_ROOT / ".github" / "workflows" / workflow_file).read_text(
+            encoding="utf-8"
+        )
+    )
+    for job in workflow.get("jobs", {}).values():
+        steps = job.get("steps", [])
+        for step in steps:
+            uses = step.get("uses", "")
+            assert not uses.startswith("actions/setup-python")
+            if uses.startswith("astral-sh/setup-uv"):
+                assert "python-version" in step.get("with", {})

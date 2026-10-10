@@ -19,7 +19,7 @@ required test check is introduced, replace the event-level filter with a
 lightweight required job and conditionally skip only the expensive test jobs.
 
 ### What it does:
-1. Sets up the Python 3.15 environment selected by the workflow
+1. Sets up the Python 3.15 environment selected by the workflow via uv
 2. Installs project dependencies and test requirements
 3. Requires a Towncrier fragment on pull requests unless the pull request has
    the `skip-changelog` label
@@ -34,7 +34,7 @@ lightweight required job and conditionally skip only the expensive test jobs.
 ### Configuration:
 - **Timeout**: 10 minutes per main-layer test step; pytest's 120-second watchdog
   includes individual-case setup and teardown
-- **Python version**: Tests run on Python 3.15
+- **Python version**: Tests run on Python 3.15 managed by uv
 - **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
   9.7 LTS
 - **Artifacts**: JUnit XML, test cache and server logs are uploaded for debugging;
