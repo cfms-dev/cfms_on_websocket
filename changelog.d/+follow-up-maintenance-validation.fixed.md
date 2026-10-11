@@ -1,1 +1,0 @@
-Maintenance backup and deployment validation now enforces consistent extension resource limits, rejects contradictory file identities and malformed release manifests, and completes independent rollback attempts.

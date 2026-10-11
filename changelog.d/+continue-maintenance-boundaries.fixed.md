@@ -1,2 +1,0 @@
-- Validate backup configuration metadata and deployment JSON encoding at their format boundaries.
-- Bound extension state copies and exact stored-release traversal while rejecting filesystem links and undeclared directories.

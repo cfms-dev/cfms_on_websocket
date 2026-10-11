@@ -9,9 +9,32 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.10.1...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.11.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.11.0) - 2026-10-11
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.10.1...v0.11.0)</small>
+
+### Changed
+
+- The test suite now enforces execution layers, uses production SQLite constraints, bounds client waits, and checks OIDC callbacks and one-time backup codes; CI reports each layer separately and requires real backend tests to execute.
+- Windows local-file writeability checks now use the Python standard library so free-threaded Python installations no longer require pywin32.
+
+### Fixed
+
+- - Keep backup file payloads tied to their exported database snapshot and reject incomplete active file records.
+  - Reject undeclared backup members, empty component claims, and release manifests without an explicit Python requirement.
+- - Reject backup payload tables and storage files that contradict their declared components or database rows.
+  - Preserve existing configuration backups and translate malformed backup metadata into consistent format errors.
+- - Validate backup configuration metadata and deployment JSON encoding at their format boundaries.
+  - Bound extension state copies and exact stored-release traversal while rejecting filesystem links and undeclared directories.
+- Backup restore now consistently enforces archive and row limits, rejects unsafe Windows paths, accepts case-insensitive SHA-256 text, and keeps deployment rollback recoverable when release or extension copies fail.
+- Initialize the isolated test runtime before pytest loads child conftest files, and clean it up even when configuration fails, fixing CI collection errors caused by a missing config.toml.
+- Maintenance backup and deployment validation now enforces consistent extension resource limits, rejects contradictory file identities and malformed release manifests, and completes independent rollback attempts.
+- Maintenance backup, deployment, and extension workflows now apply consistent row-size, stored-release, transaction-state, and extension-manifest validation across export and recovery paths.
+
 
 ## [v0.10.1](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.10.1) - 2026-09-13
 
