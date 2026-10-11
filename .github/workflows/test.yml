@@ -24,29 +24,32 @@ on:
       - ".gitignore"
   workflow_call:
 
+env:
+  PRIMARY_PYTHON_VERSION: "3.15"
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     
     strategy:
       matrix:
-        python-version: ["3.14"]
+        python-version: &python-versions ["3.15"]
     
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         fetch-depth: 0
         submodules: recursive
     
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ matrix.python-version }}
 
     - name: Set up uv
-      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
-        version: "0.11.16"
+        version: "latest"
     
     - name: Install dependencies
       run: |
@@ -59,9 +62,19 @@ jobs:
       run: |
         uv run --locked towncrier check --compare-with "origin/${BASE_REF}"
     
-    - name: Run tests with pytest
+    - name: Run unit tests
       run: |
-        uv run pytest tests/ -v --tb=short
+        uv run --locked pytest tests/ -m "unit and not stress" --junitxml=test-results/unit.xml --durations=25
+      timeout-minutes: 10
+
+    - name: Run component tests
+      run: |
+        uv run --locked pytest tests/ -m "component and not stress" --junitxml=test-results/component.xml --durations=25
+      timeout-minutes: 10
+
+    - name: Run integration tests
+      run: |
+        uv run --locked pytest tests/ -m "integration and not stress" --junitxml=test-results/integration.xml --durations=25
       timeout-minutes: 10
 
     - name: Verify test configuration cleanup
@@ -81,10 +94,62 @@ jobs:
           .pytest_cache/
           src/content/logs/
           test_logs/
+          test-results/
+        retention-days: 7
+
+  redis-provider-behavior:
+    runs-on: ubuntu-26.04
+    services:
+      redis:
+        image: redis:8.2.10-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v10.2.0
+      with:
+        version: "latest"
+
+    - name: Install Redis provider test dependencies
+      run: uv sync --locked --dev --extra cluster --extra ext-scheduling-cluster
+
+    - name: Run real Redis provider behavior tests
+      env:
+        CFMS_TEST_REDIS_URL: "redis://127.0.0.1:6379/0"
+      run: |
+        test -n "$CFMS_TEST_REDIS_URL"
+        uv run --locked pytest tests/providers/test_redis_lua_integration.py -q --junitxml=test-results/redis.xml --durations=25
+      timeout-minutes: 5
+
+    - name: Require executed Redis behavior tests
+      run: |
+        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/redis.xml').findall('.//testcase'); assert cases, 'No Redis tests executed'; assert all(case.find('skipped') is None for case in cases), 'Redis tests unexpectedly skipped'"
+
+    - name: Upload Redis test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: redis-test-results
+        path: test-results/
         retention-days: 7
 
   mysql-database-migration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -106,19 +171,19 @@ jobs:
           --health-retries=10
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
 
-    - name: Set up Python 3.14
-      uses: actions/setup-python@v6
+    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
+      uses: actions/setup-python@v7
       with:
-        python-version: "3.14"
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
     - name: Set up uv
-      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
-        version: "0.11.16"
+        version: "latest"
 
     - name: Install test and MySQL dependencies
       run: uv sync --locked --dev --extra mysql
@@ -127,14 +192,24 @@ jobs:
       env:
         CFMS_TEST_MYSQL_URL: "mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_migration?charset=utf8mb4"
       run: |
-        uv run --locked pytest tests/scheduling/test_engine_shared_database.py -q
-        uv run --locked pytest tests/domains/documents/test_upload_cleanup_mysql.py -q
-        uv run --locked pytest tests/domains/documents/test_rate_limits_mysql.py -q
-        uv run --locked pytest tests/maintenance/database/test_mysql.py -q
+        test -n "$CFMS_TEST_MYSQL_URL"
+        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database tests/domains/documents/test_upload_cleanup_mysql.py tests/domains/documents/test_rate_limits_mysql.py tests/maintenance/database/test_mysql.py -k mysql -q --junitxml=test-results/mysql.xml --durations=25
       timeout-minutes: 10
 
+    - name: Require executed MySQL integration tests
+      run: |
+        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/mysql.xml').findall('.//testcase'); assert cases, 'No MySQL tests executed'; assert all(case.find('skipped') is None for case in cases), 'MySQL tests unexpectedly skipped'"
+
+    - name: Upload MySQL test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: mysql-test-results-${{ matrix.mysql-version }}
+        path: test-results/
+        retention-days: 7
+
   postgresql-scheduling-concurrency:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     services:
       postgresql:
         image: postgres:18
@@ -151,19 +226,19 @@ jobs:
           --health-retries=10
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
 
-    - name: Set up Python 3.14
-      uses: actions/setup-python@v6
+    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
+      uses: actions/setup-python@v7
       with:
-        python-version: "3.14"
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
     - name: Set up uv
-      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
-        version: "0.11.16"
+        version: "latest"
 
     - name: Install test and PostgreSQL dependencies
       run: uv sync --locked --dev --extra postgresql
@@ -171,35 +246,59 @@ jobs:
     - name: Run PostgreSQL scheduling concurrency tests
       env:
         CFMS_TEST_POSTGRESQL_URL: "postgresql+psycopg2://cfms:cfms-test-password@127.0.0.1:5432/cfms_scheduling"
-      run: uv run --locked pytest tests/scheduling/test_engine_shared_database.py -q
+      run: |
+        test -n "$CFMS_TEST_POSTGRESQL_URL"
+        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database -k postgresql -q --junitxml=test-results/postgresql.xml --durations=25
       timeout-minutes: 10
+
+    - name: Require executed PostgreSQL concurrency tests
+      run: |
+        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/postgresql.xml').findall('.//testcase'); assert cases, 'No PostgreSQL tests executed'; assert all(case.find('skipped') is None for case in cases), 'PostgreSQL tests unexpectedly skipped'"
+
+    - name: Upload PostgreSQL test results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: postgresql-test-results
+        path: test-results/
+        retention-days: 7
 
   release-bundle-smoke:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-26.04, windows-latest]
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         submodules: recursive
 
-    - name: Set up Python 3.14
-      uses: actions/setup-python@v6
+    - name: Set up Python ${{ env.PRIMARY_PYTHON_VERSION }}
+      uses: actions/setup-python@v7
       with:
-        python-version: "3.14"
+        python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
 
     - name: Set up uv
-      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      uses: astral-sh/setup-uv@v10.2.0
       with:
-        version: "0.11.16"
+        version: "latest"
+
+    - name: Install release smoke dependencies
+      run: uv sync --locked --dev
+      timeout-minutes: 10
+
+    - name: Test Windows file writeability
+      if: matrix.os == 'windows-latest'
+      shell: pwsh
+      run: uv run --locked --no-sync pytest tests/database/test_file_writeable.py -q
+      timeout-minutes: 3
 
     - name: Build and inspect a flat release deployment
       shell: pwsh
       run: |
-        $version = uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-        uv run --locked python tools/build_release.py --version $version --source-date-epoch 1788000000 --output-dir dist
+        $version = uv run --locked --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+        uv run --locked --no-sync python tools/build_release.py --version $version --source-date-epoch 1788000000 --output-dir dist
         $archive = (Resolve-Path "dist/cfms-on-websocket-$version.zip").Path
         Expand-Archive -LiteralPath $archive -DestinationPath smoke
         $bundle = (Resolve-Path "smoke/cfms-on-websocket-$version").Path

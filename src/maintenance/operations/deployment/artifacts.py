@@ -16,7 +16,6 @@ from maintenance.operations.deployment.constants import (
     MAX_PACKAGE_BYTES,
     MAX_UNCOMPRESSED_BYTES,
 )
-from maintenance.operations.deployment.models import _Release
 from maintenance.operations.deployment.repository import (
     _archive_parts,
     _hash_file,
@@ -26,6 +25,7 @@ from maintenance.operations.deployment.repository import (
     _release_from_tree,
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
+lazy from maintenance.operations.deployment.models import _Release
 
 
 def _expected_digest(

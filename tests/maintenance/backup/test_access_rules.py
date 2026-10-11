@@ -3,11 +3,12 @@ from sqlalchemy import insert, select, update
 
 from .roundtrip_support import _seed_source
 from .support import (
-    _new_database,
     _read_jsonl,
     _RootedStorage,
     _write_jsonl,
 )
+
+pytestmark = pytest.mark.component
 
 
 def test_legacy_rule_data_rejects_malformed_embedded_json(backup_context) -> None:
@@ -17,7 +18,7 @@ def test_legacy_rule_data_rejects_malformed_embedded_json(backup_context) -> Non
         _coerce_legacy_rule_data("{")
 
 
-@pytest.mark.parametrize("rule_data", (None, 1, [], '["read"]'))
+@pytest.mark.parametrize("rule_data", [None, 1, [], '["read"]'])
 def test_legacy_rule_data_rejects_non_object_values(
     backup_context,
     rule_data,
@@ -29,14 +30,14 @@ def test_legacy_rule_data_rejects_non_object_values(
 
 
 def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
-    backup_context, tmp_path
+    database_factory, backup_context, tmp_path
 ):
     from maintenance.backup.archive import _validate_manifest
     from maintenance.backup.format import BACKUP_FORMAT_VERSION
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     extract_dir = tmp_path / "legacy-payload"
     tables_dir = extract_dir / "tables"
 
@@ -164,12 +165,12 @@ def test_legacy_access_rule_backup_rows_restore_as_compiled_rules(
 
 
 def test_current_access_rule_backup_manifest_uses_compiled_tables(
-    backup_context, tmp_path
+    database_factory, backup_context, tmp_path
 ):
     from maintenance.backup.export import _stage_backup_payload
 
     base = backup_context.Base
-    source_engine, source_session = _new_database(base, tmp_path / "source.db")
+    source_engine, source_session = database_factory(base, tmp_path / "source.db")
     source_storage = tmp_path / "source-storage"
     staging_dir = tmp_path / "staging"
     source_storage.mkdir()

@@ -1,6 +1,10 @@
 import ast
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.component
+
 
 def test_document_models_do_not_import_domain_modules() -> None:
     project_root = Path(__file__).resolve().parents[2]

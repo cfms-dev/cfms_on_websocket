@@ -8,7 +8,7 @@ from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
 )
-from include.database.models.identity import User
+lazy from include.database.models.identity import User
 
 
 def prefetch_user_blocks(

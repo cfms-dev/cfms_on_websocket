@@ -1,7 +1,7 @@
 from collections import defaultdict
-from collections.abc import Iterable
 from itertools import batched
 from typing import Any, Literal
+lazy from collections.abc import Iterable
 
 from sqlalchemy import and_, delete
 from sqlalchemy.orm import Session as OrmSession

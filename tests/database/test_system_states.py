@@ -2,7 +2,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from include.database.models.operations import SystemStateEntry
@@ -13,28 +12,20 @@ from include.database.system_states import (
     update_system_state,
 )
 
+pytestmark = pytest.mark.component
+
 
 @pytest.fixture
-def state_database(tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'system-states.db'}",
-        connect_args={"timeout": 30},
-    )
-
-    @event.listens_for(engine, "connect")
-    def _configure_sqlite(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
+def state_database(tmp_path, sqlite_engine_factory):
+    engine = sqlite_engine_factory(tmp_path / "system-states.db", timeout_seconds=30)
 
     SystemStateEntry.__table__.create(engine)
     sessions = sessionmaker(bind=engine)
-    yield sessions
-    engine.dispose()
+    return sessions
 
 
-def test_state_lifecycle_uses_revision_compare_and_swap(state_database) -> None:
+@pytest.fixture
+def existing_state(state_database):
     with state_database.begin() as session:
         assert create_system_state(
             session,
@@ -43,7 +34,30 @@ def test_state_lifecycle_uses_revision_compare_and_swap(state_database) -> None:
             schema_version=1,
             payload={"position": 4},
         )
-        assert not create_system_state(
+    return state_database
+
+
+def test_create_state_persists_first_revision(state_database) -> None:
+    with state_database.begin() as session:
+        created = create_system_state(
+            session,
+            "sample_ext",
+            "worker.position",
+            schema_version=1,
+            payload={"position": 4},
+        )
+
+    assert created is True
+    with state_database() as session:
+        state = read_system_state(session, "sample_ext", "worker.position")
+        assert state is not None
+        assert state.schema_version == state.revision == 1
+        assert state.payload == {"position": 4}
+
+
+def test_duplicate_create_preserves_existing_state(existing_state) -> None:
+    with existing_state.begin() as session:
+        created = create_system_state(
             session,
             "sample_ext",
             "worker.position",
@@ -51,19 +65,58 @@ def test_state_lifecycle_uses_revision_compare_and_swap(state_database) -> None:
             payload={"position": 5},
         )
 
-    with state_database.begin() as session:
+    assert created is False
+    with existing_state() as session:
         state = read_system_state(session, "sample_ext", "worker.position")
         assert state is not None
         assert state.revision == 1
         assert state.payload == {"position": 4}
-        assert not update_system_state(
+
+
+@pytest.mark.parametrize(
+    ("expected_revision", "applied"),
+    [
+        pytest.param(1, True, id="matching-revision"),
+        pytest.param(2, False, id="mismatched-revision"),
+    ],
+)
+def test_state_update_uses_revision_compare_and_swap(
+    existing_state,
+    expected_revision,
+    applied,
+) -> None:
+    with existing_state.begin() as session:
+        updated = update_system_state(
             session,
             "sample_ext",
             "worker.position",
-            expected_revision=2,
-            schema_version=1,
+            expected_revision=expected_revision,
+            schema_version=2,
             payload={"position": 6},
         )
+
+    assert updated is applied
+    with existing_state() as session:
+        state = read_system_state(session, "sample_ext", "worker.position")
+        assert state is not None
+        assert state.revision == (2 if applied else 1)
+        assert state.schema_version == (2 if applied else 1)
+        assert state.payload == ({"position": 6} if applied else {"position": 4})
+
+
+@pytest.mark.parametrize(
+    ("expected_revision", "applied"),
+    [
+        pytest.param(1, False, id="stale-revision"),
+        pytest.param(2, True, id="matching-revision"),
+    ],
+)
+def test_state_delete_uses_revision_compare_and_swap(
+    existing_state,
+    expected_revision,
+    applied,
+) -> None:
+    with existing_state.begin() as session:
         assert update_system_state(
             session,
             "sample_ext",
@@ -73,26 +126,23 @@ def test_state_lifecycle_uses_revision_compare_and_swap(state_database) -> None:
             payload={"position": 6},
         )
 
-    with state_database.begin() as session:
-        state = read_system_state(session, "sample_ext", "worker.position")
-        assert state is not None
-        assert state.schema_version == 2
-        assert state.revision == 2
-        assert not delete_system_state(
+    with existing_state.begin() as session:
+        deleted = delete_system_state(
             session,
             "sample_ext",
             "worker.position",
-            expected_revision=1,
-        )
-        assert delete_system_state(
-            session,
-            "sample_ext",
-            "worker.position",
-            expected_revision=2,
+            expected_revision=expected_revision,
         )
 
-    with state_database() as session:
-        assert read_system_state(session, "sample_ext", "worker.position") is None
+    assert deleted is applied
+    with existing_state() as session:
+        state = read_system_state(session, "sample_ext", "worker.position")
+        if applied:
+            assert state is None
+        else:
+            assert state is not None
+            assert state.revision == 2
+            assert state.payload == {"position": 6}
 
 
 def test_state_payloads_are_detached_copies(state_database) -> None:
@@ -168,15 +218,14 @@ def test_concurrent_create_has_one_winner(state_database) -> None:
     ],
 )
 def test_state_identity_is_validated(state_database, owner, state_key) -> None:
-    with state_database.begin() as session:
-        with pytest.raises(ValidationError):
-            create_system_state(
-                session,
-                owner,
-                state_key,
-                schema_version=1,
-                payload={},
-            )
+    with state_database.begin() as session, pytest.raises(ValidationError):
+        create_system_state(
+            session,
+            owner,
+            state_key,
+            schema_version=1,
+            payload={},
+        )
 
 
 @pytest.mark.parametrize(
@@ -190,12 +239,11 @@ def test_state_identity_is_validated(state_database, owner, state_key) -> None:
     ],
 )
 def test_state_payload_must_be_a_json_object(state_database, payload) -> None:
-    with state_database.begin() as session:
-        with pytest.raises(ValidationError):
-            create_system_state(
-                session,
-                "sample_ext",
-                "payload",
-                schema_version=1,
-                payload=payload,
-            )
+    with state_database.begin() as session, pytest.raises(ValidationError):
+        create_system_state(
+            session,
+            "sample_ext",
+            "payload",
+            schema_version=1,
+            payload=payload,
+        )

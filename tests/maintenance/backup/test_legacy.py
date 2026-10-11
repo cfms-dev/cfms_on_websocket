@@ -2,20 +2,21 @@ import pytest
 from sqlalchemy import select
 
 from .support import (
-    _new_database,
     _write_jsonl,
 )
 
+pytestmark = pytest.mark.component
+
 
 def test_backup_with_nodes_and_legacy_subtype_names_is_upgraded(
-    backup_context, tmp_path
+    database_factory, backup_context, tmp_path
 ):
     from maintenance.backup.archive import _validate_manifest
     from maintenance.backup.format import BACKUP_FORMAT_VERSION
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
-    target_engine, target_session = _new_database(base, tmp_path / "target.db")
+    target_engine, target_session = database_factory(base, tmp_path / "target.db")
     extract_dir = tmp_path / "legacy-node-payload"
     tables_dir = extract_dir / "tables"
     tables_dir.mkdir(parents=True)
@@ -74,13 +75,15 @@ def test_backup_with_nodes_and_legacy_subtype_names_is_upgraded(
     }
 
 
-def test_legacy_backup_rejects_active_cross_type_duplicate(backup_context, tmp_path):
+def test_legacy_backup_rejects_active_cross_type_duplicate(
+    backup_context, tmp_path, database_factory
+):
     from maintenance.backup.archive import _validate_manifest
     from maintenance.backup.format import BACKUP_FORMAT_VERSION
     from maintenance.backup.restore import _restore_database
 
     base = backup_context.Base
-    _, target_session = _new_database(base, tmp_path / "target.db")
+    _, target_session = database_factory(base, tmp_path / "target.db")
     extract_dir = tmp_path / "duplicate-payload"
     tables_dir = extract_dir / "tables"
     tables_dir.mkdir(parents=True)

@@ -76,7 +76,7 @@ def _unwrap_markdown_list_items(markdown: str) -> str:
             and line.startswith("  ")
             and not line.startswith("    ")
             and line.strip()
-            and not re.match(r"(?:[-*+] |\d+[.)] )", line[2:])
+            and not re.prefixmatch(r"(?:[-*+] |\d+[.)] )", line[2:])
         ):
             unwrapped[-1] += f" {line.strip()}"
         else:

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.config.validation import DocumentDownloadRiskPolicy
 from include.database.models.files import FileTask, FileTaskStatus, TransferMode

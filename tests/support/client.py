@@ -22,7 +22,7 @@ import orjson
 from Crypto.Cipher import AES
 from loguru import logger as log
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosedOK
+from websockets.exceptions import ConnectionClosedOK, InvalidHandshake
 from websockets.typing import DataLike
 
 from include.transport.multiplexing import (
@@ -65,9 +65,11 @@ def calculate_sha256(file_path: str) -> str:
     Returns:
         Hexadecimal SHA256 hash string
     """
-    with open(file_path, "rb") as f:
+    with (
+        open(file_path, "rb") as f,
+        mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mmapped_file,
+    ):
         # Use memory-mapped files to map directly to memory
-        mmapped_file = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         return hashlib.sha256(mmapped_file).hexdigest()
 
 
@@ -179,12 +181,9 @@ class AsyncMultiplexConnection:
         self._is_running = False
         try:
             await self._ws.close()
-        except Exception:
-            pass
-
-        # Explicitly cancel and await _dispatcher_task.
-        if hasattr(self, "_dispatcher_task") and not self._dispatcher_task.done():
-            self._dispatcher_task.cancel()
+        finally:
+            if not self._dispatcher_task.done():
+                self._dispatcher_task.cancel()
             try:
                 await self._dispatcher_task
             except asyncio.CancelledError:
@@ -219,6 +218,8 @@ class CFMSTestClient:
         port: int | None = None,
         use_ssl: bool | None = None,
         ssl_context: ssl.SSLContext | None = None,
+        *,
+        response_timeout: float = 10.0,
     ):
         """
         Initialize the test client.
@@ -237,6 +238,7 @@ class CFMSTestClient:
             use_ssl if use_ssl is not None else _env_bool("CFMS_TEST_USE_SSL", True)
         )
         self.ssl_context = ssl_context
+        self.response_timeout = response_timeout
         self.websocket: ClientConnection | None = None
         self.multiplexer: AsyncMultiplexConnection | None = None
         self.username: str | None = None
@@ -273,7 +275,7 @@ class CFMSTestClient:
                 self.websocket = await connect(uri, ssl=ssl_context, proxy=None)
                 self.multiplexer = AsyncMultiplexConnection(self.websocket)
                 return
-            except Exception as exc:
+            except (OSError, TimeoutError, InvalidHandshake) as exc:
                 last_exc = exc
                 if attempt == max_retries:
                     break
@@ -289,22 +291,18 @@ class CFMSTestClient:
         """
         Close the WebSocket connection.
         """
-        if self.multiplexer is not None:
-            try:
+        try:
+            if self.multiplexer is not None:
                 await self.multiplexer.close()
-            except Exception:
-                pass
+        finally:
             self.multiplexer = None
-
-        if self.websocket is not None:
             try:
-                await self.websocket.close()
-            except Exception:
-                pass
-            self.websocket = None
-
-        self.username = None
-        self.token = None
+                if self.websocket is not None:
+                    await self.websocket.close()
+            finally:
+                self.websocket = None
+                self.username = None
+                self.token = None
 
     async def _parse_frame_data(self, frame: Frame) -> Any:
         if frame.data is None:
@@ -352,7 +350,7 @@ class CFMSTestClient:
                 request["timestamp"] = time.time()
 
         await stream.send(orjson.dumps(request))
-        frame = await stream.recv()
+        frame = await stream.recv(timeout=self.response_timeout)
         return frame
 
     async def send_request(
@@ -407,6 +405,8 @@ class CFMSTestClient:
         if self.multiplexer is None:
             raise RuntimeError("Not connected to server. Call connect() first.")
 
+        if timeout is None:
+            timeout = self.response_timeout
         stream = await self.multiplexer.accept_stream(timeout=timeout)
         if stream is None:
             raise ConnectionError("Connection closed before receiving server event")
@@ -414,7 +414,7 @@ class CFMSTestClient:
         frame = await stream.recv(timeout=timeout)
         payload = await self._parse_frame_data(frame)
         if not isinstance(payload, dict):
-            raise RuntimeError(f"Unexpected event payload: {payload}")
+            raise RuntimeError(f"Unexpected event payload: {payload}")  # noqa: TRY004 -- invalid wire payload, not a Python argument
         return payload
 
     async def send_raw_request(
@@ -428,7 +428,7 @@ class CFMSTestClient:
         stream = self.multiplexer.open_stream()
         await stream.send(orjson.dumps(request))
 
-        frame = await stream.recv()
+        frame = await stream.recv(timeout=self.response_timeout)
         payload = await self._parse_frame_data(frame)
 
         if isinstance(payload, dict):
@@ -939,7 +939,7 @@ class CFMSTestClient:
         file_size = transfer_data.get("file_size")
         chunk_size = transfer_data.get("chunk_size")
         if not isinstance(file_size, int) or not isinstance(chunk_size, int):
-            raise RuntimeError("Invalid resumable download response")
+            raise RuntimeError("Invalid resumable download response")  # noqa: TRY004 -- invalid wire metadata
         if resume_state is not None and (
             resume_state.file_size != file_size or resume_state.chunk_size != chunk_size
         ):
@@ -953,7 +953,7 @@ class CFMSTestClient:
         empty_file = False
 
         while True:
-            recv_frame = await stream.recv()
+            recv_frame = await stream.recv(timeout=self.response_timeout)
             if recv_frame is None:
                 break
             raw_reply = recv_frame.data
@@ -999,7 +999,7 @@ class CFMSTestClient:
                 raise RuntimeError("Did not receive AES key")
 
             chunks.sort(key=lambda x: x[0])
-            with open(dest_path, "wb") as f:
+            with open(dest_path, "wb") as f:  # noqa: ASYNC230 -- local test payload written after receiving all chunks
                 for index, encrypted_chunk, tag, prefix in chunks:
                     nonce = prefix + index.to_bytes(4, "big")
                     cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
@@ -1007,7 +1007,9 @@ class CFMSTestClient:
                     f.write(decrypted_chunk)
 
         await stream.send(b"complete")
-        completion = await self._parse_frame_data(await stream.recv())
+        completion = await self._parse_frame_data(
+            await stream.recv(timeout=self.response_timeout)
+        )
         if (
             not isinstance(completion, dict)
             or completion.get("action") != "transfer_complete"
@@ -1080,7 +1082,7 @@ class CFMSTestClient:
         ):
             raise RuntimeError("Invalid resumable upload response")
 
-        with open(file_path, "rb") as f:
+        with open(file_path, "rb") as f:  # noqa: ASYNC230 -- keep the local source open across the transfer
             f.seek(offset)
             while offset < file_size:
                 chunk = f.read(min(chunk_size, file_size - offset))
@@ -1095,7 +1097,7 @@ class CFMSTestClient:
                 ):
                     return offset
 
-        server_frame = await stream.recv()
+        server_frame = await stream.recv(timeout=self.response_timeout)
         return await self._parse_frame_data(server_frame)
 
     # def receive_file_from_server(

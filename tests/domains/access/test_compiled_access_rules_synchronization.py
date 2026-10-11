@@ -1,9 +1,10 @@
-import time
 import warnings
 
 import pytest
 from sqlalchemy.exc import SAWarning
 from sqlalchemy.orm import Query
+
+pytestmark = pytest.mark.component
 
 
 def test_set_access_rules_keeps_compiled_rows_in_sync(access_rule_session):
@@ -408,7 +409,10 @@ def test_delete_compiled_access_rules_validates_target_type(access_rule_session)
     )
     session.flush()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid compiled access rule target\(s\) for document: folder-type-check",
+    ):
         delete_compiled_access_rules_for_targets(session, [("document", folder.id)])
 
     assert session.get(models.Folder, folder.id).access_rule_set_id is not None
@@ -420,39 +424,3 @@ def test_delete_compiled_access_rules_validates_target_type(access_rule_session)
     assert session.get(models.Folder, folder.id).access_rule_set_id is None
     assert session.query(models.CompiledAccessRuleSet).count() == 0
     assert session.query(models.CompiledAccessRule).count() == 0
-
-
-def _make_access_rule_user(models, session, username="alice"):
-    now = time.time()
-    user = models.User(
-        username=username,
-        pass_hash="hash",
-        passwd_last_modified=now,
-        nickname=username,
-        avatar_id=None,
-        last_login=None,
-        created_time=now,
-        status=0,
-        secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
-        preference_dek_id=None,
-    )
-    for permission in (
-        "delete_document",
-        "delete_directory",
-        "list_users",
-    ):
-        user.rights.append(
-            models.UserPermission(
-                username=username,
-                permission=permission,
-                granted=True,
-                start_time=0.0,
-                end_time=None,
-            )
-        )
-    session.add(user)
-    session.flush()
-    return user

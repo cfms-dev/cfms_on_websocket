@@ -1,5 +1,5 @@
 import json
-from pathlib import Path
+lazy from pathlib import Path
 
 import tomlkit
 from packaging.version import InvalidVersion

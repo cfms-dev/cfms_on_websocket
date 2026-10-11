@@ -14,6 +14,8 @@ from .support import (
     _write_package,
 )
 
+pytestmark = pytest.mark.component
+
 
 def test_catalog_reports_invalid_activation_without_importing(tmp_path, monkeypatch):
     _, _ = _prepare_src(tmp_path, monkeypatch, enabled=("missing_ext",))
@@ -25,7 +27,10 @@ def test_catalog_reports_invalid_activation_without_importing(tmp_path, monkeypa
     )
 
 
-def test_release_manifest_protects_packaged_extensions(tmp_path, monkeypatch):
+@pytest.mark.parametrize("operation", ["upgrade", "uninstall"])
+def test_release_manifest_protects_packaged_extensions(
+    tmp_path, monkeypatch, operation
+):
     src, root = _prepare_src(tmp_path, monkeypatch)
     _write_installed_extension(root, "packaged_ext")
     (src.parent / "release-manifest.json").write_text(
@@ -38,10 +43,20 @@ def test_release_manifest_protects_packaged_extensions(tmp_path, monkeypatch):
         version="2.0.0",
     )
 
-    with pytest.raises(MaintenanceOperationError, match="upgraded with the server"):
-        extension_operations.upgrade_extension(package)
-    with pytest.raises(MaintenanceOperationError, match="cannot be uninstalled"):
-        extension_operations.uninstall_extension("packaged_ext")
+    action, argument, message = (
+        (extension_operations.upgrade_extension, package, "upgraded with the server")
+        if operation == "upgrade"
+        else (
+            extension_operations.uninstall_extension,
+            "packaged_ext",
+            "cannot be uninstalled",
+        )
+    )
+
+    with pytest.raises(MaintenanceOperationError, match=message):
+        action(argument)
+
+    assert (root / "packaged_ext").is_dir()
 
 
 def test_catalog_uses_flat_application_extension_root(tmp_path, monkeypatch):

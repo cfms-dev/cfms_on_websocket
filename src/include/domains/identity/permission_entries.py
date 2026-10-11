@@ -1,6 +1,6 @@
-from collections.abc import Iterable
+lazy from collections.abc import Iterable
 
-from include.database.models.identity import UserGroupPermission, UserPermission
+lazy from include.database.models.identity import UserGroupPermission, UserPermission
 
 
 def serialize_permission_entries(

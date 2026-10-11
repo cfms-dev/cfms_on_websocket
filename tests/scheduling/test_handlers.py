@@ -2,11 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import sessionmaker
 
-from include.database.models.scheduling import Schedule, ScheduleExecution
+from include.database.models.scheduling import Schedule
 from include.domains.access.permissions import Permissions
 from include.domains.scheduling import handlers
 from include.providers.base import SchedulingProviderStatus
@@ -37,55 +37,57 @@ class _Connection:
         self.response = (code, data, message)
 
 
-def _context(monkeypatch, permissions):
-    database = create_engine("sqlite://")
-    Schedule.__table__.create(database)
-    ScheduleExecution.__table__.create(database)
-    factory = sessionmaker(bind=database, expire_on_commit=False)
-    registry = ScheduledTaskRegistry(
-        [
-            ScheduledTaskRegistration(
-                name="test.record",
-                contract_version=1,
-                payload_model=_Payload,
-                execute=lambda _context, _payload: None,
-                required_permission=Permissions.MANAGE_SYSTEM,
-            ),
-            ScheduledTaskRegistration(
-                name="test.audit",
-                contract_version=1,
-                payload_model=_Payload,
-                execute=lambda _context, _payload: None,
-                required_permission=Permissions.PURGE,
-            ),
-            ScheduledTaskRegistration(
-                name="test.system_cleanup",
-                contract_version=1,
-                payload_model=_Payload,
-                execute=lambda _context, _payload: None,
-                required_permission=Permissions.MANAGE_SYSTEM,
-                user_schedulable=False,
-            ),
-        ]
-    )
-    notifications = []
-    provider = SimpleNamespace(
-        status=lambda: SchedulingProviderStatus(True, "local"),
-        notify_schedule_change=lambda: notifications.append(True),
-    )
-    monkeypatch.setattr(handlers, "Session", factory)
-    monkeypatch.setattr(handlers, "collect_scheduled_tasks", lambda: registry)
-    monkeypatch.setattr(
-        handlers,
-        "_permissions",
-        lambda _username, _session=None: permissions,
-    )
-    monkeypatch.setattr(
-        handlers, "ProviderManager", lambda: SimpleNamespace(scheduling=provider)
-    )
-    return notifications
+@pytest.fixture
+def scheduling_context(monkeypatch, schedule_database):
+    def create_context(permissions):
+        factory = sessionmaker(bind=schedule_database, expire_on_commit=False)
+        registry = ScheduledTaskRegistry(
+            [
+                ScheduledTaskRegistration(
+                    name="test.record",
+                    contract_version=1,
+                    payload_model=_Payload,
+                    execute=lambda _context, _payload: None,
+                    required_permission=Permissions.MANAGE_SYSTEM,
+                ),
+                ScheduledTaskRegistration(
+                    name="test.audit",
+                    contract_version=1,
+                    payload_model=_Payload,
+                    execute=lambda _context, _payload: None,
+                    required_permission=Permissions.PURGE,
+                ),
+                ScheduledTaskRegistration(
+                    name="test.system_cleanup",
+                    contract_version=1,
+                    payload_model=_Payload,
+                    execute=lambda _context, _payload: None,
+                    required_permission=Permissions.MANAGE_SYSTEM,
+                    user_schedulable=False,
+                ),
+            ]
+        )
+        notifications = []
+        provider = SimpleNamespace(
+            status=lambda: SchedulingProviderStatus(True, "local"),
+            notify_schedule_change=lambda: notifications.append(True),
+        )
+        monkeypatch.setattr(handlers, "Session", factory)
+        monkeypatch.setattr(handlers, "collect_scheduled_tasks", lambda: registry)
+        monkeypatch.setattr(
+            handlers,
+            "_permissions",
+            lambda _username, _session=None: permissions,
+        )
+        monkeypatch.setattr(
+            handlers, "ProviderManager", lambda: SimpleNamespace(scheduling=provider)
+        )
+        return notifications
+
+    return create_context
 
 
+@pytest.mark.unit
 def test_core_router_exposes_all_scheduling_management_handlers():
     from include.transport.router import available_functions
 
@@ -94,6 +96,7 @@ def test_core_router_exposes_all_scheduling_management_handlers():
     } == _CORE_HANDLERS
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("handler_type", "data"),
     [
@@ -102,8 +105,10 @@ def test_core_router_exposes_all_scheduling_management_handlers():
         (handlers.RequestListSchedulesHandler, {}),
     ],
 )
-def test_read_actions_require_view_schedules(monkeypatch, handler_type, data):
-    _context(monkeypatch, set())
+def test_read_actions_require_view_schedules(
+    monkeypatch, handler_type, data, scheduling_context
+):
+    scheduling_context(set())
     connection = _Connection(data)
 
     result = handler_type().handle(connection)
@@ -112,6 +117,7 @@ def test_read_actions_require_view_schedules(monkeypatch, handler_type, data):
     assert connection.response == (403, {}, "Permission denied")
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     "permissions",
     [
@@ -120,9 +126,9 @@ def test_read_actions_require_view_schedules(monkeypatch, handler_type, data):
     ],
 )
 def test_create_schedule_requires_management_and_task_permissions(
-    monkeypatch, permissions
+    monkeypatch, permissions, scheduling_context
 ):
-    _context(monkeypatch, permissions)
+    scheduling_context(permissions)
     connection = _Connection(
         {
             "task_name": "test.record",
@@ -141,9 +147,9 @@ def test_create_schedule_requires_management_and_task_permissions(
     assert connection.response[0] == 403
 
 
-def test_create_schedule_rejects_system_task_types(monkeypatch):
-    _context(
-        monkeypatch,
+@pytest.mark.component
+def test_create_schedule_rejects_system_task_types(monkeypatch, scheduling_context):
+    scheduling_context(
         {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     connection = _Connection(
@@ -164,9 +170,11 @@ def test_create_schedule_rejects_system_task_types(monkeypatch):
     assert connection.response == (403, {}, "Permission denied")
 
 
-def test_create_schedule_persists_and_notifies_provider(monkeypatch):
-    notifications = _context(
-        monkeypatch,
+@pytest.mark.component
+def test_create_schedule_persists_and_notifies_provider(
+    monkeypatch, scheduling_context
+):
+    notifications = scheduling_context(
         {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     connection = _Connection(
@@ -189,9 +197,11 @@ def test_create_schedule_persists_and_notifies_provider(monkeypatch):
     assert notifications == [True]
 
 
-def test_create_schedule_rejects_unrepresentable_interval(monkeypatch):
-    notifications = _context(
-        monkeypatch,
+@pytest.mark.component
+def test_create_schedule_rejects_unrepresentable_interval(
+    monkeypatch, scheduling_context
+):
+    notifications = scheduling_context(
         {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     connection = _Connection(
@@ -218,18 +228,14 @@ def test_create_schedule_rejects_unrepresentable_interval(monkeypatch):
         assert session.scalar(select(Schedule.id)) is None
 
 
+@pytest.mark.component
 def test_update_schedule_uses_locked_revision_for_task_authorization(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, scheduling_context, schedule_database
 ):
-    notifications = _context(
-        monkeypatch,
+    notifications = scheduling_context(
         {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
-    database = create_engine(f"sqlite:///{tmp_path / 'scheduling.db'}")
-    with database.connect() as connection:
-        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
-    Schedule.__table__.create(database)
-    ScheduleExecution.__table__.create(database)
+    database = schedule_database
     factory = sessionmaker(bind=database, expire_on_commit=False)
     with factory() as session, session.begin():
         session.add(
@@ -282,12 +288,13 @@ def test_update_schedule_uses_locked_revision_for_task_authorization(
         assert schedule.task_name == "test.record"
         assert schedule.payload == {"value": 1}
         assert schedule.revision == 1
-    database.dispose()
 
 
-def test_update_schedule_checks_permission_for_locked_current_task(monkeypatch):
-    notifications = _context(
-        monkeypatch,
+@pytest.mark.component
+def test_update_schedule_checks_permission_for_locked_current_task(
+    monkeypatch, scheduling_context
+):
+    notifications = scheduling_context(
         {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     with handlers.Session() as session, session.begin():
@@ -320,9 +327,11 @@ def test_update_schedule_checks_permission_for_locked_current_task(monkeypatch):
         assert schedule.revision == 1
 
 
-def test_update_schedule_persists_and_notifies_provider(monkeypatch):
-    notifications = _context(
-        monkeypatch,
+@pytest.mark.component
+def test_update_schedule_persists_and_notifies_provider(
+    monkeypatch, scheduling_context
+):
+    notifications = scheduling_context(
         {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     with handlers.Session() as session, session.begin():
@@ -353,6 +362,7 @@ def test_update_schedule_persists_and_notifies_provider(monkeypatch):
     assert notifications == [True]
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("handler_type", _CORE_HANDLERS.values())
 def test_scheduling_api_returns_503_when_provider_is_degraded(
     monkeypatch, handler_type
@@ -375,9 +385,11 @@ def test_scheduling_api_returns_503_when_provider_is_degraded(
     )
 
 
-def test_system_tasks_and_schedules_are_hidden_from_management_api(monkeypatch):
-    _context(
-        monkeypatch,
+@pytest.mark.component
+def test_system_tasks_and_schedules_are_hidden_from_management_api(
+    monkeypatch, scheduling_context
+):
+    scheduling_context(
         {Permissions.VIEW_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     task_types = _Connection({})
@@ -413,6 +425,7 @@ def test_system_tasks_and_schedules_are_hidden_from_management_api(monkeypatch):
     assert schedules.response[1]["items"] == []
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("handler_type", "data"),
     [
@@ -427,9 +440,10 @@ def test_system_tasks_and_schedules_are_hidden_from_management_api(monkeypatch):
         ),
     ],
 )
-def test_system_schedules_cannot_be_managed(monkeypatch, handler_type, data):
-    notifications = _context(
-        monkeypatch,
+def test_system_schedules_cannot_be_managed(
+    monkeypatch, handler_type, data, scheduling_context
+):
+    notifications = scheduling_context(
         {
             Permissions.VIEW_SCHEDULES,
             Permissions.MANAGE_SCHEDULES,

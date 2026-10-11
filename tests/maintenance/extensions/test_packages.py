@@ -12,11 +12,14 @@ from .support import (
     _enabled,
     _manifest_source,
     _prepare_src,
+    _write_installed_extension,
     _write_package,
 )
 
+pytestmark = pytest.mark.component
 
-def test_install_validates_package_without_importing_and_leaves_it_disabled(
+
+def test_install_preview_validates_digest_without_importing_or_writing(
     tmp_path, monkeypatch
 ):
     src, root = _prepare_src(tmp_path, monkeypatch)
@@ -30,17 +33,36 @@ def test_install_validates_package_without_importing_and_leaves_it_disabled(
     assert preview.package_sha256 == expected_sha256
     assert preview.extension.enabled is False
     assert not (root / "sample_ext").exists()
+    assert _enabled(src) == ()
+    assert list(root.glob(".cfms-extension-*")) == []
+
+
+def test_install_writes_code_without_importing_or_enabling_it(tmp_path, monkeypatch):
+    src, root = _prepare_src(tmp_path, monkeypatch)
+    package = _write_package(tmp_path / "sample.zip")
+    expected_sha256 = hashlib.sha256(package.read_bytes()).hexdigest()
 
     result = extension_operations.install_extension(
-        package, expected_sha256=preview.package_sha256, write=True
+        package, expected_sha256=expected_sha256, write=True
     )
 
     assert result.extension.manifest.extension.identifier == "sample_ext"
     assert (root / "sample_ext" / "_extension.py").is_file()
     assert _enabled(src) == ()
     assert list(root.glob(".cfms-extension-*")) == []
+
+
+def test_install_rejects_an_already_installed_extension(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
+    installed = _write_installed_extension(root, "sample_ext")
+    original_code = (installed / "_extension.py").read_bytes()
+    package = _write_package(tmp_path / "sample.zip")
+
     with pytest.raises(MaintenanceOperationError, match="use upgrade"):
         extension_operations.install_extension(package, write=False)
+
+    assert (installed / "_extension.py").read_bytes() == original_code
+    assert list(root.glob(".cfms-extension-*")) == []
 
 
 def test_install_allows_a_disabled_extension_for_a_newer_server(tmp_path, monkeypatch):
@@ -87,23 +109,35 @@ def test_package_rejects_unsafe_paths(tmp_path, monkeypatch, unsafe_name):
         extension_operations.install_extension(package, write=False)
 
 
-def test_package_rejects_casefold_duplicates_and_links(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("members", "message"),
+    [
+        pytest.param(
+            {"assets/Name.txt": "a", "assets/name.TXT": "b"},
+            "Duplicate",
+            id="casefold-duplicate",
+        ),
+        pytest.param(
+            {"asset": "file", "asset/child.txt": "child"},
+            "file/directory conflict",
+            id="file-directory-conflict",
+        ),
+    ],
+)
+def test_package_rejects_conflicting_archive_paths(
+    tmp_path, monkeypatch, members, message
+):
     _, root = _prepare_src(tmp_path, monkeypatch)
-    duplicate = _write_package(
-        tmp_path / "duplicate.zip",
-        extra_members={"assets/Name.txt": "a", "assets/name.TXT": "b"},
-    )
+    package = _write_package(tmp_path / "conflict.zip", extra_members=members)
 
-    with pytest.raises(MaintenanceOperationError, match="Duplicate"):
-        extension_operations.install_extension(duplicate, write=False)
+    with pytest.raises(MaintenanceOperationError, match=message):
+        extension_operations.install_extension(package, write=False)
 
-    conflict = _write_package(
-        tmp_path / "conflict.zip",
-        extra_members={"asset": "file", "asset/child.txt": "child"},
-    )
-    with pytest.raises(MaintenanceOperationError, match="file/directory conflict"):
-        extension_operations.install_extension(conflict, write=False)
+    assert list(root.glob(".cfms-extension-*")) == []
 
+
+def test_package_rejects_link_members_and_removes_staging(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     linked = tmp_path / "linked.zip"
     with zipfile.ZipFile(linked, "w") as archive:
         archive.writestr("manifest.toml", _manifest_source("linked_ext"))
@@ -118,35 +152,54 @@ def test_package_rejects_casefold_duplicates_and_links(tmp_path, monkeypatch):
     assert list(root.glob(".cfms-extension-*")) == []
 
 
-def test_package_rejects_missing_entrypoint_builtin_and_self_dependency(
-    tmp_path, monkeypatch
-):
-    _prepare_src(tmp_path, monkeypatch)
+def test_package_rejects_missing_entrypoint(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     missing = tmp_path / "missing.zip"
     with zipfile.ZipFile(missing, "w") as archive:
         archive.writestr("manifest.toml", _manifest_source("missing_entrypoint"))
+
     with pytest.raises(MaintenanceOperationError, match="_extension.py"):
         extension_operations.install_extension(missing, write=False)
 
+    assert list(root.glob(".cfms-extension-*")) == []
+
+
+def test_package_rejects_builtin_extension(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     builtin = _write_package(tmp_path / "builtin.zip", identifier="builtin")
+
     with pytest.raises(MaintenanceOperationError, match="cannot be managed"):
         extension_operations.install_extension(builtin, write=False)
 
+    assert list(root.glob(".cfms-extension-*")) == []
+
+
+def test_package_rejects_self_dependency(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     self_dependent = _write_package(
         tmp_path / "self.zip",
         identifier="self_ext",
         dependencies={"self_ext": "1.0.0"},
     )
+
     with pytest.raises(MaintenanceOperationError, match="depend on itself"):
         extension_operations.install_extension(self_dependent, write=False)
 
+    assert list(root.glob(".cfms-extension-*")) == []
 
-def test_package_rejects_unsupported_compression_and_encryption(tmp_path, monkeypatch):
-    _prepare_src(tmp_path, monkeypatch)
+
+def test_package_rejects_unsupported_compression(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     compressed = _write_package(tmp_path / "bzip2.zip", compression=zipfile.ZIP_BZIP2)
+
     with pytest.raises(MaintenanceOperationError, match="Unsupported compression"):
         extension_operations.install_extension(compressed, write=False)
 
+    assert list(root.glob(".cfms-extension-*")) == []
+
+
+def test_package_rejects_encrypted_members(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     encrypted = _write_package(tmp_path / "encrypted.zip")
     data = bytearray(encrypted.read_bytes())
     central_offset = data.index(b"PK\x01\x02")
@@ -161,9 +214,11 @@ def test_package_rejects_unsupported_compression_and_encryption(tmp_path, monkey
     with pytest.raises(MaintenanceOperationError, match="Encrypted"):
         extension_operations.install_extension(encrypted, write=False)
 
+    assert list(root.glob(".cfms-extension-*")) == []
 
-def test_package_enforces_digest_size_and_member_limits(tmp_path, monkeypatch):
-    _prepare_src(tmp_path, monkeypatch)
+
+def test_package_rejects_digest_mismatch_before_installation(tmp_path, monkeypatch):
+    _, root = _prepare_src(tmp_path, monkeypatch)
     package = _write_package(
         tmp_path / "limits.zip", extra_members={"asset.txt": "content"}
     )
@@ -173,38 +228,56 @@ def test_package_enforces_digest_size_and_member_limits(tmp_path, monkeypatch):
             package, expected_sha256="0" * 64, write=False
         )
 
-    monkeypatch.setattr(extension_packages, "MAX_PACKAGE_BYTES", 1)
-    with pytest.raises(MaintenanceOperationError, match="64 MiB"):
+    assert not (root / "sample_ext").exists()
+    assert list(root.glob(".cfms-extension-*")) == []
+
+
+@pytest.mark.parametrize(
+    ("setting", "limit", "message"),
+    [
+        pytest.param("MAX_PACKAGE_BYTES", 1, "64 MiB", id="package-bytes"),
+        pytest.param("MAX_ARCHIVE_MEMBERS", 2, "more than 2", id="archive-members"),
+        pytest.param(
+            "MAX_UNCOMPRESSED_BYTES", 3, "uncompressed limit", id="uncompressed-bytes"
+        ),
+    ],
+)
+def test_package_enforces_resource_limits_and_cleans_staging(
+    tmp_path, monkeypatch, setting, limit, message
+):
+    _, root = _prepare_src(tmp_path, monkeypatch)
+    package = _write_package(
+        tmp_path / "limits.zip", extra_members={"asset.txt": "content"}
+    )
+    monkeypatch.setattr(extension_packages, setting, limit)
+
+    with pytest.raises(MaintenanceOperationError, match=message):
         extension_operations.install_extension(package, write=False)
-    monkeypatch.setattr(extension_packages, "MAX_PACKAGE_BYTES", 64 * 1024 * 1024)
-    monkeypatch.setattr(extension_packages, "MAX_ARCHIVE_MEMBERS", 2)
-    with pytest.raises(MaintenanceOperationError, match="more than 2"):
-        extension_operations.install_extension(package, write=False)
-    monkeypatch.setattr(extension_packages, "MAX_ARCHIVE_MEMBERS", 4096)
-    monkeypatch.setattr(extension_packages, "MAX_UNCOMPRESSED_BYTES", 3)
-    with pytest.raises(MaintenanceOperationError, match="uncompressed limit"):
-        extension_operations.install_extension(package, write=False)
+
+    assert not (root / "sample_ext").exists()
+    assert list(root.glob(".cfms-extension-*")) == []
 
 
 def test_extension_root_limit_counts_non_directory_entries(tmp_path, monkeypatch):
-    root = tmp_path / "extensions"
-    root.mkdir()
+    _, root = _prepare_src(tmp_path, monkeypatch)
     for index in range(3):
         (root / f"entry-{index}.txt").write_text("entry", encoding="utf-8")
     monkeypatch.setattr(extension_packages, "MAX_INSTALLED_EXTENSIONS", 2)
 
     with pytest.raises(MaintenanceOperationError, match="more than 2 entries"):
-        extension_packages._validate_extension_root_size(root)
+        extension_operations.inspect_extensions()
 
 
 def test_extension_root_rejects_oversized_installed_manifest(
     tmp_path,
     monkeypatch,
 ):
-    manifest = tmp_path / "extensions" / "sample_ext" / "manifest.toml"
+    _, root = _prepare_src(tmp_path, monkeypatch)
+    manifest = root / "sample_ext" / "manifest.toml"
     manifest.parent.mkdir(parents=True)
-    manifest.write_bytes(b"x" * 17)
-    monkeypatch.setattr(extension_packages, "MAX_EXTENSION_MANIFEST_BYTES", 16)
+    limit = (root / "builtin" / "manifest.toml").stat().st_size + 1
+    manifest.write_bytes(b"x" * (limit + 1))
+    monkeypatch.setattr(extension_packages, "MAX_EXTENSION_MANIFEST_BYTES", limit)
 
-    with pytest.raises(MaintenanceOperationError, match="manifest exceeds"):
-        extension_packages._validate_extension_root_size(manifest.parents[1])
+    with pytest.raises(MaintenanceOperationError, match="manifest exceeds.*sample_ext"):
+        extension_operations.inspect_extensions()

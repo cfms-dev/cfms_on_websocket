@@ -1,9 +1,9 @@
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import create_engine
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from include.database.models.scheduling import Schedule, ScheduleExecution
+from include.database.models.scheduling import Schedule
 from include.domains.access.permissions import Permissions
 from include.scheduling import ScheduledTaskRegistration, ScheduledTaskRegistry
 from include.scheduling import commands as scheduling_commands
@@ -15,12 +15,15 @@ from include.scheduling.commands import (
     update_schedule,
 )
 
+pytestmark = pytest.mark.component
+
 
 class _Payload(BaseModel):
     value: int
 
 
-def _registry():
+@pytest.fixture
+def registry():
     return ScheduledTaskRegistry(
         [
             ScheduledTaskRegistration(
@@ -29,160 +32,206 @@ def _registry():
                 payload_model=_Payload,
                 execute=lambda _context, _payload: None,
                 required_permission=Permissions.MANAGE_SYSTEM,
-            )
-        ]
-    )
-
-
-def _factory():
-    database = create_engine("sqlite://")
-    Schedule.__table__.create(database)
-    ScheduleExecution.__table__.create(database)
-    return sessionmaker(bind=database, expire_on_commit=False)
-
-
-def test_schedule_create_update_and_delete_use_revisions():
-    factory = _factory()
-    registry = _registry()
-    with factory() as session, session.begin():
-        schedule = create_schedule(
-            session,
-            registry,
-            username="admin",
-            task_name="test.record",
-            payload={"value": 1},
-            trigger_type="date",
-            trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
-            timezone="UTC",
-            enabled=True,
-            now=100.0,
-        )
-        schedule_id = schedule.id
-        assert schedule.task_contract_version == 2
-        assert schedule_response(schedule, registry)["task_available"] is True
-
-    with factory() as session, session.begin():
-        updated = update_schedule(
-            session,
-            registry,
-            schedule_id,
-            1,
-            {"payload": {"value": 2}, "enabled": False},
-            username="admin",
-            now=200.0,
-        )
-        assert updated.revision == 2
-        assert updated.payload == {"value": 2}
-        assert updated.enabled is False
-
-    with factory() as session, session.begin():
-        delete_schedule(session, schedule_id, 2, username="admin", now=300.0)
-        deleted = session.get(Schedule, schedule_id)
-        assert deleted.status == "deleted"
-        assert deleted.revision == 3
-
-
-def test_schedule_mutations_use_database_clock(monkeypatch):
-    factory = _factory()
-    registry = _registry()
-    database_times = iter((100.0, 200.0, 300.0))
-    monkeypatch.setattr(
-        scheduling_commands,
-        "database_now",
-        lambda _session: next(database_times),
-    )
-
-    with factory() as session, session.begin():
-        schedule = create_schedule(
-            session,
-            registry,
-            username="admin",
-            task_name="test.record",
-            payload={"value": 1},
-            trigger_type="date",
-            trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
-            timezone="UTC",
-            enabled=True,
-        )
-        schedule_id = schedule.id
-        assert schedule.created_at == 100.0
-        assert schedule.updated_at == 100.0
-
-    with factory() as session, session.begin():
-        schedule = update_schedule(
-            session,
-            registry,
-            schedule_id,
-            1,
-            {"payload": {"value": 2}},
-            username="admin",
-        )
-        assert schedule.updated_at == 200.0
-
-    with factory() as session, session.begin():
-        delete_schedule(session, schedule_id, 2, username="admin")
-        schedule = session.get(Schedule, schedule_id)
-        assert schedule.updated_at == 300.0
-        assert schedule.deleted_at == 300.0
-
-
-def test_schedule_update_rejects_stale_revision():
-    factory = _factory()
-    registry = _registry()
-    with factory() as session, session.begin():
-        schedule = create_schedule(
-            session,
-            registry,
-            username="admin",
-            task_name="test.record",
-            payload={"value": 1},
-            trigger_type="interval",
-            trigger_data={"seconds": 60, "start_at": "2026-01-01T00:00:00+00:00"},
-            timezone="UTC",
-            enabled=True,
-            now=100.0,
-        )
-        schedule_id = schedule.id
-
-    with factory() as session, session.begin():
-        with pytest.raises(ScheduleConflictError, match="stale"):
-            update_schedule(
-                session,
-                registry,
-                schedule_id,
-                2,
-                {},
-                username="admin",
-            )
-
-
-def test_system_managed_schedule_cannot_be_created_or_mutated_by_users():
-    factory = _factory()
-    registry = ScheduledTaskRegistry(
-        [
+            ),
             ScheduledTaskRegistration(
                 name="test.system_cleanup",
                 contract_version=1,
                 payload_model=_Payload,
                 execute=lambda _context, _payload: None,
-                required_permission=Permissions.MANAGE_SYSTEM,
                 user_schedulable=False,
-            )
+            ),
         ]
     )
-    with factory() as session, session.begin():
-        with pytest.raises(LookupError, match="system managed"):
-            create_schedule(
-                session,
-                registry,
-                username="admin",
-                task_name="test.system_cleanup",
-                payload={"value": 1},
-                trigger_type="date",
-                trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
-                timezone="UTC",
-                enabled=True,
-            )
+
+
+@pytest.fixture
+def schedule_sessions(schedule_database):
+    return sessionmaker(bind=schedule_database, expire_on_commit=False)
+
+
+@pytest.fixture
+def user_schedule_id(schedule_sessions, registry):
+    with schedule_sessions.begin() as session:
+        schedule = create_schedule(
+            session,
+            registry,
+            username="admin",
+            task_name="test.record",
+            payload={"value": 1},
+            trigger_type="date",
+            trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
+            timezone="UTC",
+            enabled=True,
+            now=100.0,
+        )
+        return schedule.id
+
+
+def test_schedule_creation_persists_contract_and_initial_revision(
+    schedule_sessions, registry
+):
+    with schedule_sessions.begin() as session:
+        schedule = create_schedule(
+            session,
+            registry,
+            username="admin",
+            task_name="test.record",
+            payload={"value": 1},
+            trigger_type="date",
+            trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
+            timezone="UTC",
+            enabled=True,
+            now=100.0,
+        )
+        schedule_id = schedule.id
+
+    with schedule_sessions() as session:
+        persisted = session.get(Schedule, schedule_id)
+        assert persisted.task_contract_version == 2
+        assert persisted.revision == 1
+        assert persisted.payload == {"value": 1}
+        assert schedule_response(persisted, registry)["task_available"] is True
+
+
+def test_schedule_update_persists_changes_and_increments_revision(
+    schedule_sessions, registry, user_schedule_id
+):
+    with schedule_sessions.begin() as session:
+        update_schedule(
+            session,
+            registry,
+            user_schedule_id,
+            1,
+            {"payload": {"value": 2}, "enabled": False},
+            username="admin",
+            now=200.0,
+        )
+
+    with schedule_sessions() as session:
+        updated = session.get(Schedule, user_schedule_id)
+        assert updated.revision == 2
+        assert updated.payload == {"value": 2}
+        assert updated.enabled is False
+
+
+def test_schedule_deletion_persists_terminal_status_and_increments_revision(
+    schedule_sessions, user_schedule_id
+):
+    with schedule_sessions.begin() as session:
+        delete_schedule(session, user_schedule_id, 1, username="admin", now=300.0)
+
+    with schedule_sessions() as session:
+        deleted = session.get(Schedule, user_schedule_id)
+        assert deleted.status == "deleted"
+        assert deleted.revision == 2
+
+
+def test_schedule_creation_uses_database_clock(
+    monkeypatch, schedule_sessions, registry
+):
+    monkeypatch.setattr(scheduling_commands, "database_now", lambda _session: 100.0)
+
+    with schedule_sessions.begin() as session:
+        schedule = create_schedule(
+            session,
+            registry,
+            username="admin",
+            task_name="test.record",
+            payload={"value": 1},
+            trigger_type="date",
+            trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
+            timezone="UTC",
+            enabled=True,
+        )
+        schedule_id = schedule.id
+
+    with schedule_sessions() as session:
+        schedule = session.get(Schedule, schedule_id)
+        assert schedule.created_at == 100.0
+        assert schedule.updated_at == 100.0
+
+
+def test_schedule_update_uses_database_clock(
+    monkeypatch, schedule_sessions, registry, user_schedule_id
+):
+    monkeypatch.setattr(scheduling_commands, "database_now", lambda _session: 200.0)
+
+    with schedule_sessions.begin() as session:
+        update_schedule(
+            session,
+            registry,
+            user_schedule_id,
+            1,
+            {"payload": {"value": 2}},
+            username="admin",
+        )
+
+    with schedule_sessions() as session:
+        assert session.get(Schedule, user_schedule_id).updated_at == 200.0
+
+
+def test_schedule_deletion_uses_database_clock(
+    monkeypatch, schedule_sessions, user_schedule_id
+):
+    monkeypatch.setattr(scheduling_commands, "database_now", lambda _session: 300.0)
+
+    with schedule_sessions.begin() as session:
+        delete_schedule(session, user_schedule_id, 1, username="admin")
+
+    with schedule_sessions() as session:
+        schedule = session.get(Schedule, user_schedule_id)
+        assert schedule.updated_at == 300.0
+        assert schedule.deleted_at == 300.0
+
+
+def test_schedule_update_rejects_stale_revision(
+    schedule_sessions, registry, user_schedule_id
+):
+    with (
+        schedule_sessions.begin() as session,
+        pytest.raises(ScheduleConflictError, match="Schedule revision is stale"),
+    ):
+        update_schedule(
+            session,
+            registry,
+            user_schedule_id,
+            2,
+            {},
+            username="admin",
+            now=200.0,
+        )
+
+    with schedule_sessions() as session:
+        schedule = session.get(Schedule, user_schedule_id)
+        assert schedule.revision == 1
+        assert schedule.payload == {"value": 1}
+
+
+def test_system_task_cannot_be_scheduled_by_users(schedule_sessions, registry):
+    with (
+        schedule_sessions.begin() as session,
+        pytest.raises(LookupError, match="test.system_cleanup.*system managed"),
+    ):
+        create_schedule(
+            session,
+            registry,
+            username="admin",
+            task_name="test.system_cleanup",
+            payload={"value": 1},
+            trigger_type="date",
+            trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
+            timezone="UTC",
+            enabled=True,
+            now=100.0,
+        )
+
+    with schedule_sessions() as session:
+        assert session.scalars(select(Schedule)).all() == []
+
+
+@pytest.mark.parametrize("operation", ["update", "delete"])
+def test_system_schedule_rejects_user_mutations(schedule_sessions, registry, operation):
+    with schedule_sessions.begin() as session:
         session.add(
             Schedule(
                 id="test.system_cleanup",
@@ -190,10 +239,7 @@ def test_system_managed_schedule_cannot_be_created_or_mutated_by_users():
                 task_contract_version=1,
                 payload={"value": 1},
                 trigger_type="interval",
-                trigger_data={
-                    "seconds": 60,
-                    "start_at": "2026-01-01T00:00:00+00:00",
-                },
+                trigger_data={"seconds": 60, "start_at": "2026-01-01T00:00:00+00:00"},
                 timezone="UTC",
                 system_managed=True,
                 next_run_at=100.0,
@@ -202,20 +248,26 @@ def test_system_managed_schedule_cannot_be_created_or_mutated_by_users():
             )
         )
 
-    with factory() as session, session.begin():
-        with pytest.raises(ScheduleConflictError, match="cannot be updated"):
-            update_schedule(
-                session,
-                registry,
-                "test.system_cleanup",
-                1,
-                {},
-                username="admin",
-            )
-        with pytest.raises(ScheduleConflictError, match="cannot be deleted"):
-            delete_schedule(
-                session,
-                "test.system_cleanup",
-                1,
-                username="admin",
-            )
+    with schedule_sessions.begin() as session:
+        if operation == "update":
+            with pytest.raises(ScheduleConflictError, match="cannot be updated"):
+                update_schedule(
+                    session,
+                    registry,
+                    "test.system_cleanup",
+                    1,
+                    {},
+                    username="admin",
+                    now=200.0,
+                )
+        else:
+            with pytest.raises(ScheduleConflictError, match="cannot be deleted"):
+                delete_schedule(
+                    session, "test.system_cleanup", 1, username="admin", now=200.0
+                )
+
+    with schedule_sessions() as session:
+        schedule = session.get(Schedule, "test.system_cleanup")
+        assert schedule.revision == 1
+        assert schedule.status == "active"
+        assert schedule.system_managed is True

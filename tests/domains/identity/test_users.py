@@ -7,6 +7,8 @@ from include.config.constants import (
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success, permission_entry
 
+pytestmark = pytest.mark.integration
+
 
 class TestUserOperations:
     @pytest.mark.asyncio
@@ -277,8 +279,8 @@ class TestUserOperations:
         response = await authenticated_client.get_user_info(
             "nonexistent_user_xyz_12345"
         )
-        code = response.get("code")
-        assert code in [400, 404], f"Expected 400 or 404, got {code}"
+        error = assert_error(response, 404)
+        assert error["message"] == "User does not exist"
 
     @pytest.mark.asyncio
     async def test_delete_user(
@@ -291,7 +293,7 @@ class TestUserOperations:
         assert_success(delete_response)
 
         info_response = await authenticated_client.get_user_info(username)
-        assert info_response.get("code") != 200
+        assert_error(info_response, 404)
 
     @pytest.mark.asyncio
     async def test_create_user_with_duplicate_username(
@@ -300,7 +302,8 @@ class TestUserOperations:
         response = await authenticated_client.create_user(
             username=test_user["username"], password="AnotherPassword123!"
         )
-        assert response.get("code") in [400, 409]
+        error = assert_error(response, 400)
+        assert error["message"] == "Username already exists"
 
     @pytest.mark.asyncio
     async def test_create_user_with_empty_username(

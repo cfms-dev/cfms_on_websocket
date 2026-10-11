@@ -5,12 +5,12 @@ import threading
 import orjson
 from loguru import logger
 
-from include.config.validation import SchedulingPolicy
 from include.domains.operations.commands.audit import log_audit
 from include.scheduling.claims import refresh_execution_lease
 from include.scheduling.contracts import ClaimedExecution, ScheduledTaskContext
 from include.scheduling.outcomes import complete_execution, fail_execution
-from include.scheduling.registry import ScheduledTaskRegistry
+lazy from include.config.validation import SchedulingPolicy
+lazy from include.scheduling.registry import ScheduledTaskRegistry
 
 
 def run_claimed_execution(

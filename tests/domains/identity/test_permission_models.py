@@ -1,19 +1,17 @@
 import time
 from pathlib import Path
-from shutil import copyfile
 
-from sqlalchemy import create_engine
+import pytest
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_permission_entries_survive_reload_and_respect_time_windows(
-    monkeypatch, tmp_path
+    tmp_path, sqlite_engine_factory
 ) -> None:
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
     from include.database.models.identity import (
         User,
         UserGroup,
@@ -23,7 +21,7 @@ def test_permission_entries_survive_reload_and_respect_time_windows(
     )
     from include.database.session import Base
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'permissions.db'}")
+    engine = sqlite_engine_factory(tmp_path / "permissions.db")
     Base.metadata.create_all(engine)
     test_session = sessionmaker(bind=engine)
     now = time.time()

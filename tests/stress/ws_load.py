@@ -181,7 +181,7 @@ async def timed_call(
                 include_in_total=include_in_total,
             )
         return response
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- aggregate workload failures into benchmark results
         latency_ms = (time.perf_counter() - start) * 1000
         stats.record_error(action, exc, latency_ms, include_in_total=include_in_total)
         return None
@@ -303,7 +303,7 @@ async def connect_client(
     start = time.perf_counter()
     try:
         await client.connect(max_retries=1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- record connection failures without stopping other workers
         latency_ms = (time.perf_counter() - start) * 1000
         rejection = _valid_handshake_rejection(exc) if expected_rejection else None
         if rejection is not None:
@@ -537,7 +537,7 @@ async def _upload_payload(
                 raise RuntimeError("Upload did not produce a resume checkpoint")
             await reconnect_context(context, stats)
         await context.client.upload_file_to_server(task_id, str(payload_path))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- aggregate transfer failures into benchmark results
         stats.record_error(
             "upload_file_resume" if resume else "upload_file",
             exc,
@@ -629,7 +629,7 @@ async def _download_payload(
             raise RuntimeError("Download did not reach completion")
         if destination.stat().st_size != payload_size:
             raise RuntimeError("Downloaded file size does not match source")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- aggregate transfer failures into benchmark results
         stats.record_error(
             "download_file_resume" if resume else "download_file",
             exc,
@@ -778,7 +778,7 @@ async def _run_connection_cycle(
                     "connection", exc, (time.perf_counter() - start) * 1000
                 )
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- classify worker failures while remaining workers continue
             close_code = getattr(client.websocket, "close_code", None)
             if close_code == 1013:
                 stats.record_expected_rejection(

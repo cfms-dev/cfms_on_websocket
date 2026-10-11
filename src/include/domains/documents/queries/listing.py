@@ -1,6 +1,6 @@
-from collections.abc import Sequence
 from itertools import batched
 from typing import Any
+lazy from collections.abc import Sequence
 
 from sqlalchemy import and_, exists, false, func, literal, not_, or_, select, union_all
 from sqlalchemy.orm import aliased, joinedload, raiseload
@@ -24,11 +24,11 @@ from include.database.models.documents import (
     Node,
 )
 from include.database.models.files import File
-from include.database.models.identity import User
 from include.domains.access.authorization.compiled_rules import (
     active_compiled_rule_filter,
 )
 from include.domains.access.permissions import Permissions
+lazy from include.database.models.identity import User
 
 _CURSOR_KEY = "_cursor_key"
 

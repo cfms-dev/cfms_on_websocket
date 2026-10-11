@@ -1,9 +1,9 @@
 import secrets
 import time
-from collections.abc import Callable, Iterable
 from enum import IntEnum
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
+lazy from collections.abc import Callable, Iterable
 
 import jwt
 import orjson
@@ -29,19 +29,17 @@ from include.config.constants import (
 )
 from include.config.settings import global_config
 from include.database.session import Base, Session
-from include.domains.access.permissions import Permissions
 from include.domains.identity.tokens import Token
+lazy from include.database.models.access import UserBlockEntry
+lazy from include.database.models.comments import Comment
+lazy from include.database.models.files import File
+lazy from include.database.models.keyrings import UserKey
+lazy from include.database.models.operations import AuditEntry
+lazy from include.domains.access.permissions import Permissions
 
 # Module-level PasswordHasher instance — reused across all calls to avoid
 # repeated construction overhead.
 _password_hasher = PasswordHasher()
-
-if TYPE_CHECKING:
-    from include.database.models.access import UserBlockEntry
-    from include.database.models.comments import Comment
-    from include.database.models.files import File
-    from include.database.models.keyrings import UserKey
-    from include.database.models.operations import AuditEntry
 
 
 class UserStatus(IntEnum):

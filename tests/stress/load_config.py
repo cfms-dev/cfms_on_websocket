@@ -98,7 +98,7 @@ class LoadProfile:
 
 def parse_duration(value: object, *, field_name: str = "duration") -> float:
     if isinstance(value, bool):
-        raise ValueError(f"{field_name} must be a positive duration")
+        raise ValueError(f"{field_name} must be a positive duration")  # noqa: TRY004 -- malformed profile values use one validation error contract
     if isinstance(value, int | float):
         seconds = float(value)
     elif isinstance(value, str):
@@ -111,7 +111,7 @@ def parse_duration(value: object, *, field_name: str = "duration") -> float:
             float(match.group("value")) * _DURATION_MULTIPLIERS[match.group("unit")]
         )
     else:
-        raise ValueError(f"{field_name} must be a positive duration")
+        raise ValueError(f"{field_name} must be a positive duration")  # noqa: TRY004 -- malformed profile values use one validation error contract
     if not math.isfinite(seconds) or seconds <= 0:
         raise ValueError(f"{field_name} must be a positive duration")
     return seconds
@@ -125,7 +125,7 @@ def _non_negative_duration(value: object, *, field_name: str) -> float:
 
 def _strict_number(value: object, *, field_name: str, minimum: float = 0) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"{field_name} must be a number")
+        raise ValueError(f"{field_name} must be a number")  # noqa: TRY004 -- malformed profile values use one validation error contract
     number = float(value)
     if not math.isfinite(number) or number < minimum:
         raise ValueError(f"{field_name} must be at least {minimum:g}")
@@ -144,7 +144,7 @@ def _validate_action_weights(
     if raw is None:
         return {"read": 45.0, "create": 25.0, "update": 15.0, "delete": 15.0}
     if not isinstance(raw, dict):
-        raise ValueError(f"profile {profile_name!r} action_weights must be a table")
+        raise ValueError(f"profile {profile_name!r} action_weights must be a table")  # noqa: TRY004 -- invalid TOML field type is a profile validation error
     unknown = set(raw) - MIXED_ACTIONS
     if unknown:
         raise ValueError(
@@ -163,7 +163,7 @@ def _validate_action_weights(
 
 def _profile_from_table(name: str, raw: object) -> LoadProfile:
     if not isinstance(raw, dict):
-        raise ValueError(f"profile {name!r} must be a table")
+        raise ValueError(f"profile {name!r} must be a table")  # noqa: TRY004 -- invalid TOML field type is a profile validation error
     unknown = set(raw) - PROFILE_FIELDS
     if unknown:
         raise ValueError(f"profile {name!r} has unknown fields: {sorted(unknown)}")
@@ -200,7 +200,7 @@ def _profile_from_table(name: str, raw: object) -> LoadProfile:
 
     stage_rates_raw = raw.get("stage_rates", [])
     if not isinstance(stage_rates_raw, list):
-        raise ValueError("stage_rates must be an array")
+        raise ValueError("stage_rates must be an array")  # noqa: TRY004 -- invalid TOML field type is a profile validation error
     stage_rates = tuple(
         _strict_number(value, field_name="stage_rates", minimum=0.0000001)
         for value in stage_rates_raw
@@ -277,7 +277,7 @@ def _profile_from_table(name: str, raw: object) -> LoadProfile:
         raise ValueError("upload-unique requires payload_size of at least 32 bytes")
     seed = raw["seed"]
     if isinstance(seed, bool) or not isinstance(seed, int):
-        raise ValueError("seed must be an integer")
+        raise ValueError("seed must be an integer")  # noqa: TRY004 -- invalid TOML field type is a profile validation error
 
     return LoadProfile(
         name=name,
@@ -315,7 +315,7 @@ def load_profiles(path: Path = DEFAULT_PROFILE_PATH) -> dict[str, LoadProfile]:
         raise ValueError("profiles.toml schema_version must be 1")
     raw_profiles = document.get("profiles")
     if not isinstance(raw_profiles, dict):
-        raise ValueError("profiles.toml must contain a profiles table")
+        raise ValueError("profiles.toml must contain a profiles table")  # noqa: TRY004 -- invalid TOML field type is a profile validation error
     missing = REQUIRED_PROFILES - set(raw_profiles)
     if missing:
         raise ValueError(

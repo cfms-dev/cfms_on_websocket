@@ -1,11 +1,11 @@
 from typing import Any
 
-from sqlalchemy.orm import Session as ORMSession
+lazy from sqlalchemy.orm import Session as ORMSession
 
 from include.database.models.identity import User, UserStatus
 from include.database.models.keyrings import UserKey
-from include.domains.identity.tokens import Token
 from include.exceptions.misc import UserNotActiveError
+lazy from include.domains.identity.tokens import Token
 
 
 def issue_login_token(user: User) -> Token:

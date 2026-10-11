@@ -6,16 +6,13 @@ __all__ = [
 ]
 
 import time
-from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, Double, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.config.constants import USERNAME_DATABASE_MAX_LENGTH
 from include.database.session import Base
-
-if TYPE_CHECKING:
-    from include.database.models.comments import Comment
+lazy from include.database.models.comments import Comment
 
 
 class BannedSubnet(Base):

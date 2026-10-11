@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from include.config.validation import DocumentDownloadRiskPolicy
+lazy from include.config.validation import DocumentDownloadRiskPolicy
 
 
 class DownloadRiskLevel(StrEnum):

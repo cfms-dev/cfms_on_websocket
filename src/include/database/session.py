@@ -13,6 +13,7 @@ from sqlalchemy.orm import (
 
 from include.config.settings import global_config
 from include.database.engine import create_database_engine
+lazy from include.database.models.documents import Document, EntityStatus, Folder
 
 __all__ = ["Base", "Session", "engine"]
 
@@ -29,8 +30,6 @@ def _add_filtering_criteria(execute_state: ORMExecuteState) -> None:
         and not execute_state.is_column_load
         and not execute_state.execution_options.get("include_deleted", False)
     ):
-        from include.database.models.documents import Document, EntityStatus, Folder
-
         execute_state.statement = execute_state.statement.options(
             with_loader_criteria(Folder, Folder.status != EntityStatus.DELETED),
             with_loader_criteria(Document, Document.status != EntityStatus.DELETED),

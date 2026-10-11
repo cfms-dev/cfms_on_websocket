@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
+lazy from include.database.models.identity import User
+lazy from include.database.session import Session
 
 
 @dataclass(frozen=True)
@@ -26,9 +28,6 @@ def build_random_password(length: int = 16) -> str:
 def reset_password(username: str, password: str | None = None) -> PasswordResetResult:
     enter_server_root()
     load_database_models()
-
-    from include.database.models.identity import User
-    from include.database.session import Session
 
     new_password = password or build_random_password()
     with Session() as session:
@@ -56,9 +55,6 @@ def clear_totp(
             "Specify exactly one target: a username or --all."
         )
     load_database_models()
-
-    from include.database.models.identity import User
-    from include.database.session import Session
 
     with Session() as session:
         if all_users:

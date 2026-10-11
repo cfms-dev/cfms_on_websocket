@@ -2,22 +2,21 @@ import logging
 import os
 import shutil
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+lazy from collections.abc import Callable
 
 import tomlkit
-from rich.progress import Progress
 from sqlalchemy import bindparam, func, insert, select
-from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
+lazy from rich.progress import Progress
+lazy from sqlalchemy.engine import Engine
+lazy from sqlalchemy.orm import sessionmaker
 
 from include.config.paths import EXECUTABLE_ABSPATH
 from include.database.session import Base, Session, engine
 from include.domains.documents.commands.name_conflicts import is_node_name_conflict
 from include.domains.operations.comments import CommentStore
-from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
 from maintenance.backup.archive import (
     _cleanup_restored_files,
@@ -66,6 +65,7 @@ from maintenance.operations.database.tables import (
     DEFERRED_COLUMNS,
     DEFERRED_UPDATE_ORDER,
 )
+lazy from include.providers.base import StorageProvider
 
 LOGGER = logging.getLogger(__name__)
 MAX_INIT_MARKER_BYTES = 64 * 1024

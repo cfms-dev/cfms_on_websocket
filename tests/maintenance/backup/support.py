@@ -6,8 +6,10 @@ from pathlib import Path
 import tomlkit
 from rich.console import Console
 from rich.progress import Progress
-from sqlalchemy import create_engine, event, insert, select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.orm import sessionmaker
+
+from include.database.engine import create_database_engine
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _SRC_PATH = _PROJECT_ROOT / "src"
@@ -60,15 +62,12 @@ def _write_config(path: Path, *, secret_key: str, pepper: str) -> dict:
 
 
 def _new_database(base, path: Path):
-    db_engine = create_engine(f"sqlite:///{path}")
-
-    @event.listens_for(db_engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    base.metadata.create_all(db_engine)
+    db_engine = create_database_engine({"type": "sqlite", "file": str(path)})
+    try:
+        base.metadata.create_all(db_engine)
+    except BaseException:
+        db_engine.dispose()
+        raise
     return db_engine, sessionmaker(bind=db_engine)
 
 

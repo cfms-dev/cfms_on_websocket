@@ -12,12 +12,12 @@ from include.scheduling.commands import (
     cancel_unstarted_schedule_execution,
     lock_schedule,
 )
-from include.scheduling.contracts import (
+from include.scheduling.triggers import build_trigger, first_run_at
+lazy from include.scheduling.contracts import (
     ScheduledTaskRegistration,
     SystemScheduleDefinition,
 )
-from include.scheduling.registry import ScheduledTaskRegistry
-from include.scheduling.triggers import build_trigger, first_run_at
+lazy from include.scheduling.registry import ScheduledTaskRegistry
 
 
 def _system_schedule_values(

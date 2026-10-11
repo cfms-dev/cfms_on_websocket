@@ -2,13 +2,14 @@ import copy
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import tomlkit
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy.exc import SQLAlchemyError
 from tomlkit.exceptions import TOMLKitError
+lazy from rich.progress import Progress
 
 from include.config import paths
 from include.config.validation import ConfigValidationError, parse_config_document
@@ -29,9 +30,7 @@ from maintenance.operations.database.schema import (
 )
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
-
-if TYPE_CHECKING:
-    from rich.progress import Progress
+lazy from include.database.session import Base, engine
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,8 +47,6 @@ class DatabaseMigrationResult:
 def upgrade_database() -> SchemaUpgradeResult:
     enter_server_root()
     load_database_models()
-
-    from include.database.session import Base, engine
 
     try:
         return execute_schema_upgrade(engine, Base.metadata)
@@ -71,16 +68,13 @@ def migrate_database(
     )
     load_database_models()
 
-    from include.database.session import Base
-    from include.database.session import engine as source_engine
-
     target_engine = None
     try:
         target_engine = create_database_engine(target_database)
         alembic_config = Config(paths.EXECUTABLE_ABSPATH / "alembic.ini")
         script_directory = ScriptDirectory.from_config(alembic_config)
         result = execute_database_migration(
-            source_engine,
+            engine,
             target_engine,
             Base.metadata,
             script_directory,

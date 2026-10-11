@@ -1,9 +1,6 @@
-from typing import TYPE_CHECKING
+lazy from rich.progress import Progress, TaskID
 
 from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
-
-if TYPE_CHECKING:
-    from rich.progress import Progress, TaskID
 
 
 def add_progress_task(progress: Progress | None) -> TaskID | None:

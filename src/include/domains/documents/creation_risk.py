@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from include.config.validation import DocumentCreationRiskPolicy
+lazy from include.config.validation import DocumentCreationRiskPolicy
 
 
 class CreationRiskLevel(StrEnum):

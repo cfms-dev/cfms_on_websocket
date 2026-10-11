@@ -13,7 +13,7 @@ import orjson
 from loguru import logger as log
 from sqlalchemy import select, update
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import GLOBAL_BROADCAST_EVENT_CHANNEL
 from include.database.clock import database_now
@@ -51,12 +51,7 @@ _ACTIVE_FILE_TASK_STATUSES = (
     FileTaskStatus.IN_PROGRESS,
 )
 
-
-class _ReasonUnset:
-    pass  # TODO: Use a sentinel type when Python 3.15 comes out
-
-
-_REASON_UNSET = _ReasonUnset()
+_REASON_UNSET = sentinel("_REASON_UNSET")
 
 
 def _publish_lockdown_state(state: LockdownState) -> None:
@@ -114,7 +109,7 @@ def _notify_schedule_change() -> None:
 
 def apply_lockdown(
     status: bool,
-    reason: str | None | _ReasonUnset = _REASON_UNSET,
+    reason: str | None | _REASON_UNSET = _REASON_UNSET,
     *,
     only_if_inactive: bool = False,
     take_over_scheduled: bool = False,
@@ -124,7 +119,7 @@ def apply_lockdown(
         raise ValueError("only_if_inactive is only valid when enabling lockdown")
     if take_over_scheduled and (not status or not only_if_inactive):
         raise ValueError("take_over_scheduled requires enabling with only_if_inactive")
-    if not status and not isinstance(reason, _ReasonUnset):
+    if not status and reason != _REASON_UNSET:
         raise ValueError("A lockdown reason requires lockdown to be enabled")
 
     attempt = 0
@@ -146,20 +141,7 @@ def apply_lockdown(
                 previous_source = _lockdown_source(current, current_activation)
 
                 if status and only_if_inactive and previous_state.enabled:
-                    if take_over_scheduled and current_activation is not None:
-                        _persist_lockdown_state(
-                            session,
-                            current,
-                            previous_state,
-                            LockdownSource.AUTOMATIC,
-                            current.last_disabled_at,
-                        )
-                        activation_changed = _delete_lockdown_activation(
-                            session,
-                            activation_entry,
-                        )
-                        source = LockdownSource.AUTOMATIC
-                    else:
+                    if not (take_over_scheduled and current_activation is not None):
                         return LockdownTransition(
                             previous_state=previous_state,
                             state=previous_state,
@@ -168,13 +150,12 @@ def apply_lockdown(
                             outcome=LockdownTransitionOutcome.CONDITION_NOT_MET,
                         )
                     state = previous_state
-                    status_changed = False
+                    source = LockdownSource.AUTOMATIC
                 else:
-                    current_reason = previous_state.reason
-                    if not isinstance(reason, _ReasonUnset):
+                    if reason != _REASON_UNSET:
                         next_reason = reason
                     elif status and previous_state.enabled:
-                        next_reason = current_reason
+                        next_reason = previous_state.reason
                     else:
                         next_reason = None
 
@@ -189,42 +170,40 @@ def apply_lockdown(
                             outcome=LockdownTransitionOutcome.UNCHANGED,
                         )
 
-                    status_changed = state.enabled != previous_state.enabled
-                    source = (
-                        LockdownSource.AUTOMATIC
-                        if state.enabled and previous_source is LockdownSource.AUTOMATIC
-                        else (LockdownSource.MANUAL if state.enabled else None)
-                    )
+                    if not state.enabled:
+                        source = None
+                    elif previous_source is LockdownSource.AUTOMATIC:
+                        source = LockdownSource.AUTOMATIC
+                    else:
+                        source = LockdownSource.MANUAL
 
-                    last_disabled_at = (
-                        time.time()
-                        if status_changed and not status
-                        else (0.0 if current is None else current.last_disabled_at)
-                    )
-                    _persist_lockdown_state(
-                        session,
-                        current,
-                        state,
-                        source,
-                        last_disabled_at,
-                    )
-                    activation_changed = _delete_lockdown_activation(
-                        session,
-                        activation_entry,
-                    )
+                status_changed = state.enabled != previous_state.enabled
+                last_disabled_at = (
+                    time.time()
+                    if status_changed and not status
+                    else (0.0 if current is None else current.last_disabled_at)
+                )
+                _persist_lockdown_state(
+                    session,
+                    current,
+                    state,
+                    source,
+                    last_disabled_at,
+                )
+                activation_changed = _delete_lockdown_activation(
+                    session,
+                    activation_entry,
+                )
 
-                    if status_changed and status:
-                        task_ids, cancelled_file_tasks = _cancel_pending_file_tasks(
-                            session
-                        )
+                if status_changed and status:
+                    task_ids, cancelled_file_tasks = _cancel_pending_file_tasks(session)
         except _LockdownCasConflict:
             attempt = _retry_lockdown_cas(attempt)
             continue
 
         if status_changed:
             publish_cancelled_file_tasks(task_ids)
-            _publish_lockdown_state(state)
-        elif state != previous_state:
+        if state != previous_state:
             _publish_lockdown_state(state)
         if activation_changed:
             _notify_schedule_change()

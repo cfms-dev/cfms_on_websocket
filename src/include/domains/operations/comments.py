@@ -8,7 +8,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.database.models.comments import Comment
 

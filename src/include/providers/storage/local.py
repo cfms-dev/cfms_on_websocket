@@ -1,10 +1,10 @@
 __all__ = ["LocalFileObject", "LocalStorageProvider"]
 
 import os
-from collections.abc import Buffer, Callable
 from contextlib import ExitStack
-from types import TracebackType
 from typing import IO, Any
+lazy from collections.abc import Buffer, Callable
+lazy from types import TracebackType
 
 from include.providers.base import FileObject, ResumableUpload, StorageProvider
 

@@ -9,7 +9,7 @@ easier debugging and tracking of errors in complex systems.
 
 import uuid
 
-import loguru
+lazy import loguru
 
 
 def log_exception_with_id(

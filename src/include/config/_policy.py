@@ -6,6 +6,7 @@ from pydantic import AfterValidator, BeforeValidator, ConfigDict, ValidationErro
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from include.types import PositiveInt, TrimmedNonEmptyString
+lazy from include.config.settings import global_config
 
 
 class ConfigValidationError(ValueError):
@@ -150,8 +151,6 @@ class _ConfigPolicy:
     @classmethod
     def from_config(cls, config: _ConfigSource | None = None) -> Self:
         if config is None:
-            from include.config.settings import global_config
-
             config = global_config
 
         section = cls._read_section(config)

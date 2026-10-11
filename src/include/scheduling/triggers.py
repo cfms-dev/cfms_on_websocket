@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from apscheduler.triggers.base import BaseTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+lazy from apscheduler.triggers.base import BaseTrigger
 
 
 class TriggerValidationError(ValueError):

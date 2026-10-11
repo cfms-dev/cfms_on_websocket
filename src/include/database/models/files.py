@@ -23,6 +23,7 @@ from sqlalchemy.orm.session import object_session
 from include.database.session import Base
 from include.providers.manager import ProviderManager
 from include.providers.storage import LocalStorageProvider
+lazy from include.platform.win32.bindings import can_open_file_for_write
 
 logger = log.bind(name="database.file")
 
@@ -164,26 +165,8 @@ class File(Base):
             return True
 
         if sys.platform == "win32":
-            import pywintypes
-            import win32file
-
-            hFile = None
-            try:
-                if ProviderManager().storage.exists(self.path):
-                    hFile = win32file.CreateFile(
-                        self.path,
-                        win32file.GENERIC_READ + win32file.GENERIC_WRITE,
-                        win32file.FILE_SHARE_READ,
-                        None,
-                        win32file.OPEN_ALWAYS,
-                        0,
-                        None,
-                    )
-            except pywintypes.error:
-                return False
-            finally:
-                if hFile:
-                    hFile.Close()
+            if ProviderManager().storage.exists(self.path):
+                return can_open_file_for_write(self.path)
 
         return True
 

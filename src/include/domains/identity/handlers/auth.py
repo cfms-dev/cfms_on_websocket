@@ -8,7 +8,6 @@ from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.identity.sessions import build_login_success_data
-from include.domains.identity.types import RequestUsername
 from include.domains.identity.validators.passwords import check_passwd_requirements
 from include.domains.operations.commands.audit import log_audit
 from include.domains.security.guards.login import (
@@ -17,9 +16,7 @@ from include.domains.security.guards.login import (
     ThrottleDecision,
     ThrottleScope,
 )
-from include.domains.security.types import TwoFactorToken
 from include.transport.client_address import get_client_ip
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     EmptyRequestDataModel,
@@ -28,7 +25,10 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-from include.types import NonEmptyString
+lazy from include.domains.identity.types import RequestUsername
+lazy from include.domains.security.types import TwoFactorToken
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.types import NonEmptyString
 
 
 class _LoginRequest(RequestDataModel):

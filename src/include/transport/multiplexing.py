@@ -7,8 +7,8 @@ from enum import IntEnum
 
 from loguru import logger as log
 from websockets.exceptions import ConnectionClosed
-from websockets.sync.server import ServerConnection
-from websockets.typing import Data, DataLike
+lazy from websockets.sync.server import ServerConnection
+lazy from websockets.typing import Data, DataLike
 
 FRAME_HEADER_FORMAT = "!IB"  # 4 bytes for stream_id, 1 byte for frame_type
 FRAME_HEADER = struct.Struct(FRAME_HEADER_FORMAT)

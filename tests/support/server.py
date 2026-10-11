@@ -1,10 +1,15 @@
 import os
+import ssl
 import subprocess
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from typing import IO
+
+from websockets.exceptions import InvalidHandshake
+from websockets.sync.client import connect
 
 from tests.support.config import ServerTestSettings
 
@@ -26,10 +31,12 @@ class ServerLogCapture:
 
     def close(self) -> None:
         self.stop_event.set()
-        self.stdout_thread.join(timeout=2)
-        self.stderr_thread.join(timeout=2)
-        self.stdout_file.close()
-        self.stderr_file.close()
+        with ExitStack() as files:
+            files.callback(self.stdout_file.close)
+            files.callback(self.stderr_file.close)
+            for thread in (self.stdout_thread, self.stderr_thread):
+                if thread.ident is not None:
+                    thread.join(timeout=2)
 
 
 def log_server_output(
@@ -41,8 +48,6 @@ def log_server_output(
     stdout_path = log_path / f"server_stdout_{timestamp}.log"
     stderr_path = log_path / f"server_stderr_{timestamp}.log"
 
-    stdout_file = open(stdout_path, "w", encoding="utf-8", buffering=1)
-    stderr_file = open(stderr_path, "w", encoding="utf-8", buffering=1)
     stop_event = threading.Event()
 
     def read_stream(stream, output_file):
@@ -56,25 +61,33 @@ def log_server_output(
                     output_file.flush()
                 except ValueError, OSError:
                     break
-        except Exception:
-            pass
+        except ValueError, OSError:
+            return
 
-    stdout_thread = threading.Thread(
-        target=read_stream, args=(process.stdout, stdout_file), daemon=True
-    )
-    stderr_thread = threading.Thread(
-        target=read_stream, args=(process.stderr, stderr_file), daemon=True
-    )
-    stdout_thread.start()
-    stderr_thread.start()
-
-    return ServerLogCapture(
-        stdout_thread,
-        stderr_thread,
-        stdout_file,
-        stderr_file,
-        stop_event,
-    )
+    with ExitStack() as files:
+        stdout_file = files.enter_context(
+            stdout_path.open("w", encoding="utf-8", buffering=1)
+        )
+        stderr_file = files.enter_context(
+            stderr_path.open("w", encoding="utf-8", buffering=1)
+        )
+        stdout_thread = threading.Thread(
+            target=read_stream, args=(process.stdout, stdout_file), daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=read_stream, args=(process.stderr, stderr_file), daemon=True
+        )
+        logs = ServerLogCapture(
+            stdout_thread, stderr_thread, stdout_file, stderr_file, stop_event
+        )
+        try:
+            stdout_thread.start()
+            stderr_thread.start()
+        except BaseException:
+            stop_server(process, logs)
+            raise
+        files.pop_all()
+        return logs
 
 
 def start_server(
@@ -96,41 +109,58 @@ def start_server(
         cwd=settings.src_dir,
         env=env,
     )
-    logs = log_server_output(process)
-
-    password_path = settings.src_dir / "admin_password.txt"
-    max_wait = 20
-    waited = 0.0
-    while waited < max_wait:
-        time.sleep(0.5)
-        waited += 0.5
-        if process.poll() is not None:
-            break
-        if password_path.exists():
-            time.sleep(1)
-            break
-
-    if not password_path.exists():
-        stop_server(process, logs)
-        raise RuntimeError(
-            f"Server initialization timed out or crashed after {max_wait}s."
-        )
-
-    return process, logs
-
-
-def stop_server(process: subprocess.Popen, logs: ServerLogCapture) -> None:
-    process.terminate()
+    logs = None
     try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+        logs = log_server_output(
+            process, Path("test_logs") / settings.src_dir.parent.name
+        )
+        password_path = settings.src_dir / "admin_password.txt"
+        ssl_context = None
+        if settings.use_ssl:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        host = f"[{settings.host}]" if ":" in settings.host else settings.host
+        protocol = "wss" if settings.use_ssl else "ws"
+        deadline = time.monotonic() + 20
+        last_error = None
+        while (remaining := deadline - time.monotonic()) > 0:
+            if process.poll() is not None:
+                raise RuntimeError(
+                    f"Test server exited during startup: {process.returncode}"
+                )
+            if password_path.is_file():
+                try:
+                    with connect(
+                        f"{protocol}://{host}:{settings.port}",
+                        ssl=ssl_context,
+                        proxy=None,
+                        open_timeout=min(0.5, remaining),
+                        close_timeout=1,
+                    ):
+                        return process, logs
+                except (OSError, TimeoutError, InvalidHandshake) as exc:
+                    last_error = exc
+            time.sleep(min(0.05, remaining))
+        raise RuntimeError(
+            "Test server did not become ready within 20 seconds"
+        ) from last_error
+    except BaseException:
+        stop_server(process, logs)
+        raise
 
-    for pipe in (process.stdout, process.stderr):
-        try:
-            if pipe:
-                pipe.close()
-        except Exception:
-            pass
-    logs.close()
+
+def stop_server(process: subprocess.Popen, logs: ServerLogCapture | None) -> None:
+    with ExitStack() as resources:
+        if logs is not None:
+            resources.callback(logs.close)
+        for pipe in (process.stdout, process.stderr):
+            if pipe is not None:
+                resources.callback(pipe.close)
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)

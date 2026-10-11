@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from pathlib import Path
+lazy from pathlib import Path
 
-from include.extensions.manager import (
+lazy from include.extensions.manager import (
     ExtensionManifest,
 )
 

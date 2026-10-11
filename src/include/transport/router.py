@@ -1,3 +1,4 @@
+import ssl
 import threading
 import time
 
@@ -7,7 +8,7 @@ from loguru import logger as log
 from pydantic import ValidationError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
-from websockets.sync.server import ServerConnection
+lazy from websockets.sync.server import ServerConnection
 
 from include.config.constants import NONCE_MIN_LENGTH
 from include.config.validation import AdmissionControlPolicy
@@ -130,7 +131,7 @@ from include.transport.admission import admission_controller
 from include.transport.client_address import get_client_ip
 from include.transport.connection import ConnectionHandler, send_conclusion
 from include.transport.multiplexing import FrameType, MultiplexedConnection, Stream
-from include.transport.request_handler import RequestHandler, Result
+lazy from include.transport.request_handler import RequestHandler, Result
 
 logger = log.bind(name="connection_handler")
 
@@ -313,8 +314,16 @@ def handle_connection(websocket: ServerConnection):
     else:
         logger.info(f"Incoming connection: {websocket.remote_address[0]}")
 
+    # FIXME: For debugging purposes; remove this when unused.
+    sock = websocket.socket
+    if isinstance(sock, ssl.SSLSocket):
+        logger.debug(
+            f"Is a TLS connection: version={sock.version()} cipher={sock.cipher()} "
+            f"group={sock.group()} server_sigalg={sock.server_sigalg()}",
+        )
+
     multiplexer: MultiplexedConnection | None = None
-    extension_connected = False
+    ext_on_connect_triggered = False
     try:
         policy = AdmissionControlPolicy.from_config()
         multiplexer = MultiplexedConnection(
@@ -326,7 +335,7 @@ def handle_connection(websocket: ServerConnection):
             clients.add(multiplexer)
 
         pm.hook.ext_on_connect(websocket=websocket)
-        extension_connected = True
+        ext_on_connect_triggered = True
 
         while True:
             stream = multiplexer.accept_stream()
@@ -370,7 +379,7 @@ def handle_connection(websocket: ServerConnection):
             with clients_lock:
                 clients.discard(multiplexer)
 
-        if extension_connected:
+        if ext_on_connect_triggered:
             pm.hook.ext_post_disconnect()
         admission_controller.release_connection(ip)
 

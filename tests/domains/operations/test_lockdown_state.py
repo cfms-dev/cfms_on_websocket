@@ -9,7 +9,6 @@ import orjson
 import pytest
 import tomlkit
 from pydantic import ValidationError
-from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
@@ -34,21 +33,11 @@ _REAL_CANCEL_PENDING_FILE_TASKS = lockdown._cancel_pending_file_tasks
 
 
 @pytest.fixture
-def lockdown_database(monkeypatch, tmp_path):
+def lockdown_database(monkeypatch, tmp_path, sqlite_engine_factory):
     database_path = tmp_path / "lockdown.db"
-    engine = create_engine(f"sqlite:///{database_path}", connect_args={"timeout": 30})
+    engine = sqlite_engine_factory(database_path, timeout_seconds=30)
 
-    @event.listens_for(engine, "connect")
-    def _configure_sqlite(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
-
-    SystemStateEntry.metadata.create_all(
-        engine,
-        tables=[SystemStateEntry.__table__, File.__table__, FileTask.__table__],
-    )
+    SystemStateEntry.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine)
     monkeypatch.setattr(lockdown, "Session", sessions)
     monkeypatch.setattr(lockdown_state, "Session", sessions)
@@ -58,11 +47,13 @@ def lockdown_database(monkeypatch, tmp_path):
     monkeypatch.setattr(lockdown, "publish_cancelled_file_tasks", lambda _ids: None)
     monkeypatch.setattr(lockdown, "_publish_lockdown_state", lambda _state: None)
     monkeypatch.setattr(lockdown, "_notify_schedule_change", lambda: None)
-    yield sessions, database_path
-    engine.dispose()
+    return sessions, database_path
 
 
-def test_lockdown_reason_is_replaced_and_persisted(lockdown_database) -> None:
+@pytest.mark.component
+def test_lockdown_reason_is_replaced_and_persisted(
+    lockdown_database, sqlite_engine_factory
+) -> None:
     sessions, database_path = lockdown_database
 
     apply_lockdown(True, "First maintenance window")
@@ -75,15 +66,13 @@ def test_lockdown_reason_is_replaced_and_persisted(lockdown_database) -> None:
     assert lockdown_state_manager.get_state() == LockdownState(enabled=True)
 
     sessions.kw["bind"].dispose()
-    reopened_engine = create_engine(f"sqlite:///{database_path}")
+    reopened_engine = sqlite_engine_factory(database_path)
     reopened_sessions = sessionmaker(bind=reopened_engine)
     lockdown_state.Session = reopened_sessions
-    try:
-        assert lockdown_state_manager.get_state() == LockdownState(enabled=True)
-    finally:
-        reopened_engine.dispose()
+    assert lockdown_state_manager.get_state() == LockdownState(enabled=True)
 
 
+@pytest.mark.component
 def test_active_lockdown_reason_update_skips_transition_side_effects(
     monkeypatch, lockdown_database
 ) -> None:
@@ -116,6 +105,7 @@ def test_active_lockdown_reason_update_skips_transition_side_effects(
     assert broadcasts == [transition.state]
 
 
+@pytest.mark.component
 def test_active_lockdown_reason_can_be_cleared(lockdown_database) -> None:
     apply_lockdown(True, "Temporary reason")
 
@@ -126,6 +116,7 @@ def test_active_lockdown_reason_can_be_cleared(lockdown_database) -> None:
     assert lockdown_state_manager.get_state() == transition.state
 
 
+@pytest.mark.component
 def test_repeated_lockdown_requests_are_idempotent(
     monkeypatch, lockdown_database
 ) -> None:
@@ -146,6 +137,7 @@ def test_repeated_lockdown_requests_are_idempotent(
     assert lockdown_state_manager.get_last_disabled_at() == 100.0
 
 
+@pytest.mark.unit
 def test_unlocked_state_rejects_a_reason() -> None:
     with pytest.raises(ValidationError) as error:
         LockdownState(reason="Invalid")
@@ -154,6 +146,7 @@ def test_unlocked_state_rejects_a_reason() -> None:
     assert error.value.errors()[0]["type"] == "value_error"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("values", "location", "error_type"),
     [
@@ -180,6 +173,7 @@ def test_lockdown_state_uses_strict_validation(values, location, error_type) -> 
     assert validation_error["type"] == error_type
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "data",
     [
@@ -193,6 +187,7 @@ def test_lockdown_request_model_accepts_valid_data(data) -> None:
     RequestLockdownHandler.request_model.model_validate(data)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "data",
     [
@@ -209,6 +204,7 @@ def test_lockdown_request_model_rejects_invalid_data(data) -> None:
         RequestLockdownHandler.request_model.model_validate(data)
 
 
+@pytest.mark.component
 def test_lockdown_payload_shape_is_stable(lockdown_database) -> None:
     sessions, _database_path = lockdown_database
 
@@ -227,6 +223,7 @@ def test_lockdown_payload_shape_is_stable(lockdown_database) -> None:
     }
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     "payload",
     [
@@ -304,6 +301,7 @@ def test_invalid_persisted_lockdown_payload_is_rejected(
         lockdown_state_manager.get_state()
 
 
+@pytest.mark.component
 def test_unknown_lockdown_schema_version_is_rejected(lockdown_database) -> None:
     sessions, _database_path = lockdown_database
     with sessions.begin() as session:
@@ -326,6 +324,7 @@ def test_unknown_lockdown_schema_version_is_rejected(lockdown_database) -> None:
         lockdown_state_manager.get_state()
 
 
+@pytest.mark.component
 def test_enable_if_inactive_preserves_existing_reason(lockdown_database) -> None:
     initial = apply_lockdown(True, "Automatic", only_if_inactive=True)
     existing = apply_lockdown(True, "Replacement", only_if_inactive=True)
@@ -336,6 +335,46 @@ def test_enable_if_inactive_preserves_existing_reason(lockdown_database) -> None
     assert existing.state == initial.state
 
 
+@pytest.mark.component
+def test_enable_if_inactive_takes_over_scheduled_lockdown(
+    monkeypatch, lockdown_database
+) -> None:
+    monkeypatch.setattr(lockdown, "database_now", lambda _session: 100.0)
+    apply_scheduled_lockdown("execution-1", 200.0, "Maintenance")
+    broadcasts = []
+    cancellations = []
+    schedule_changes = []
+    monkeypatch.setattr(lockdown, "_publish_lockdown_state", broadcasts.append)
+    monkeypatch.setattr(
+        lockdown,
+        "_cancel_pending_file_tasks",
+        lambda _session: (cancellations.append(True) or [], 0),
+    )
+    monkeypatch.setattr(
+        lockdown, "_notify_schedule_change", lambda: schedule_changes.append(True)
+    )
+
+    transition = apply_lockdown(
+        True,
+        "Replacement",
+        only_if_inactive=True,
+        take_over_scheduled=True,
+    )
+
+    expected_state = LockdownState(enabled=True, reason="Maintenance")
+    assert transition.outcome is LockdownTransitionOutcome.APPLIED
+    assert transition.previous_state == transition.state == expected_state
+    assert transition.previous_source is LockdownSource.SCHEDULED
+    assert transition.source is LockdownSource.AUTOMATIC
+    assert lockdown_state_manager.get_state() == expected_state
+    assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
+    assert lockdown_state_manager.get_scheduled_activation() is None
+    assert broadcasts == []
+    assert cancellations == []
+    assert schedule_changes == [True]
+
+
+@pytest.mark.component
 def test_legacy_lockdown_source_is_inferred_conservatively(lockdown_database) -> None:
     sessions, _database_path = lockdown_database
     with sessions.begin() as session:
@@ -361,6 +400,7 @@ def test_legacy_lockdown_source_is_inferred_conservatively(lockdown_database) ->
     )
 
 
+@pytest.mark.component
 def test_legacy_scheduled_activation_is_inferred_as_scheduled(
     lockdown_database,
 ) -> None:
@@ -398,6 +438,7 @@ def test_legacy_scheduled_activation_is_inferred_as_scheduled(
     assert lockdown_state_manager.get_source() is LockdownSource.SCHEDULED
 
 
+@pytest.mark.component
 def test_scheduled_lockdown_expires_only_after_its_deadline(
     monkeypatch, lockdown_database
 ) -> None:
@@ -429,6 +470,7 @@ def test_scheduled_lockdown_expires_only_after_its_deadline(
     assert lockdown_state_manager.get_last_disabled_at() == 200.0
 
 
+@pytest.mark.component
 def test_scheduled_lockdown_without_deadline_keeps_owned_activation(
     monkeypatch, lockdown_database
 ) -> None:
@@ -462,6 +504,7 @@ def test_scheduled_lockdown_without_deadline_keeps_owned_activation(
     assert activation.payload["expires_at"] is None
 
 
+@pytest.mark.component
 def test_inconsistent_scheduled_source_is_treated_as_unknown(
     lockdown_database,
 ) -> None:
@@ -482,6 +525,7 @@ def test_inconsistent_scheduled_source_is_treated_as_unknown(
     )
 
 
+@pytest.mark.component
 def test_scheduled_disable_applies_only_to_releasable_sources(
     monkeypatch, lockdown_database
 ) -> None:
@@ -509,6 +553,7 @@ def test_scheduled_disable_applies_only_to_releasable_sources(
     assert lockdown_state_manager.get_state().enabled is True
 
 
+@pytest.mark.component
 def test_scheduled_lockdown_cannot_replace_or_expire_another_activation(
     monkeypatch, lockdown_database
 ) -> None:
@@ -527,6 +572,7 @@ def test_scheduled_lockdown_cannot_replace_or_expire_another_activation(
     )
 
 
+@pytest.mark.component
 def test_manual_reason_change_takes_over_scheduled_lockdown(
     monkeypatch, lockdown_database
 ) -> None:
@@ -548,6 +594,7 @@ def test_manual_reason_change_takes_over_scheduled_lockdown(
     )
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("expires_at", [None, 200.0])
 def test_protective_lockdown_takes_over_without_replacing_public_reason(
     monkeypatch, lockdown_database, expires_at
@@ -572,6 +619,7 @@ def test_protective_lockdown_takes_over_without_replacing_public_reason(
     assert lockdown_state_manager.get_scheduled_activation() is None
 
 
+@pytest.mark.component
 def test_automatic_lockdown_takes_over_manual_source(lockdown_database) -> None:
     apply_lockdown(True, "Operator maintenance")
 
@@ -587,6 +635,7 @@ def test_automatic_lockdown_takes_over_manual_source(lockdown_database) -> None:
     assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
 
 
+@pytest.mark.component
 def test_reason_change_does_not_release_automatic_protection(
     lockdown_database,
 ) -> None:
@@ -604,6 +653,7 @@ def test_reason_change_does_not_release_automatic_protection(
     )
 
 
+@pytest.mark.component
 def test_automatic_takeover_wins_race_with_scheduled_disable(
     monkeypatch,
     lockdown_database,
@@ -643,6 +693,7 @@ def test_automatic_takeover_wins_race_with_scheduled_disable(
     assert lockdown_state_manager.get_source() is LockdownSource.AUTOMATIC
 
 
+@pytest.mark.component
 def test_lockdown_cas_retries_are_bounded(monkeypatch, lockdown_database) -> None:
     attempts = []
     delays = []
@@ -668,6 +719,7 @@ def test_lockdown_cas_retries_are_bounded(monkeypatch, lockdown_database) -> Non
     assert lockdown_state_manager.get_state() == LockdownState()
 
 
+@pytest.mark.component
 def test_enable_if_inactive_has_single_concurrent_winner(
     monkeypatch, lockdown_database
 ) -> None:
@@ -704,6 +756,7 @@ def test_enable_if_inactive_has_single_concurrent_winner(
     assert broadcasts == winning_states
 
 
+@pytest.mark.component
 def test_transition_effects_are_published_after_commit(
     monkeypatch, lockdown_database
 ) -> None:
@@ -738,6 +791,7 @@ def test_transition_effects_are_published_after_commit(
     ]
 
 
+@pytest.mark.component
 def test_lockdown_cancels_active_file_tasks_in_its_transaction(
     monkeypatch, lockdown_database
 ) -> None:
@@ -789,6 +843,7 @@ def test_lockdown_cancels_active_file_tasks_in_its_transaction(
         assert session.get(FileTask, "complete").status == FileTaskStatus.COMPLETED
 
 
+@pytest.mark.component
 def test_transition_rolls_back_when_task_cancellation_fails(
     monkeypatch, lockdown_database
 ) -> None:
@@ -804,6 +859,7 @@ def test_transition_rolls_back_when_task_cancellation_fails(
     assert lockdown_state_manager.get_state() == LockdownState()
 
 
+@pytest.mark.component
 def test_disable_persists_timestamp(monkeypatch, lockdown_database) -> None:
     apply_lockdown(True, "Automatic")
     monkeypatch.setattr(lockdown.time, "time", lambda: 1234.5)
@@ -820,6 +876,10 @@ def _run_lockdown_process(runtime_dir: Path, action: str) -> dict:
     script = """
 import sys
 import orjson
+from pathlib import Path
+from maintenance.runtime import enter_server_root
+
+enter_server_root(Path.cwd())
 import include.database.models
 from include.config.settings import global_config
 from include.database.session import Base, engine
@@ -849,6 +909,7 @@ global_config.stop()
     return orjson.loads(result.stdout.strip().splitlines()[-1])
 
 
+@pytest.mark.integration
 def test_lockdown_persists_across_process_restarts(tmp_path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
@@ -862,6 +923,7 @@ def test_lockdown_persists_across_process_restarts(tmp_path) -> None:
     config["provider"]["caching"] = "memory"
     config["provider"]["event_bus"] = "local"
     (runtime_dir / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
+    (runtime_dir / "main.py").write_bytes((source_dir / "main.py").read_bytes())
     (runtime_dir / "init").write_text("initialized\n", encoding="utf-8")
 
     assert _run_lockdown_process(runtime_dir, "enable") == {

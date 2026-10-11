@@ -13,12 +13,12 @@ from include.database.models.documents import (
     EntityStatus,
     Folder,
 )
-from include.database.models.identity import User
 from include.domains.access.authorization.compiled_rules import (
     fetch_compiled_access_rules_for_targets,
 )
 from include.domains.access.authorization.evaluation import check_access_for_object
 from include.domains.access.authorization.grants import prefetch_user_blocks
+lazy from include.database.models.identity import User
 
 
 def fetch_subtree_for_deletion(

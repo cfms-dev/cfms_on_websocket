@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
+
 from include.domains.operations.lockdown import scheduling
+
+pytestmark = pytest.mark.unit
 
 
 def test_expiry_schedule_tracks_active_activation(monkeypatch):

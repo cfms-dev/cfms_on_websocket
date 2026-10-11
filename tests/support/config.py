@@ -1,9 +1,11 @@
 import os
+import shutil
 import socket
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from tomlkit import dumps, parse
 
@@ -120,3 +122,30 @@ def managed_test_config(
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = value
+
+
+@contextmanager
+def isolated_test_runtime(
+    source_dir: Path = SOURCE_ROOT,
+) -> Generator[ServerTestSettings]:
+    with TemporaryDirectory(prefix="cfms-pytest-") as temporary:
+        src_dir = Path(temporary) / "src"
+        src_dir.mkdir()
+        for filename in ("main.py", "alembic.ini", "config.toml.sample"):
+            shutil.copy2(source_dir / filename, src_dir / filename)
+        for directory in ("include", "maintenance", "alembic"):
+            shutil.copytree(
+                source_dir / directory,
+                src_dir / directory,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git"),
+            )
+        (src_dir / "content" / "logs").mkdir(parents=True)
+        (src_dir / "content" / "ssl").mkdir()
+        shutil.copy2(source_dir / "content" / "hello", src_dir / "content" / "hello")
+        shutil.copytree(
+            source_dir / "content" / "ssl" / "client",
+            src_dir / "content" / "ssl" / "client",
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        with managed_test_config(src_dir) as settings:
+            yield settings

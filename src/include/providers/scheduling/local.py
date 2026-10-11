@@ -6,14 +6,14 @@ import time
 
 from loguru import logger
 
-from include.config.validation import SchedulingPolicy
 from include.providers.base import SchedulingProvider, SchedulingProviderStatus
 from include.scheduling.claims import claim_execution
 from include.scheduling.engine import enqueue_due_schedules, ensure_runtime_state
 from include.scheduling.outcomes import cancel_expired_deleted_executions
 from include.scheduling.reconciliation import synchronize_system_schedules
-from include.scheduling.registry import ScheduledTaskRegistry
 from include.scheduling.runner import run_claimed_execution
+lazy from include.config.validation import SchedulingPolicy
+lazy from include.scheduling.registry import ScheduledTaskRegistry
 
 
 class LocalSchedulingProvider(SchedulingProvider):

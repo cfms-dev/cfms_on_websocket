@@ -1,18 +1,23 @@
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 
 import include.database.models  # noqa: F401
 from include.config.paths import EXECUTABLE_ABSPATH
 from include.database.initialization import initialize_database_schema
 from include.database.session import Base
 
+pytestmark = pytest.mark.component
 
-def test_fresh_database_is_initialized_and_stamped(tmp_path: Path) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+
+def test_fresh_database_is_initialized_and_stamped(
+    tmp_path: Path, sqlite_engine_factory
+) -> None:
+    engine = sqlite_engine_factory(tmp_path / "fresh.db")
 
     initialize_database_schema(engine, Base.metadata)
 

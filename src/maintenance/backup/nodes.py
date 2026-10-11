@@ -1,8 +1,8 @@
 import sqlite3
 import tempfile
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+lazy from collections.abc import Mapping
 
 import orjson
 from sqlalchemy import Table, insert

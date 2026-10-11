@@ -1,5 +1,5 @@
 import struct
-from pathlib import Path
+lazy from pathlib import Path
 
 from maintenance.operations.exceptions import MaintenanceOperationError
 

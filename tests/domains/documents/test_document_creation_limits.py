@@ -1,24 +1,16 @@
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from shutil import copyfile
 
 import pytest
-from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
-def creation_limit_context(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    (tmp_path / "init").touch()
-    monkeypatch.chdir(tmp_path)
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
+def creation_limit_context(monkeypatch, sqlite_engine_factory):
     from include.config.validation import (
         DocumentCreationRiskPolicy,
         DocumentUploadPolicy,
@@ -27,13 +19,7 @@ def creation_limit_context(monkeypatch, tmp_path):
     from include.database.session import Base
     from include.domains.documents import creation_limits
 
-    engine = create_engine("sqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    engine = sqlite_engine_factory(":memory:")
 
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
@@ -68,8 +54,7 @@ def creation_limit_context(monkeypatch, tmp_path):
         "from_config",
         classmethod(lambda _cls: risk_policy),
     )
-    yield creation_limits, models, session_factory, upload_policy, risk_policy
-    engine.dispose()
+    return creation_limits, models, session_factory, upload_policy, risk_policy
 
 
 def _check(
@@ -336,7 +321,7 @@ def test_reduced_capacity_caps_existing_balance(creation_limit_context, monkeypa
 
 
 def test_concurrent_bypass_requests_do_not_cross_pending_limit(
-    creation_limit_context, tmp_path
+    creation_limit_context, tmp_path, sqlite_engine_factory
 ):
     from include.domains.security.guards.rate_limits import (
         risk_control_transaction,
@@ -345,10 +330,7 @@ def test_concurrent_bypass_requests_do_not_cross_pending_limit(
     creation_limits, models, _session_factory, upload_policy, _risk = (
         creation_limit_context
     )
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'concurrency.db'}",
-        connect_args={"timeout": 30},
-    )
+    engine = sqlite_engine_factory(tmp_path / "concurrency.db", timeout_seconds=30)
     models.User.metadata.create_all(engine)
     concurrent_sessions = sessionmaker(bind=engine)
     with concurrent_sessions.begin() as session:
@@ -402,4 +384,3 @@ def test_concurrent_bypass_requests_do_not_cross_pending_limit(
     assert sum(allowed) == upload_policy.max_pending_documents_per_creator
     with concurrent_sessions() as session:
         assert creation_limits.count_pending_documents(session, "alice", 1004.0) == 2
-    engine.dispose()

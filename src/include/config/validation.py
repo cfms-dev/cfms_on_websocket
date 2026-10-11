@@ -25,7 +25,8 @@ from include.config._policy import (
 )
 from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 from include.extensions.identifiers import validate_extension_identifier
-from include.types import (
+lazy from include.extensions.manager import validate_extension_config
+lazy from include.types import (
     NonEmptyString,
     NonNegativeFloat,
     NonNegativeInt,
@@ -638,8 +639,6 @@ def validate_config(config: _ConfigSource) -> None:
         raise ConfigValidationError(
             "scheduling.redis_namespace is required when provider.scheduling='redis'"
         )
-
-    from include.extensions.manager import validate_extension_config
 
     validate_extension_config(config)
 

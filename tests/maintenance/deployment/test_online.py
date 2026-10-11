@@ -26,6 +26,8 @@ from .support import (
     _write_release,
 )
 
+pytestmark = pytest.mark.component
+
 
 @pytest.mark.parametrize(
     ("current_version", "latest_version", "available"),

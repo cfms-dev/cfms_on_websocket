@@ -8,7 +8,6 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from include.config.validation import SchedulingPolicy
 from include.database.models.scheduling import (
@@ -45,37 +44,14 @@ class _EmptyPayload(BaseModel):
     pass
 
 
-def _session_factory(monkeypatch):
-    database = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    SchedulingRuntimeState.__table__.create(database)
-    Schedule.__table__.create(database)
-    ScheduleExecution.__table__.create(database)
-    factory = sessionmaker(bind=database)
+@pytest.fixture
+def scheduling_sessions(monkeypatch, schedule_database):
+    factory = sessionmaker(bind=schedule_database)
     monkeypatch.setattr(scheduling_engine, "Session", factory)
     monkeypatch.setattr(scheduling_claims, "Session", factory)
     monkeypatch.setattr(scheduling_outcomes, "Session", factory)
     monkeypatch.setattr(scheduling_reconciliation, "Session", factory)
     return factory
-
-
-def _file_session_factory(monkeypatch, tmp_path):
-    database = create_engine(
-        f"sqlite:///{tmp_path / 'scheduling.db'}",
-        connect_args={"timeout": 10},
-    )
-    SchedulingRuntimeState.__table__.create(database)
-    Schedule.__table__.create(database)
-    ScheduleExecution.__table__.create(database)
-    factory = sessionmaker(bind=database)
-    monkeypatch.setattr(scheduling_engine, "Session", factory)
-    monkeypatch.setattr(scheduling_claims, "Session", factory)
-    monkeypatch.setattr(scheduling_outcomes, "Session", factory)
-    monkeypatch.setattr(scheduling_reconciliation, "Session", factory)
-    return database, factory
 
 
 def _assert_concurrent_runtime_initialization(monkeypatch, database) -> None:
@@ -122,6 +98,7 @@ def _assert_concurrent_runtime_initialization(monkeypatch, database) -> None:
         ]
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("dialect_name", "expected_clause"),
     [
@@ -150,18 +127,16 @@ def test_runtime_state_upsert_uses_supported_dialect_syntax(
     assert expected_clause in str(statement.compile(dialect=dialects[dialect_name]))
 
 
-def test_runtime_state_initialization_is_atomic(monkeypatch, tmp_path) -> None:
-    database = create_engine(
-        f"sqlite:///{tmp_path / 'runtime-state.db'}",
-        connect_args={"timeout": 10},
-    )
+@pytest.mark.component
+def test_runtime_state_initialization_is_atomic(
+    monkeypatch, tmp_path, sqlite_engine_factory
+) -> None:
+    database = sqlite_engine_factory(tmp_path / "runtime-state.db", timeout_seconds=10)
     SchedulingRuntimeState.__table__.create(database)
-    try:
-        _assert_concurrent_runtime_initialization(monkeypatch, database)
-    finally:
-        database.dispose()
+    _assert_concurrent_runtime_initialization(monkeypatch, database)
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "database_url_environment",
     ["CFMS_TEST_MYSQL_URL", "CFMS_TEST_POSTGRESQL_URL"],
@@ -169,12 +144,14 @@ def test_runtime_state_initialization_is_atomic(monkeypatch, tmp_path) -> None:
 def test_runtime_state_initialization_is_atomic_on_shared_database(
     monkeypatch,
     database_url_environment,
+    request,
 ) -> None:
     database_url = os.environ.get(database_url_environment)
     if database_url is None:
         pytest.skip(f"{database_url_environment} is required")
 
     database = create_engine(database_url)
+    request.addfinalizer(database.dispose)
     table = SchedulingRuntimeState.__table__
     table.drop(database, checkfirst=True)
     table.create(database)
@@ -182,7 +159,6 @@ def test_runtime_state_initialization_is_atomic_on_shared_database(
         _assert_concurrent_runtime_initialization(monkeypatch, database)
     finally:
         table.drop(database)
-        database.dispose()
 
 
 def _schedule(
@@ -229,8 +205,9 @@ def _system_registry(system_schedule):
     )
 
 
-def test_due_execution_is_durable_and_completed(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_due_execution_is_durable_and_completed(monkeypatch, scheduling_sessions):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(misfire_grace_seconds=300)
     calls = []
@@ -279,6 +256,7 @@ def test_due_execution_is_durable_and_completed(monkeypatch):
         assert audits[0][2]["data"]["execution_id"] == execution.id
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("task_result", "expected_result", "expected_audit_count"),
     [
@@ -295,8 +273,9 @@ def test_system_execution_can_suppress_only_its_success_audit(
     task_result,
     expected_result,
     expected_audit_count,
+    scheduling_sessions,
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     _schedule(
         factory,
         task_name="test.system_cleanup",
@@ -338,8 +317,9 @@ def test_system_execution_can_suppress_only_its_success_audit(
     assert len(audits) == expected_audit_count
 
 
-def test_system_execution_failure_is_always_audited(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_system_execution_failure_is_always_audited(monkeypatch, scheduling_sessions):
+    factory = scheduling_sessions
     _schedule(
         factory,
         task_name="test.system_cleanup",
@@ -391,8 +371,9 @@ def test_system_execution_failure_is_always_audited(monkeypatch):
     assert audits[0][2]["data"]["execution_id"] == claim.id
 
 
-def test_execution_logs_when_lease_refresh_is_lost(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_execution_logs_when_lease_refresh_is_lost(monkeypatch, scheduling_sessions):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(
         execution_lease_seconds=3,
@@ -407,7 +388,6 @@ def test_execution_logs_when_lease_refresh_is_lost(monkeypatch):
 
     def execute(_context, _payload):
         assert refresh_attempted.wait(3)
-        return None
 
     registry = ScheduledTaskRegistry(
         [
@@ -442,11 +422,12 @@ def test_execution_logs_when_lease_refresh_is_lost(monkeypatch):
     assert warnings == [("Scheduled execution {} lost its lease", (claim.id,))]
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("terminal_status", ["completed", "failed"])
 def test_updating_terminal_schedule_reactivates_and_enqueues(
-    monkeypatch, terminal_status
+    monkeypatch, terminal_status, scheduling_sessions
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     registry = ScheduledTaskRegistry(
         [
             ScheduledTaskRegistration(
@@ -500,8 +481,11 @@ def test_updating_terminal_schedule_reactivates_and_enqueues(
     )
 
 
-def test_updating_terminal_date_schedule_rejects_recorded_occurrence(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_updating_terminal_date_schedule_rejects_recorded_occurrence(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     registry = ScheduledTaskRegistry(
         [
             ScheduledTaskRegistration(
@@ -570,8 +554,11 @@ def test_updating_terminal_date_schedule_rejects_recorded_occurrence(monkeypatch
         assert schedule.revision == 1
 
 
-def test_system_schedule_is_created_updated_and_retired(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_system_schedule_is_created_updated_and_retired(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     interval_seconds = 60
 
     def system_schedule():
@@ -625,8 +612,11 @@ def test_system_schedule_is_created_updated_and_retired(monkeypatch):
         assert schedule.status == "deleted"
 
 
-def test_dynamic_system_schedule_is_retired_when_factory_returns_none(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_dynamic_system_schedule_is_retired_when_factory_returns_none(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     definition = SystemScheduleDefinition(
         id="test.dynamic_cleanup",
         payload={},
@@ -650,8 +640,10 @@ def test_dynamic_system_schedule_is_retired_when_factory_returns_none(monkeypatc
         assert schedule.status == "deleted"
 
 
-def test_unchanged_system_schedule_does_not_acquire_write_lock(monkeypatch):
-    _session_factory(monkeypatch)
+@pytest.mark.component
+def test_unchanged_system_schedule_does_not_acquire_write_lock(
+    monkeypatch, scheduling_sessions
+):
 
     def system_schedule():
         return SystemScheduleDefinition(
@@ -678,10 +670,12 @@ def test_unchanged_system_schedule_does_not_acquire_write_lock(monkeypatch):
     assert locked_schedule_ids == []
 
 
+@pytest.mark.component
 def test_system_schedule_immediate_reconciliation_preserves_interval_cadence(
     monkeypatch,
+    scheduling_sessions,
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     interval_seconds = 60
 
     def system_schedule():
@@ -715,8 +709,11 @@ def test_system_schedule_immediate_reconciliation_preserves_interval_cadence(
         assert schedule.next_run_at == 220.0
 
 
-def test_system_schedule_update_preserves_queued_execution_contract(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_system_schedule_update_preserves_queued_execution_contract(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
 
     def registry(contract_version, value):
         return ScheduledTaskRegistry(
@@ -759,8 +756,11 @@ def test_system_schedule_update_preserves_queued_execution_contract(monkeypatch)
         assert execution.payload == {"value": 1}
 
 
-def test_system_schedule_reconciliation_clears_user_attribution(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_system_schedule_reconciliation_clears_user_attribution(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
 
     def system_schedule():
         return SystemScheduleDefinition(
@@ -774,8 +774,8 @@ def test_system_schedule_reconciliation_clears_user_attribution(monkeypatch):
     scheduling_reconciliation.synchronize_system_schedules(registry, now=100.0)
     with factory() as session, session.begin():
         schedule = session.get(Schedule, "test.system_cleanup")
-        schedule.created_by = "unexpected-user"
-        schedule.updated_by = "unexpected-user"
+        schedule.created_by = "admin"
+        schedule.updated_by = "admin"
 
     assert (
         scheduling_reconciliation.synchronize_system_schedules(registry, now=101.0) == 1
@@ -786,11 +786,12 @@ def test_system_schedule_reconciliation_clears_user_attribution(monkeypatch):
         assert schedule.updated_by is None
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("execution_state", ["pending", "retry_wait"])
 def test_retiring_system_schedule_cancels_unstarted_execution(
-    monkeypatch, execution_state
+    monkeypatch, execution_state, scheduling_sessions
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
 
     def system_schedule():
         return SystemScheduleDefinition(
@@ -846,8 +847,11 @@ def test_retiring_system_schedule_cancels_unstarted_execution(
         assert execution.state == "cancelled"
 
 
-def test_retiring_system_schedule_allows_running_execution_to_finish(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_retiring_system_schedule_allows_running_execution_to_finish(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
 
     def system_schedule():
         return SystemScheduleDefinition(
@@ -896,11 +900,12 @@ def test_retiring_system_schedule_allows_running_execution_to_finish(monkeypatch
         assert execution.completed_at == 102.0
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("execution_state", [None, "succeeded"])
 def test_retiring_system_schedule_clears_stale_execution_slot(
-    monkeypatch, execution_state
+    monkeypatch, execution_state, scheduling_sessions
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
 
     def system_schedule():
         return SystemScheduleDefinition(
@@ -938,8 +943,11 @@ def test_retiring_system_schedule_clears_stale_execution_slot(
         assert schedule.active_execution_id is None
 
 
-def test_due_occurrences_coalesce_while_execution_is_active(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_due_occurrences_coalesce_while_execution_is_active(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(misfire_grace_seconds=300)
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -955,12 +963,14 @@ def test_due_occurrences_coalesce_while_execution_is_active(monkeypatch):
         assert schedule.next_run_at == 280.0
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("management_change", ["update", "delete"])
 def test_enqueue_rejects_schedule_changed_after_candidate_read(
     monkeypatch,
     management_change,
+    scheduling_sessions,
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -975,16 +985,15 @@ def test_enqueue_rejects_schedule_changed_after_candidate_read(
             )
         ]
     )
-    original_advance_trigger = scheduling_engine.advance_trigger
+    original_lock_schedule = scheduling_engine.lock_schedule
     changed = False
 
-    def change_schedule_before_reservation(*args):
+    def change_schedule_before_reservation(session, schedule_id):
         nonlocal changed
-        advance = original_advance_trigger(*args)
-        with factory() as session, session.begin():
+        with factory() as concurrent, concurrent.begin():
             if management_change == "update":
                 update_schedule(
-                    session,
+                    concurrent,
                     registry,
                     "schedule-1",
                     1,
@@ -998,17 +1007,17 @@ def test_enqueue_rejects_schedule_changed_after_candidate_read(
                 )
             else:
                 delete_schedule(
-                    session,
+                    concurrent,
                     "schedule-1",
                     1,
                     username="admin",
                     now=101.0,
                 )
         changed = True
-        return advance
+        return original_lock_schedule(session, schedule_id)
 
     monkeypatch.setattr(
-        scheduling_engine, "advance_trigger", change_schedule_before_reservation
+        scheduling_engine, "lock_schedule", change_schedule_before_reservation
     )
 
     assert scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0) == 0
@@ -1028,8 +1037,11 @@ def test_enqueue_rejects_schedule_changed_after_candidate_read(
             assert schedule.next_run_at is None
 
 
-def test_provider_switch_requeues_unfinished_execution(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_provider_switch_requeues_unfinished_execution(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -1047,8 +1059,11 @@ def test_provider_switch_requeues_unfinished_execution(monkeypatch):
         assert execution.dispatch_state == "pending"
 
 
-def test_redis_namespace_switch_requeues_sent_execution(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_redis_namespace_switch_requeues_sent_execution(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state(
@@ -1078,8 +1093,11 @@ def test_redis_namespace_switch_requeues_sent_execution(monkeypatch):
         assert execution.dispatch_state == "pending"
 
 
-def test_redis_namespace_switch_rejects_live_execution_lease(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_redis_namespace_switch_rejects_live_execution_lease(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state(
@@ -1093,8 +1111,11 @@ def test_redis_namespace_switch_rejects_live_execution_lease(monkeypatch):
         scheduling_engine.ensure_runtime_state("redis", "second-cluster", now=101.0)
 
 
-def test_cluster_dispatch_claims_the_requested_execution(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_cluster_dispatch_claims_the_requested_execution(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state(
@@ -1121,8 +1142,11 @@ def test_cluster_dispatch_claims_the_requested_execution(monkeypatch):
     )
 
 
-def test_cluster_dispatch_recovers_sent_execution_that_was_never_claimed(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_cluster_dispatch_recovers_sent_execution_that_was_never_claimed(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(
         execution_lease_seconds=60,
@@ -1157,8 +1181,11 @@ def test_cluster_dispatch_recovers_sent_execution_that_was_never_claimed(monkeyp
         assert execution.dispatched_at is None
 
 
-def test_late_dispatch_acknowledgement_does_not_hide_a_new_retry(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_late_dispatch_acknowledgement_does_not_hide_a_new_retry(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(
         execution_lease_seconds=60,
@@ -1206,8 +1233,11 @@ def test_late_dispatch_acknowledgement_does_not_hide_a_new_retry(monkeypatch):
     ) == (scheduling_contracts.PendingDispatch(id=dispatch.id, attempt=1),)
 
 
-def test_dense_misfire_does_not_block_other_due_schedules(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_dense_misfire_does_not_block_other_due_schedules(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     with factory() as session, session.begin():
         session.add_all(
             [
@@ -1261,8 +1291,11 @@ def test_dense_misfire_does_not_block_other_due_schedules(monkeypatch):
         }
 
 
-def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_cluster_dispatch_recovers_execution_after_long_lease_expires(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(
         poll_interval_seconds=1.0,
@@ -1314,8 +1347,11 @@ def test_cluster_dispatch_recovers_execution_after_long_lease_expires(monkeypatc
     assert second_claim.attempt == 2
 
 
-def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(
         execution_lease_seconds=60,
@@ -1415,11 +1451,12 @@ def test_cluster_lease_uses_database_clock_when_node_clocks_disagree(monkeypatch
         assert execution.lease_expires_at is None
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("claim_by_id", [False, True])
 def test_execution_lease_starts_after_schedule_lock_is_acquired(
-    monkeypatch, claim_by_id
+    monkeypatch, claim_by_id, scheduling_sessions
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(
         execution_lease_seconds=60,
@@ -1473,8 +1510,11 @@ def test_execution_lease_starts_after_schedule_lock_is_acquired(
         assert execution.lease_expires_at == 210.0
 
 
-def test_execution_lease_refresh_uses_time_after_execution_lock(monkeypatch, tmp_path):
-    database, factory = _file_session_factory(monkeypatch, tmp_path)
+@pytest.mark.component
+def test_execution_lease_refresh_uses_time_after_execution_lock(
+    monkeypatch, tmp_path, schedule_database, scheduling_sessions
+):
+    database, factory = schedule_database, scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(
         execution_lease_seconds=60,
@@ -1535,14 +1575,14 @@ def test_execution_lease_refresh_uses_time_after_execution_lock(monkeypatch, tmp
     finally:
         event.remove(database, "before_cursor_execute", observe_refresh_update)
         blocker.close()
-        database.dispose()
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("provider", ["local", "redis"])
 def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
-    monkeypatch, provider
+    monkeypatch, provider, scheduling_sessions
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     with factory() as session, session.begin():
         session.add(
             Schedule(
@@ -1661,15 +1701,16 @@ def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
         )
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("new_state", "retry_at"),
-    (("succeeded", None), ("retry_wait", 200.0)),
+    [("succeeded", None), ("retry_wait", 200.0)],
 )
 @pytest.mark.parametrize("claim_by_id", [False, True])
 def test_claim_rechecks_candidate_state_at_atomic_update(
-    monkeypatch, new_state, retry_at, claim_by_id
+    monkeypatch, new_state, retry_at, claim_by_id, scheduling_sessions
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state(
@@ -1722,8 +1763,11 @@ def test_claim_rechecks_candidate_state_at_atomic_update(
         assert execution.attempt == 0
 
 
-def test_deleting_schedule_cancels_unclaimed_execution(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_deleting_schedule_cancels_unclaimed_execution(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -1751,8 +1795,11 @@ def test_deleting_schedule_cancels_unclaimed_execution(monkeypatch):
         assert execution.completed_at == 101.0
 
 
-def test_claim_rejects_execution_if_schedule_was_deleted_concurrently(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_claim_rejects_execution_if_schedule_was_deleted_concurrently(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -1771,10 +1818,12 @@ def test_claim_rejects_execution_if_schedule_was_deleted_concurrently(monkeypatc
     )
 
 
+@pytest.mark.component
 def test_deleting_schedule_allows_running_execution_to_finish_without_retry(
     monkeypatch,
+    scheduling_sessions,
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -1808,8 +1857,11 @@ def test_deleting_schedule_allows_running_execution_to_finish_without_retry(
         assert execution.completed_at == 102.0
 
 
-def test_expired_deleted_execution_is_cancelled_and_releases_schedule(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_expired_deleted_execution_is_cancelled_and_releases_schedule(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(execution_lease_seconds=60, lease_refresh_seconds=20)
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -1859,10 +1911,12 @@ def test_expired_deleted_execution_is_cancelled_and_releases_schedule(monkeypatc
         assert session.get(ScheduleExecution, claim.id) is None
 
 
+@pytest.mark.component
 def test_pending_dispatches_cancels_expired_deleted_execution_across_generations(
     monkeypatch,
+    scheduling_sessions,
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy(execution_lease_seconds=60, lease_refresh_seconds=20)
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -1895,8 +1949,11 @@ def test_pending_dispatches_cancels_expired_deleted_execution_across_generations
         assert execution.completed_at == 160.0
 
 
-def test_expired_deleted_execution_cancellation_is_bounded(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_expired_deleted_execution_cancellation_is_bounded(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     with factory() as session, session.begin():
         for index in range(2):
             schedule_id = f"deleted-{index}"
@@ -1948,8 +2005,11 @@ def test_expired_deleted_execution_cancellation_is_bounded(monkeypatch):
     assert scheduling_outcomes.cancel_expired_deleted_executions(1, now=3.0) == 1
 
 
-def test_completion_after_schedule_deletion_preserves_deleted_status(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_completion_after_schedule_deletion_preserves_deleted_status(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -1972,114 +2032,114 @@ def test_completion_after_schedule_deletion_preserves_deleted_status(monkeypatch
         assert execution.result == {"completed": True}
 
 
+@pytest.mark.component
 def test_concurrent_completion_and_deletion_serialize_without_deadlock(
     monkeypatch,
     tmp_path,
+    schedule_database,
+    scheduling_sessions,
 ):
-    database, factory = _file_session_factory(monkeypatch, tmp_path)
-    try:
-        _schedule(factory)
-        policy = SchedulingPolicy()
-        generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
-        scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-        claim = scheduling_claims.claim_execution(
-            generation, "worker", policy, now=100.0
-        )
-        assert claim is not None
-        barrier = threading.Barrier(2)
+    database, factory = schedule_database, scheduling_sessions
+    _schedule(factory)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    claim = scheduling_claims.claim_execution(generation, "worker", policy, now=100.0)
+    assert claim is not None
+    barrier = threading.Barrier(2)
 
-        def complete():
-            barrier.wait(timeout=10)
-            return scheduling_outcomes.complete_execution(
-                claim, generation, {"completed": True}, now=102.0
+    def complete():
+        barrier.wait(timeout=10)
+        return scheduling_outcomes.complete_execution(
+            claim, generation, {"completed": True}, now=102.0
+        )
+
+    def delete():
+        barrier.wait(timeout=10)
+        with factory() as session, session.begin():
+            delete_schedule(
+                session,
+                "schedule-1",
+                1,
+                username="admin",
+                now=101.0,
             )
 
-        def delete():
-            barrier.wait(timeout=10)
-            with factory() as session, session.begin():
-                delete_schedule(
-                    session,
-                    "schedule-1",
-                    1,
-                    username="admin",
-                    now=101.0,
-                )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        completed = executor.submit(complete)
+        deleted = executor.submit(delete)
+        assert completed.result(timeout=15) is True
+        assert deleted.result(timeout=15) is None
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            completed = executor.submit(complete)
-            deleted = executor.submit(delete)
-            assert completed.result(timeout=15) is True
-            assert deleted.result(timeout=15) is None
-
-        with factory() as session:
-            schedule = session.get(Schedule, "schedule-1")
-            execution = session.get(ScheduleExecution, claim.id)
-            assert schedule.status == "deleted"
-            assert schedule.active_execution_id is None
-            assert execution.state == "succeeded"
-    finally:
-        database.dispose()
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        execution = session.get(ScheduleExecution, claim.id)
+        assert schedule.status == "deleted"
+        assert schedule.active_execution_id is None
+        assert execution.state == "succeeded"
 
 
+@pytest.mark.component
 def test_concurrent_claim_and_deletion_have_one_complete_outcome(
     monkeypatch,
     tmp_path,
+    schedule_database,
+    scheduling_sessions,
 ):
-    database, factory = _file_session_factory(monkeypatch, tmp_path)
-    try:
-        _schedule(factory)
-        policy = SchedulingPolicy()
-        generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
-        scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
-        with factory() as session:
-            execution_id = session.scalar(select(ScheduleExecution.id))
-        assert execution_id is not None
-        barrier = threading.Barrier(2)
+    database, factory = schedule_database, scheduling_sessions
+    _schedule(factory)
+    policy = SchedulingPolicy()
+    generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
+    scheduling_engine.enqueue_due_schedules(generation, policy, now=100.0)
+    with factory() as session:
+        execution_id = session.scalar(select(ScheduleExecution.id))
+    assert execution_id is not None
+    barrier = threading.Barrier(2)
 
-        def claim():
-            barrier.wait(timeout=10)
-            return scheduling_claims.claim_execution(
-                generation, "worker", policy, now=101.0
+    def claim():
+        barrier.wait(timeout=10)
+        return scheduling_claims.claim_execution(
+            generation, "worker", policy, now=101.0
+        )
+
+    def delete():
+        barrier.wait(timeout=10)
+        with factory() as session, session.begin():
+            delete_schedule(
+                session,
+                "schedule-1",
+                1,
+                username="admin",
+                now=101.0,
             )
 
-        def delete():
-            barrier.wait(timeout=10)
-            with factory() as session, session.begin():
-                delete_schedule(
-                    session,
-                    "schedule-1",
-                    1,
-                    username="admin",
-                    now=101.0,
-                )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claimed = executor.submit(claim)
+        deleted = executor.submit(delete)
+        claim_result = claimed.result(timeout=15)
+        assert deleted.result(timeout=15) is None
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            claimed = executor.submit(claim)
-            deleted = executor.submit(delete)
-            claim_result = claimed.result(timeout=15)
-            assert deleted.result(timeout=15) is None
-
-        with factory() as session:
-            schedule = session.get(Schedule, "schedule-1")
-            execution = session.get(ScheduleExecution, execution_id)
-            assert schedule.status == "deleted"
-            if claim_result is None:
-                assert schedule.active_execution_id is None
-                assert execution.state == "cancelled"
-            else:
-                assert schedule.active_execution_id == execution_id
-                assert execution.state == "running"
-                assert execution.lease_owner == "worker"
-    finally:
-        database.dispose()
+    with factory() as session:
+        schedule = session.get(Schedule, "schedule-1")
+        execution = session.get(ScheduleExecution, execution_id)
+        assert schedule.status == "deleted"
+        if claim_result is None:
+            assert schedule.active_execution_id is None
+            assert execution.state == "cancelled"
+        else:
+            assert schedule.active_execution_id == execution_id
+            assert execution.state == "running"
+            assert execution.lease_owner == "worker"
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("lost_condition", ["owner", "generation"])
 def test_terminal_transition_rejects_lost_execution_lease(
     monkeypatch,
     lost_condition,
+    scheduling_sessions,
 ):
-    factory = _session_factory(monkeypatch)
+    factory = scheduling_sessions
     _schedule(factory)
     policy = SchedulingPolicy()
     generation = scheduling_engine.ensure_runtime_state("local", now=100.0)
@@ -2134,8 +2194,11 @@ def test_terminal_transition_rejects_lost_execution_lease(
         )
 
 
-def test_completed_execution_history_is_purged_in_bounded_batches(monkeypatch):
-    factory = _session_factory(monkeypatch)
+@pytest.mark.component
+def test_completed_execution_history_is_purged_in_bounded_batches(
+    monkeypatch, scheduling_sessions
+):
+    factory = scheduling_sessions
     _schedule(factory)
     with factory() as session, session.begin():
         session.add_all(

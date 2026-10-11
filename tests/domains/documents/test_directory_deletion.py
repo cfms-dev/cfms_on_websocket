@@ -1,38 +1,21 @@
-import sys
 from pathlib import Path
-from shutil import copyfile
 
-from sqlalchemy import create_engine, event
+import pytest
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _prepare_config(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
-
 def test_mark_nodes_deleted_updates_node_table_for_joined_inheritance(
-    monkeypatch, tmp_path
+    sqlite_engine_factory,
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.database import models
-    from include.database.session import Base, global_config
+    from include.database.session import Base
     from include.domains.documents.handlers.directories import _mark_nodes_deleted
 
-    engine = create_engine("sqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    engine = sqlite_engine_factory(":memory:")
 
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
@@ -60,24 +43,14 @@ def test_mark_nodes_deleted_updates_node_table_for_joined_inheritance(
         assert document_node.status == models.EntityStatus.DELETED
         assert document_node.status_operation_id == "operation-1"
 
-    global_config.stop()
-
 
 def test_deleting_revision_sets_document_and_child_revision_references_null(
-    monkeypatch, tmp_path
+    sqlite_engine_factory,
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.database import models
-    from include.database.session import Base, global_config
+    from include.database.session import Base
 
-    engine = create_engine("sqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    engine = sqlite_engine_factory(":memory:")
 
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
@@ -122,16 +95,12 @@ def test_deleting_revision_sets_document_and_child_revision_references_null(
             is None
         )
 
-    global_config.stop()
-
 
 def test_document_task_cancellation_uses_remaining_file_reachability(
-    monkeypatch, tmp_path
+    sqlite_engine_factory,
 ):
-    _prepare_config(monkeypatch, tmp_path)
-
     from include.database import models
-    from include.database.session import Base, global_config
+    from include.database.session import Base
     from include.domains.documents.commands.file_tasks import (
         cancel_file_tasks_for_files,
     )
@@ -140,13 +109,7 @@ def test_document_task_cancellation_uses_remaining_file_reachability(
         find_unreachable_document_file_ids,
     )
 
-    engine = create_engine("sqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    engine = sqlite_engine_factory(":memory:")
 
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
@@ -209,4 +172,3 @@ def test_document_task_cancellation_uses_remaining_file_reachability(
         )
 
     _clear_file_references_cache()
-    global_config.stop()

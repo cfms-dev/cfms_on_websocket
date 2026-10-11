@@ -12,6 +12,7 @@ _SRC_PATH = _PROJECT_ROOT / "src"
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _BOX_DRAWING_RE = re.compile(r"[\u2500-\u257F]")
 _AUDIT_CUTOFF = dt.datetime.fromtimestamp(200, dt.UTC).isoformat()
+_PERMISSION_NOW = 4_000_000.0
 
 
 def _run_maintain(
@@ -20,9 +21,31 @@ def _run_maintain(
     *,
     check: bool = True,
     input_text: str | None = None,
+    permission_now: float | None = None,
 ):
+    command = ["uv", "run", "--locked", "--project", str(_PROJECT_ROOT)]
+    if permission_now is None:
+        command.extend(["maintain", *args])
+    else:
+        command.extend(
+            [
+                "python",
+                "-c",
+                f"""
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import maintenance.operations.permissions as operations
+from maintenance.cli import app
+
+with patch.object(operations, "time", SimpleNamespace(time=lambda: {permission_now!r})):
+    app(prog_name="maintain")
+""",
+                *args,
+            ]
+        )
     result = subprocess.run(
-        ["uv", "run", "--project", str(_PROJECT_ROOT), "maintain", *args],
+        command,
         cwd=cwd,
         input=input_text,
         capture_output=True,
@@ -30,6 +53,7 @@ def _run_maintain(
         encoding="utf-8",
         errors="replace",
         timeout=30,
+        check=False,
     )
     if check and result.returncode != 0:
         pytest.fail(
@@ -43,13 +67,23 @@ def _run_maintain(
 
 def _run_python(cwd: Path, code: str):
     result = subprocess.run(
-        ["uv", "run", "--project", str(_PROJECT_ROOT), "python", "-c", code],
+        [
+            "uv",
+            "run",
+            "--locked",
+            "--project",
+            str(_PROJECT_ROOT),
+            "python",
+            "-c",
+            code,
+        ],
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=30,
+        check=False,
     )
     if result.returncode != 0:
         pytest.fail(
@@ -170,9 +204,7 @@ with Session() as session:
 def _seed_permission_entries(src_dir: Path) -> None:
     _run_python(
         src_dir,
-        """
-import time
-
+        f"""
 from maintenance.runtime import load_database_models
 
 load_database_models()
@@ -186,15 +218,17 @@ from include.database.models.identity import (
 from include.database.session import Base, Session, engine
 
 Base.metadata.create_all(engine)
-now = time.time()
+now = {_PERMISSION_NOW!r}
 old_end = now - 31 * 24 * 60 * 60
 recent_end = now - 29 * 24 * 60 * 60
+cutoff = 1_408_000.0
 with Session.begin() as session:
     user = User(username="alice", pass_hash="hash", created_time=now)
     user.rights.extend(
         [
             UserPermission(permission="old_user", granted=True, start_time=0.0, end_time=old_end),
             UserPermission(permission="recent_user", granted=True, start_time=0.0, end_time=recent_end),
+            UserPermission(permission="cutoff_user", granted=True, start_time=0.0, end_time=cutoff),
             UserPermission(permission="permanent_user_revocation", granted=False, start_time=0.0, end_time=None),
         ]
     )
@@ -203,6 +237,7 @@ with Session.begin() as session:
         [
             UserGroupPermission(permission="old_group", granted=False, start_time=0.0, end_time=old_end),
             UserGroupPermission(permission="recent_group", granted=True, start_time=0.0, end_time=recent_end),
+            UserGroupPermission(permission="cutoff_group", granted=True, start_time=0.0, end_time=cutoff),
             UserGroupPermission(permission="permanent_group_revocation", granted=False, start_time=0.0, end_time=None),
         ]
     )

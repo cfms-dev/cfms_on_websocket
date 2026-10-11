@@ -9,11 +9,19 @@ import os
 import socket
 import ssl
 import sys
-from collections.abc import Generator
 from contextlib import contextmanager
+lazy import datetime
+lazy import secrets
+lazy import string
+lazy from collections.abc import Generator
 
 from loguru import logger
 from websockets.sync.server import Server, serve
+lazy from cryptography import x509
+lazy from cryptography.hazmat.backends import default_backend
+lazy from cryptography.hazmat.primitives import hashes, serialization
+lazy from cryptography.hazmat.primitives.asymmetric import ec
+lazy from cryptography.x509.oid import NameOID
 
 import include.database.models  # noqa: F401
 from include.config.constants import (
@@ -65,6 +73,8 @@ from include.transport.router import (
     whitelisted_functions,
 )
 from include.transport.tls import create_server_ssl_context
+lazy from include.domains.identity.commands.groups import create_group
+lazy from include.domains.identity.commands.users import create_user
 
 # fix
 os.makedirs(EXECUTABLE_ABSPATH / "content" / "logs", exist_ok=True)
@@ -112,11 +122,6 @@ def server_init():
 
     If it is not, create the necessary tables and a default admin user.
     """
-    import datetime
-    import secrets
-
-    from include.domains.identity.commands.groups import create_group
-
     initialize_database_schema(engine, Base.metadata)
 
     # Ensure the root folder exists before seeding any objects that reference it.
@@ -240,11 +245,6 @@ def server_init():
         session.add(init_document_revision)
         session.commit()
 
-    import secrets
-    import string
-
-    from include.domains.identity.commands.users import create_user
-
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{};:,.<>?/"
     password = "".join(secrets.choice(alphabet) for _ in range(16))
 
@@ -277,14 +277,6 @@ def server_init():
     # therefore, the `os` library is used for read/write operations instead of
     # `StorageProvider`.
     os.makedirs(EXECUTABLE_ABSPATH / "content", exist_ok=True)
-
-    import datetime
-
-    from cryptography import x509
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
 
     cert_path = global_config["server"]["ssl_certfile"]
     key_path = global_config["server"]["ssl_keyfile"]
@@ -434,7 +426,7 @@ def _run_server():
         server_init()
 
     logger.info("Initializating CFMS WebSocket server...")
-    logger.info(f"CFMS Core Version: {CORE_VERSION}")
+    logger.info(f"Core Version: {CORE_VERSION}")
 
     # TODO: Add support for TLS ECH when upstream libraries support it.
     security_cfg = global_config.get("security", {})
@@ -456,15 +448,13 @@ def _run_server():
     for warning in get_config_warnings(global_config):
         logger.warning(warning)
 
+    # NOTE: Version contract: (major, minor, fix, patch, status)
     if ssl.OPENSSL_VERSION_INFO < (3, 5):
-        logger.warning(
-            "The version of OpenSSL bundled with Python is too low "
-            f"({ssl.OPENSSL_VERSION}) and therefore **does not support"
-            " post-quantum encryption**. Communication without post-quantum "
-            'encryption may be vulnerable to "harvest now, decrypt later" '
-            "attacks. Consider using a Python distribution that bundles "
-            "OpenSSL 3.5 or later to resolve this issue."
+        openssl_version = ssl.OPENSSL_VERSION.split()[1]
+        logger.critical(
+            f"The used OpenSSL library is too old ({openssl_version} < 3.5)"
         )
+        sys.exit(1)
 
     # Ensure the root folder record exists (handles upgrades from older versions)
     ensure_root_folder()

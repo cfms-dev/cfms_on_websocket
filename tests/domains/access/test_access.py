@@ -8,6 +8,8 @@ import pytest
 
 from tests.support.client import CFMSTestClient
 
+pytestmark = pytest.mark.integration
+
 
 class TestAccessManagement:
     """Test access grant and revoke operations."""

@@ -1,11 +1,11 @@
 import time
 from pathlib import Path
-from shutil import copyfile
 from types import SimpleNamespace
 
 import orjson
 import pytest
-from sqlalchemy import create_engine, select
+from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -28,9 +28,7 @@ class FakeHandler:
 
 
 @pytest.fixture
-def security_admin_context(monkeypatch, tmp_path):
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
+def security_admin_context(monkeypatch, tmp_path, sqlite_engine_factory):
 
     import include.database.models  # noqa: F401
     from include.config.constants import LOGIN_GUARD_EVENT_CHANNEL
@@ -48,20 +46,21 @@ def security_admin_context(monkeypatch, tmp_path):
     from include.domains.security.handlers import access_control
     from include.providers.caching.memory import MemoryCachingProvider
     from include.providers.events.local import LocalEventBusProvider
-    from include.providers.manager import ProviderManager
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'security-admin.db'}")
+    engine = sqlite_engine_factory(tmp_path / "security-admin.db")
     Base.metadata.create_all(engine)
     test_session = sessionmaker(bind=engine)
     monkeypatch.setattr(access_control, "Session", test_session)
     monkeypatch.setattr(login, "Session", test_session)
     monkeypatch.setattr(access_control, "get_client_ip", lambda _ws: "203.0.113.10")
-    ProviderManager().register(MemoryCachingProvider())
     event_bus = LocalEventBusProvider()
+    provider = SimpleNamespace(caching=MemoryCachingProvider(), event_bus=event_bus)
+    monkeypatch.setattr(access_control, "ProviderManager", lambda: provider)
+    monkeypatch.setattr(login, "ProviderManager", lambda: provider)
+    monkeypatch.setattr(access_control.time, "time", lambda: 1_700_000_000.0)
     published_events = []
     event_bus.subscribe(LOGIN_GUARD_EVENT_CHANNEL, login.LoginGuard.handle_event)
     event_bus.subscribe(LOGIN_GUARD_EVENT_CHANNEL, published_events.append)
-    ProviderManager().register(event_bus)
     monkeypatch.setattr(login.LoginGuard, "_banned_rules", [])
     monkeypatch.setattr(login.LoginGuard, "_networks_loaded", True)
 
@@ -84,7 +83,7 @@ def security_admin_context(monkeypatch, tmp_path):
         session.add(admin)
         session.add(User(username="viewer", pass_hash="hash", created_time=0.0))
 
-    yield SimpleNamespace(
+    return SimpleNamespace(
         handlers=access_control,
         login=login,
         Session=test_session,
@@ -95,7 +94,6 @@ def security_admin_context(monkeypatch, tmp_path):
         Comment=Comment,
         published_events=published_events,
     )
-    engine.dispose()
 
 
 def _call(handler_class, data, username="admin"):
@@ -105,6 +103,7 @@ def _call(handler_class, data, username="admin"):
     return result, connection.responses[-1]
 
 
+@pytest.mark.component
 def test_banned_subnet_crud_and_filters(security_admin_context):
     handlers = security_admin_context.handlers
     now = handlers.time.time()
@@ -159,6 +158,7 @@ def test_banned_subnet_crud_and_filters(security_admin_context):
         assert session.get(security_admin_context.BannedSubnet, "192.0.2.0/24") is None
 
 
+@pytest.mark.component
 def test_banned_subnets_reuse_equal_reason_comments(security_admin_context):
     handlers = security_admin_context.handlers
     for subnet in ("192.0.2.0/24", "198.51.100.0/24"):
@@ -190,6 +190,7 @@ def test_banned_subnets_reuse_equal_reason_comments(security_admin_context):
         assert retained.reason == "shared incident"
 
 
+@pytest.mark.component
 def test_banned_subnet_reason_only_update_skips_guard_refresh(
     security_admin_context,
 ):
@@ -214,64 +215,64 @@ def test_banned_subnet_reason_only_update_skips_guard_refresh(
     assert security_admin_context.published_events == []
 
 
-def test_banned_subnet_mutations_reload_once_through_local_event_consumer(
-    security_admin_context, monkeypatch
+@pytest.mark.component
+@pytest.mark.parametrize(
+    ("operation", "request_data", "expected_allowed"),
+    [
+        pytest.param("create", {"subnet": "192.0.2.0/24"}, False, id="create"),
+        pytest.param(
+            "update",
+            {"subnet": "192.0.2.0/24", "starts_at": 1_700_000_060.0},
+            True,
+            id="reschedule",
+        ),
+        pytest.param("delete", {"subnet": "192.0.2.0/24"}, True, id="delete"),
+    ],
+)
+def test_banned_subnet_mutation_refreshes_guard_through_local_event(
+    security_admin_context,
+    operation,
+    request_data,
+    expected_allowed,
 ):
-    handlers = security_admin_context.handlers
-    guard = security_admin_context.login.LoginGuard
-    reloads = []
-    original_reload = guard.reload_networks
-
-    def track_reload(_cls):
-        reloads.append(True)
-        original_reload()
-
-    monkeypatch.setattr(
-        guard,
-        "reload_networks",
-        classmethod(track_reload),
-    )
-    security_admin_context.published_events.clear()
-    log_messages = []
-    sink_id = handlers.logger.add(log_messages.append, format="{message}")
-
-    try:
-        _, created = _call(
-            handlers.RequestCreateBannedSubnetHandler,
-            {"subnet": "192.0.2.0/24"},
+    context = security_admin_context
+    handlers = context.handlers
+    if operation != "create":
+        _, initial = _call(
+            handlers.RequestCreateBannedSubnetHandler, {"subnet": "192.0.2.0/24"}
         )
-        _, updated = _call(
-            handlers.RequestUpdateBannedSubnetHandler,
-            {"subnet": "192.0.2.0/24", "starts_at": handlers.time.time() + 60},
+        assert initial["code"] == 200
+        assert (
+            context.login.LoginGuard.evaluate_subnet_access("192.0.2.10").allowed
+            is False
         )
-        _, deleted = _call(
-            handlers.RequestDeleteBannedSubnetHandler,
-            {"subnet": "192.0.2.0/24"},
-        )
-    finally:
-        handlers.logger.remove(sink_id)
+    context.published_events.clear()
+    handler_class = {
+        "create": handlers.RequestCreateBannedSubnetHandler,
+        "update": handlers.RequestUpdateBannedSubnetHandler,
+        "delete": handlers.RequestDeleteBannedSubnetHandler,
+    }[operation]
 
-    assert created["code"] == updated["code"] == deleted["code"] == 200
-    assert reloads == [True, True, True]
+    _, response = _call(handler_class, request_data)
+
+    assert response["code"] == 200
+    assert [orjson.loads(message) for message in context.published_events] == [
+        {"type": "reload_subnets"}
+    ]
     assert (
-        sum(
-            "banned subnet rule(s) from database." in str(message)
-            for message in log_messages
-        )
-        == 3
+        context.login.LoginGuard.evaluate_subnet_access("192.0.2.10").allowed
+        is expected_allowed
     )
-    assert [
-        orjson.loads(message) for message in security_admin_context.published_events
-    ] == [{"type": "reload_subnets"}] * 3
-    with security_admin_context.Session() as session:
-        assert session.get(security_admin_context.BannedSubnet, "192.0.2.0/24") is None
 
 
+@pytest.mark.component
 def test_banned_subnet_reload_waits_for_event_consumer(
-    security_admin_context, monkeypatch
+    security_admin_context,
+    monkeypatch,
 ):
-    handlers = security_admin_context.handlers
-    guard = security_admin_context.login.LoginGuard
+    context = security_admin_context
+    handlers = context.handlers
+    guard = context.login.LoginGuard
     published = []
     event_bus = SimpleNamespace(
         publish=lambda channel, message: published.append((channel, message))
@@ -279,56 +280,52 @@ def test_banned_subnet_reload_waits_for_event_consumer(
     monkeypatch.setattr(
         handlers, "ProviderManager", lambda: SimpleNamespace(event_bus=event_bus)
     )
-    reloads = []
-    monkeypatch.setattr(
-        guard, "reload_networks", classmethod(lambda _cls: reloads.append(True))
-    )
-
     _, created = _call(
-        handlers.RequestCreateBannedSubnetHandler,
-        {"subnet": "192.0.2.0/24"},
+        handlers.RequestCreateBannedSubnetHandler, {"subnet": "192.0.2.0/24"}
     )
-
     assert created["code"] == 200
-    assert reloads == []
+    assert guard.evaluate_subnet_access("192.0.2.10").allowed is True
     assert len(published) == 1
     channel, message = published[0]
     assert channel == handlers.LOGIN_GUARD_EVENT_CHANNEL
     assert orjson.loads(message) == {"type": "reload_subnets"}
 
     guard.handle_event(message)
-    assert reloads == [True]
+
+    assert guard.evaluate_subnet_access("192.0.2.10").allowed is False
 
 
+@pytest.mark.component
 def test_banned_subnet_publish_failure_keeps_committed_change(
-    security_admin_context, monkeypatch
+    security_admin_context,
+    monkeypatch,
 ):
     handlers = security_admin_context.handlers
-    guard = security_admin_context.login.LoginGuard
 
     def fail_publish(_channel, _message):
         raise RuntimeError("event bus unavailable")
 
-    event_bus = SimpleNamespace(publish=fail_publish)
     monkeypatch.setattr(
-        handlers, "ProviderManager", lambda: SimpleNamespace(event_bus=event_bus)
-    )
-    reloads = []
-    monkeypatch.setattr(
-        guard, "reload_networks", classmethod(lambda _cls: reloads.append(True))
+        handlers,
+        "ProviderManager",
+        lambda: SimpleNamespace(event_bus=SimpleNamespace(publish=fail_publish)),
     )
     log_messages = []
     sink_id = handlers.logger.add(log_messages.append, format="{message}")
     try:
         _, created = _call(
-            handlers.RequestCreateBannedSubnetHandler,
-            {"subnet": "192.0.2.0/24"},
+            handlers.RequestCreateBannedSubnetHandler, {"subnet": "192.0.2.0/24"}
         )
     finally:
         handlers.logger.remove(sink_id)
 
     assert created["code"] == 200
-    assert reloads == []
+    assert (
+        security_admin_context.login.LoginGuard.evaluate_subnet_access(
+            "192.0.2.10"
+        ).allowed
+        is True
+    )
     assert any("runtime state may be stale" in str(message) for message in log_messages)
     with security_admin_context.Session() as session:
         assert (
@@ -336,6 +333,7 @@ def test_banned_subnet_publish_failure_keeps_committed_change(
         )
 
 
+@pytest.mark.component
 def test_banned_subnet_requires_explicit_self_block_confirmation(
     security_admin_context, monkeypatch
 ):
@@ -355,71 +353,116 @@ def test_banned_subnet_requires_explicit_self_block_confirmation(
     assert accepted["code"] == 200
 
 
-def test_security_admin_permissions_are_independent(security_admin_context):
-    handlers = security_admin_context.handlers
-    _, list_denied = _call(
-        handlers.RequestListBannedSubnetsHandler, {}, username="viewer"
-    )
-    _, create_denied = _call(
-        handlers.RequestCreateBannedSubnetHandler,
-        {"subnet": "192.0.2.0/24"},
-        username="viewer",
-    )
-    _, lockout_denied = _call(
-        handlers.RequestListAuthLockoutsHandler, {}, username="viewer"
-    )
-    _, unlock_denied = _call(
-        handlers.RequestUnlockAuthLockoutsHandler,
-        {"locks": [{"scope": "ip", "ip_address": "192.0.2.1"}], "reason": "test"},
-        username="viewer",
-    )
-    assert {
-        response["code"]
-        for response in (
-            list_denied,
-            create_denied,
-            lockout_denied,
-            unlock_denied,
-        )
-    } == {403}
-
-
-def test_security_admin_request_models_preserve_schema_constraints(
+@pytest.mark.component
+@pytest.mark.parametrize(
+    ("handler_name", "request_data"),
+    [
+        pytest.param("RequestListBannedSubnetsHandler", {}, id="list-subnets"),
+        pytest.param(
+            "RequestCreateBannedSubnetHandler",
+            {"subnet": "192.0.2.0/24"},
+            id="create-subnet",
+        ),
+        pytest.param("RequestListAuthLockoutsHandler", {}, id="list-lockouts"),
+        pytest.param(
+            "RequestUnlockAuthLockoutsHandler",
+            {"locks": [{"scope": "ip", "ip_address": "192.0.2.1"}], "reason": "test"},
+            id="unlock-lockouts",
+        ),
+    ],
+)
+def test_security_admin_action_requires_its_permission(
     security_admin_context,
+    handler_name,
+    request_data,
 ):
-    from pydantic import ValidationError
+    handler_class = getattr(security_admin_context.handlers, handler_name)
 
-    handlers = security_admin_context.handlers
-    handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
-        {"subnet": "192.0.2.0/24", "reason": "x" * 1024, "expires_at": None}
+    _, response = _call(handler_class, request_data, username="viewer")
+
+    assert response["code"] == 403
+
+
+@pytest.mark.component
+@pytest.mark.parametrize(
+    ("handler_name", "request_data"),
+    [
+        pytest.param(
+            "RequestUpdateBannedSubnetHandler",
+            {"subnet": "192.0.2.0/24", "reason": "x" * 1024, "expires_at": None},
+            id="maximum-reason-and-null-expiry",
+        ),
+        pytest.param(
+            "RequestUnlockAuthLockoutsHandler",
+            {
+                "locks": [{"scope": "ip", "ip_address": "192.0.2.1"}],
+                "reason": "manual unlock",
+            },
+            id="single-lock-selector",
+        ),
+    ],
+)
+def test_security_admin_request_accepts_valid_data(
+    security_admin_context,
+    handler_name,
+    request_data,
+):
+    model = getattr(security_admin_context.handlers, handler_name).request_model
+
+    request = model.model_validate(request_data)
+
+    assert request.model_dump(exclude_unset=True) == request_data
+
+
+@pytest.mark.component
+@pytest.mark.parametrize(
+    ("request_data", "error_field"),
+    [
+        pytest.param(
+            {"subnet": "192.0.2.0/24", "reason": ""}, "reason", id="empty-reason"
+        ),
+        pytest.param(
+            {"subnet": "192.0.2.0/24", "reason": "x" * 1025},
+            "reason",
+            id="oversized-reason",
+        ),
+        pytest.param(
+            {"subnet": "192.0.2.0/24", "starts_at": None},
+            "starts_at",
+            id="null-start",
+        ),
+    ],
+)
+def test_banned_subnet_update_rejects_invalid_field(
+    security_admin_context,
+    request_data,
+    error_field,
+):
+    model = (
+        security_admin_context.handlers.RequestUpdateBannedSubnetHandler.request_model
     )
-    with pytest.raises(ValidationError):
-        handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
-            {"subnet": "192.0.2.0/24", "reason": ""}
-        )
-    with pytest.raises(ValidationError):
-        handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
-            {"subnet": "192.0.2.0/24", "reason": "x" * 1025}
-        )
-    with pytest.raises(ValidationError):
-        handlers.RequestUpdateBannedSubnetHandler.request_model.model_validate(
-            {"subnet": "192.0.2.0/24", "starts_at": None}
-        )
 
+    with pytest.raises(ValidationError) as excinfo:
+        model.model_validate(request_data)
+
+    assert {error["loc"][0] for error in excinfo.value.errors()} == {error_field}
+
+
+@pytest.mark.component
+def test_unlock_request_rejects_duplicate_lock_selectors(security_admin_context):
+    model = (
+        security_admin_context.handlers.RequestUnlockAuthLockoutsHandler.request_model
+    )
     selector = {"scope": "ip", "ip_address": "192.0.2.1"}
-    handlers.RequestUnlockAuthLockoutsHandler.request_model.model_validate(
-        {"locks": [selector], "reason": "manual unlock"}
-    )
-    with pytest.raises(ValidationError):
-        handlers.RequestUnlockAuthLockoutsHandler.request_model.model_validate(
-            {"locks": [selector, selector], "reason": "manual unlock"}
-        )
+
+    with pytest.raises(ValidationError, match="locks must contain unique selectors"):
+        model.model_validate({"locks": [selector, selector], "reason": "manual unlock"})
 
 
-def test_list_and_unlock_all_lockout_scopes(security_admin_context):
+@pytest.fixture
+def active_lockouts(security_admin_context):
     context = security_admin_context
-    handlers = context.handlers
-    now = handlers.time.time()
+    now = context.handlers.time.time()
     with context.Session.begin() as session:
         session.add_all(
             [
@@ -438,8 +481,8 @@ def test_list_and_unlock_all_lockout_scopes(security_admin_context):
                     locked_until=now + 500,
                 ),
                 context.LoginThrottle(
-                    username="alice",
-                    ip_address="192.0.2.1",
+                    username="bob",
+                    ip_address="192.0.2.2",
                     failed_attempts=5,
                     window_started_at=now - 60,
                     last_attempt=now,
@@ -447,51 +490,80 @@ def test_list_and_unlock_all_lockout_scopes(security_admin_context):
                 ),
             ]
         )
+    return context
+
+
+@pytest.mark.component
+def test_list_lockouts_cursor_returns_all_scopes(active_lockouts):
+    handlers = active_lockouts.handlers
 
     _, first_page = _call(handlers.RequestListAuthLockoutsHandler, {"page_size": 2})
-    assert len(first_page["data"]["items"]) == 2
-    assert first_page["data"]["has_more"] is True
     _, second_page = _call(
         handlers.RequestListAuthLockoutsHandler,
         {"page_size": 2, "cursor": first_page["data"]["next_cursor"]},
     )
-    scopes = {
+
+    assert first_page["code"] == second_page["code"] == 200
+    assert len(first_page["data"]["items"]) == 2
+    assert len(second_page["data"]["items"]) == 1
+    assert first_page["data"]["has_more"] is True
+    assert second_page["data"]["has_more"] is False
+    assert {
         item["scope"]
         for item in first_page["data"]["items"] + second_page["data"]["items"]
-    }
-    assert scopes == {"ip", "account", "account_ip"}
+    } == {"ip", "account", "account_ip"}
 
+
+@pytest.mark.component
+def test_unlock_all_scopes_clears_persisted_and_cached_denials(active_lockouts):
+    context = active_lockouts
+    guard = context.login.LoginGuard
+    factor = context.login.AuthFactor.PASSWORD
+    identities = [
+        ("192.0.2.1", None, None),
+        ("", "alice", factor),
+        ("192.0.2.2", "bob", factor),
+    ]
     selectors = [
         {"scope": "ip", "ip_address": "192.0.2.1"},
         {"scope": "account", "username": "alice", "factor": "password"},
-        {"scope": "account_ip", "username": "alice", "ip_address": "192.0.2.1"},
+        {"scope": "account_ip", "username": "bob", "ip_address": "192.0.2.2"},
     ]
-    cache_keys = [
-        context.TrafficThrottle.make_cache_key("192.0.2.1"),
-        context.AccountThrottle.make_cache_key("alice", "password"),
-        context.LoginThrottle.make_cache_key("alice", "192.0.2.1"),
-    ]
-    cache = handlers.ProviderManager().caching
-    for key in cache_keys:
-        cache.set(context.login.LoginGuard._cache_key(key), now + 600, ttl=600)
+    assert [guard.evaluate(*identity).allowed for identity in identities] == [False] * 3
 
-    result, unlocked = _call(
-        handlers.RequestUnlockAuthLockoutsHandler,
+    result, response = _call(
+        context.handlers.RequestUnlockAuthLockoutsHandler,
         {"locks": selectors, "reason": "Emergency access"},
     )
-    assert unlocked["code"] == 200
-    assert unlocked["data"] == {"cleared": selectors, "not_found": []}
-    assert result.data["reason"] == "Emergency access"
-    for key in cache_keys:
-        assert cache.get(context.login.LoginGuard._cache_key(key)) is None
 
-    _, repeated = _call(
-        handlers.RequestUnlockAuthLockoutsHandler,
+    assert response["code"] == 200
+    assert response["data"] == {"cleared": selectors, "not_found": []}
+    assert result.data["reason"] == "Emergency access"
+    assert [guard.evaluate(*identity).allowed for identity in identities] == [True] * 3
+    with context.Session() as session:
+        assert session.get(context.TrafficThrottle, "192.0.2.1") is None
+        assert session.get(context.AccountThrottle, ("alice", "password")) is None
+        assert session.get(context.LoginThrottle, ("bob", "192.0.2.2")) is None
+
+
+@pytest.mark.component
+def test_unlock_missing_lockouts_reports_each_selector(security_admin_context):
+    selectors = [
+        {"scope": "ip", "ip_address": "192.0.2.1"},
+        {"scope": "account", "username": "alice", "factor": "password"},
+        {"scope": "account_ip", "username": "bob", "ip_address": "192.0.2.2"},
+    ]
+
+    _, response = _call(
+        security_admin_context.handlers.RequestUnlockAuthLockoutsHandler,
         {"locks": selectors, "reason": "Retry"},
     )
-    assert repeated["data"] == {"cleared": [], "not_found": selectors}
+
+    assert response["code"] == 200
+    assert response["data"] == {"cleared": [], "not_found": selectors}
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_security_admin_websocket_actions(authenticated_client):
     from tests.support.utils import assert_success
@@ -523,6 +595,7 @@ async def test_security_admin_websocket_actions(authenticated_client):
     assert_success(await authenticated_client.delete_banned_subnet("192.0.2.1/24"))
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_unlock_auth_lockouts_over_websocket(
     authenticated_client, unauthenticated_client

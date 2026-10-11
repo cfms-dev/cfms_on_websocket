@@ -1,5 +1,5 @@
 from sqlalchemy import func, literal_column, select
-from sqlalchemy.orm import Session as OrmSession
+lazy from sqlalchemy.orm import Session as OrmSession
 
 _UNIX_EPOCH_JULIAN_DAY = 2_440_587.5
 _SECONDS_PER_DAY = 86_400.0

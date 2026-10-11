@@ -7,13 +7,11 @@ __all__ = [
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-from include.domains.access.permissions import Permissions
+lazy from fastapi import APIRouter
+
 from include.extensions.manager import hookimpl, hookspec
-
-if TYPE_CHECKING:
-    from fastapi import APIRouter
+lazy from include.domains.access.permissions import Permissions
 
 http_hookimpl = hookimpl
 

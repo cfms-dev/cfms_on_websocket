@@ -7,6 +7,7 @@ from include.database import engine as engine_module
 from include.database.engine import create_database_engine, database_url
 
 
+@pytest.mark.unit
 def test_mysql_database_url_keeps_password_out_of_rendered_value() -> None:
     url = database_url(
         {
@@ -26,6 +27,7 @@ def test_mysql_database_url_keeps_password_out_of_rendered_value() -> None:
     assert "secret" not in str(url)
 
 
+@pytest.mark.unit
 def test_postgresql_database_url_uses_packaged_driver() -> None:
     url = database_url(
         {
@@ -44,10 +46,12 @@ def test_postgresql_database_url_uses_packaged_driver() -> None:
     assert "secret" not in str(url)
 
 
-def test_sqlite_engine_applies_runtime_pragmas(tmp_path) -> None:
+@pytest.mark.component
+def test_sqlite_engine_applies_runtime_pragmas(tmp_path, request) -> None:
     engine = create_database_engine(
         {"type": "sqlite", "file": str(tmp_path / "runtime.db")}
     )
+    request.addfinalizer(engine.dispose)
 
     with engine.connect() as connection:
         assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
@@ -55,10 +59,11 @@ def test_sqlite_engine_applies_runtime_pragmas(tmp_path) -> None:
         assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one() == "wal"
         assert connection.exec_driver_sql("PRAGMA synchronous").scalar_one() == 1
 
-    engine.dispose()
 
-
-def test_file_sqlite_engine_applies_configured_queue_pool_limits(tmp_path) -> None:
+@pytest.mark.component
+def test_file_sqlite_engine_applies_configured_queue_pool_limits(
+    tmp_path, request
+) -> None:
     engine = create_database_engine(
         {
             "type": "sqlite",
@@ -66,18 +71,20 @@ def test_file_sqlite_engine_applies_configured_queue_pool_limits(tmp_path) -> No
             "pool": {"size": 1, "max_overflow": 1, "timeout_seconds": 0},
         }
     )
+    request.addfinalizer(engine.dispose)
 
-    try:
-        assert engine.pool.size() == 1
-        assert engine.pool.timeout() == 0
-        with engine.connect(), engine.connect():
-            with pytest.raises(SQLAlchemyTimeoutError, match="QueuePool limit"):
-                engine.connect()
-    finally:
-        engine.dispose()
+    assert engine.pool.size() == 1
+    assert engine.pool.timeout() == 0
+    with (
+        engine.connect(),
+        engine.connect(),
+        pytest.raises(SQLAlchemyTimeoutError, match="QueuePool limit"),
+    ):
+        engine.connect()
 
 
-def test_in_memory_sqlite_keeps_its_dedicated_pool() -> None:
+@pytest.mark.component
+def test_in_memory_sqlite_keeps_its_dedicated_pool(request) -> None:
     engine = create_database_engine(
         {
             "type": "sqlite",
@@ -85,13 +92,12 @@ def test_in_memory_sqlite_keeps_its_dedicated_pool() -> None:
             "pool": {"size": 1, "max_overflow": 0, "timeout_seconds": 0},
         }
     )
+    request.addfinalizer(engine.dispose)
 
-    try:
-        assert isinstance(engine.pool, SingletonThreadPool)
-    finally:
-        engine.dispose()
+    assert isinstance(engine.pool, SingletonThreadPool)
 
 
+@pytest.mark.unit
 def test_external_database_keeps_recycle_and_applies_pool_settings(monkeypatch) -> None:
     created = []
     expected_engine = object()
@@ -127,6 +133,7 @@ def test_external_database_keeps_recycle_and_applies_pool_settings(monkeypatch) 
     }
 
 
+@pytest.mark.unit
 def test_database_url_rejects_unknown_database_type() -> None:
     with pytest.raises(ValueError, match="Unsupported database type: oracle"):
         database_url({"type": "oracle"})

@@ -1,7 +1,7 @@
 import threading
-from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from itertools import batched
+lazy from collections.abc import Iterator, Sequence
 
 import orjson
 from loguru import logger as log

@@ -11,14 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import orjson
-from rich.progress import Progress
 from sqlalchemy import case, select
-from sqlalchemy.orm import sessionmaker
+lazy from rich.progress import Progress
+lazy from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import CORE_VERSION
 from include.config.settings import global_config
 from include.database.session import Session
-from include.providers.base import StorageProvider
 from include.providers.manager import ProviderManager
 from maintenance.backup.archive import _write_json
 from maintenance.backup.constants import (
@@ -59,6 +58,7 @@ from maintenance.backup.selection import (
     _selected_table_names,
     _selection_components,
 )
+lazy from include.providers.base import StorageProvider
 
 LOGGER = logging.getLogger(__name__)
 

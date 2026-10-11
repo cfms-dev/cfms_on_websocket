@@ -14,7 +14,7 @@ from include.scheduling import (
     ScheduledTaskRegistration,
     ScheduledTaskResult,
 )
-from include.types import PositiveInt
+lazy from include.types import PositiveInt
 
 
 class ScheduledLockdownWindowPayload(BaseModel):

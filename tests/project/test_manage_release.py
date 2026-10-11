@@ -6,6 +6,8 @@ import pytest
 
 from tools import manage_release
 
+pytestmark = pytest.mark.component
+
 
 def _write_project(project_root: Path) -> None:
     files = {

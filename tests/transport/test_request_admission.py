@@ -1,9 +1,13 @@
-import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from include.config.validation import AdmissionControlPolicy
 from include.transport import admission as admission_module
 from include.transport.admission import AdmissionController
+
+pytestmark = pytest.mark.unit
 
 
 def _policy(**overrides: int) -> AdmissionControlPolicy:
@@ -72,39 +76,27 @@ def test_connection_admission_enforces_global_cap_concurrently(monkeypatch):
         _policy(max_connections=10, max_connections_per_ip=10),
     )
     controller = AdmissionController()
-    barrier = threading.Barrier(100)
-    outcomes: queue.SimpleQueue[bool] = queue.SimpleQueue()
+    barrier = threading.Barrier(100, timeout=5)
 
-    def acquire() -> None:
+    def acquire() -> bool:
         barrier.wait()
-        outcomes.put(controller.acquire_connection("192.0.2.1").allowed)
+        return controller.acquire_connection("192.0.2.1").allowed
 
-    threads = [threading.Thread(target=acquire) for _ in range(100)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=2)
-        assert not thread.is_alive()
-
-    assert sum(outcomes.get() for _ in threads) == 10
+    with ThreadPoolExecutor(max_workers=100) as workers:
+        outcomes = [workers.submit(acquire) for _ in range(100)]
+        assert sum(outcome.result(timeout=5) for outcome in outcomes) == 10
 
 
 def test_default_request_admission_caps_sixteen_request_burst_at_twelve(monkeypatch):
     policy = AdmissionControlPolicy()
     _use_policy(monkeypatch, policy)
     controller = AdmissionController()
-    barrier = threading.Barrier(16)
-    outcomes: queue.SimpleQueue[bool] = queue.SimpleQueue()
+    barrier = threading.Barrier(16, timeout=5)
 
-    def acquire() -> None:
+    def acquire() -> bool:
         barrier.wait()
-        outcomes.put(controller.acquire_request(object()).allowed)
+        return controller.acquire_request(object()).allowed
 
-    threads = [threading.Thread(target=acquire) for _ in range(16)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=2)
-        assert not thread.is_alive()
-
-    assert sum(outcomes.get() for _ in threads) == 12
+    with ThreadPoolExecutor(max_workers=16) as workers:
+        outcomes = [workers.submit(acquire) for _ in range(16)]
+        assert sum(outcome.result(timeout=5) for outcome in outcomes) == 12

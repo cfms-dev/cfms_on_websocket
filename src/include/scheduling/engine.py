@@ -7,7 +7,6 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from include.config.validation import SchedulingPolicy
 from include.database.clock import database_now
 from include.database.models.scheduling import (
     Schedule,
@@ -18,6 +17,7 @@ from include.database.session import Session
 from include.scheduling.commands import lock_schedule
 from include.scheduling.occurrences import create_execution, execution_id
 from include.scheduling.triggers import advance_trigger, build_trigger
+lazy from include.config.validation import SchedulingPolicy
 
 __all__ = [
     "enqueue_due_schedules",

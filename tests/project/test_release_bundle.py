@@ -10,6 +10,8 @@ import pytest
 
 from tools.build_release import build_release
 
+pytestmark = pytest.mark.component
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_DATE_EPOCH = 1_788_000_000
 

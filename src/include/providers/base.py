@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
-from collections.abc import Buffer, Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from io import UnsupportedOperation
-from types import TracebackType
 from typing import Any, ClassVar, Self
+lazy from collections.abc import Buffer, Callable
+lazy from types import TracebackType
 
 
 class Provider(ABC):
@@ -50,25 +50,17 @@ class SchedulingProvider(Provider):
     def start(self, registry: Any) -> None:
         """Validate durable state, reconcile system schedules, and start workers."""
 
-        pass
-
     @abstractmethod
     def shutdown(self) -> None:
         """Request shutdown and wait up to the configured graceful deadline."""
-
-        pass
 
     @abstractmethod
     def notify_schedule_change(self) -> None:
         """Best-effort hint that the authoritative database state has changed."""
 
-        pass
-
     @abstractmethod
     def status(self) -> SchedulingProviderStatus:
         """Return management-facing availability without exposing credentials."""
-
-        pass
 
 
 @dataclass(frozen=True, slots=True)

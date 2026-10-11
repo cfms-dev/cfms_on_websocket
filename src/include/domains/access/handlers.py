@@ -25,7 +25,6 @@ from include.domains.pagination import (
     make_cursor_response,
 )
 from include.messages import Messages as smsg
-from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -33,7 +32,8 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-from include.types import JsonInteger, NonEmptyString, NonNegativeFloat
+lazy from include.transport.connection import ConnectionHandler
+lazy from include.types import JsonInteger, NonEmptyString, NonNegativeFloat
 
 ENTITY_TYPE_MAPPING = {"user": User, "group": UserGroup}
 TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}

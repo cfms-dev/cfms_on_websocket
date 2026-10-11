@@ -1,6 +1,5 @@
 import secrets
 import time
-from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     JSON,
@@ -14,9 +13,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
-
-if TYPE_CHECKING:
-    from include.database.models.identity import User
+lazy from include.database.models.identity import User
 
 
 class AuditEntry(Base):

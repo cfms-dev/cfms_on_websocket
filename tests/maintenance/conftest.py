@@ -1,15 +1,29 @@
-import sys
+from contextlib import ExitStack
 from types import SimpleNamespace
 
 import pytest
 
-from tests.maintenance.backup.support import _SRC_PATH, _write_config
+from tests.maintenance.backup.support import _SRC_PATH, _new_database, _write_config
+from tests.support.database import sqlite_engine_factory
+
+__all__ = ["sqlite_engine_factory"]
+
+
+@pytest.fixture
+def database_factory():
+    with ExitStack() as resources:
+
+        def create_database(base, path):
+            engine, sessions = _new_database(base, path)
+            resources.callback(engine.dispose)
+            return engine, sessions
+
+        yield create_database
 
 
 @pytest.fixture
 def backup_context(monkeypatch, tmp_path):
-    if str(_SRC_PATH) not in sys.path:
-        sys.path.insert(0, str(_SRC_PATH))
+    monkeypatch.syspath_prepend(str(_SRC_PATH))
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()

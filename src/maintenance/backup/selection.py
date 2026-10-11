@@ -1,6 +1,6 @@
 import enum
-from collections.abc import Iterable
 from dataclasses import dataclass
+lazy from collections.abc import Iterable
 
 from sqlalchemy import Table, exists, false, or_, select, union
 

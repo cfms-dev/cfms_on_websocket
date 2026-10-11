@@ -1,4 +1,5 @@
-from sqlalchemy import create_engine, event, select
+import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 import include.database.models  # noqa: F401
@@ -6,11 +7,14 @@ from include.database.models.identity import User
 from include.database.models.scheduling import Schedule
 from include.database.session import Base
 
+pytestmark = pytest.mark.component
 
-def test_deleting_user_preserves_schedule_and_clears_attribution(tmp_path):
-    database = create_engine(f"sqlite:///{tmp_path / 'scheduling.db'}")
 
-    @event.listens_for(database, "connect")
+def test_deleting_user_preserves_schedule_and_clears_attribution(
+    tmp_path, sqlite_engine_factory
+):
+    database = sqlite_engine_factory(tmp_path / "scheduling.db")
+
     def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
@@ -27,6 +31,7 @@ def test_deleting_user_preserves_schedule_and_clears_attribution(tmp_path):
                 secret_key="secret",
             )
         )
+        session.flush()
         session.add(
             Schedule(
                 id="user-schedule",

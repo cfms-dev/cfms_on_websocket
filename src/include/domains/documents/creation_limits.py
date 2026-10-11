@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 from sqlalchemy import exists, func, select
-from sqlalchemy.orm import Session
+lazy from sqlalchemy.orm import Session
 
 from include.config.validation import DocumentCreationRiskPolicy, DocumentUploadPolicy
 from include.database.models.documents import (

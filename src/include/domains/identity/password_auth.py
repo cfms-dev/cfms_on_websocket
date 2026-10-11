@@ -5,7 +5,7 @@ import secrets
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
-from include.database.models.identity import User
+lazy from include.database.models.identity import User
 
 _password_hasher = PasswordHasher()
 _dummy_password_hash = _password_hasher.hash(secrets.token_urlsafe(32))
@@ -23,6 +23,6 @@ def verify_password_or_dummy(user: User | None, password: str) -> bool:
         return user.verify_password(password)
     try:
         _password_hasher.verify(_dummy_password_hash, password)
-    except (VerifyMismatchError, VerificationError, InvalidHashError):
+    except VerifyMismatchError, VerificationError, InvalidHashError:
         pass
     return False

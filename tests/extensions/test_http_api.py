@@ -22,8 +22,7 @@ from include.extensions import manager as extension_manager
 
 
 @pytest.fixture
-def http_api_modules(monkeypatch, protected_test_config):
-    monkeypatch.chdir(protected_test_config.src_dir)
+def http_api_modules():
     from include.extensions.http_api import (
         application,
         config,
@@ -93,6 +92,7 @@ def _install_http_plugins(monkeypatch, modules, registrations_by_owner):
     )
 
 
+@pytest.mark.unit
 def test_sample_http_configuration_is_valid(http_api_modules):
     policy = http_api_modules.config.HttpApiPolicy.from_config(
         http_api_modules.security.global_config
@@ -105,6 +105,7 @@ def test_sample_http_configuration_is_valid(http_api_modules):
     assert policy.cors_allowed_origins == ()
 
 
+@pytest.mark.unit
 def test_http_extension_adds_hook_spec_to_core_manager(http_api_modules):
     from include.extensions.http_api import _extension
 
@@ -112,6 +113,7 @@ def test_http_extension_adds_hook_spec_to_core_manager(http_api_modules):
     assert _extension.http_hookimpl is extension_manager.hookimpl
 
 
+@pytest.mark.unit
 def test_http_extension_shutdown_does_not_reload_changed_config(
     monkeypatch, http_api_modules
 ):
@@ -142,6 +144,7 @@ def test_http_extension_shutdown_does_not_reload_changed_config(
     assert runtime.shutdown_calls == 1
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "section",
     [
@@ -159,10 +162,14 @@ def test_http_extension_shutdown_does_not_reload_changed_config(
 def test_invalid_http_configuration_is_rejected(http_api_modules, section):
     config = {"extensions": {"http_api": section}}
 
-    with pytest.raises(Exception, match="Invalid extensions.http_api"):
+    with pytest.raises(
+        http_api_modules.config.ConfigValidationError,
+        match=r"Invalid extensions\.http_api configuration",
+    ):
         http_api_modules.config.HttpApiPolicy.from_config(config)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "origin",
     [
@@ -189,6 +196,7 @@ def test_cors_origin_rejects_non_origin_url_components(http_api_modules, origin)
         http_api_modules.config.HttpApiPolicy.from_config(config)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [
@@ -205,6 +213,7 @@ def test_cors_origin_is_normalized(http_api_modules, configured, expected):
     assert policy.cors_allowed_origins == (expected,)
 
 
+@pytest.mark.unit
 def test_cors_origin_rejects_duplicates_after_normalization(http_api_modules):
     config = {
         "extensions": {
@@ -224,6 +233,7 @@ def test_cors_origin_rejects_duplicates_after_normalization(http_api_modules):
         http_api_modules.config.HttpApiPolicy.from_config(config)
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_normalized_cors_origin_matches_browser_header(
     monkeypatch, http_api_modules
@@ -245,6 +255,7 @@ async def test_normalized_cors_origin_matches_browser_header(
     assert response.headers["Access-Control-Allow-Origin"] == "https://ui.example"
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_registered_router_is_http_only_and_docs_are_disabled(
     monkeypatch, http_api_modules
@@ -273,6 +284,7 @@ async def test_registered_router_is_http_only_and_docs_are_disabled(
     assert "value" not in websocket_actions
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_docs_use_fixed_api_paths_when_enabled(monkeypatch, http_api_modules):
     modules = http_api_modules
@@ -287,18 +299,28 @@ async def test_docs_use_fixed_api_paths_when_enabled(monkeypatch, http_api_modul
         assert (await client.head("/api/v1/docs")).status_code == 200
 
 
-@pytest.mark.parametrize("invalid_router", [object(), APIRouter()])
+@pytest.mark.component
+@pytest.mark.parametrize(
+    ("invalid_router", "exception_type", "message"),
+    [
+        pytest.param(object(), TypeError, "must contain an APIRouter", id="wrong-type"),
+        pytest.param(
+            APIRouter(), ValueError, "non-empty sub-prefix", id="missing-prefix"
+        ),
+    ],
+)
 def test_invalid_router_registration_fails_startup(
-    monkeypatch, http_api_modules, invalid_router
+    monkeypatch, http_api_modules, invalid_router, exception_type, message
 ):
     modules = http_api_modules
     registration = modules.contracts.HttpRouterRegistration("consumer", invalid_router)
     _install_http_plugins(monkeypatch, modules, [("consumer", (registration,))])
 
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(exception_type, match=message):
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
 
+@pytest.mark.component
 def test_unknown_router_owner_fails_startup(monkeypatch, http_api_modules):
     modules = http_api_modules
     router = APIRouter(prefix="/example")
@@ -309,6 +331,7 @@ def test_unknown_router_owner_fails_startup(monkeypatch, http_api_modules):
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
 
+@pytest.mark.unit
 def test_duplicate_method_and_final_path_fails_startup(monkeypatch, http_api_modules):
     modules = http_api_modules
     first = APIRouter(prefix="/example")
@@ -329,6 +352,7 @@ def test_duplicate_method_and_final_path_fails_startup(monkeypatch, http_api_mod
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("first_path", "second_path"),
     [
@@ -354,7 +378,7 @@ def test_equivalent_parameterized_routes_fail_startup_across_extensions(
         [("first", (registrations[0],)), ("second", (registrations[1],))],
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="Duplicate HTTP route GET") as exc_info:
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
     message = str(exc_info.value)
@@ -364,6 +388,7 @@ def test_equivalent_parameterized_routes_fail_startup_across_extensions(
     assert "'second'" in message
 
 
+@pytest.mark.unit
 def test_equivalent_custom_converter_regex_fails_startup(monkeypatch, http_api_modules):
     modules = http_api_modules
 
@@ -397,6 +422,7 @@ def test_equivalent_custom_converter_regex_fails_startup(monkeypatch, http_api_m
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("first_path", "second_path"),
     [
@@ -425,7 +451,7 @@ def test_broader_dynamic_route_cannot_shadow_later_dynamic_route(
         [("broad", (registrations[0],)), ("narrow", (registrations[1],))],
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="Shadowed HTTP route GET") as exc_info:
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
     message = str(exc_info.value)
@@ -435,6 +461,7 @@ def test_broader_dynamic_route_cannot_shadow_later_dynamic_route(
     assert "'narrow'" in message
 
 
+@pytest.mark.component
 def test_dynamic_route_cannot_shadow_later_static_route_across_extensions(
     monkeypatch, http_api_modules
 ):
@@ -453,7 +480,7 @@ def test_dynamic_route_cannot_shadow_later_static_route_across_extensions(
         [("dynamic", (registrations[0],)), ("static", (registrations[1],))],
     )
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="Shadowed HTTP route GET") as exc_info:
         modules.application.build_http_application(modules.config.HttpApiPolicy())
 
     message = str(exc_info.value)
@@ -463,6 +490,7 @@ def test_dynamic_route_cannot_shadow_later_static_route_across_extensions(
     assert "'static'" in message
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_static_route_before_dynamic_route_keeps_both_reachable(
     monkeypatch, http_api_modules
@@ -495,6 +523,7 @@ async def test_static_route_before_dynamic_route_keeps_both_reachable(
         }
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_dynamic_converter_that_does_not_match_static_path_is_allowed(
     monkeypatch, http_api_modules
@@ -527,6 +556,7 @@ async def test_dynamic_converter_that_does_not_match_static_path_is_allowed(
         assert (await client.get("/api/v1/users/me")).json() == {"handler": "static"}
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_different_converters_keep_reachable_routes_distinct(
     monkeypatch, http_api_modules
@@ -562,6 +592,7 @@ async def test_different_converters_keep_reachable_routes_distinct(
         }
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_equivalent_route_patterns_with_different_methods_are_allowed(
     monkeypatch, http_api_modules
@@ -595,6 +626,7 @@ async def test_equivalent_route_patterns_with_different_methods_are_allowed(
         }
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
 def test_router_cannot_replace_enabled_docs(monkeypatch, http_api_modules, method):
     modules = http_api_modules
@@ -611,6 +643,7 @@ def test_router_cannot_replace_enabled_docs(monkeypatch, http_api_modules, metho
         )
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
     monkeypatch, http_api_modules
@@ -668,6 +701,7 @@ async def test_body_limit_and_exception_boundary_do_not_echo_sensitive_data(
     assert "Access-Control-Allow-Origin" not in disallowed_origin.headers
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_body_limit_counts_chunked_body_before_endpoint_runs(
     monkeypatch, http_api_modules
@@ -709,6 +743,7 @@ async def test_body_limit_counts_chunked_body_before_endpoint_runs(
     assert calls == 1
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_body_receive_timeout_closes_connection_before_endpoint_runs(
     monkeypatch, http_api_modules
@@ -746,6 +781,7 @@ async def test_body_receive_timeout_closes_connection_before_endpoint_runs(
     assert calls == 0
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("content_length", ["-1", "not-a-number"])
 @pytest.mark.asyncio
 async def test_invalid_content_length_is_rejected(
@@ -765,6 +801,7 @@ async def test_invalid_content_length_is_rejected(
     assert response.json() == {"detail": "Invalid Content-Length"}
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_banned_client_is_rejected(monkeypatch, http_api_modules):
     modules = http_api_modules
@@ -795,6 +832,7 @@ async def test_banned_client_is_rejected(monkeypatch, http_api_modules):
     assert "Access-Control-Allow-Origin" not in disallowed_origin.headers
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_banned_cors_preflight_is_rejected_before_body_and_cors(
     monkeypatch, http_api_modules
@@ -830,6 +868,7 @@ async def test_banned_cors_preflight_is_rejected_before_body_and_cors(
     assert "Origin" in response.headers["Vary"]
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_oversized_cors_preflight_is_rejected_before_cors(
     monkeypatch, http_api_modules
@@ -861,6 +900,7 @@ async def test_oversized_cors_preflight_is_rejected_before_cors(
     assert "Origin" in response.headers["Vary"]
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_admitted_cors_preflight_reaches_cors_middleware(
     monkeypatch, http_api_modules
@@ -898,6 +938,7 @@ async def test_admitted_cors_preflight_reaches_cors_middleware(
     assert {"authorization", "content-type"}.issubset(allowed_headers)
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_invalid_peer_address_is_rejected(monkeypatch, http_api_modules):
     modules = http_api_modules
@@ -910,6 +951,7 @@ async def test_invalid_peer_address_is_rejected(monkeypatch, http_api_modules):
     assert response.status_code == 403
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_trusted_proxy_resolution_uses_rightmost_untrusted_address(
     monkeypatch, http_api_modules
@@ -949,6 +991,7 @@ def _session_factory(user):
     return FakeSession
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("token_kind", "status_code"),
     [
@@ -1002,7 +1045,9 @@ async def test_bearer_authentication_fully_validates_user_token(
     app = FastAPI()
 
     @app.get("/")
-    def endpoint(principal=Depends(security.require_http_principal)):
+    def endpoint(
+        principal=Depends(security.require_http_principal),  # noqa: B008 - FastAPI dependency metadata.
+    ):
         return {"username": principal.username}
 
     headers = {}
@@ -1023,6 +1068,7 @@ async def test_bearer_authentication_fully_validates_user_token(
         assert response.headers["WWW-Authenticate"] == "Bearer"
 
 
+@pytest.mark.component
 @pytest.mark.asyncio
 async def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modules):
     security = http_api_modules.security
@@ -1049,8 +1095,8 @@ async def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modu
 
     @app.get("/forbidden")
     def forbidden(
-        _principal=Depends(
-            security.require_http_permissions(Permissions.MANAGE_SYSTEM)
+        _principal=Depends(  # noqa: B008 - FastAPI dependency metadata.
+            security.require_http_permissions(Permissions.MANAGE_SYSTEM)  # noqa: B008 - FastAPI permission dependency.
         ),
     ):
         return {}
@@ -1101,6 +1147,7 @@ def _reserve_ipv4_port() -> int:
         return listener.getsockname()[1]
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("request_bytes", "expected_status", "expected_body", "subnet_allowed"),
     [
@@ -1211,6 +1258,7 @@ def test_real_tls_early_rejection_closes_unread_body_and_releases_concurrency(
         runtime.shutdown()
 
 
+@pytest.mark.integration
 def test_real_tls_listener_reclaims_slow_headers_and_releases_port(
     monkeypatch, http_api_modules, tmp_path
 ):
@@ -1315,6 +1363,7 @@ def test_real_tls_listener_reclaims_slow_headers_and_releases_port(
         listener.bind(("127.0.0.1", port))
 
 
+@pytest.mark.integration
 def test_listener_bind_failure_is_propagated(monkeypatch, http_api_modules, tmp_path):
     modules = http_api_modules
     cert_path, key_path = _write_self_signed_certificate(tmp_path)
@@ -1350,6 +1399,7 @@ def test_listener_bind_failure_is_propagated(monkeypatch, http_api_modules, tmp_
     runtime.shutdown()
 
 
+@pytest.mark.unit
 def test_runtime_uses_exact_concurrency_and_rounded_shutdown_limits(
     monkeypatch, http_api_modules
 ):
@@ -1398,6 +1448,7 @@ def test_runtime_uses_exact_concurrency_and_rounded_shutdown_limits(
     assert runtime._active is None
 
 
+@pytest.mark.unit
 def test_post_start_failure_is_reported_and_clears_active(
     monkeypatch, http_api_modules
 ):
@@ -1444,6 +1495,7 @@ def test_post_start_failure_is_reported_and_clears_active(
     assert errors == ["HTTP API server stopped unexpectedly after startup"]
 
 
+@pytest.mark.unit
 def test_shutdown_force_exit_gets_a_second_join(monkeypatch, http_api_modules):
     modules = http_api_modules
     instances = []
@@ -1486,6 +1538,7 @@ def test_shutdown_force_exit_gets_a_second_join(monkeypatch, http_api_modules):
     assert runtime._active is None
 
 
+@pytest.mark.unit
 def test_startup_timeout_requests_shutdown_and_cleans_thread(
     monkeypatch, http_api_modules
 ):

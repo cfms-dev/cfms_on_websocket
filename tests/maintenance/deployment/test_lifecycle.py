@@ -8,8 +8,8 @@ import pytest
 from alembic.migration import MigrationContext
 from typer.testing import CliRunner
 
-import maintenance.operations.deployment as deployment
 from maintenance.cli import app
+from maintenance.operations import deployment
 from maintenance.operations.deployment import (
     database as deployment_database,
 )
@@ -31,6 +31,8 @@ from .support import (
     _write_extension,
     _write_release,
 )
+
+pytestmark = pytest.mark.component
 
 
 def test_upgrade_rejects_incompatible_python_before_database_preflight(

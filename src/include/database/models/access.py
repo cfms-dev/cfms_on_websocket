@@ -1,16 +1,13 @@
 import secrets
 import time
-from typing import TYPE_CHECKING
 
 from sqlalchemy import VARCHAR, BigInteger, Boolean, Double, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
-
-if TYPE_CHECKING:
-    from include.database.models.comments import Comment
-    from include.database.models.documents import Node
-    from include.database.models.identity import User
+lazy from include.database.models.comments import Comment
+lazy from include.database.models.documents import Node
+lazy from include.database.models.identity import User
 
 
 class UserBlockEntry(Base):

@@ -1,6 +1,6 @@
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+lazy from collections.abc import Mapping
 
 from sqlalchemy import URL, Engine, create_engine, event
 

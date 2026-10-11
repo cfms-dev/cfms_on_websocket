@@ -1,24 +1,22 @@
 from pathlib import Path
-from shutil import copyfile
 
+import pytest
 from argon2 import PasswordHasher
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+pytestmark = pytest.mark.component
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_set_password_participates_in_the_caller_transaction(
-    monkeypatch, tmp_path
+    sqlite_engine_factory,
 ) -> None:
-    copyfile(PROJECT_ROOT / "src" / "config.toml.sample", tmp_path / "config.toml")
-    monkeypatch.chdir(tmp_path)
-
     import include.database.models  # noqa: F401
     from include.database.models.identity import User
     from include.database.session import Base
 
-    engine = create_engine("sqlite://")
+    engine = sqlite_engine_factory(":memory:")
     Base.metadata.create_all(engine)
     local_session = sessionmaker(bind=engine)
     hasher = PasswordHasher()

@@ -1,14 +1,10 @@
-import sys
 import time
-from pathlib import Path
 
 import pytest
-import tomlkit
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_SRC_PATH = _PROJECT_ROOT / "src"
+from tests.domains.access.support import _make_rule_user
+
+pytestmark = pytest.mark.component
 
 
 def _legacy_rule_data_matches_user(rule_data: dict, user) -> bool:
@@ -86,84 +82,6 @@ def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
         for rule_data in relevant_rules
         if rule_data
     )
-
-
-@pytest.fixture()
-def access_rule_session(monkeypatch, tmp_path):
-    if str(_SRC_PATH) not in sys.path:
-        sys.path.insert(0, str(_SRC_PATH))
-
-    config = tomlkit.parse((_SRC_PATH / "config.toml.sample").read_text("utf-8"))
-    config["database"]["type"] = "sqlite"
-    config["database"]["file"] = ":memory:"
-    (tmp_path / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-
-    import include.database.models as models
-    from include.database.session import Base
-
-    engine = create_engine("sqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    with SessionLocal() as session:
-        session.add(models.Folder(id="/", name="/", inherit=False))
-        session.commit()
-        yield models, session
-
-
-def _make_rule_user(models, session, *, permissions=(), groups=(), username="alice"):
-    now = time.time()
-    user = models.User(
-        username=username,
-        pass_hash="hash",
-        passwd_last_modified=now,
-        nickname=username,
-        avatar_id=None,
-        last_login=None,
-        created_time=now,
-        status=0,
-        secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
-        preference_dek_id=None,
-    )
-    for permission in permissions:
-        user.rights.append(
-            models.UserPermission(
-                username=username,
-                permission=permission,
-                granted=True,
-                start_time=0.0,
-                end_time=None,
-            )
-        )
-    for group_name in groups:
-        if session.get(models.UserGroup, group_name) is None:
-            session.add(
-                models.UserGroup(
-                    group_name=group_name,
-                    group_display_name=group_name,
-                )
-            )
-        user.groups.append(
-            models.UserMembership(
-                username=username,
-                group_name=group_name,
-                start_time=0.0,
-                end_time=None,
-            )
-        )
-    session.add(user)
-    session.flush()
-    return user
 
 
 def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):

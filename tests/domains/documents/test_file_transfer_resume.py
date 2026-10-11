@@ -2,7 +2,7 @@ import hashlib
 
 import pytest
 
-from tests.domains.documents.test_file_task_lifecycle import (
+from tests.domains.documents.support import (
     _create_file_task,
     _DisconnectBeforeCompletionStream,
     _DisconnectingUploadStream,
@@ -14,6 +14,8 @@ from tests.domains.documents.test_file_task_lifecycle import (
     _new_transfer_handler,
     _sent_json_messages,
 )
+
+pytestmark = pytest.mark.component
 
 
 @pytest.mark.parametrize(
@@ -425,7 +427,8 @@ def test_upload_closes_resources_when_negotiation_send_fails(
     )
 
     assert storage.upload is not None
-    assert storage.upload._closed is True
+    with pytest.raises(ValueError, match="closed file"):
+        storage.upload.write(b"a")
     with file_task_context.session() as session:
         task = session.get(file_task_context.FileTask, task_id)
         assert task.status == FileTaskStatus.PENDING

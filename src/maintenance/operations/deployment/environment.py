@@ -1,11 +1,11 @@
 import os
 import shutil
 import subprocess
-from pathlib import Path
+lazy from pathlib import Path
 
-from maintenance.operations.deployment.models import DeploymentSettings
 from maintenance.operations.deployment.repository import _maintenance_root
 from maintenance.operations.exceptions import MaintenanceOperationError
+lazy from maintenance.operations.deployment.models import DeploymentSettings
 
 
 def _run(command_line: list[str], *, cwd: Path) -> None:

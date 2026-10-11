@@ -13,6 +13,8 @@ from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings
 from tests.support.utils import assert_error, assert_success, permission_entry
 
+pytestmark = pytest.mark.integration
+
 
 def _format_ws_host(host: str) -> str:
     if ":" in host and not host.startswith("["):
@@ -209,63 +211,65 @@ class TestSystemManagement:
             await diagnostics_client.disconnect()
 
     @pytest.mark.asyncio
-    async def test_lockdown_enabled(
-        self, authenticated_client: CFMSTestClient, user_factory
+    async def test_lockdown_blocks_regular_user_requests(
+        self,
+        authenticated_client: CFMSTestClient,
+        user_client: CFMSTestClient,
     ):
-        # Enable lockdown
-        lockdown_resp = await authenticated_client.set_lockdown(
-            True, "Scheduled maintenance"
-        )
-        assert assert_success(lockdown_resp) == {
-            "status": True,
-            "reason": "Scheduled maintenance",
-        }
-
-        corrected_reason = "Corrected maintenance window"
-        assert assert_success(
-            await authenticated_client.set_lockdown(True, corrected_reason)
-        ) == {
-            "status": True,
-            "reason": corrected_reason,
-        }
-
-        audit_items = assert_success(
-            await authenticated_client.view_audit_logs(filters=["lockdown"])
-        )["items"]
-        assert audit_items[0]["data"]["reason_change"] == {
-            "previous": "Scheduled maintenance",
-            "current": corrected_reason,
-        }
-
-        server_info = assert_success(await authenticated_client.server_info())
-        assert server_info["lockdown"] is True
-        assert server_info["lockdown_reason"] == corrected_reason
-
         try:
-            # Create a regular user
-            test_user = await user_factory()
-
-            # Connect as the regular user
-            user_client = CFMSTestClient()
-            await user_client.connect()
-            login_resp = await user_client.login(
-                test_user["username"], test_user["password"]
+            response = await authenticated_client.set_lockdown(
+                True, "Scheduled maintenance"
             )
-            assert_success(login_resp)
 
-            create_resp = await user_client.create_directory("LockdownTestDir")
-            try:
-                error = assert_error(create_resp, 999)
-                assert error["data"] == {
-                    "status": True,
-                    "reason": corrected_reason,
-                }
-            finally:
-                await user_client.disconnect()
+            assert assert_success(response) == {
+                "status": True,
+                "reason": "Scheduled maintenance",
+            }
+            server_info = assert_success(await authenticated_client.server_info())
+            assert server_info["lockdown"] is True
+            assert server_info["lockdown_reason"] == "Scheduled maintenance"
+            error = assert_error(
+                await user_client.create_directory("LockdownTestDir"), 999
+            )
+            assert error["data"] == {
+                "status": True,
+                "reason": "Scheduled maintenance",
+            }
         finally:
-            # Revert lockdown
-            unlockdown_resp = await authenticated_client.set_lockdown(False)
-            assert assert_success(unlockdown_resp) == {
+            assert assert_success(await authenticated_client.set_lockdown(False)) == {
+                "status": False,
+                "reason": None,
+            }
+
+    @pytest.mark.asyncio
+    async def test_lockdown_reason_update_is_visible_and_audited(
+        self, authenticated_client: CFMSTestClient
+    ):
+        try:
+            assert_success(
+                await authenticated_client.set_lockdown(True, "Scheduled maintenance")
+            )
+
+            response = await authenticated_client.set_lockdown(
+                True, "Corrected maintenance window"
+            )
+
+            assert assert_success(response) == {
+                "status": True,
+                "reason": "Corrected maintenance window",
+            }
+            server_info = assert_success(await authenticated_client.server_info())
+            assert server_info["lockdown"] is True
+            assert server_info["lockdown_reason"] == "Corrected maintenance window"
+            audit_items = assert_success(
+                await authenticated_client.view_audit_logs(filters=["lockdown"])
+            )["items"]
+            assert audit_items[0]["data"]["reason_change"] == {
+                "previous": "Scheduled maintenance",
+                "current": "Corrected maintenance window",
+            }
+        finally:
+            assert assert_success(await authenticated_client.set_lockdown(False)) == {
                 "status": False,
                 "reason": None,
             }

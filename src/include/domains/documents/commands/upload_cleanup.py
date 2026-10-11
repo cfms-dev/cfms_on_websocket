@@ -5,7 +5,7 @@ from typing import Any, cast
 from loguru import logger as log
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session as ORMSession
+lazy from sqlalchemy.orm import Session as ORMSession
 
 from include.database.models.documents import Document, DocumentRevision
 from include.database.models.files import (

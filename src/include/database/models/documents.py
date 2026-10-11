@@ -12,7 +12,7 @@ __all__ = [
 import secrets
 import time
 from enum import IntEnum, StrEnum
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 from warnings import deprecated
 
 from sqlalchemy import (
@@ -33,13 +33,11 @@ from include.config.constants import (
     ROOT_DIRECTORY_ID,
     USERNAME_DATABASE_MAX_LENGTH,
 )
-from include.database.models.files import File
 from include.database.session import Base
 from include.exceptions.misc import NoActiveRevisionsError
-
-if TYPE_CHECKING:
-    from include.database.models.access import CompiledAccessRuleSet
-    from include.database.models.identity import User
+lazy from include.database.models.access import CompiledAccessRuleSet
+lazy from include.database.models.files import File
+lazy from include.database.models.identity import User
 
 
 class NodeType(StrEnum):
