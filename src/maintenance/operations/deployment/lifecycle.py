@@ -16,6 +16,7 @@ from maintenance.operations.deployment.database import (
     _current_revision,
     _database_engine,
     _downgrade_database,
+    _is_ancestor,
     _preflight_downgrade_database,
     _preflight_upgrade_database,
     _suppress_bytecode_writes,
@@ -357,16 +358,20 @@ def resume_deployment(
             try:
                 with _suppress_bytecode_writes(), engine.connect() as connection:
                     revision = _current_revision(connection)
-                    _, _, source_head = _alembic(source)
+                    _, source_scripts, source_head = _alembic(source)
                     _, _, target_head = _alembic(target)
             finally:
                 engine.dispose()
-            if revision == source_head:
-                _restore_active(project_root, source, target)
-                active = source
-            elif revision == target_head:
+            if revision == target_head:
                 _restore_active(project_root, target, source)
                 active = target
+            elif revision == source_head or (
+                source_scripts is not None
+                and revision is not None
+                and _is_ancestor(source_scripts, revision, source_head)
+            ):
+                _restore_active(project_root, source, target)
+                active = source
             else:
                 raise MaintenanceOperationError(
                     f"Database revision {revision or 'unversioned'} matches "

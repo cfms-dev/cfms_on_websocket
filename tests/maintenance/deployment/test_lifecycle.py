@@ -437,6 +437,89 @@ def test_failed_migration_resume_reconciles_to_restored_database_revision(
     assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
 
 
+def test_failed_migration_resume_reconciles_to_ancestor_database_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _prepare_deployment(root)
+    staged_target = _write_release(tmp_path / "target", "1.1.0", "new")
+    stage = root / "src" / ".maintenance" / "staging" / "stage"
+    stage.mkdir(parents=True)
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_stage_release",
+        lambda *args, **kwargs: (staged_target, "a" * 64, stage),
+    )
+    monkeypatch.setattr(deployment_lifecycle, "_sync_environment", lambda *args: None)
+    monkeypatch.setattr(
+        deployment_lifecycle, "_preflight_upgrade_database", lambda *args: None
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle, "sync_config_template", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_upgrade_database",
+        lambda *_args: (_ for _ in ()).throw(
+            MaintenanceOperationError("migration failed")
+        ),
+    )
+
+    with pytest.raises(MaintenanceOperationError, match="migration failed"):
+        deployment.upgrade_deployment(
+            tmp_path / "release.zip",
+            root,
+            expected_sha256="a" * 64,
+        )
+
+    class _ConnectionContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            return False
+
+    class _Engine:
+        def connect(self):
+            return _ConnectionContext()
+
+        def dispose(self):
+            pass
+
+    dummy_scripts = object()
+    monkeypatch.setattr(
+        deployment_lifecycle, "_database_engine", lambda *args: _Engine()
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_alembic",
+        lambda release, *args: (
+            None,
+            dummy_scripts if release.release_id == source.release_id else None,
+            "source-head" if release.release_id == source.release_id else "target-head",
+        ),
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle, "_current_revision", lambda *args: "ancestor-head"
+    )
+    monkeypatch.setattr(
+        deployment_lifecycle,
+        "_is_ancestor",
+        lambda scripts, lower, upper: (
+            scripts is dummy_scripts
+            and lower == "ancestor-head"
+            and upper == "source-head"
+        ),
+    )
+
+    resumed = deployment.resume_deployment(root)
+
+    assert resumed.active_release_id == source.release_id
+    assert not (root / "src" / ".maintenance" / "transaction.json").exists()
+    assert (root / "src" / "main.py").read_text(encoding="utf-8") == "# old\n"
+
+
 def test_status_removes_stored_bytecode_but_rejects_other_extra_files(
     tmp_path: Path,
 ) -> None:

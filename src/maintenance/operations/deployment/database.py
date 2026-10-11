@@ -78,7 +78,12 @@ def _is_ancestor(scripts: ScriptDirectory, lower: str, upper: str) -> bool:
         return False
 
 
-def _require_source_revision(connection, source_head: str) -> None:
+def _require_upgrade_revision(
+    connection,
+    target_scripts: ScriptDirectory,
+    source_head: str,
+    target_head: str,
+) -> None:
     current = _current_revision(connection)
     if current is None:
         raise MaintenanceOperationError(
@@ -86,9 +91,30 @@ def _require_source_revision(connection, source_head: str) -> None:
             f"the active release, then stamp it at {source_head} before switching "
             "releases"
         )
-    if current != source_head:
+    if not _is_ancestor(target_scripts, current, target_head):
         raise MaintenanceOperationError(
-            f"Database revision is {current}; active release expects {source_head}"
+            f"Database revision is {current}; target release expects an ancestor "
+            f"of {target_head}"
+        )
+
+
+def _require_downgrade_revision(
+    connection,
+    source_scripts: ScriptDirectory,
+    source_head: str,
+    target_head: str,
+) -> None:
+    current = _current_revision(connection)
+    if current is None:
+        raise MaintenanceOperationError(
+            "Database has no Alembic revision; verify that its schema matches "
+            f"the active release, then stamp it at {source_head} before switching "
+            "releases"
+        )
+    if not _is_ancestor(source_scripts, target_head, current):
+        raise MaintenanceOperationError(
+            f"Database revision is {current}; active release expects a descendant "
+            f"of {target_head}"
         )
 
 
@@ -106,7 +132,9 @@ def _preflight_upgrade_database(
                 raise MaintenanceOperationError(
                     f"Target Alembic head {target_head} does not descend from {source_head}"
                 )
-            _require_source_revision(connection, source_head)
+            _require_upgrade_revision(
+                connection, target_scripts, source_head, target_head
+            )
     except (CommandError, OSError, SQLAlchemyError) as exc:
         raise MaintenanceOperationError(
             f"Database upgrade preflight failed: {exc}"
@@ -129,7 +157,9 @@ def _preflight_downgrade_database(
                 raise MaintenanceOperationError(
                     f"Target Alembic head {target_head} is not reachable from {source_head}"
                 )
-            _require_source_revision(connection, source_head)
+            _require_downgrade_revision(
+                connection, source_scripts, source_head, target_head
+            )
     except (CommandError, OSError, SQLAlchemyError) as exc:
         raise MaintenanceOperationError(
             f"Database downgrade preflight failed: {exc}"
@@ -148,8 +178,11 @@ def _upgrade_database(project_root: Path, source: _Release, target: _Release) ->
                 raise MaintenanceOperationError(
                     f"Target Alembic head {target_head} does not descend from {source_head}"
                 )
-            _require_source_revision(connection, source_head)
-            if source_head != target_head:
+            _require_upgrade_revision(
+                connection, target_scripts, source_head, target_head
+            )
+            current = _current_revision(connection)
+            if current != target_head:
                 command.upgrade(target_config, target_head)
             if _current_revision(connection) != target_head:
                 raise MaintenanceOperationError(
@@ -171,8 +204,11 @@ def _downgrade_database(project_root: Path, source: _Release, target: _Release) 
                 raise MaintenanceOperationError(
                     f"Target Alembic head {target_head} is not reachable from {source_head}"
                 )
-            _require_source_revision(connection, source_head)
-            if source_head != target_head:
+            _require_downgrade_revision(
+                connection, source_scripts, source_head, target_head
+            )
+            current = _current_revision(connection)
+            if current != target_head:
                 command.downgrade(source_config, target_head)
             if _current_revision(connection) != target_head:
                 raise MaintenanceOperationError(
