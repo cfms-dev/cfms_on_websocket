@@ -88,8 +88,9 @@ def test_document_lookup_indexes_round_trip_on_mysql(backup_context, request) ->
         with mysql_engine.begin() as connection:
             MigrationContext.configure(connection).stamp(scripts, head)
 
-        config.set_main_option("sqlalchemy.url", os.environ["CFMS_TEST_MYSQL_URL"])
-        command.downgrade(config, "3c496a214a87")
+        with mysql_engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "3c496a214a87")
 
         with mysql_engine.connect() as connection:
             inspector = inspect(connection)
@@ -107,7 +108,9 @@ def test_document_lookup_indexes_round_trip_on_mysql(backup_context, request) ->
                 }
                 assert expected.items() <= actual.items()
 
-        command.upgrade(config, "head")
+        with mysql_engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
 
         with mysql_engine.connect() as connection:
             inspector = inspect(connection)
@@ -132,14 +135,17 @@ def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) 
         with mysql_engine.begin() as connection:
             MigrationContext.configure(connection).stamp(scripts, head)
 
-        config.set_main_option("sqlalchemy.url", os.environ["CFMS_TEST_MYSQL_URL"])
-        command.downgrade(config, "8c130010a943")
+        with mysql_engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "8c130010a943")
         with mysql_engine.connect() as connection:
             assert "system_managed" not in {
                 item["name"] for item in inspect(connection).get_columns("schedules")
             }
 
-        command.upgrade(config, "head")
+        with mysql_engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
         with mysql_engine.connect() as connection:
             assert "system_managed" in {
                 item["name"] for item in inspect(connection).get_columns("schedules")

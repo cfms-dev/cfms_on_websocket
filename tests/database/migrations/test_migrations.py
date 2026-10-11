@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,6 @@ def test_document_lookup_indexes_round_trip(tmp_path: Path) -> None:
 
     config = Config(src_dir / "alembic.ini")
     database_url = f"sqlite:///{(tmp_path / 'document-indexes.db').as_posix()}"
-    config.set_main_option("sqlalchemy.url", database_url)
     engine = create_engine(database_url)
     expected_indexes = {
         "documents": {"ix_documents_current_revision_id"},
@@ -38,7 +38,9 @@ def test_document_lookup_indexes_round_trip(tmp_path: Path) -> None:
             "ix_document_revisions_parent_revision_id",
         },
     }
-    try:
+    with ExitStack() as resources:
+        resources.callback(engine.dispose)
+        config.attributes["connection"] = resources.enter_context(engine.connect())
         database_models.User.metadata.create_all(engine)
         command.stamp(config, "head")
         command.downgrade(config, "3c496a214a87")
@@ -56,8 +58,6 @@ def test_document_lookup_indexes_round_trip(tmp_path: Path) -> None:
             assert index_names <= {
                 index["name"] for index in inspector.get_indexes(table_name)
             }
-    finally:
-        engine.dispose()
 
 
 def test_retained_revision_chain_round_trips_to_head(tmp_path: Path) -> None:
@@ -67,13 +67,14 @@ def test_retained_revision_chain_round_trips_to_head(tmp_path: Path) -> None:
 
     config = Config(src_dir / "alembic.ini")
     database_url = f"sqlite:///{(tmp_path / 'migrations.db').as_posix()}"
-    config.set_main_option("sqlalchemy.url", database_url)
 
     scripts = ScriptDirectory.from_config(config)
     assert scripts.get_base() == "fe8863687aa4"
     expected_heads = tuple(scripts.get_heads())
     engine = create_engine(database_url)
-    try:
+    with ExitStack() as resources:
+        resources.callback(engine.dispose)
+        config.attributes["connection"] = resources.enter_context(engine.connect())
         database_models.User.metadata.create_all(engine)
         command.stamp(config, "head")
         command.downgrade(config, "76f1c7621e23")
@@ -121,8 +122,6 @@ def test_retained_revision_chain_round_trips_to_head(tmp_path: Path) -> None:
                 )
             }
             assert "redis_namespace" in runtime_columns
-    finally:
-        engine.dispose()
 
 
 def test_execution_contract_snapshot_migration_backfills_queued_work(
@@ -134,7 +133,6 @@ def test_execution_contract_snapshot_migration_backfills_queued_work(
 
     config = Config(src_dir / "alembic.ini")
     database_url = f"sqlite:///{(tmp_path / 'execution-snapshots.db').as_posix()}"
-    config.set_main_option("sqlalchemy.url", database_url)
     engine = create_engine(database_url)
     schedules = database_models.User.metadata.tables["schedules"]
     old_executions = table(
@@ -154,7 +152,9 @@ def test_execution_contract_snapshot_migration_backfills_queued_work(
         column("task_contract_version", Integer()),
         column("payload", JSON()),
     )
-    try:
+    with ExitStack() as resources:
+        resources.callback(engine.dispose)
+        config.attributes["connection"] = resources.enter_context(engine.connect())
         database_models.User.metadata.create_all(engine)
         command.stamp(config, "head")
         command.downgrade(config, "6dba0956fa9d")
@@ -199,8 +199,6 @@ def test_execution_contract_snapshot_migration_backfills_queued_work(
                 3,
                 {"value": 7},
             )
-    finally:
-        engine.dispose()
 
 
 def test_scheduling_permission_downgrade_preserves_other_grants(tmp_path: Path) -> None:
@@ -210,10 +208,11 @@ def test_scheduling_permission_downgrade_preserves_other_grants(tmp_path: Path) 
 
     config = Config(src_dir / "alembic.ini")
     database_url = f"sqlite:///{(tmp_path / 'permissions.db').as_posix()}"
-    config.set_main_option("sqlalchemy.url", database_url)
     engine = create_engine(database_url)
     tables = database_models.User.metadata.tables
-    try:
+    with ExitStack() as resources:
+        resources.callback(engine.dispose)
+        config.attributes["connection"] = resources.enter_context(engine.connect())
         database_models.User.metadata.create_all(engine)
         command.stamp(config, "head")
         command.downgrade(config, "ab7efda19079")
@@ -260,8 +259,6 @@ def test_scheduling_permission_downgrade_preserves_other_grants(tmp_path: Path) 
                 ("view_schedules", 0.0, None),
                 ("manage_schedules", 100.0, 200.0),
             }
-    finally:
-        engine.dispose()
 
 
 def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
@@ -273,7 +270,6 @@ def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
 
     config = Config(src_dir / "alembic.ini")
     database_url = f"sqlite:///{(tmp_path / 'system-schedules.db').as_posix()}"
-    config.set_main_option("sqlalchemy.url", database_url)
     engine = create_engine(database_url)
     schedules = database_models.User.metadata.tables["schedules"]
     schedule_rows = table(
@@ -281,7 +277,9 @@ def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
         column("id", String()),
         column("system_managed", Boolean()),
     )
-    try:
+    with ExitStack() as resources:
+        resources.callback(engine.dispose)
+        config.attributes["connection"] = resources.enter_context(engine.connect())
         database_models.User.metadata.create_all(engine)
         with engine.begin() as connection:
             connection.execute(
@@ -382,5 +380,3 @@ def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
             assert schedule_foreign_keys[("updated_by",)]["options"]["ondelete"] == (
                 "SET NULL"
             )
-    finally:
-        engine.dispose()
