@@ -9,9 +9,18 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.1...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.11.1](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.11.1) - 2026-10-11
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.0...v0.11.1)</small>
+
+### Fixed
+
+- Alembic now uses the database settings in config.toml for online migrations and offline SQL generation instead of always opening app.db.
+
 
 ## [v0.11.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.11.0) - 2026-10-11
 
