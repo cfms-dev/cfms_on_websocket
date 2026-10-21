@@ -9,9 +9,18 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.1...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.2...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.11.2](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.11.2) - 2026-10-21
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.1...v0.11.2)</small>
+
+### Security
+
+- upgrade certifi according to the recent [security advisory](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576)
+
 
 ## [v0.11.1](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.11.1) - 2026-10-11
 
