@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
+lazy from include.database.models.auth import UserTotpCredential
 lazy from include.database.models.identity import User
 lazy from include.database.session import Session
 
@@ -58,13 +59,7 @@ def clear_totp(
 
     with Session() as session:
         if all_users:
-            updated_count = session.query(User).update(
-                {
-                    User.totp_enabled: False,
-                    User.totp_secret: None,
-                    User.totp_backup_codes: None,
-                }
-            )
+            updated_count = session.query(UserTotpCredential).delete()
             session.commit()
             return TotpClearResult(username=None, updated_count=updated_count)
 
@@ -72,10 +67,8 @@ def clear_totp(
         if user is None:
             raise MaintenanceOperationError(f"User {username!r} was not found.")
 
-        user.totp_enabled = False
-        user.totp_secret = None
-        user.totp_backup_codes = None
-        session.add(user)
-        session.commit()
+        if user.totp_credential:
+            session.delete(user.totp_credential)
+            session.commit()
 
     return TotpClearResult(username=username, updated_count=1)

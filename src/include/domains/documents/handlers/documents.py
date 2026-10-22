@@ -247,7 +247,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
 
     request_model = _DocumentInfoRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -313,7 +313,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
 
 class RequestGetDocumentAccessRulesHandler(RequestHandler):
     request_model = _DocumentIDRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -357,7 +357,7 @@ class RequestGetDocumentHandler(RequestHandler):
 
     request_model = _DocumentIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -566,7 +566,7 @@ class RequestCreateDocumentHandler(RequestHandler):
 
     request_model = _CreateDocumentRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -583,11 +583,13 @@ class RequestCreateDocumentHandler(RequestHandler):
 
         outcome: tuple[int, dict[str, Any], str, Result] | None = None
         conflict_response: tuple[dict[str, Any], str] | None = None
+
+        assert handler.token, "Authenticated requests must have a valid token"
         with Session() as session:
             try:
                 outcome = _create_document_in_transaction(
                     session,
-                    handler.username,
+                    handler.token.username,
                     handler.remote_address,
                     folder_id,
                     title,
@@ -633,7 +635,7 @@ class RequestUploadDocumentHandler(RequestHandler):
 
     request_model = _UploadDocumentRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -769,7 +771,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
 
     request_model = _DocumentIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -817,7 +819,7 @@ class RequestRenameDocumentHandler(RequestHandler):
 
     request_model = _RenameDocumentRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -917,7 +919,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
 
     request_model = _SetDocumentRulesRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -974,7 +976,7 @@ class RequestMoveDocumentHandler(RequestHandler):
 
     request_model = _MoveDocumentRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -1092,7 +1094,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
 
     request_model = _DocumentIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
@@ -1138,7 +1140,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
 
     request_model = _RestoreDocumentRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -1227,7 +1229,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
 class RequestSetDocumentTagsHandler(RequestHandler):
     request_model = _SetDocumentTagsRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

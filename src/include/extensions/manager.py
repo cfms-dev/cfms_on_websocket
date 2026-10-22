@@ -44,6 +44,7 @@ lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import CORE_VERSION
 from include.config.version import Version
+lazy from include.domains.identity.auth.base import BaseAuthMethodProvider
 lazy from include.extensions.identifiers import ExtensionIdentifier
 lazy from include.scheduling.contracts import ScheduledTaskRegistration
 lazy from include.scheduling.registry import ScheduledTaskRegistry
@@ -307,6 +308,11 @@ class ServerHookSpecs(ABC):
         self,
     ) -> tuple["ScheduledTaskRegistration[Any]", ...]:
         """Register trusted scheduled task types owned by this extension."""
+
+    @hookspec
+    @abstractmethod
+    def ext_register_auth_methods(self) -> list["BaseAuthMethodProvider"]:
+        """Register custom authentication method providers owned by extensions."""
 
     @hookspec
     @abstractmethod

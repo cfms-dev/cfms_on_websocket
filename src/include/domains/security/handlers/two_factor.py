@@ -90,7 +90,7 @@ class RequestSetup2FAHandler(RequestHandler):
 
     request_model = _Setup2FARequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 20
 
     def handle(self, handler: ConnectionHandler):
@@ -133,7 +133,7 @@ class RequestValidate2FAHandler(RequestHandler):
 
     request_model = _Validate2FARequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -197,7 +197,7 @@ class RequestDisable2FAHandler(RequestHandler):
 
     request_model = _Disable2FARequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -280,7 +280,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
 
     request_model = EmptyRequestDataModel
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
@@ -319,7 +319,7 @@ class RequestGet2FAStatusHandler(RequestHandler):
 
     request_model = _Get2FAStatusRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):

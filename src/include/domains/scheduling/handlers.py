@@ -148,7 +148,7 @@ class RequestListScheduledTaskTypesHandler(RequestHandler):
     """List task contracts the authenticated principal is allowed to schedule."""
 
     request_model = EmptyRequestDataModel
-    require_auth = True
+    requires_auth = True
 
     def handle(self, handler: ConnectionHandler):
         """Filter task registrations by view and task-specific permissions."""
@@ -179,7 +179,7 @@ class RequestCreateScheduleHandler(RequestHandler):
     """Validate, authorize, and persist a new user-managed schedule."""
 
     request_model = _CreateScheduleRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -227,7 +227,7 @@ class RequestGetScheduleHandler(RequestHandler):
     """Return one non-deleted, non-system schedule by ID."""
 
     request_model = _ScheduleIdRequest
-    require_auth = True
+    requires_auth = True
 
     def handle(self, handler: ConnectionHandler):
         """Hide deleted and system-managed rows from direct lookup."""
@@ -255,7 +255,7 @@ class RequestListSchedulesHandler(RequestHandler):
     """List user-managed schedules with signed cursor pagination."""
 
     request_model = _ListSchedulesRequest
-    require_auth = True
+    requires_auth = True
 
     def handle(self, handler: ConnectionHandler):
         """Return one descending page without exposing system-managed rows."""
@@ -319,7 +319,7 @@ class RequestUpdateScheduleHandler(RequestHandler):
     """Apply an authorized optimistic update to an idle user schedule."""
 
     request_model = _UpdateScheduleRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -391,7 +391,7 @@ class RequestDeleteScheduleHandler(RequestHandler):
     """Logically delete a user schedule without interrupting running work."""
 
     request_model = _DeleteScheduleRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

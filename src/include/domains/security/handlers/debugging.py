@@ -16,7 +16,7 @@ class RequestThrowExceptionHandler(RequestHandler):
     """A request handler that always throws an exception for testing purposes."""
 
     request_model = _DebugRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

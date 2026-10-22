@@ -190,7 +190,7 @@ class RequestListDirectoryHandler(RequestHandler):
 
     request_model = _ListDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -283,7 +283,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
 
     request_model = _DirectoryIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -295,7 +295,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
             return
 
         with Session() as session:
-            # require_auth ensures this
+            # requires_auth ensures this
             user = User.get_existing(session, handler.username)
 
             directory = session.get(Folder, directory_id)
@@ -348,7 +348,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
 
 class RequestGetDirectoryAccessRulesHandler(RequestHandler):
     request_model = _DirectoryIDRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -405,7 +405,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
 
     request_model = _CreateDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -512,7 +512,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
 
     request_model = _FolderIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
@@ -615,7 +615,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
     request_model = _RenameDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -677,7 +677,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
 class RequestMoveDirectoryHandler(RequestHandler):
     request_model = _MoveDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -763,7 +763,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
 
     request_model = _SetDirectoryRulesRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -824,7 +824,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
 
     request_model = _FolderIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 20
 
     def handle(self, handler: ConnectionHandler):
@@ -918,7 +918,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
 
     request_model = _RestoreDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
@@ -1021,7 +1021,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
 
     request_model = _ListDeletedItemsRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

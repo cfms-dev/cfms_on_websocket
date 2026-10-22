@@ -58,7 +58,7 @@ class _SetDocumentRevisionRequest(RequestDataModel):
 class RequestListRevisionsHandler(RequestHandler):
     request_model = _ListRevisionsRequest
 
-    require_auth = True  # when True, handler.username is guaranteed to be not None
+    requires_auth = True  # when True, handler.username is guaranteed to be not None
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -144,7 +144,7 @@ class RequestListRevisionsHandler(RequestHandler):
 class RequestGetRevisionHandler(RequestHandler):
     request_model = _RevisionIDRequest
 
-    require_auth = True  # when True, handler.username is guaranteed to be not None
+    requires_auth = True  # when True, handler.username is guaranteed to be not None
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -208,7 +208,7 @@ class RequestGetRevisionHandler(RequestHandler):
 class RequestSetDocumentRevisionHandler(RequestHandler):
     request_model = _SetDocumentRevisionRequest
 
-    require_auth = True  # when True, handler.username is guaranteed to be not None
+    requires_auth = True  # when True, handler.username is guaranteed to be not None
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -246,7 +246,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
 class RequestDeleteRevisionHandler(RequestHandler):
     request_model = _RevisionIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):

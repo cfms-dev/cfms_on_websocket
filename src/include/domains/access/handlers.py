@@ -63,7 +63,7 @@ class _RevokeAccessRequest(RequestDataModel):
 class RequestGrantAccessHandler(RequestHandler):
     request_model = _GrantAccessRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -145,7 +145,7 @@ class RequestGrantAccessHandler(RequestHandler):
 class RequestViewAccessEntriesHandler(RequestHandler):
     request_model = _ViewAccessEntriesRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -240,7 +240,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
 class RequestRevokeAccessHandler(RequestHandler):
     request_model = _RevokeAccessRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):

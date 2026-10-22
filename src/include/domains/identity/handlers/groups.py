@@ -53,7 +53,7 @@ class _ChangeGroupPermissionsRequest(RequestDataModel):
 class RequestListGroupsHandler(RequestHandler):
     request_model = OffsetPaginationRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -107,7 +107,7 @@ class RequestListGroupsHandler(RequestHandler):
 class RequestCreateGroupHandler(RequestHandler):
     request_model = _CreateGroupRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -148,7 +148,7 @@ class RequestCreateGroupHandler(RequestHandler):
 class RequestDeleteGroupHandler(RequestHandler):
     request_model = _GroupNameRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -215,7 +215,7 @@ class RequestDeleteGroupHandler(RequestHandler):
 class RequestRenameGroupHandler(RequestHandler):
     request_model = _RenameGroupRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -265,7 +265,7 @@ class RequestRenameGroupHandler(RequestHandler):
 class RequestGetGroupInfoHandler(RequestHandler):
     request_model = _GroupNameRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -323,7 +323,7 @@ class RequestGetGroupInfoHandler(RequestHandler):
 class RequestChangeGroupPermissionsHandler(RequestHandler):
     request_model = _ChangeGroupPermissionsRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

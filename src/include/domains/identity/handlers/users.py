@@ -185,7 +185,7 @@ def _serialize_user_block(entry: UserBlockEntry) -> dict:
 class RequestListUsersHandler(RequestHandler):
     request_model = OffsetPaginationRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -248,7 +248,7 @@ class RequestListUsersHandler(RequestHandler):
 class RequestCreateUserHandler(RequestHandler):
     request_model = _CreateUserRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -312,7 +312,7 @@ class RequestCreateUserHandler(RequestHandler):
 class RequestDeleteUserHandler(RequestHandler):
     request_model = _UsernameRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -446,7 +446,7 @@ class RequestBlockUserHandler(RequestHandler):
 
     request_model = _BlockUserRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -528,7 +528,7 @@ class RequestUnblockUserHandler(RequestHandler):
 
     request_model = _BlockIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -569,7 +569,7 @@ class RequestUnblockUserHandler(RequestHandler):
 
 class RequestUpdateUserBlockHandler(RequestHandler):
     request_model = _UpdateUserBlockRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -623,7 +623,7 @@ class RequestUpdateUserBlockHandler(RequestHandler):
 class RequestListUserBlocksHandler(RequestHandler):
     request_model = _ListUserBlocksRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -713,7 +713,7 @@ class RequestListUserBlocksHandler(RequestHandler):
 class RequestGetUserInfoHandler(RequestHandler):
     request_model = _UsernameRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -770,7 +770,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
 
     request_model = _UsernameRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -780,7 +780,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
             return
 
         with Session() as session:
-            # when require_auth is True, user authentication has been verified
+            # when requires_auth is True, user authentication has been verified
             this_user = User.get_existing(session, handler.username)
 
             if (
@@ -828,7 +828,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
 
     request_model = _SetUserAvatarRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -897,7 +897,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
 class RequestChangeUserGroupsHandler(RequestHandler):
     request_model = _ChangeUserGroupsRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -945,7 +945,7 @@ class RequestChangeUserGroupsHandler(RequestHandler):
 class RequestChangeUserPermissionsHandler(RequestHandler):
     request_model = _ChangeUserPermissionsRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -1152,7 +1152,7 @@ class RequestSetPasswdHandler(RequestHandler):
 class RequestManageUserStatusHandler(RequestHandler):
     request_model = _ManageUserStatusRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

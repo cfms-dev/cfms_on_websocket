@@ -3,6 +3,7 @@ import hashlib
 import os
 import time
 from enum import IntEnum
+from typing import Any
 lazy import threading
 
 import jsonschema
@@ -51,6 +52,7 @@ from include.domains.documents.download_limits import (
     check_download_transfer_limits,
 )
 from include.domains.documents.file_task_signals import watch_file_task
+from include.domains.identity.tokens import Token
 from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.extensions.manager import pm
 from include.messages import Messages as smsg
@@ -142,10 +144,13 @@ class ConnectionHandler:
         jsonschema.validate(self.request, _REQUEST_ENVELOPE_SCHEMA)
 
         self.action: str = self.request["action"]
-        self.data: dict = self.request["data"]
+        self.data: dict[str, Any] = self.request[
+            "data"
+        ]  # JSON key names must be strings.
 
-        self.username: str = self.request.get("username", "")
-        self.token: str = self.request.get("token", "")
+        # Username and token are checked and set by the router.
+        self.username: str | None = None
+        self.token: Token | None = None
 
         self.nonce: str = self.request.get("nonce", "")
         self.request_timestamp: float = self.request.get("timestamp", 0.0)

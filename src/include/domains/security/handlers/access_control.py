@@ -184,7 +184,7 @@ def _publish_guard_event(payload: dict[str, Any]) -> None:
 
 class RequestListBannedSubnetsHandler(RequestHandler):
     request_model = _ListBannedSubnetsRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -265,7 +265,7 @@ class RequestListBannedSubnetsHandler(RequestHandler):
 
 class RequestCreateBannedSubnetHandler(RequestHandler):
     request_model = _BannedSubnetMutationRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -338,7 +338,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
 
 class RequestUpdateBannedSubnetHandler(RequestHandler):
     request_model = _BannedSubnetMutationRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -419,7 +419,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
 
 class RequestDeleteBannedSubnetHandler(RequestHandler):
     request_model = _DeleteBannedSubnetRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -501,7 +501,7 @@ def _after_lockout_cursor(columns, last: list[Any]):
 
 class RequestListAuthLockoutsHandler(RequestHandler):
     request_model = _ListAuthLockoutsRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -605,7 +605,7 @@ def _selector_record_and_key(selector: dict[str, str]):
 
 class RequestUnlockAuthLockoutsHandler(RequestHandler):
     request_model = _UnlockAuthLockoutsRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):

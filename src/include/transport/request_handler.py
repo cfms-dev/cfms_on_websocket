@@ -18,6 +18,7 @@ lazy from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
+from include.domains.identity.tokens import TokenPurpose
 from include.types import JsonInteger, NonEmptyString
 lazy from include.transport.connection import ConnectionHandler
 
@@ -68,8 +69,12 @@ class RequestHandler(ABC):
     """
 
     request_model: ClassVar[type[RequestDataModel]]
-    # Defines whether the handler needs auth check before handling a request.
-    require_auth: bool = False
+
+    # Indicates whether the request handler requires authentication.
+    # If True, the router will enforce that a valid token is present in the request.
+    requires_auth: bool = False
+    required_token_purpose: TokenPurpose = TokenPurpose.GENERAL
+
     # Relative token cost used by transport-wide request rate control.
     rate_limit_cost: ClassVar[int] = 1
 

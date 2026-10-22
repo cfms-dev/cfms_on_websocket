@@ -48,7 +48,7 @@ class _ViewAuditLogsRequest(RequestDataModel):
 class RequestLockdownHandler(RequestHandler):
     request_model = _LockdownRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
@@ -84,7 +84,7 @@ class RequestLockdownHandler(RequestHandler):
 
 class RequestViewAuditLogsHandler(RequestHandler):
     request_model = _ViewAuditLogsRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

@@ -65,7 +65,7 @@ class RequestSearchHandler(RequestHandler):
 
     request_model = _SearchRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):

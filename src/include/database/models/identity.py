@@ -2,14 +2,11 @@ import secrets
 import time
 from enum import IntEnum
 from functools import cached_property
-from typing import Any, cast
+from typing import Any
 lazy from collections.abc import Callable, Iterable
 
 import jwt
-import orjson
-import pyotp
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from sqlalchemy import (
     VARCHAR,
     Boolean,
@@ -17,7 +14,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    Text,
     event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -29,16 +25,19 @@ from include.config.constants import (
 )
 from include.config.settings import global_config
 from include.database.session import Base, Session
-from include.domains.identity.tokens import Token
+from include.domains.identity.tokens import Token, TokenPurpose
 lazy from include.database.models.access import UserBlockEntry
+lazy from include.database.models.auth import (
+    UserAuthPublicKey,
+    UserPasswordCredential,
+    UserTotpCredential,
+)
 lazy from include.database.models.comments import Comment
 lazy from include.database.models.files import File
 lazy from include.database.models.keyrings import UserKey
 lazy from include.database.models.operations import AuditEntry
 lazy from include.domains.access.permissions import Permissions
 
-# Module-level PasswordHasher instance — reused across all calls to avoid
-# repeated construction overhead.
 _password_hasher = PasswordHasher()
 
 
@@ -95,13 +94,8 @@ def _replace_permission_entries(
 
 class User(Base):
     __tablename__ = "users"
-    # id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(
         VARCHAR(USERNAME_DATABASE_MAX_LENGTH), primary_key=True
-    )
-    pass_hash: Mapped[str] = mapped_column(Text)
-    passwd_last_modified: Mapped[float] = mapped_column(
-        Double, default=0, nullable=False
     )
     nickname: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
 
@@ -111,7 +105,9 @@ class User(Base):
     avatar: Mapped["File | None"] = relationship("File")
 
     last_login: Mapped[float | None] = mapped_column(Double)
-    created_time: Mapped[float | None] = mapped_column(Double, nullable=False)
+    created_time: Mapped[float] = mapped_column(
+        Double, default=time.time, nullable=False
+    )
 
     status: Mapped[int] = mapped_column(
         Integer, default=UserStatus.ACTIVE.value, nullable=False
@@ -128,14 +124,26 @@ class User(Base):
         VARCHAR(64), default=lambda: secrets.token_hex(32), nullable=True
     )
 
-    # Two-Factor Authentication (TOTP) fields
-    totp_secret: Mapped[str | None] = mapped_column(
-        VARCHAR(32), nullable=True, default=None
+    password_credential: Mapped["UserPasswordCredential | None"] = relationship(
+        "UserPasswordCredential",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
-    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    totp_backup_codes: Mapped[str | None] = mapped_column(
-        Text, nullable=True, default=None
-    )  # JSON string of backup codes
+    totp_credential: Mapped["UserTotpCredential | None"] = relationship(
+        "UserTotpCredential",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    auth_public_keys: Mapped[list["UserAuthPublicKey"]] = relationship(
+        "UserAuthPublicKey",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     groups: Mapped[list[UserMembership]] = relationship(
         "UserMembership", back_populates="user", cascade="all, delete-orphan"
@@ -186,50 +194,149 @@ class User(Base):
     def status_reason(self) -> str | None:
         return self.status_comment.comment_text if self.status_comment else None
 
+    @property
+    def pass_hash(self) -> str | None:
+        return self.password_credential.pass_hash if self.password_credential else None
+
+    @pass_hash.setter
+    def pass_hash(self, value: str | None) -> None:
+        if value is None:
+            self.password_credential = None
+            return
+        if not self.password_credential:
+            self.password_credential = UserPasswordCredential(
+                username=self.username,
+                pass_hash=value,
+                passwd_last_modified=time.time(),
+            )
+        else:
+            self.password_credential.pass_hash = value
+
+    @property
+    def passwd_last_modified(self) -> float:
+        return (
+            self.password_credential.passwd_last_modified
+            if self.password_credential
+            else 0.0
+        )
+
+    @passwd_last_modified.setter
+    def passwd_last_modified(self, value: float) -> None:
+        if self.password_credential:
+            self.password_credential.passwd_last_modified = value
+
+    @property
+    def totp_secret(self) -> str | None:
+        return self.totp_credential.secret if self.totp_credential else None
+
+    @totp_secret.setter
+    def totp_secret(self, value: str | None) -> None:
+        if value is not None:
+            if not self.totp_credential:
+                self.totp_credential = UserTotpCredential(
+                    username=self.username,
+                    secret=value,
+                    enabled=False,
+                    created_time=time.time(),
+                )
+            else:
+                self.totp_credential.secret = value
+        elif self.totp_credential:
+            self.totp_credential = None
+
+    @property
+    def totp_enabled(self) -> bool:
+        return self.totp_credential.enabled if self.totp_credential else False
+
+    @totp_enabled.setter
+    def totp_enabled(self, value: bool) -> None:
+        if not self.totp_credential:
+            self.totp_credential = UserTotpCredential(
+                username=self.username,
+                secret="",
+                enabled=value,
+                created_time=time.time(),
+            )
+        else:
+            self.totp_credential.enabled = value
+
+    @property
+    def totp_backup_codes(self) -> str | None:
+        return self.totp_credential.backup_codes if self.totp_credential else None
+
+    @totp_backup_codes.setter
+    def totp_backup_codes(self, value: str | None) -> None:
+        if not self.totp_credential:
+            self.totp_credential = UserTotpCredential(
+                username=self.username,
+                secret="",
+                enabled=False,
+                backup_codes=value,
+                created_time=time.time(),
+            )
+        else:
+            self.totp_credential.backup_codes = value
+
     def verify_password(self, plain_password: str) -> bool:
-        try:
-            return _password_hasher.verify(self.pass_hash, plain_password)
-        except VerifyMismatchError, VerificationError, InvalidHashError:
+        if not self.password_credential:
             return False
+        return self.password_credential.verify(plain_password)
 
-    def create_token_after_authentication(self, plain_password: str) -> Token:
-        """Issue a token after the caller has verified every required factor.
+    def set_password(
+        self, plain_password: str, force_update_after_login: bool = False
+    ) -> None:
+        if not self.password_credential:
+            session = object_session(self)
+            cred = UserPasswordCredential(
+                username=self.username,
+                pass_hash="",
+                passwd_last_modified=0.0,
+            )
+            cred.set_password(plain_password, force_update_after_login)
+            self.password_credential = cred
+            if session is not None:
+                session.add(self.password_credential)
+        else:
+            self.password_credential.set_password(
+                plain_password, force_update_after_login
+            )
 
-        This method will automatically update and commit to the database when
-        generating the token, which may lead to unexpected consequences.
-        """
+        self.secret_key = secrets.token_hex(32)
 
+    def create_token_after_authentication(
+        self, plain_password: str | None = None
+    ) -> Token:
         secret = (
             global_config["server"]["secret_key"]
             if not self.secret_key
             else self.secret_key
         )
-        token = Token(secret, self.username)
-        token.new(DEFAULT_TOKEN_EXPIRY_SECONDS)
+        token = Token.new(self.username, DEFAULT_TOKEN_EXPIRY_SECONDS, secret)
 
         session = object_session(self)
         if session is not None:
             self.last_login = time.time()
-            # Rehash password if argon2id parameters have changed (same transaction)
-            if _password_hasher.check_needs_rehash(self.pass_hash):
-                self.pass_hash = _password_hasher.hash(plain_password)
+            if (
+                plain_password
+                and self.password_credential
+                and self.password_credential.check_needs_rehash()
+            ):
+                self.password_credential.pass_hash = _password_hasher.hash(
+                    plain_password
+                )
+                session.add(self.password_credential)
             session.add(self)
             session.commit()
 
         return token
 
-    def is_token_valid(self, token: str) -> bool:
-        """
-        Validate a JWT for this user.
-
-        Return True when the token is valid, unexpired, and the user account is
-        active; otherwise return False.
-        """
+    def is_token_valid(self, token: Token | str, purpose=TokenPurpose.GENERAL) -> bool:
         if self.status != UserStatus.ACTIVE:
             return False
+        raw_token = token.raw if isinstance(token, Token) else str(token)
         try:
             payload = jwt.decode(
-                token,
+                raw_token,
                 (
                     global_config["server"]["secret_key"]
                     if not self.secret_key
@@ -237,140 +344,67 @@ class User(Base):
                 ),
                 algorithms=["HS256"],
             )
-            return payload.get("username") == self.username
+            return payload.get("username") == self.username and bool(
+                payload.get("purpose", 0) & purpose
+            )
         except jwt.ExpiredSignatureError, jwt.InvalidTokenError:
             return False
 
-    def renew_token(self) -> Token:
-        """Regenerate this user's JWT."""
+    def renew_token(self, old: Token | None = None) -> Token:
+        secret: str
+        purpose: TokenPurpose
 
-        secret = (
-            global_config["server"]["secret_key"]
-            if not self.secret_key
-            else self.secret_key
-        )
-        new_token = Token(secret, self.username)
-        new_token.new(DEFAULT_TOKEN_EXPIRY_SECONDS)
+        if not old:
+            secret = (
+                global_config["server"]["secret_key"]
+                if not self.secret_key
+                else self.secret_key
+            )
+            purpose = TokenPurpose.GENERAL
+        else:
+            secret = old._secret
+            purpose = old.purpose
 
-        return new_token
-
-    def set_password(
-        self, plain_password: str, force_update_after_login: bool = False
-    ) -> None:
-        """Update password state; the caller owns persistence."""
-        self.pass_hash = _password_hasher.hash(plain_password)
-
-        self.secret_key = secrets.token_hex(
-            32
-        )  # token_hex(32) generates a 64-character hex
-        self.passwd_last_modified = time.time() if not force_update_after_login else 0
+        return Token.new(self.username, DEFAULT_TOKEN_EXPIRY_SECONDS, secret, purpose)
 
     def setup_totp(self) -> tuple[str, list[str]]:
-        """
-        Setup TOTP for the user. Generates a new TOTP secret and backup codes.
-        Returns a tuple of (secret, backup_codes).
-        """
-        # Generate a new TOTP secret
-        self.totp_secret = pyotp.random_base32()
-
-        # Generate 10 backup codes
-        backup_codes = [secrets.token_hex(4) for _ in range(10)]
-        pepper = global_config["security"]["pepper"]
-        # Hash the backup codes before storing using Argon2id with pepper
-        hashed_codes = [_password_hasher.hash(code + pepper) for code in backup_codes]
-        self.totp_backup_codes = orjson.dumps(hashed_codes).decode("utf-8")
-
-        # TOTP is not enabled yet until validated
-        self.totp_enabled = False
-
-        # Write to database
+        credential, backup_codes = UserTotpCredential.create_pending(self.username)
         session = object_session(self)
+        if self.totp_credential and session is not None:
+            session.delete(self.totp_credential)
+        self.totp_credential = credential
         if session is not None:
-            session.add(self)
+            session.add(credential)
             session.commit()
+        return credential.secret, backup_codes
 
-        return cast(str, self.totp_secret), backup_codes
-
-    def enable_totp(self):
-        """
-        Enable TOTP authentication for the user.
-        """
-        if not self.totp_secret:
+    def enable_totp(self) -> None:
+        if not self.totp_credential or not self.totp_credential.secret:
             raise ValueError("TOTP secret not set. Call setup_totp() first.")
-
-        self.totp_enabled = True
-
+        self.totp_credential.enabled = True
         session = object_session(self)
         if session is not None:
-            session.add(self)
+            session.add(self.totp_credential)
             session.commit()
 
-    def disable_totp(self):
-        """
-        Disable and remove TOTP authentication for the user.
-        """
-        self.totp_enabled = False
-        self.totp_secret = None
-        self.totp_backup_codes = None
-
-        session = object_session(self)
-        if session is not None:
-            session.add(self)
-            session.commit()
+    def disable_totp(self) -> None:
+        if self.totp_credential:
+            session = object_session(self)
+            if session is not None:
+                session.delete(self.totp_credential)
+                session.commit()
+            self.totp_credential = None
 
     def verify_totp(self, token: str) -> bool:
-        """
-        Verify a TOTP token or backup code.
-        Returns True if the token is valid.
-        Can be called during setup (when totp_enabled is False) or during login.
-        """
-        # Check if TOTP secret exists (may not be enabled yet during setup)
-        if not self.totp_secret:
+        if not self.totp_credential:
             return False
-
-        # Try to verify as TOTP token first
-        totp = pyotp.TOTP(self.totp_secret)
-        if totp.verify(token, valid_window=1):
-            return True
-
-        # Try to verify as backup code (only if 2FA is enabled)
-        if self.totp_enabled and self.totp_backup_codes:
-            try:
-                hashed_codes = orjson.loads(self.totp_backup_codes)
-                pepper = global_config["security"]["pepper"]
-
-                for hash_str in hashed_codes:
-                    try:
-                        if _password_hasher.verify(hash_str, token + pepper):
-                            # Verification succeeded, remove the used backup code
-                            hashed_codes.remove(hash_str)
-                            self.totp_backup_codes = orjson.dumps(hashed_codes).decode(
-                                "utf-8"
-                            )
-
-                            session = object_session(self)
-                            if session is not None:
-                                session.add(self)
-                                session.commit()
-
-                            return True
-                    except VerifyMismatchError:
-                        continue
-            except orjson.JSONDecodeError, ValueError:
-                pass
-
-        return False
+        return self.totp_credential.verify(token)
 
     @property
     def totp_provisioning_uri(self) -> str | None:
-        """
-        Get the TOTP provisioning URI for QR code generation.
-        """
-        if not self.totp_secret:
+        if not self.totp_credential or not self.totp_credential.secret:
             return None
-
-        totp = pyotp.TOTP(self.totp_secret)
-        return totp.provisioning_uri(name=self.username, issuer_name="CFMS")
+        return self.totp_credential.provisioning_uri
 
     @property
     def all_groups(self):

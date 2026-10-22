@@ -2,6 +2,7 @@ import time
 
 from argon2 import PasswordHasher
 
+from include.database.models.auth import UserPasswordCredential
 from include.database.models.identity import User, UserMembership, UserPermission
 from include.database.session import Session
 
@@ -14,13 +15,13 @@ def create_user(**kwargs) -> None:
     """
     Create a new user in the system.
 
-    This utility hashes the provided password using argon2id and creates
-    a user record along with associated permissions and group memberships.
+    This utility hashes the provided password (if any) using argon2id and creates
+    a user record along with associated credentials, permissions, and group memberships.
 
     Args:
         **kwargs: Arbitrary keyword arguments that may include:
             - username (str): The username for the new user.
-            - password (str): The password for the new user.
+            - password (str, optional): The password for the new user.
             - nickname (str, optional): The nickname for the new user.
             - permissions (list, optional): A list of dicts for user
               permissions. Each dict may contain:
@@ -43,15 +44,22 @@ def create_user(**kwargs) -> None:
         None: Commits the new user to the database.
     """
 
-    pass_hash = _password_hasher.hash(kwargs["password"])
+    raw_password = kwargs.get("password")
     with Session() as session:
         user = User(
             username=kwargs["username"],
-            pass_hash=pass_hash,
             nickname=kwargs.get("nickname", None),
             last_login=0,
             created_time=time.time(),
         )
+        if raw_password:
+            pass_hash = _password_hasher.hash(raw_password)
+            user.password_credential = UserPasswordCredential(
+                username=user.username,
+                pass_hash=pass_hash,
+                passwd_last_modified=time.time(),
+            )
+
         for i in kwargs.get("permissions", []):
             permission = UserPermission(
                 user=user,

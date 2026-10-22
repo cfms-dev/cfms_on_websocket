@@ -95,7 +95,7 @@ class RequestServerInfoHandler(RequestHandler):
 
 class RequestDiagnosticsHandler(RequestHandler):
     request_model = EmptyRequestDataModel
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -170,7 +170,7 @@ class RequestShutdownHandler(RequestHandler):
     """
 
     request_model = EmptyRequestDataModel
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):

@@ -290,7 +290,7 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
 
     class PydanticHandler:
         request_model = InvalidRequest
-        require_auth = False
+        requires_auth = False
         rate_limit_cost = 1
 
         def handle(self, _handler):
@@ -391,7 +391,7 @@ def test_router_keeps_validated_request_data_as_the_original_dict(monkeypatch):
 
     class PydanticHandler:
         request_model = ValidRequest
-        require_auth = False
+        requires_auth = False
         rate_limit_cost = 1
 
         def handle(self, handler):
@@ -517,7 +517,7 @@ def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(monkeypatch):
 
     class PoolTimeoutHandler:
         request_model = SimpleNamespace(model_validate=lambda _data: None)
-        require_auth = False
+        requires_auth = False
         rate_limit_cost = 1
 
         def handle(self, _handler):
@@ -567,7 +567,7 @@ def test_non_pool_handler_failure_keeps_generic_500_response(monkeypatch):
 
     class FailingHandler:
         request_model = SimpleNamespace(model_validate=lambda _data: None)
-        require_auth = False
+        requires_auth = False
         rate_limit_cost = 1
 
         def handle(self, _handler):

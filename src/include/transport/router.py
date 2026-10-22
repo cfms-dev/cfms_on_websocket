@@ -3,6 +3,7 @@ import threading
 import time
 
 import jsonschema
+import jwt
 import orjson
 from loguru import logger as log
 from pydantic import ValidationError
@@ -11,6 +12,7 @@ from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 lazy from websockets.sync.server import ServerConnection
 
 from include.config.constants import NONCE_MIN_LENGTH
+from include.config.settings import global_config
 from include.config.validation import AdmissionControlPolicy
 from include.database.models.identity import User
 from include.database.session import Session
@@ -85,6 +87,8 @@ from include.domains.identity.handlers.users import (
     RequestUnblockUserHandler,
     RequestUpdateUserBlockHandler,
 )
+from include.domains.identity.states import AuthState
+from include.domains.identity.tokens import Token, TokenPurpose
 from include.domains.keyrings.handlers.keyrings import (
     RequestDeleteUserKeyHandler,
     RequestGetUserKeyHandler,
@@ -451,16 +455,54 @@ def handle_request(stream: Stream):
         return
 
     user_permissions: set[Permissions] = set()
-    authenticated = False
-    if this_handler.username and this_handler.token:
+    user_auth_state: AuthState = AuthState.NONE
+    token: Token | None = None
+
+    if unverified_raw_token := this_handler.request.get("token"):
+        # CAUTION! Touching a unverified token requires careful handling.
+        unverified = jwt.decode(
+            unverified_raw_token,
+            options={"verify_signature": False},
+        )
+
         with Session() as session:
-            user = session.get(User, this_handler.username)
-            if user and user.is_token_valid(this_handler.token):
-                authenticated = True
+            claimed_username = unverified.get("username")
+            if not claimed_username:
+                this_handler.conclude_request(
+                    401, {}, "Invalid token: missing username claim"
+                )
+                return
+
+            user = session.get(User, claimed_username)
+            if not user:  # User not found
+                this_handler.conclude_request(401, {}, "Invalid token")
+                return
+
+            # Determine which `secret` to use.
+            secret: str = user.secret_key or global_config["server"]["secret_key"]
+
+            try:
+                token = Token.from_raw(unverified_raw_token, secret)
+            except jwt.ExpiredSignatureError:
+                this_handler.conclude_request(401, {}, "Token has expired")
+                return
+            except jwt.InvalidTokenError:
+                this_handler.conclude_request(401, {}, "Invalid token")
+                return
+
+            # The purpose of the token is left to subsequent logic for validation.
+            # However, it is obvious to say that a token lacking the GENERAL purpose
+            # cannot be considered authenticated.
+            if token.purpose & TokenPurpose.GENERAL:
+                user_auth_state = AuthState.FULL
                 user_permissions = user.all_permissions
             else:
-                this_handler.conclude_request(401, {}, "Invalid user or token")
-                return
+                user_auth_state = AuthState.PARTIAL
+
+            this_handler.username = (
+                user.username
+            )  # FIXME: Retained as an alias; Consider using `token.username` directly
+            this_handler.token = token
 
     handler_type = available_functions.get(action)
     if handler_type is None:
@@ -471,9 +513,10 @@ def handle_request(stream: Stream):
         action,
         handler_type.rate_limit_cost,
         ip,
-        username=this_handler.username if authenticated else None,
+        username=this_handler.username if user_auth_state == AuthState.FULL else None,
         bypass=(
-            authenticated and Permissions.BYPASS_REQUEST_RATE_LIMIT in user_permissions
+            user_auth_state == AuthState.FULL
+            and Permissions.BYPASS_REQUEST_RATE_LIMIT in user_permissions
         ),
     )
     if not rate_decision.allowed:
@@ -491,7 +534,10 @@ def handle_request(stream: Stream):
     lockdown_state = lockdown_state_manager.get_state()
     if lockdown_state.enabled and action not in whitelisted_functions:
         can_bypass_lockdown = False
-        if authenticated and Permissions.BYPASS_LOCKDOWN in user_permissions:
+        if (
+            user_auth_state == AuthState.FULL
+            and Permissions.BYPASS_LOCKDOWN in user_permissions
+        ):
             can_bypass_lockdown = True
 
         if not can_bypass_lockdown:
@@ -503,7 +549,10 @@ def handle_request(stream: Stream):
     # Replay attack protection: validate nonce and timestamp.
     # Only applied to authenticated requests to prevent unauthenticated
     # traffic from polluting the nonce store (DoS vector).
-    if authenticated and _validate_replay_protection(this_handler) is not None:
+    if (
+        user_auth_state != AuthState.NONE
+        and _validate_replay_protection(this_handler) is not None
+    ):
         return
 
     if handler_type is not None:
@@ -525,15 +574,34 @@ def handle_request(stream: Stream):
             )
             return
 
-        if _request_handler.require_auth and not authenticated:
-            this_handler.conclude_request(401, {}, "Authentication required")
-            log_audit(
-                action,
-                401,
-                data=this_handler.data,
-                remote_address=this_handler.remote_address,
-            )
-            return
+        if _request_handler.requires_auth:
+            if user_auth_state == AuthState.NONE:
+                this_handler.conclude_request(401, {}, "Authentication required")
+                log_audit(
+                    action,
+                    401,
+                    data=this_handler.data,
+                    remote_address=this_handler.remote_address,
+                )
+                return
+
+            assert token is not None
+
+            if not token.purpose & _request_handler.required_token_purpose:
+                this_handler.conclude_request(
+                    403,
+                    {},
+                    "Token does not have the required purpose: "
+                    f"{_request_handler.required_token_purpose.name}",
+                )
+                log_audit(
+                    action,
+                    403,
+                    username=token.username,
+                    data=this_handler.data,
+                    remote_address=this_handler.remote_address,
+                )
+                return
 
         try:
             if (
