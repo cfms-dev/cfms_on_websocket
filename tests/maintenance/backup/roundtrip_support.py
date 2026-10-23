@@ -1,8 +1,11 @@
+import uuid
 from pathlib import Path
 
 from sqlalchemy import insert, update
 
 from .support import _insert_compiled_rule, _RootedStorage
+
+ALICE_ID = uuid.UUID("12345678-1234-4234-9234-123456789abc")
 
 
 def _seed_source(base, db_engine, storage_root: Path) -> None:
@@ -73,9 +76,8 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
         connection.execute(
             insert(tables["users"]),
             {
+                "id": ALICE_ID,
                 "username": "alice",
-                "pass_hash": "hash",
-                "passwd_last_modified": now,
                 "nickname": "Alice",
                 "avatar_id": "file-avatar",
                 "last_login": None,
@@ -83,10 +85,35 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "status": 1,
                 "status_comment_id": 1,
                 "secret_key": "alice-secret",
-                "totp_secret": None,
-                "totp_enabled": False,
-                "totp_backup_codes": None,
                 "preference_dek_id": None,
+            },
+        )
+        connection.execute(
+            insert(tables["user_passwords"]),
+            {
+                "user_id": ALICE_ID,
+                "pass_hash": "preserved-password-hash",
+                "passwd_last_modified": now,
+            },
+        )
+        connection.execute(
+            insert(tables["user_totp_credentials"]),
+            {
+                "user_id": ALICE_ID,
+                "secret": "JBSWY3DPEHPK3PXP",
+                "enabled": True,
+                "backup_codes": "[]",
+                "created_time": now,
+            },
+        )
+        connection.execute(
+            insert(tables["user_auth_public_keys"]),
+            {
+                "id": "auth-key",
+                "user_id": ALICE_ID,
+                "public_key_der": b"\x30\x00",
+                "fingerprint": b"f" * 32,
+                "created_time": now,
             },
         )
         connection.execute(
@@ -109,9 +136,9 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
                 "next_run_at": now + 3600,
                 "active_execution_id": None,
                 "pending_scheduled_for": None,
-                "created_by": "alice",
+                "created_by": ALICE_ID,
                 "created_at": now,
-                "updated_by": "alice",
+                "updated_by": ALICE_ID,
                 "updated_at": now,
                 "deleted_at": None,
             },
@@ -136,7 +163,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
         connection.execute(
             insert(tables["user_memberships"]),
             {
-                "username": "alice",
+                "user_id": ALICE_ID,
                 "group_name": "sysop",
                 "start_time": 0.0,
                 "end_time": None,
@@ -145,7 +172,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
         connection.execute(
             insert(tables["user_permissions"]),
             {
-                "username": "alice",
+                "user_id": ALICE_ID,
                 "permission": "list_users",
                 "granted": True,
                 "start_time": 0.0,
@@ -156,7 +183,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             insert(tables["keyrings"]),
             {
                 "id": "key-1",
-                "username": "alice",
+                "user_id": ALICE_ID,
                 "content": "encrypted-dek",
                 "label": "main",
                 "created_time": now,
@@ -259,8 +286,8 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             insert(tables["document_metadata"]),
             {
                 "document_id": "doc-1",
-                "creator_username": "alice",
-                "last_modified_by_username": "alice",
+                "creator_id": ALICE_ID,
+                "last_modified_by_id": ALICE_ID,
             },
         )
         connection.execute(
@@ -288,7 +315,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             {
                 "id": "audit-1",
                 "action": "create_document",
-                "username": "alice",
+                "user_id": ALICE_ID,
                 "target": "doc-1",
                 "data": {"ok": True},
                 "result": 200,
@@ -300,7 +327,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             insert(tables["userblock_entries"]),
             {
                 "block_id": "block-1",
-                "username": "alice",
+                "user_id": ALICE_ID,
                 "timestamp": now,
                 "not_before": 0.0,
                 "not_after": -1.0,

@@ -4,6 +4,8 @@ import pytest
 import tomlkit
 from sqlalchemy import select
 
+from include.extensions.oidc_sso.models import OIDCBase
+
 from .roundtrip_support import _seed_source
 from .support import (
     _dump_backup_tables,
@@ -15,8 +17,9 @@ from .support import (
 pytestmark = pytest.mark.component
 
 
+@pytest.mark.parametrize("enabled", [False, True])
 def test_backup_header_and_roundtrip_restore(
-    backup_context, tmp_path, caplog, database_factory
+    backup_context, tmp_path, caplog, database_factory, enabled
 ):
     base = backup_context.Base
     source_engine, source_session = database_factory(base, tmp_path / "source.db")
@@ -26,6 +29,38 @@ def test_backup_header_and_roundtrip_restore(
     source_storage.mkdir()
     target_storage.mkdir()
     _seed_source(base, source_engine, source_storage)
+    from include.database.models.auth import UserAuthPolicy
+    from include.database.models.identity import User
+    from include.extensions.oidc_sso.credentials import bind_oidc_identity
+
+    backup_context.source_config["extensions"]["enabled"] = (
+        ["oidc_sso"] if enabled else []
+    )
+    OIDCBase.metadata.create_all(source_engine)
+
+    with source_session.begin() as session:
+        user = session.scalar(select(User).where(User.username == "alice"))
+        credential = bind_oidc_identity(
+            session, user, "https://issuer.example", "alice-subject"
+        )
+        session.add(
+            UserAuthPolicy(
+                user_id=user.id,
+                purpose="login",
+                revision=3,
+                chains=[
+                    [
+                        {
+                            "method": "oidc",
+                            "credential_ids": [credential.id],
+                        }
+                    ]
+                ],
+            )
+        )
+        session.add(
+            UserAuthPolicy(user_id=user.id, purpose="mfa", revision=2, chains=[])
+        )
 
     backup_path = tmp_path / "backup.conf"
     caplog.set_level(logging.DEBUG, logger="maintenance.backup")
@@ -102,6 +137,11 @@ def test_backup_header_and_roundtrip_restore(
     assert _dump_backup_tables(base, source_engine) == _dump_backup_tables(
         base, target_engine
     )
+    with source_engine.connect() as source, target_engine.connect() as target:
+        table = OIDCBase.metadata.tables["user_oidc_credentials"]
+        assert (
+            source.execute(select(table)).all() == target.execute(select(table)).all()
+        )
     assert (target_storage / "content" / "files" / "doc.bin").read_bytes() == (
         source_storage / "content" / "files" / "doc.bin"
     ).read_bytes()
@@ -159,17 +199,12 @@ def test_backup_header_and_roundtrip_restore(
     with target_session() as session:
         user = User(
             username="bob",
-            pass_hash="hash",
-            passwd_last_modified=0.0,
             nickname="Bob",
             avatar_id=None,
             last_login=None,
             created_time=0.0,
             status=0,
             secret_key="bob-secret",
-            totp_secret=None,
-            totp_enabled=False,
-            totp_backup_codes=None,
             preference_dek_id=None,
         )
         session.add(user)

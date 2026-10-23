@@ -1,5 +1,6 @@
 import os
 import threading
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
@@ -29,7 +30,7 @@ _DATABASE_URL_ENVIRONMENTS = (
     "CFMS_TEST_MYSQL_URL",
     "CFMS_TEST_POSTGRESQL_URL",
 )
-_SCHEDULE_ACTOR = "admin"
+_SCHEDULE_ACTOR = uuid.UUID("aabbccdd-0000-4000-8000-000000000001")
 
 
 @pytest.fixture(scope="module", params=_DATABASE_URL_ENVIRONMENTS)
@@ -46,7 +47,7 @@ def shared_database(request):
         users = Table(
             "users",
             support_metadata,
-            Column("username", User.__table__.c.username.type.copy(), primary_key=True),
+            Column("id", User.__table__.c.id.type.copy(), primary_key=True),
         )
         tables = (
             users,
@@ -60,7 +61,7 @@ def shared_database(request):
         for table in tables:
             table.create(database)
         with database.begin() as connection:
-            connection.execute(users.insert().values(username=_SCHEDULE_ACTOR))
+            connection.execute(users.insert().values(id=_SCHEDULE_ACTOR))
         try:
             yield database
         finally:
@@ -281,7 +282,7 @@ def test_completion_and_deletion_serialize_without_rollback(
                 session,
                 claim.schedule_id,
                 1,
-                username=_SCHEDULE_ACTOR,
+                user_id=_SCHEDULE_ACTOR,
                 now=101.0,
             )
 
@@ -327,7 +328,7 @@ def test_completion_and_deleted_lease_cancellation_choose_one_terminal_state(
             session,
             claim.schedule_id,
             1,
-            username=_SCHEDULE_ACTOR,
+            user_id=_SCHEDULE_ACTOR,
             now=101.0,
         )
 

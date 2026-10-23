@@ -144,7 +144,7 @@ def test_audit_export_applies_filters_and_serializes_matching_record(tmp_path):
         "remote_address": "203.0.113.10",
         "result": 401,
         "target": "alice",
-        "username": "alice",
+        "user_id": "12345678-1234-4234-9234-123456789abc",
     }
 
 
@@ -289,7 +289,7 @@ def test_audit_purge_archives_expired_entries_before_deleting_them(tmp_path):
         "old-login",
         "old-update",
     ]
-    assert archived_rows[1]["username"] is None
+    assert archived_rows[1]["user_id"] is None
     assert archived_rows[1]["data"] is None
     assert archived_rows[1]["remote_address"] is None
     assert "Archived" in purged.stdout

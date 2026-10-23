@@ -8,7 +8,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from include.config.constants import CORE_VERSION
+from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings
 from tests.support.utils import assert_error, assert_success, permission_entry
@@ -59,7 +59,7 @@ class TestSystemManagement:
         denied = next(
             item
             for item in audit_items
-            if item["username"] == low_privilege_client.username
+            if item["user_id"] == low_privilege_client.user_id
         )
         assert denied["result"] == 403
         assert denied["data"] is None
@@ -86,7 +86,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 27,
+            "protocol_version": PROTOCOL_VERSION,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {
@@ -176,7 +176,7 @@ class TestSystemManagement:
         user = await user_factory()
         assert_success(
             await authenticated_client.change_user_permissions(
-                user["username"], [permission_entry("diagnostics")]
+                user["user_id"], [permission_entry("diagnostics")]
             )
         )
         diagnostics_client = CFMSTestClient(
@@ -405,6 +405,12 @@ class TestSystemManagement:
             )
         )
         assert len(reordered_filter_page["items"]) == 1
+        first_entry = first_page["items"][0]
+        next_entry = reordered_filter_page["items"][0]
+        assert (first_entry["logged_time"], first_entry["id"]) > (
+            next_entry["logged_time"],
+            next_entry["id"],
+        )
 
         changed_filter_response = await authenticated_client.view_audit_logs(
             page_size=1,

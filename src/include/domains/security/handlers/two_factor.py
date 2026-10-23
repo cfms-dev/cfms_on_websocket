@@ -5,15 +5,24 @@ This module provides handlers for setting up, validating, and canceling
 two-factor authentication using Time-based One-Time Passwords (TOTP).
 """
 
+import uuid
 from operator import xor
 from typing import Literal, Self
 
 import orjson
 from pydantic import model_validator
 
+from include.database.models.auth import UserPasswordCredential, UserTotpCredential
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.identity.auth.registry import auth_registry
+from include.domains.identity.commands.credentials import (
+    enable_login_totp,
+    remove_totp,
+    setup_totp,
+)
+from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.security.guards.login import (
     AuthFactor,
     LoginGuard,
@@ -28,7 +37,7 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-lazy from include.domains.identity.types import RequestUsername
+lazy from include.domains.identity.types import RequestUserID
 lazy from include.domains.security.types import TwoFactorToken
 lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString
@@ -43,25 +52,25 @@ class _Validate2FARequest(RequestDataModel):
 
 
 class _Disable2FARequest(RequestDataModel):
-    username: Omittable[RequestUsername] = REQUEST_UNSET
+    user_id: Omittable[RequestUserID] = REQUEST_UNSET
     password: Omittable[NonEmptyString] = REQUEST_UNSET
 
     @model_validator(mode="after")
-    def require_username_or_password(self) -> Self:
-        if not {"username", "password"} & self.model_fields_set:
-            raise ValueError("username or password is required")
+    def require_user_id_or_password(self) -> Self:
+        if not {"user_id", "password"} & self.model_fields_set:
+            raise ValueError("user_id or password is required")
         return self
 
 
 class _Get2FAStatusRequest(RequestDataModel):
-    target: Omittable[NonEmptyString] = REQUEST_UNSET
+    user_id: Omittable[RequestUserID] = REQUEST_UNSET
 
 
 def _conclude_throttled(
     handler: ConnectionHandler,
     decision: ThrottleDecision,
     target: str,
-    username: str | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> Result:
     data = {}
     if decision.retry_after_seconds is not None:
@@ -71,10 +80,10 @@ def _conclude_throttled(
         data,
         "Too many authentication attempts. Please try again later.",
     )
-    return Result(code=429, target=target, username=username)
+    return Result(code=429, target=target, user_id=user_id)
 
 
-class RequestSetup2FAHandler(RequestHandler):
+class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
     """
     Handler for setting up two-factor authentication.
 
@@ -90,15 +99,16 @@ class RequestSetup2FAHandler(RequestHandler):
 
     request_model = _Setup2FARequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 20
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             # Check if user already has 2FA enabled
-            if user.totp_enabled:
+            credential = session.get(UserTotpCredential, user.id)
+            if credential is not None and credential.enabled:
                 handler.conclude_request(
                     code=400,
                     message="Two-factor authentication is already enabled. Please cancel it first.",
@@ -109,21 +119,27 @@ class RequestSetup2FAHandler(RequestHandler):
                 return
 
             # Setup TOTP
-            secret, backup_codes = user.setup_totp()
+            credential, backup_codes = setup_totp(session, user)
+            session.commit()
 
             handler.conclude_request(
                 code=200,
                 message="Two-factor authentication setup initiated. Please verify with your authenticator app.",
                 data={
-                    "secret": secret,
-                    "provisioning_uri": user.totp_provisioning_uri,
+                    "secret": credential.secret,
+                    "provisioning_uri": credential.provisioning_uri,
                     "backup_codes": backup_codes,
                 },
             )
-            return Result(code=200, target=handler.username)
+            return Result(
+                code=200,
+                target=str(user.id),
+                data={"target_username": user.username},
+                user_id=handler.user_id,
+            )
 
 
-class RequestValidate2FAHandler(RequestHandler):
+class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
     """
     Handler for validating and enabling two-factor authentication.
 
@@ -133,17 +149,17 @@ class RequestValidate2FAHandler(RequestHandler):
 
     request_model = _Validate2FARequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         token = handler.data["token"]
-        username = handler.username
+        user_id = handler.user_id
 
         success = False
 
         with Session() as session:
-            user = session.get(User, username)
+            user = session.get(User, user_id)
 
             if user is None:
                 handler.conclude_request(
@@ -154,7 +170,8 @@ class RequestValidate2FAHandler(RequestHandler):
                 return
 
             # Check if TOTP secret exists but not enabled yet
-            if not user.totp_secret:
+            credential = session.get(UserTotpCredential, user.id)
+            if credential is None or not credential.secret:
                 handler.conclude_request(
                     code=400,
                     message="Two-factor authentication has not been set up. Please set it up first.",
@@ -162,7 +179,7 @@ class RequestValidate2FAHandler(RequestHandler):
                 )
                 return
 
-            if user.totp_enabled:
+            if credential.enabled:
                 handler.conclude_request(
                     code=400,
                     message="Two-factor authentication is already enabled.",
@@ -170,9 +187,12 @@ class RequestValidate2FAHandler(RequestHandler):
                 )
                 return
 
+            username = user.username
+
             # Verify the provided TOTP token
-            if user.verify_totp(token):
-                user.enable_totp()
+            if credential.verify(token):
+                enable_login_totp(session, user, credential)
+                session.commit()
                 success = True
 
         if success:
@@ -184,10 +204,12 @@ class RequestValidate2FAHandler(RequestHandler):
         else:
             handler.conclude_request(401, {}, "Invalid verification code")
 
-        return Result(code=0 if success else 401, target=username)
+        return Result(
+            code=0 if success else 401, target=username, user_id=handler.user_id
+        )
 
 
-class RequestDisable2FAHandler(RequestHandler):
+class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
     """
     Handler for canceling two-factor authentication.
 
@@ -197,15 +219,24 @@ class RequestDisable2FAHandler(RequestHandler):
 
     request_model = _Disable2FARequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
         password = handler.data.get("password")
-        target_username = handler.data.get("username") or handler.username
-        requester_username = handler.username
+        with Session() as session:
+            requester = User.get_existing(session, handler.user_id)
+            requester_username = requester.username
+        target_user_id = (
+            uuid.UUID(handler.data["user_id"])
+            if "user_id" in handler.data
+            else handler.user_id
+        )
+        audit_target = str(target_user_id)
+        audit_data = {}
+        requester_user_id = handler.user_id
 
-        is_self = target_username == requester_username
+        is_self = target_user_id == requester_user_id
         has_password = bool(password)
 
         if xor(is_self, has_password):
@@ -215,45 +246,55 @@ class RequestDisable2FAHandler(RequestHandler):
                 else "Password should not be provided when disabling 2FA for another user"
             )
             handler.conclude_request(400, {}, error_msg)
-            return Result(code=400, target=target_username, username=requester_username)
+            return Result(code=400, target=audit_target, user_id=requester_user_id)
 
         ip = get_client_ip(handler.stream.connection._ws)
         if password:
-            decision = LoginGuard.evaluate(ip, target_username, AuthFactor.PASSWORD)
+            decision = LoginGuard.evaluate(ip, requester_username, AuthFactor.PASSWORD)
             if not decision.allowed:
                 return _conclude_throttled(
-                    handler, decision, target_username, requester_username
+                    handler, decision, audit_target, requester_user_id
                 )
 
         with Session() as session:
             if not is_self:
-                requester = User.get_existing(session, requester_username)
+                requester = User.get_existing(session, requester_user_id)
                 if Permissions.MANAGE_2FA not in requester.all_permissions:
                     handler.conclude_request(403, {}, "Permission denied")
                     return Result(
                         code=403,
-                        target=target_username,
-                        username=requester_username,
+                        target=audit_target,
+                        user_id=requester_user_id,
                     )
 
-            user = session.get(User, target_username)
-            if not user or not user.totp_enabled:
+            user = session.get(User, target_user_id)
+            if user is not None:
+                audit_data["target_username"] = user.username
+            credential = session.get(UserTotpCredential, user.id) if user else None
+            if user is None or credential is None or not credential.enabled:
                 handler.conclude_request(400, {}, "2FA not enabled or user not found")
                 return Result(
-                    code=400, target=target_username, username=requester_username
+                    code=400,
+                    target=audit_target,
+                    data=audit_data or None,
+                    user_id=requester_user_id,
                 )
 
             if password:
-                if not user.verify_password(password):
-                    LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
+                password_credential = session.get(UserPasswordCredential, user.id)
+                if not verify_password_or_dummy(password_credential, password):
+                    LoginGuard.report_failure(ip, user.username, AuthFactor.PASSWORD)
                     handler.conclude_request(401, {}, "Invalid password")
                     return Result(
-                        code=401, target=target_username, username=requester_username
+                        code=401,
+                        target=audit_target,
+                        data=audit_data,
+                        user_id=requester_user_id,
                     )
 
                 LoginGuard.report_success(
                     ip,
-                    target_username,
+                    user.username,
                     AuthFactor.PASSWORD,
                     completed_authentication=True,
                 )
@@ -261,16 +302,22 @@ class RequestDisable2FAHandler(RequestHandler):
                 if user.status != UserStatus.ACTIVE:
                     handler.conclude_request(4003, {}, "User account is not active")
                     return Result(
-                        code=4003, target=target_username, username=requester_username
+                        code=4003,
+                        target=audit_target,
+                        data=audit_data,
+                        user_id=requester_user_id,
                     )
 
-            user.disable_totp()
+            remove_totp(session, user, credential)
+            session.commit()
 
         handler.conclude_request(200, {}, "2FA disabled successfully")
-        return Result(code=0, target=target_username, username=requester_username)
+        return Result(
+            code=0, target=audit_target, data=audit_data, user_id=requester_user_id
+        )
 
 
-class RequestCancel2FASetupHandler(RequestHandler):
+class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
     """
     Handler for canceling two-factor authentication setup.
 
@@ -280,15 +327,16 @@ class RequestCancel2FASetupHandler(RequestHandler):
 
     request_model = EmptyRequestDataModel
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             # Check if TOTP setup exists but not enabled yet
-            if not user.totp_secret or user.totp_enabled:
+            credential = session.get(UserTotpCredential, user.id)
+            if credential is None or not credential.secret or credential.enabled:
                 handler.conclude_request(
                     code=400,
                     message="No pending two-factor authentication setup to cancel.",
@@ -297,10 +345,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
                 return
 
             # Cancel TOTP setup
-            user.totp_secret = None
-            user.totp_backup_codes = None
-
-            session.add(user)
+            remove_totp(session, user, credential)
             session.commit()
 
             handler.conclude_request(
@@ -310,7 +355,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
             )
 
 
-class RequestGet2FAStatusHandler(RequestHandler):
+class RequestGet2FAStatusHandler(RequestHandler[_Get2FAStatusRequest]):
     """
     Handler for getting two-factor authentication status.
 
@@ -319,18 +364,21 @@ class RequestGet2FAStatusHandler(RequestHandler):
 
     request_model = _Get2FAStatusRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
 
-        target_username = handler.data.get("target") or handler.username
-
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
+            target_user_id = (
+                uuid.UUID(handler.data["user_id"])
+                if "user_id" in handler.data
+                else user.id
+            )
 
             if (
-                target_username != handler.username
+                target_user_id != user.id
                 and Permissions.MANAGE_2FA not in user.all_permissions
             ):
                 handler.conclude_request(
@@ -339,28 +387,40 @@ class RequestGet2FAStatusHandler(RequestHandler):
                     data={},
                 )
                 return Result(
-                    code=403, target=target_username, username=handler.username
+                    code=403, target=str(target_user_id), user_id=handler.user_id
                 )
 
-            target = session.get(User, target_username)
+            target = session.get(User, target_user_id)
             if not target:
                 handler.conclude_request(
                     code=404,
                     message="Target user not found",
                     data={},
                 )
-                return
+                return Result(
+                    code=404, target=str(target_user_id), user_id=handler.user_id
+                )
 
+            credential = session.get(UserTotpCredential, target.id)
+            enabled = auth_registry.user_requires_mfa(session, target)
+            methods = auth_registry.get_user_mfa_methods(session, target)
             handler.conclude_request(
                 code=200,
                 message="Two-factor authentication status",
                 data={
-                    "enabled": target.totp_enabled,
-                    "method": "totp" if target.totp_enabled else None,
+                    "enabled": enabled,
+                    "method": methods[0] if len(methods) == 1 else None,
+                    "methods": methods,
                     "backup_codes_count": (
-                        len(orjson.loads(target.totp_backup_codes))
-                        if target.totp_backup_codes
+                        len(orjson.loads(credential.backup_codes))
+                        if credential is not None and credential.backup_codes
                         else 0
                     ),
                 },
+            )
+            return Result(
+                code=200,
+                target=str(target_user_id),
+                data={"target_username": target.username},
+                user_id=handler.user_id,
             )

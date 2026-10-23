@@ -1,5 +1,6 @@
 import math
 import threading
+import uuid
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, cast
@@ -96,10 +97,10 @@ def record_ip_account(
     session: Session,
     namespace: str,
     ip_address: str,
-    username: str,
+    user_id: uuid.UUID,
     now: float,
 ) -> None:
-    identity = (namespace, ip_address, username)
+    identity = (namespace, ip_address, user_id)
     row = session.get(RiskIPAccount, identity)
     if row is not None:
         row.last_attempt = now
@@ -110,7 +111,7 @@ def record_ip_account(
                 RiskIPAccount(
                     namespace=namespace,
                     ip_address=ip_address,
-                    username=username,
+                    user_id=user_id,
                     last_attempt=now,
                 )
             )
@@ -123,7 +124,7 @@ def record_ip_account(
                 .where(
                     RiskIPAccount.namespace == namespace,
                     RiskIPAccount.ip_address == ip_address,
-                    RiskIPAccount.username == username,
+                    RiskIPAccount.user_id == user_id,
                 )
                 .values(last_attempt=now)
             ),
@@ -140,7 +141,7 @@ def count_ip_accounts(
 ) -> int:
     return int(
         session.scalar(
-            select(func.count(RiskIPAccount.username)).where(
+            select(func.count(RiskIPAccount.user_id)).where(
                 RiskIPAccount.namespace == namespace,
                 RiskIPAccount.ip_address == ip_address,
                 RiskIPAccount.last_attempt >= cutoff,

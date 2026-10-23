@@ -17,6 +17,7 @@ lazy from sqlalchemy.sql.elements import ColumnElement
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
 lazy from include.config.validation import AuditRetentionPolicy
+lazy from include.database.models.identity import User
 lazy from include.database.models.operations import AuditEntry
 lazy from include.database.session import Session
 
@@ -24,7 +25,7 @@ _SECONDS_PER_DAY = 24 * 60 * 60
 _AUDIT_COLUMNS = (
     "id",
     "action",
-    "username",
+    "user_id",
     "target",
     "data",
     "result",
@@ -109,7 +110,7 @@ def inspect_audit_entries(selection: AuditSelection) -> AuditInspectionResult:
     enter_server_root()
     load_database_models()
 
-    table = AuditEntry.__table__
+    table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     conditions = _selection_conditions(table, selection)
     try:
         with Session() as session:
@@ -155,7 +156,7 @@ def export_audit_entries(
     load_database_models()
 
     policy = AuditRetentionPolicy.from_config()
-    table = AuditEntry.__table__
+    table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     output = Path(output_path)
     if output.exists():
         raise MaintenanceOperationError(f"Audit export already exists: {output}")
@@ -233,7 +234,7 @@ def purge_audit_entries(
         )
 
     policy = AuditRetentionPolicy.from_config()
-    table = AuditEntry.__table__
+    table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     deleted_count = 0
     pending_ids: list[str] = []
     try:
@@ -290,13 +291,18 @@ def _selection_conditions(
     conditions = [table.c.logged_time < selection.cutoff]
     for column_name, values in (
         ("action", selection.actions),
-        ("username", selection.usernames),
         ("target", selection.targets),
         ("result", selection.results),
         ("remote_address", selection.remote_addresses),
     ):
         if values:
             conditions.append(table.c[column_name].in_(values))
+    if selection.usernames:
+        conditions.append(
+            table.c.user_id.in_(
+                select(User.id).where(User.username.in_(selection.usernames))
+            )
+        )
     return tuple(conditions)
 
 

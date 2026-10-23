@@ -1,6 +1,7 @@
 import secrets
 import sys
 import time
+import uuid
 from enum import IntEnum
 
 from loguru import logger as log
@@ -253,9 +254,8 @@ class FileTask(Base):
     start_time: Mapped[float] = mapped_column(Double, nullable=False)
     end_time: Mapped[float | None] = mapped_column(Double, nullable=True)
 
-    issued_by_username: Mapped[str | None] = mapped_column(
-        VARCHAR(256),
-        ForeignKey("users.username", ondelete="SET NULL"),
+    issued_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
 

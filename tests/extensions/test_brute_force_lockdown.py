@@ -160,8 +160,6 @@ def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
             session.add_all(
                 User(
                     username=username,
-                    pass_hash="unused",
-                    passwd_last_modified=0.0,
                     created_time=0.0,
                 )
                 for username in ("alice", "bob")
@@ -418,7 +416,7 @@ def test_detector_cancels_file_tasks_and_audits_once(detector_context):
         ).one()
         assert automatic_audit.result == 0
         assert automatic_audit.logged_time == 1000.0
-        assert automatic_audit.username is None
+        assert automatic_audit.user_id is None
         assert automatic_audit.target is None
         assert automatic_audit.remote_address is None
         assert automatic_audit.data == {

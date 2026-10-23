@@ -2,10 +2,95 @@ import datetime as dt
 import hashlib
 import io
 import tarfile
+import uuid
 
 import pytest
+from sqlalchemy import Column, DateTime, MetaData, Table, Uuid
+
+from maintenance.backup.models import BackupFormatError
+from maintenance.backup.rows import _decode_row
+from maintenance.backup.selection import _backup_tables
 
 pytestmark = pytest.mark.component
+
+
+@pytest.mark.parametrize("value", ["not-a-uuid", 42, [], {}])
+def test_backup_rejects_invalid_user_id(backup_context, value):
+    table = backup_context.Base.metadata.tables["user_passwords"]
+    with pytest.raises(backup_context.BackupFormatError, match="Invalid UUID"):
+        backup_context.backup_core._decode_row({"user_id": value}, table)
+
+
+def test_backup_round_trips_native_user_id(backup_context):
+    from maintenance.backup.format import _serialize_value
+
+    user_id = uuid.uuid4()
+    table = backup_context.Base.metadata.tables["user_passwords"]
+    decoded = backup_context.backup_core._decode_row(
+        {"user_id": _serialize_value(user_id)}, table
+    )
+    assert decoded["user_id"] == user_id
+
+
+@pytest.mark.parametrize("timestamp", [None, "2026-10-23T10:00:00+00:00"])
+def test_backup_decodes_uuid_and_datetime_columns_independently(timestamp):
+    table = Table(
+        "example_records",
+        MetaData(),
+        Column("id", Uuid, primary_key=True),
+        Column("created_at", DateTime(timezone=True)),
+    )
+    user_id = uuid.uuid4()
+
+    decoded = _decode_row({"id": str(user_id), "created_at": timestamp}, table)
+
+    assert decoded == {
+        "id": user_id,
+        "created_at": (
+            None if timestamp is None else dt.datetime(2026, 10, 23, 10, tzinfo=dt.UTC)
+        ),
+    }
+
+
+@pytest.mark.parametrize("value", ["invalid-date", 42, [], {}])
+def test_backup_rejects_invalid_datetime(value):
+    table = Table(
+        "example_records",
+        MetaData(),
+        Column("id", Uuid, primary_key=True),
+        Column("created_at", DateTime(timezone=True)),
+    )
+    with pytest.raises(BackupFormatError, match="Invalid datetime"):
+        _decode_row({"id": str(uuid.uuid4()), "created_at": value}, table)
+
+
+def test_backup_decodes_public_key_bytes_with_native_user_id(backup_context):
+    user_id = uuid.uuid4()
+    table = backup_context.Base.metadata.tables["user_auth_public_keys"]
+
+    decoded = _decode_row(
+        {
+            "id": "key",
+            "user_id": str(user_id),
+            "public_key_der": "010203",
+            "fingerprint": "ab" * 32,
+        },
+        table,
+    )
+
+    assert decoded["user_id"] == user_id
+    assert decoded["public_key_der"] == b"\x01\x02\x03"
+    assert decoded["fingerprint"] == b"\xab" * 32
+
+
+@pytest.mark.parametrize("fingerprint", ["zz", "00", 42, []])
+def test_backup_rejects_invalid_public_key_fingerprint(backup_context, fingerprint):
+    table = backup_context.Base.metadata.tables["user_auth_public_keys"]
+    with pytest.raises(backup_context.BackupFormatError, match="Invalid public key"):
+        backup_context.backup_core._decode_row(
+            {"id": "key", "user_id": str(uuid.uuid4()), "fingerprint": fingerprint},
+            table,
+        )
 
 
 def test_legacy_banned_subnet_times_are_upgraded(backup_context):
@@ -387,3 +472,19 @@ def test_runtime_state_tables_are_excluded(backup_context):
     assert "schedule_executions" in excluded
     assert "scheduling_runtime_state" in excluded
     assert "system_states" in excluded
+
+
+@pytest.mark.parametrize("digest", ["not-hex", "00" * 32, 42])
+def test_backup_rejects_oidc_binding_digest_mismatch(backup_context, digest):
+    table = _backup_tables()["user_oidc_credentials"]
+    with pytest.raises(backup_context.BackupFormatError, match="OIDC identity digest"):
+        backup_context.backup_core._decode_row(
+            {
+                "id": "binding",
+                "user_id": str(uuid.uuid4()),
+                "issuer": "https://issuer.example",
+                "subject": "subject",
+                "identity_digest": digest,
+            },
+            table,
+        )

@@ -50,8 +50,8 @@ class TestDocumentOperations:
         info = assert_success(info_response)
         assert info["metadata"] == {
             "tags": [],
-            "creator": "admin",
-            "last_modified_by": "admin",
+            "creator": authenticated_client.user_id,
+            "last_modified_by": authenticated_client.user_id,
         }
 
         set_response = await authenticated_client.set_document_tags(
@@ -64,8 +64,8 @@ class TestDocumentOperations:
         info_response = await authenticated_client.get_document_info(document_id)
         info = assert_success(info_response)
         assert info["metadata"]["tags"] == ["secret", "finance", "topic"]
-        assert info["metadata"]["creator"] == "admin"
-        assert info["metadata"]["last_modified_by"] == "admin"
+        assert info["metadata"]["creator"] == authenticated_client.user_id
+        assert info["metadata"]["last_modified_by"] == authenticated_client.user_id
 
     @pytest.mark.asyncio
     async def test_get_document_info_omits_metadata_without_permission(
@@ -84,7 +84,7 @@ class TestDocumentOperations:
         user = await user_factory()
         grant_response = await authenticated_client.grant_access(
             entity_type="user",
-            entity_identifier=user["username"],
+            entity_identifier=user["user_id"],
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
@@ -125,7 +125,7 @@ class TestDocumentOperations:
         try:
             grant_response = await authenticated_client.grant_access(
                 entity_type="user",
-                entity_identifier=username,
+                entity_identifier=response["data"]["user_id"],
                 target_type="document",
                 target_identifier=document_id,
                 access_types=["write"],
@@ -144,7 +144,7 @@ class TestDocumentOperations:
             finally:
                 await client.disconnect()
         finally:
-            await authenticated_client.delete_user(username)
+            await authenticated_client.delete_user(response["data"]["user_id"])
 
     @pytest.mark.asyncio
     async def test_rename_document(

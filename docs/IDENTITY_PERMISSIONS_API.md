@@ -64,7 +64,7 @@ For example:
 {
   "action": "change_user_permissions",
   "data": {
-    "username": "alice",
+    "user_id": "aabbccdd-0000-4000-8000-000000000001",
     "permissions": [
       {
         "permission": "list_users",
@@ -86,6 +86,10 @@ For example:
 Each change action is a complete replacement. Omitting an existing entry from
 the submitted list deletes that entry. Strings, missing fields, unknown fields,
 wrong JSON types, and reversed time windows return `400`.
+
+Since protocol 28, `change_user_permissions` requires the account's `user_id`.
+Obtain it from `create_user`, `list_users`, or `get_user_info`; see
+[account identity](USER_IDS.md#protocol-28-user-management).
 
 ## Read actions
 

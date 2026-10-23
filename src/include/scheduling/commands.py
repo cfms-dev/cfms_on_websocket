@@ -4,6 +4,7 @@ Every function receiving a SQLAlchemy session participates in the caller's
 transaction.  It never commits, rolls back, closes, or replaces that session.
 """
 
+import uuid
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, select, update
@@ -48,7 +49,7 @@ def create_schedule(
     session: OrmSession,
     registry: ScheduledTaskRegistry,
     *,
-    username: str,
+    user_id: uuid.UUID,
     task_name: str,
     payload: dict[str, Any],
     trigger_type: str,
@@ -77,9 +78,9 @@ def create_schedule(
         timezone=timezone,
         enabled=enabled,
         next_run_at=first_run_at(trigger, current_time),
-        created_by=username,
+        created_by=user_id,
         created_at=current_time,
-        updated_by=username,
+        updated_by=user_id,
         updated_at=current_time,
     )
     session.add(schedule)
@@ -94,7 +95,7 @@ def update_schedule(
     expected_revision: int,
     changes: dict[str, Any],
     *,
-    username: str,
+    user_id: uuid.UUID,
     now: float | None = None,
 ) -> Schedule:
     """Apply validated changes to a quiescent schedule using optimistic concurrency.
@@ -153,7 +154,7 @@ def update_schedule(
         "status": "active",
         "next_run_at": next_run_at,
         "pending_scheduled_for": None,
-        "updated_by": username,
+        "updated_by": user_id,
         "updated_at": current_time,
         "revision": expected_revision + 1,
     }
@@ -227,7 +228,7 @@ def delete_schedule(
     schedule_id: str,
     expected_revision: int,
     *,
-    username: str,
+    user_id: uuid.UUID,
     now: float | None = None,
 ) -> None:
     """Logically delete a user schedule at the expected revision.
@@ -248,7 +249,7 @@ def delete_schedule(
     schedule.next_run_at = None
     schedule.pending_scheduled_for = None
     schedule.revision = expected_revision + 1
-    schedule.updated_by = username
+    schedule.updated_by = user_id
     schedule.updated_at = current_time
     schedule.deleted_at = current_time
     cancel_unstarted_schedule_execution(
@@ -289,8 +290,8 @@ def schedule_response(
         "next_run_at": schedule.next_run_at,
         "active_execution_id": schedule.active_execution_id,
         "pending_scheduled_for": schedule.pending_scheduled_for,
-        "created_by": schedule.created_by,
+        "created_by": str(schedule.created_by) if schedule.created_by else None,
         "created_at": schedule.created_at,
-        "updated_by": schedule.updated_by,
+        "updated_by": str(schedule.updated_by) if schedule.updated_by else None,
         "updated_at": schedule.updated_at,
     }

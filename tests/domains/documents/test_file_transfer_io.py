@@ -271,11 +271,7 @@ def test_exact_chunk_upload_marks_file_task_completed(
         assert file.size == len(payload)
 
     sent_messages = _sent_json_messages(stream)
-    assert any(
-        message.get("code") == 200
-        and message.get("message") == "File received successfully"
-        for message in sent_messages
-    )
+    assert any(message.get("code") == 200 for message in sent_messages)
 
 
 @pytest.mark.component

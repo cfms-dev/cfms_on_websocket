@@ -50,14 +50,21 @@ from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
 from include.domains.documents.file_task_signals import on_file_task_event
+from include.domains.identity.auth.registry import auth_registry
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.request_rate_control import (
     validate_handler_rate_limit_costs,
 )
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
+from include.extensions.data import (
+    extension_metadata,
+    load_extension_data,
+    prepare_extension_tables,
+)
 from include.extensions.manager import (
     collect_scheduled_tasks,
+    get_loaded_extension_metadata,
     load_extensions_from_directory,
     pm,
 )
@@ -343,6 +350,10 @@ def prepare_handlers():
     It also populates the `whitelisted_functions` list with actions that are
     allowed even during lockdown.
     """
+    for providers in pm.hook.ext_register_auth_methods():
+        for provider in providers:
+            auth_registry.register(provider)
+
     if global_config["debug"]:  # Debugging
         available_functions["throw_exception"] = RequestThrowExceptionHandler
 
@@ -393,6 +404,7 @@ def prepare_logger():
         sys.stderr,
         level="INFO",
         format=fmt,
+        diagnose=False,
     )
     logger.add(
         log_file,
@@ -402,6 +414,7 @@ def prepare_logger():
         retention="1 week",
         compression="zip",
         enqueue=True,
+        diagnose=False,
     )
 
 
@@ -476,6 +489,19 @@ def _run_server():
         get_enabled_extensions(global_config),
         config=global_config,
     )
+
+    declarations = load_extension_data(Base.metadata)
+    enabled_owners = {entry.identifier for entry in get_loaded_extension_metadata()}
+    with engine.begin() as connection:
+        prepare_extension_tables(
+            connection,
+            extension_metadata(Base.metadata, declarations),
+            {
+                name
+                for name, entry in declarations.items()
+                if entry.owner in enabled_owners
+            },
+        )
 
     # Initialize available request handlers
     prepare_handlers()

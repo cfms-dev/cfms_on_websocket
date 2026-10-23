@@ -1,6 +1,7 @@
 __all__ = [
     "DiscoveredExtension",
     "ExtensionCompatibility",
+    "ExtensionDataEntrypoint",
     "ExtensionDependencies",
     "ExtensionDiscoveryError",
     "ExtensionLoadError",
@@ -44,6 +45,7 @@ lazy from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import CORE_VERSION
 from include.config.version import Version
+lazy from include.domains.identity.auth.base import BaseAuthMethodProvider
 lazy from include.extensions.identifiers import ExtensionIdentifier
 lazy from include.scheduling.contracts import ScheduledTaskRegistration
 lazy from include.scheduling.registry import ScheduledTaskRegistry
@@ -138,6 +140,19 @@ class ExtensionDependencies(BaseModel):
         return value
 
 
+class ExtensionDataEntrypoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    module: str
+
+    @field_validator("module")
+    @classmethod
+    def validate_module(cls, value: str) -> str:
+        if not value or not all(part.isidentifier() for part in value.split(".")):
+            raise ValueError("data.module must be an importable dotted module name")
+        return value
+
+
 class ExtensionManifest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -146,6 +161,7 @@ class ExtensionManifest(BaseModel):
     )
 
     manifest_version: Literal[2, 3]
+    data: ExtensionDataEntrypoint | None = None
     extension: ExtensionMetadata
     compatibility: ExtensionCompatibility = Field(
         default_factory=ExtensionCompatibility
@@ -307,6 +323,11 @@ class ServerHookSpecs(ABC):
         self,
     ) -> tuple["ScheduledTaskRegistration[Any]", ...]:
         """Register trusted scheduled task types owned by this extension."""
+
+    @hookspec
+    @abstractmethod
+    def ext_register_auth_methods(self) -> list["BaseAuthMethodProvider"]:
+        """Register custom authentication method providers owned by extensions."""
 
     @hookspec
     @abstractmethod

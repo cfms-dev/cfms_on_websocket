@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 pytestmark = pytest.mark.component
@@ -50,7 +51,7 @@ def test_permission_entries_survive_reload_and_respect_time_windows(
                 ),
             ]
         )
-        user = User(username="alice", pass_hash="hash", created_time=now)
+        user = User(username="alice", created_time=now)
         user.rights.extend(
             [
                 UserPermission(
@@ -89,7 +90,7 @@ def test_permission_entries_survive_reload_and_respect_time_windows(
         session.add_all([group, user])
 
     with test_session() as session:
-        user = session.get(User, "alice")
+        user = session.scalar(select(User).where(User.username == "alice"))
         group = session.get(UserGroup, "staff")
 
         assert user is not None
@@ -104,7 +105,7 @@ def test_permission_entries_survive_reload_and_respect_time_windows(
         session.commit()
 
     with test_session() as session:
-        user = session.get(User, "alice")
+        user = session.scalar(select(User).where(User.username == "alice"))
         assert user is not None
         assert len(user.rights) == 4
         assert any(not entry.granted for entry in user.rights)

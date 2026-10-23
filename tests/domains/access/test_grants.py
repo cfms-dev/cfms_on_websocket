@@ -9,17 +9,12 @@ def _make_user(models, session, *, username="alice", memberships=()):
     created_at = time.time()
     user = models.User(
         username=username,
-        pass_hash="hash",
-        passwd_last_modified=created_at,
         nickname=username,
         avatar_id=None,
         last_login=None,
         created_time=created_at,
         status=0,
         secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     for group_name, start_time, end_time in memberships:
@@ -31,7 +26,7 @@ def _make_user(models, session, *, username="alice", memberships=()):
                 )
             )
         membership = models.UserMembership(
-            username=username,
+            user=user,
             group_name=group_name,
             start_time=start_time,
             end_time=None,
@@ -148,7 +143,7 @@ def test_direct_user_grant_still_matches(access_rule_session):
         models,
         session,
         entity_type="user",
-        entity_identifier=user.username,
+        entity_identifier=str(user.id),
     )
 
     assert _granted_ids(session, user) == {"folder"}

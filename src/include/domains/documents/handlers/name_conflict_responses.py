@@ -20,5 +20,5 @@ def respond_to_node_name_conflict(
         code=409,
         target=target,
         data=result_data,
-        username=handler.username,
+        user_id=handler.user_id,
     )

@@ -67,7 +67,7 @@ def _component_versions() -> dict[str, str]:
     }
 
 
-class RequestServerInfoHandler(RequestHandler):
+class RequestServerInfoHandler(RequestHandler[EmptyRequestDataModel]):
     """
     Handle the 'server_info' action to return server information.
 
@@ -93,17 +93,17 @@ class RequestServerInfoHandler(RequestHandler):
         )
 
 
-class RequestDiagnosticsHandler(RequestHandler):
+class RequestDiagnosticsHandler(RequestHandler[EmptyRequestDataModel]):
     request_model = EmptyRequestDataModel
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             if Permissions.DIAGNOSTICS not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=None, username=handler.username)
+                return Result(code=403, target=None, user_id=handler.user_id)
 
         lockdown_state = lockdown_state_manager.get_state()
         provider_config = global_config["provider"]
@@ -158,10 +158,10 @@ class RequestDiagnosticsHandler(RequestHandler):
         handler.conclude_request(
             200, diagnostics, "Server diagnostics retrieved successfully"
         )
-        return Result(code=0, target=None, username=handler.username)
+        return Result(code=0, target=None, user_id=handler.user_id)
 
 
-class RequestShutdownHandler(RequestHandler):
+class RequestShutdownHandler(RequestHandler[EmptyRequestDataModel]):
     """
     Handle the 'shutdown' action to gracefully shut down the server.
 
@@ -170,13 +170,13 @@ class RequestShutdownHandler(RequestHandler):
     """
 
     request_model = EmptyRequestDataModel
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.SHUTDOWN not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)

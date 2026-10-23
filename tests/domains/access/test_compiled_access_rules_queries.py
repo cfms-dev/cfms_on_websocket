@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 
 from tests.domains.access.support import _make_access_rule_user, _make_rule_user
 
@@ -171,7 +171,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
     session.flush()
 
     block = models.UserBlockEntry(
-        username=user.username,
+        user=user,
         timestamp=time.time(),
         not_before=0.0,
         not_after=-1,
@@ -191,7 +191,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
 
     expired_entry = models.ObjectAccessEntry(
         entity_type="user",
-        entity_identifier=user.username,
+        entity_identifier=str(user.id),
         target_type="directory",
         target_identifier=child.id,
         access_type="read",
@@ -208,7 +208,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
 
     active_entry = models.ObjectAccessEntry(
         entity_type="user",
-        entity_identifier=user.username,
+        entity_identifier=str(user.id),
         target_type="directory",
         target_identifier=child.id,
         access_type="read",
@@ -240,7 +240,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
     group = models.UserGroup(group_name="context-group", group_display_name="Context")
     user.groups.append(
         models.UserMembership(
-            username=user.username,
+            user=user,
             group_name=group.group_name,
             start_time=0.0,
             end_time=None,
@@ -334,7 +334,9 @@ def test_folder_access_context_reuses_queries_across_depth(access_rule_session):
 
     def direct_statement_count(folder_id: str) -> int:
         session.expire_all()
-        direct_user = session.get(models.User, "alice")
+        direct_user = session.scalar(
+            select(models.User).where(models.User.username == "alice")
+        )
         folder = session.get(models.Folder, folder_id)
         assert direct_user is not None
         assert folder is not None

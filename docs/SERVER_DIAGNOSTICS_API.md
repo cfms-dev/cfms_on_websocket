@@ -14,7 +14,6 @@ response is returned before the diagnostics permission check.
 ```json
 {
   "action": "diagnostics",
-  "username": "admin",
   "token": "<token>",
   "nonce": "<unique nonce>",
   "timestamp": 1786600000,
@@ -30,7 +29,7 @@ response is returned before the diagnostics permission check.
   "server": {
     "server_name": "CFMS WebSocket Server",
     "core_version": "0.5.0.260812_alpha",
-    "protocol_version": 27,
+    "protocol_version": 30,
     "debug_configured": false
   },
   "runtime": {

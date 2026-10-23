@@ -428,9 +428,7 @@ def _seed_other_references(session, file_ids, revisions, *, avatars=(), tasks=()
         for document_id, file_id in revisions
     )
     session.add_all(
-        models.User(
-            username=username, pass_hash="hash", created_time=0, avatar_id=file_id
-        )
+        models.User(username=username, created_time=0, avatar_id=file_id)
         for username, file_id in avatars
     )
     session.add_all(

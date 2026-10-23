@@ -19,24 +19,22 @@ from include.config.paths import EXECUTABLE_ABSPATH
 from include.database.models.documents import DocumentMetadata
 from include.database.models.identity import User
 from include.database.models.security import AccountThrottle
-from include.domains.identity.handlers.auth import RequestLoginHandler
+from include.domains.identity.auth.providers.password import PasswordCredentialSchema
+from include.domains.identity.auth.providers.publickey import PublicKeyLoginRequest
 from include.domains.identity.handlers.users import (
     RequestCreateUserHandler,
     RequestSetPasswdHandler,
 )
-from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
 from pydantic import ValidationError
 
 assert EXECUTABLE_ABSPATH == Path.cwd()
 
 handler_payloads = (
-    (RequestLoginHandler, {"username": "u", "password": "secret"}),
     (RequestCreateUserHandler, {"username": "u", "password": "secret"}),
     (
         RequestSetPasswdHandler,
-        {"username": "u", "new_passwd": "secret"},
+        {"username": "u", "old_passwd": "old-secret", "new_passwd": "secret"},
     ),
-    (RequestDisable2FAHandler, {"username": "u"}),
 )
 for handler_type, payload in handler_payloads:
     handler_type.request_model.model_validate(
@@ -51,11 +49,21 @@ for handler_type, payload in handler_payloads:
     else:
         raise AssertionError(f"{handler_type.__name__} accepted an oversized username")
 
+for schema, credential in (
+    (PasswordCredentialSchema, {"password": "secret"}),
+    (PublicKeyLoginRequest, {"fingerprint": "f" * 64}),
+):
+    schema.model_validate(credential | {"username": "u" * USERNAME_MAX_LENGTH})
+    try:
+        schema.model_validate(credential | {"username": "u" * (USERNAME_MAX_LENGTH + 1)})
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError(f"{schema.__name__} accepted an oversized username")
+
 username_columns = (
     User.__table__.c.username,
     AccountThrottle.__table__.c.username,
-    DocumentMetadata.__table__.c.creator_username,
-    DocumentMetadata.__table__.c.last_modified_by_username,
 )
 for column in username_columns:
     assert column.type.length == USERNAME_DATABASE_MAX_LENGTH

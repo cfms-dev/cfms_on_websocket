@@ -29,10 +29,10 @@ from maintenance.backup.selection import (
     BACKUP_TABLE_NAMES,
     COMPILED_ACCESS_RULE_TABLE_NAMES,
     EXCLUDED_TABLE_NAMES,
-    INSERT_ORDER,
     LEGACY_ACCESS_RULE_TABLE_NAMES,
     BackupComponent,
     BackupExportSelection,
+    _backup_tables,
     _selected_table_names,
 )
 lazy from include.providers.base import StorageProvider
@@ -85,16 +85,23 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
         raise BackupFormatError(f"Unsupported payload format version: {format_version}")
     table_names: set[str] = set(tables)
     expected: set[str] = set(BACKUP_TABLE_NAMES)
+    registered_tables = set(_backup_tables())
+    extension_tables = registered_tables - expected
     compiled_access_rule_tables = set(COMPILED_ACCESS_RULE_TABLE_NAMES)
     legacy_access_rule_tables = set(LEGACY_ACCESS_RULE_TABLE_NAMES)
     previous_compiled_expected = expected - {"compiled_access_rule_sets"}
     legacy_expected = (
         expected - compiled_access_rule_tables
     ) | legacy_access_rule_tables
-    # Schedules were added without changing the backup format version, so full
-    # backups created before that table existed remain compatible.
-    compatible_table_names = table_names | {"schedules"}
-    unknown_tables = table_names - expected - legacy_access_rule_tables
+    # Full archives predating scheduling or separate credentials keep their format.
+    compatible_table_names = (table_names - extension_tables) | {
+        "schedules",
+        "user_auth_policies",
+        "user_passwords",
+        "user_totp_credentials",
+        "user_auth_public_keys",
+    }
+    unknown_tables = table_names - registered_tables - legacy_access_rule_tables
     if unknown_tables:
         raise BackupFormatError(
             f"Backup table set contains unsupported tables: {sorted(unknown_tables)}"
@@ -226,7 +233,9 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
 
 def _manifest_table_names(manifest: dict[str, Any]) -> tuple[str, ...]:
     table_names = set(manifest.get("tables", {}))
-    return tuple(table_name for table_name in INSERT_ORDER if table_name in table_names)
+    return tuple(
+        table_name for table_name in _backup_tables() if table_name in table_names
+    )
 
 
 def _manifest_includes_configuration(manifest: dict[str, Any]) -> bool:
@@ -258,13 +267,14 @@ def _safe_extract_tar_xz(source_path: Path, target_dir: Path) -> None:
         lzma.open(source_path, "rb") as compressed,
         tarfile.open(fileobj=compressed, mode="r|") as tar,
     ):
+        member_limit = MAX_BACKUP_FILES + len(_backup_tables()) + 1
         member_count = 0
         declared_size = 0
         extracted_size = 0
         extracted_paths: set[Path] = set()
         for member in tar:
             member_count += 1
-            if member_count > MAX_BACKUP_FILES + len(BACKUP_TABLE_NAMES) + 1:
+            if member_count > member_limit:
                 raise BackupFormatError("Backup archive contains too many members")
             LOGGER.debug("Extracting archive member %s", member.name)
             target_path = _safe_payload_path(target_dir, member.name)

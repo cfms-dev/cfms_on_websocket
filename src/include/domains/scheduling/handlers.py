@@ -1,5 +1,6 @@
 """WebSocket management actions for the core scheduled-task domain."""
 
+import uuid
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, StringConstraints
@@ -100,7 +101,7 @@ class _DeleteScheduleRequest(RequestDataModel):
     revision: ScheduleRevision
 
 
-def _provider_error(handler: ConnectionHandler, username: str) -> Result | None:
+def _provider_error(handler: ConnectionHandler, user_id: uuid.UUID) -> Result | None:
     """Return a safe 503 response when the configured runtime is degraded."""
 
     status = ProviderManager().scheduling.status()
@@ -111,24 +112,26 @@ def _provider_error(handler: ConnectionHandler, username: str) -> Result | None:
         {"provider": status.mode, "status": "degraded"},
         "Scheduling provider is unavailable",
     )
-    return Result(code=503, username=username)
+    return Result(code=503, user_id=user_id)
 
 
-def _permissions(username: str, session: OrmSession | None = None) -> set[Permissions]:
+def _permissions(
+    user_id: uuid.UUID, session: OrmSession | None = None
+) -> set[Permissions]:
     """Read effective permissions, optionally inside the mutation transaction."""
 
     if session is not None:
-        return User.get_existing(session, username).all_permissions
+        return User.get_existing(session, user_id).all_permissions
 
     with Session() as session:  # noqa: PLR1704
-        return User.get_existing(session, username).all_permissions
+        return User.get_existing(session, user_id).all_permissions
 
 
-def _deny(handler: ConnectionHandler, username: str) -> Result:
+def _deny(handler: ConnectionHandler, user_id: uuid.UUID) -> Result:
     """Emit the uniform scheduling permission-denied response."""
 
     handler.conclude_request(403, {}, "Permission denied")
-    return Result(code=403, username=username)
+    return Result(code=403, user_id=user_id)
 
 
 def _task_permission_allowed(
@@ -144,20 +147,21 @@ def _task_permission_allowed(
     )
 
 
-class RequestListScheduledTaskTypesHandler(RequestHandler):
+class RequestListScheduledTaskTypesHandler(RequestHandler[EmptyRequestDataModel]):
     """List task contracts the authenticated principal is allowed to schedule."""
 
     request_model = EmptyRequestDataModel
-    require_auth = True
+    requires_auth = True
 
     def handle(self, handler: ConnectionHandler):
         """Filter task registrations by view and task-specific permissions."""
 
-        if error := _provider_error(handler, handler.username):
+        assert handler.user_id is not None
+        if error := _provider_error(handler, handler.user_id):
             return error
-        permissions = _permissions(handler.username)
+        permissions = _permissions(handler.user_id)
         if Permissions.VIEW_SCHEDULES not in permissions:
-            return _deny(handler, handler.username)
+            return _deny(handler, handler.user_id)
         registry = collect_scheduled_tasks()
         items = [
             {
@@ -172,36 +176,37 @@ class RequestListScheduledTaskTypesHandler(RequestHandler):
             and registration.required_permission in permissions
         ]
         handler.conclude_request(200, {"items": items}, "Scheduled task types listed")
-        return Result(code=0, data={"count": len(items)}, username=handler.username)
+        return Result(code=0, data={"count": len(items)}, user_id=handler.user_id)
 
 
-class RequestCreateScheduleHandler(RequestHandler):
+class RequestCreateScheduleHandler(RequestHandler[_CreateScheduleRequest]):
     """Validate, authorize, and persist a new user-managed schedule."""
 
     request_model = _CreateScheduleRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         """Create a schedule transactionally, then wake the active Provider."""
 
-        if error := _provider_error(handler, handler.username):
+        assert handler.user_id is not None
+        if error := _provider_error(handler, handler.user_id):
             return error
-        permissions = _permissions(handler.username)
+        permissions = _permissions(handler.user_id)
         registry = collect_scheduled_tasks()
         task_name = handler.data["task_name"]
         if (
             Permissions.MANAGE_SCHEDULES not in permissions
             or not _task_permission_allowed(permissions, task_name, registry)
         ):
-            return _deny(handler, handler.username)
+            return _deny(handler, handler.user_id)
         trigger = handler.data["trigger"]
         try:
             with Session() as session, session.begin():
                 schedule = create_schedule(
                     session,
                     registry,
-                    username=handler.username,
+                    user_id=handler.user_id,
                     task_name=task_name,
                     payload=handler.data["payload"],
                     trigger_type=trigger["type"],
@@ -212,30 +217,31 @@ class RequestCreateScheduleHandler(RequestHandler):
                 response = schedule_response(schedule, registry)
         except (LookupError, TriggerValidationError, ValueError) as exc:
             handler.conclude_request(400, {}, str(exc))
-            return Result(code=400, username=handler.username)
+            return Result(code=400, user_id=handler.user_id)
         ProviderManager().scheduling.notify_schedule_change()
         handler.conclude_request(200, response, "Schedule created")
         return Result(
             code=0,
             target=response["id"],
             data={"task_name": task_name},
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
-class RequestGetScheduleHandler(RequestHandler):
+class RequestGetScheduleHandler(RequestHandler[_ScheduleIdRequest]):
     """Return one non-deleted, non-system schedule by ID."""
 
     request_model = _ScheduleIdRequest
-    require_auth = True
+    requires_auth = True
 
     def handle(self, handler: ConnectionHandler):
         """Hide deleted and system-managed rows from direct lookup."""
 
-        if error := _provider_error(handler, handler.username):
+        assert handler.user_id is not None
+        if error := _provider_error(handler, handler.user_id):
             return error
-        if Permissions.VIEW_SCHEDULES not in _permissions(handler.username):
-            return _deny(handler, handler.username)
+        if Permissions.VIEW_SCHEDULES not in _permissions(handler.user_id):
+            return _deny(handler, handler.user_id)
         registry = collect_scheduled_tasks()
         with Session() as session:
             schedule = session.get(Schedule, handler.data["id"])
@@ -245,25 +251,26 @@ class RequestGetScheduleHandler(RequestHandler):
                 or schedule.system_managed
             ):
                 handler.conclude_request(404, {}, "Schedule not found")
-                return Result(code=404, username=handler.username)
+                return Result(code=404, user_id=handler.user_id)
             response = schedule_response(schedule, registry)
         handler.conclude_request(200, response, "Schedule retrieved")
-        return Result(code=0, target=response["id"], username=handler.username)
+        return Result(code=0, target=response["id"], user_id=handler.user_id)
 
 
-class RequestListSchedulesHandler(RequestHandler):
+class RequestListSchedulesHandler(RequestHandler[_ListSchedulesRequest]):
     """List user-managed schedules with signed cursor pagination."""
 
     request_model = _ListSchedulesRequest
-    require_auth = True
+    requires_auth = True
 
     def handle(self, handler: ConnectionHandler):
         """Return one descending page without exposing system-managed rows."""
 
-        if error := _provider_error(handler, handler.username):
+        assert handler.user_id is not None
+        if error := _provider_error(handler, handler.user_id):
             return error
-        if Permissions.VIEW_SCHEDULES not in _permissions(handler.username):
-            return _deny(handler, handler.username)
+        if Permissions.VIEW_SCHEDULES not in _permissions(handler.user_id):
+            return _deny(handler, handler.user_id)
         page_size = get_page_size(handler.data)
         include_deleted = handler.data.get("include_deleted", False)
         filters = {"include_deleted": include_deleted}
@@ -279,7 +286,7 @@ class RequestListSchedulesHandler(RequestHandler):
             )
         except CursorError as exc:
             handler.conclude_request(400, {}, str(exc))
-            return Result(code=400, username=handler.username)
+            return Result(code=400, user_id=handler.user_id)
 
         registry = collect_scheduled_tasks()
         with Session() as session:
@@ -312,20 +319,21 @@ class RequestListSchedulesHandler(RequestHandler):
             cursor_key=lambda item: [item["created_at"], item["id"]],
         )
         handler.conclude_request(200, response, "Schedules listed")
-        return Result(code=0, data={"page_size": page_size}, username=handler.username)
+        return Result(code=0, data={"page_size": page_size}, user_id=handler.user_id)
 
 
-class RequestUpdateScheduleHandler(RequestHandler):
+class RequestUpdateScheduleHandler(RequestHandler[_UpdateScheduleRequest]):
     """Apply an authorized optimistic update to an idle user schedule."""
 
     request_model = _UpdateScheduleRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         """Authorize against locked current state and apply supplied fields."""
 
-        if error := _provider_error(handler, handler.username):
+        assert handler.user_id is not None
+        if error := _provider_error(handler, handler.user_id):
             return error
         registry = collect_scheduled_tasks()
         changes = {
@@ -349,81 +357,82 @@ class RequestUpdateScheduleHandler(RequestHandler):
                     or current.system_managed
                 ):
                     handler.conclude_request(404, {}, "Schedule not found")
-                    return Result(code=404, username=handler.username)
+                    return Result(code=404, user_id=handler.user_id)
                 if current.revision != handler.data["revision"]:
                     raise ScheduleConflictError("Schedule revision is stale")
                 task_name = changes.get("task_name", current.task_name)
-                permissions = _permissions(handler.username, session)
+                permissions = _permissions(handler.user_id, session)
                 if (
                     Permissions.MANAGE_SCHEDULES not in permissions
                     or not _task_permission_allowed(permissions, task_name, registry)
                 ):
-                    return _deny(handler, handler.username)
+                    return _deny(handler, handler.user_id)
                 if not changes:
                     handler.conclude_request(
                         400, {}, "No schedule changes were provided"
                     )
-                    return Result(code=400, username=handler.username)
+                    return Result(code=400, user_id=handler.user_id)
                 schedule = update_schedule(
                     session,
                     registry,
                     handler.data["id"],
                     handler.data["revision"],
                     changes,
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
                 response = schedule_response(schedule, registry)
         except ScheduleNotFoundError:
             handler.conclude_request(404, {}, "Schedule not found")
-            return Result(code=404, username=handler.username)
+            return Result(code=404, user_id=handler.user_id)
         except ScheduleConflictError as exc:
             handler.conclude_request(409, {}, str(exc))
-            return Result(code=409, username=handler.username)
+            return Result(code=409, user_id=handler.user_id)
         except (LookupError, TriggerValidationError, ValueError) as exc:
             handler.conclude_request(400, {}, str(exc))
-            return Result(code=400, username=handler.username)
+            return Result(code=400, user_id=handler.user_id)
         ProviderManager().scheduling.notify_schedule_change()
         handler.conclude_request(200, response, "Schedule updated")
-        return Result(code=0, target=response["id"], username=handler.username)
+        return Result(code=0, target=response["id"], user_id=handler.user_id)
 
 
-class RequestDeleteScheduleHandler(RequestHandler):
+class RequestDeleteScheduleHandler(RequestHandler[_DeleteScheduleRequest]):
     """Logically delete a user schedule without interrupting running work."""
 
     request_model = _DeleteScheduleRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         """Retire a user schedule at the expected revision and wake the Provider."""
 
-        if error := _provider_error(handler, handler.username):
+        assert handler.user_id is not None
+        if error := _provider_error(handler, handler.user_id):
             return error
-        if Permissions.MANAGE_SCHEDULES not in _permissions(handler.username):
-            return _deny(handler, handler.username)
+        if Permissions.MANAGE_SCHEDULES not in _permissions(handler.user_id):
+            return _deny(handler, handler.user_id)
         with Session() as session:
             schedule = session.get(Schedule, handler.data["id"])
             if schedule is not None and schedule.system_managed:
                 handler.conclude_request(404, {}, "Schedule not found")
-                return Result(code=404, username=handler.username)
+                return Result(code=404, user_id=handler.user_id)
         try:
             with Session() as session, session.begin():
                 delete_schedule(
                     session,
                     handler.data["id"],
                     handler.data["revision"],
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
         except ScheduleNotFoundError:
             handler.conclude_request(404, {}, "Schedule not found")
-            return Result(code=404, username=handler.username)
+            return Result(code=404, user_id=handler.user_id)
         except ScheduleConflictError as exc:
             handler.conclude_request(409, {}, str(exc))
-            return Result(code=409, username=handler.username)
+            return Result(code=409, user_id=handler.user_id)
         ProviderManager().scheduling.notify_schedule_change()
         handler.conclude_request(200, {}, "Schedule deleted")
         return Result(
             code=0,
             target=handler.data["id"],
-            username=handler.username,
+            user_id=handler.user_id,
         )

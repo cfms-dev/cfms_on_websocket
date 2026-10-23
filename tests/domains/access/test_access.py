@@ -7,6 +7,7 @@ import time
 import pytest
 
 from tests.support.client import CFMSTestClient
+from tests.support.utils import assert_success
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +37,7 @@ class TestAccessManagement:
         # Grant access to the user for the document
         grant_response = await authenticated_client.grant_access(
             entity_type="user",
-            entity_identifier=test_username,
+            entity_identifier=user_response["data"]["user_id"],
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
@@ -48,7 +49,7 @@ class TestAccessManagement:
 
         # View access entries for the user
         view_response = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=test_username
+            object_type="user", object_identifier=user_response["data"]["user_id"]
         )
         assert view_response["code"] == 200, (
             f"Failed to view access entries: {view_response}"
@@ -61,7 +62,10 @@ class TestAccessManagement:
         entry = entries[0]
         assert "id" in entry, "Access entry missing 'id' field"
         assert entry["entity_type"] == "user"
-        assert entry["entity_identifier"] == test_username
+        target_info = assert_success(
+            await authenticated_client.get_user_info(username=test_username)
+        )
+        assert entry["entity_identifier"] == target_info["user_id"]
         assert entry["target_type"] == "document"
         assert entry["target_identifier"] == document_id
         assert entry["access_type"] == "read"
@@ -76,7 +80,7 @@ class TestAccessManagement:
 
         # Verify the access was revoked
         view_after_revoke = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=test_username
+            object_type="user", object_identifier=user_response["data"]["user_id"]
         )
         assert view_after_revoke["code"] == 200
         entries_after = view_after_revoke["data"]["items"]
@@ -86,7 +90,7 @@ class TestAccessManagement:
 
         # Clean up
         await authenticated_client.delete_document(document_id)
-        await authenticated_client.delete_user(test_username)
+        await authenticated_client.delete_user(user_response["data"]["user_id"])
 
     @pytest.mark.asyncio
     async def test_revoke_nonexistent_entry(self, authenticated_client: CFMSTestClient):
@@ -99,7 +103,7 @@ class TestAccessManagement:
 
     @pytest.mark.asyncio
     async def test_grant_multiple_access_types(
-        self, authenticated_client: CFMSTestClient
+        self, authenticated_client: CFMSTestClient, user_factory
     ):
         """Test granting multiple access types and revoking them individually."""
         # Create a test user
@@ -121,7 +125,7 @@ class TestAccessManagement:
         # Grant multiple access types
         grant_response = await authenticated_client.grant_access(
             entity_type="user",
-            entity_identifier=test_username,
+            entity_identifier=user_response["data"]["user_id"],
             target_type="document",
             target_identifier=document_id,
             access_types=["read", "write"],
@@ -131,19 +135,21 @@ class TestAccessManagement:
 
         # View access entries - should have 2 entries
         view_response = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=test_username
+            object_type="user", object_identifier=user_response["data"]["user_id"]
         )
         assert view_response["code"] == 200
         entries = view_response["data"]["items"]
         assert len(entries) == 2, f"Expected 2 access entries, got {len(entries)}"
 
         first_page_response = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=test_username, page_size=1
+            object_type="user",
+            object_identifier=user_response["data"]["user_id"].upper().replace("-", ""),
+            page_size=1,
         )
         first_page = first_page_response["data"]
         second_page_response = await authenticated_client.view_access_entries(
             object_type="user",
-            object_identifier=test_username,
+            object_identifier=user_response["data"]["user_id"],
             page_size=1,
             cursor=first_page["next_cursor"],
         )
@@ -152,6 +158,15 @@ class TestAccessManagement:
         assert len(second_page["items"]) == 1
         assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
 
+        other = await user_factory()
+        wrong_user = await authenticated_client.view_access_entries(
+            object_type="user",
+            object_identifier=other["user_id"],
+            cursor=first_page["next_cursor"],
+            page_size=1,
+        )
+        assert wrong_user["code"] == 400
+
         # Revoke one access type
         first_entry_id = entries[0]["id"]
         revoke_response = await authenticated_client.revoke_access(first_entry_id)
@@ -159,7 +174,7 @@ class TestAccessManagement:
 
         # Verify only one entry remains
         view_after_revoke = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=test_username
+            object_type="user", object_identifier=user_response["data"]["user_id"]
         )
         assert view_after_revoke["code"] == 200
         entries_after = view_after_revoke["data"]["items"]
@@ -172,7 +187,7 @@ class TestAccessManagement:
         await authenticated_client.revoke_access(remaining_entry_id)
 
         await authenticated_client.delete_document(document_id)
-        await authenticated_client.delete_user(test_username)
+        await authenticated_client.delete_user(user_response["data"]["user_id"])
 
     @pytest.mark.asyncio
     async def test_grant_access_to_group(self, authenticated_client: CFMSTestClient):
@@ -255,7 +270,7 @@ class TestAccessManagement:
         # Grant access to the user for the directory
         grant_response = await authenticated_client.grant_access(
             entity_type="user",
-            entity_identifier=test_username,
+            entity_identifier=user_response["data"]["user_id"],
             target_type="directory",
             target_identifier=directory_id,
             access_types=["read"],
@@ -287,4 +302,4 @@ class TestAccessManagement:
 
         # Clean up
         await authenticated_client.delete_directory(directory_id)
-        await authenticated_client.delete_user(test_username)
+        await authenticated_client.delete_user(user_response["data"]["user_id"])

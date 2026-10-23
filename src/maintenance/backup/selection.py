@@ -14,6 +14,12 @@ from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
 )
+from include.database.models.auth import (
+    UserAuthPolicy,
+    UserAuthPublicKey,
+    UserPasswordCredential,
+    UserTotpCredential,
+)
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -33,9 +39,14 @@ from include.database.models.keyrings import UserKey
 from include.database.models.operations import AuditEntry
 from include.database.models.security import BannedSubnet
 from include.database.session import Base
+from include.extensions.data import load_extension_data
 from maintenance.backup.models import BackupFormatError
 
 _MODEL_IMPORTS = (
+    UserAuthPolicy,
+    UserPasswordCredential,
+    UserTotpCredential,
+    UserAuthPublicKey,
     UserBlockEntry,
     UserBlockSubEntry,
     AuditEntry,
@@ -65,6 +76,10 @@ BACKUP_TABLE_NAMES = (
     "files",
     "comments",
     "users",
+    "user_passwords",
+    "user_totp_credentials",
+    "user_auth_public_keys",
+    "user_auth_policies",
     "user_groups",
     "group_permissions",
     "user_memberships",
@@ -105,35 +120,6 @@ EXCLUDED_TABLE_NAMES = frozenset(
 )
 
 
-INSERT_ORDER = (
-    "files",
-    "comments",
-    "users",
-    "user_groups",
-    "group_permissions",
-    "user_memberships",
-    "user_permissions",
-    "keyrings",
-    "nodes",
-    "folders",
-    "documents",
-    "document_revisions",
-    "document_metadata",
-    "document_metadata_tags",
-    "object_access_entries",
-    "compiled_access_rule_sets",
-    "compiled_access_rules",
-    "compiled_access_rule_groups",
-    "compiled_access_rule_memberships",
-    "compiled_access_rule_rights",
-    "audit_entries",
-    "userblock_entries",
-    "userblock_sub_entries",
-    "banned_subnets",
-    "schedules",
-)
-
-
 class BackupComponent(enum.StrEnum):
     ACCOUNTS = "accounts"
     DOCUMENT_LIBRARY = "documents"
@@ -146,6 +132,10 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
     BackupComponent.ACCOUNTS: (
         "comments",
         "users",
+        "user_passwords",
+        "user_totp_credentials",
+        "user_auth_public_keys",
+        "user_auth_policies",
         "user_groups",
         "group_permissions",
         "user_memberships",
@@ -275,8 +265,13 @@ def _selected_table_names(
         selected.update(BACKUP_COMPONENT_TABLES[component])
     if include_files:
         selected.add("files")
+    selected.update(
+        name
+        for name, entry in load_extension_data(Base.metadata).items()
+        if entry.backup_component in {component.value for component in components}
+    )
     return tuple(
-        table_name for table_name in BACKUP_TABLE_NAMES if table_name in selected
+        table_name for table_name in _backup_tables() if table_name in selected
     )
 
 
@@ -420,4 +415,10 @@ def _backup_tables() -> dict[str, Table]:
     missing = [name for name in BACKUP_TABLE_NAMES if name not in Base.metadata.tables]
     if missing:
         raise BackupFormatError(f"Backup table metadata is missing: {missing}")
-    return {name: Base.metadata.tables[name] for name in BACKUP_TABLE_NAMES}
+    tables = {name: Base.metadata.tables[name] for name in BACKUP_TABLE_NAMES}
+    tables.update(
+        (name, entry.table)
+        for name, entry in load_extension_data(Base.metadata).items()
+        if entry.backup_component is not None
+    )
+    return tables

@@ -1,5 +1,6 @@
 import secrets
 import time
+import uuid
 
 from sqlalchemy import VARCHAR, Double, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,8 +25,8 @@ class UserKey(Base):
     id: Mapped[str] = mapped_column(
         VARCHAR(64), primary_key=True, default=lambda: secrets.token_hex(32)
     )
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE"), nullable=False, index=True
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -39,10 +40,10 @@ class UserKey(Base):
         "User",
         back_populates="keyring",
         overlaps="preference_dek",
-        foreign_keys=[username],
+        foreign_keys=[user_id],
     )
 
     def __repr__(self) -> str:
         return (
-            f"UserKey(id={self.id!r}, username={self.username!r}, label={self.label!r})"
+            f"UserKey(id={self.id!r}, user_id={self.user_id!r}, label={self.label!r})"
         )

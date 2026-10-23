@@ -34,6 +34,7 @@ from include.scheduling.commands import (
     delete_schedule,
     update_schedule,
 )
+from tests.scheduling.conftest import ADMIN_ID
 
 
 class _Payload(BaseModel):
@@ -184,8 +185,8 @@ def _schedule(
                 timezone="UTC",
                 system_managed=system_managed,
                 next_run_at=next_run_at,
-                created_by=None if system_managed else "admin",
-                updated_by=None if system_managed else "admin",
+                created_by=None if system_managed else ADMIN_ID,
+                updated_by=None if system_managed else ADMIN_ID,
             )
         )
 
@@ -451,8 +452,8 @@ def test_updating_terminal_schedule_reactivates_and_enqueues(
                 timezone="UTC",
                 status=terminal_status,
                 next_run_at=None,
-                created_by="admin",
-                updated_by="admin",
+                created_by=ADMIN_ID,
+                updated_by=ADMIN_ID,
             )
         )
 
@@ -466,7 +467,7 @@ def test_updating_terminal_schedule_reactivates_and_enqueues(
                 "trigger_type": "date",
                 "trigger_data": {"run_at": "1970-01-01T00:03:20+00:00"},
             },
-            username="admin",
+            user_id=ADMIN_ID,
             now=100.0,
         )
         assert schedule.status == "active"
@@ -510,8 +511,8 @@ def test_updating_terminal_date_schedule_rejects_recorded_occurrence(
                 timezone="UTC",
                 status="completed",
                 next_run_at=None,
-                created_by="admin",
-                updated_by="admin",
+                created_by=ADMIN_ID,
+                updated_by=ADMIN_ID,
             )
         )
         session.add(
@@ -543,7 +544,7 @@ def test_updating_terminal_date_schedule_rejects_recorded_occurrence(
             "terminal-schedule",
             1,
             {"payload": {"value": 8}},
-            username="admin",
+            user_id=ADMIN_ID,
             now=201.0,
         )
 
@@ -774,8 +775,8 @@ def test_system_schedule_reconciliation_clears_user_attribution(
     scheduling_reconciliation.synchronize_system_schedules(registry, now=100.0)
     with factory() as session, session.begin():
         schedule = session.get(Schedule, "test.system_cleanup")
-        schedule.created_by = "admin"
-        schedule.updated_by = "admin"
+        schedule.created_by = ADMIN_ID
+        schedule.updated_by = ADMIN_ID
 
     assert (
         scheduling_reconciliation.synchronize_system_schedules(registry, now=101.0) == 1
@@ -1002,7 +1003,7 @@ def test_enqueue_rejects_schedule_changed_after_candidate_read(
                         "trigger_data": {"run_at": "1970-01-01T00:08:20+00:00"},
                         "timezone": "UTC",
                     },
-                    username="admin",
+                    user_id=ADMIN_ID,
                     now=101.0,
                 )
             else:
@@ -1010,7 +1011,7 @@ def test_enqueue_rejects_schedule_changed_after_candidate_read(
                     concurrent,
                     "schedule-1",
                     1,
-                    username="admin",
+                    user_id=ADMIN_ID,
                     now=101.0,
                 )
         changed = True
@@ -1253,8 +1254,8 @@ def test_dense_misfire_does_not_block_other_due_schedules(
                     },
                     timezone="UTC",
                     next_run_at=0.0,
-                    created_by="admin",
-                    updated_by="admin",
+                    created_by=ADMIN_ID,
+                    updated_by=ADMIN_ID,
                 ),
                 Schedule(
                     id="ordinary-date",
@@ -1265,8 +1266,8 @@ def test_dense_misfire_does_not_block_other_due_schedules(
                     trigger_data={"run_at": "1970-01-02T03:46:41+00:00"},
                     timezone="UTC",
                     next_run_at=100_001.0,
-                    created_by="admin",
-                    updated_by="admin",
+                    created_by=ADMIN_ID,
+                    updated_by=ADMIN_ID,
                 ),
             ]
         )
@@ -1594,8 +1595,8 @@ def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
                 trigger_data={"run_at": "1970-01-01T00:01:40+00:00"},
                 timezone="UTC",
                 next_run_at=100.0,
-                created_by="admin",
-                updated_by="admin",
+                created_by=ADMIN_ID,
+                updated_by=ADMIN_ID,
             )
         )
     policy = SchedulingPolicy(
@@ -1775,7 +1776,7 @@ def test_deleting_schedule_cancels_unclaimed_execution(
 
     with factory() as session, session.begin():
         execution_id = session.scalar(select(ScheduleExecution.id))
-        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+        delete_schedule(session, "schedule-1", 1, user_id=ADMIN_ID, now=101.0)
 
     assert execution_id is not None
     assert (
@@ -1832,7 +1833,7 @@ def test_deleting_schedule_allows_running_execution_to_finish_without_retry(
     assert claim is not None
 
     with factory() as session, session.begin():
-        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+        delete_schedule(session, "schedule-1", 1, user_id=ADMIN_ID, now=101.0)
         assert session.get(ScheduleExecution, claim.id).state == "running"
 
     assert (
@@ -1870,7 +1871,7 @@ def test_expired_deleted_execution_is_cancelled_and_releases_schedule(
     assert claim is not None
 
     with factory() as session, session.begin():
-        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+        delete_schedule(session, "schedule-1", 1, user_id=ADMIN_ID, now=101.0)
 
     assert (
         scheduling_outcomes.cancel_expired_deleted_executions(
@@ -1925,7 +1926,7 @@ def test_pending_dispatches_cancels_expired_deleted_execution_across_generations
     assert claim is not None
 
     with factory() as session, session.begin():
-        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+        delete_schedule(session, "schedule-1", 1, user_id=ADMIN_ID, now=101.0)
 
     redis_generation = scheduling_engine.ensure_runtime_state(
         "redis", "test-cluster", now=160.0
@@ -2018,7 +2019,7 @@ def test_completion_after_schedule_deletion_preserves_deleted_status(
     assert claim is not None
 
     with factory() as session, session.begin():
-        delete_schedule(session, "schedule-1", 1, username="admin", now=101.0)
+        delete_schedule(session, "schedule-1", 1, user_id=ADMIN_ID, now=101.0)
 
     assert scheduling_outcomes.complete_execution(
         claim, generation, {"completed": True}, now=102.0
@@ -2061,7 +2062,7 @@ def test_concurrent_completion_and_deletion_serialize_without_deadlock(
                 session,
                 "schedule-1",
                 1,
-                username="admin",
+                user_id=ADMIN_ID,
                 now=101.0,
             )
 
@@ -2109,7 +2110,7 @@ def test_concurrent_claim_and_deletion_have_one_complete_outcome(
                 session,
                 "schedule-1",
                 1,
-                username="admin",
+                user_id=ADMIN_ID,
                 now=101.0,
             )
 

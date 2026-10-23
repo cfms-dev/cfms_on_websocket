@@ -1,4 +1,5 @@
 import os
+import uuid
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ def test_record_ip_account_refreshes_row_created_after_snapshot(request):
     RiskIPAccount.__table__.drop(engine, checkfirst=True)
     RiskIPAccount.__table__.create(engine)
     session_factory = sessionmaker(bind=engine)
-    identity = ("download_transfer", "117.173.139.116", "HUMANITY")
+    identity = ("download_transfer", "117.173.139.116", uuid.uuid4())
 
     try:
         with session_factory() as stale_session, stale_session.begin():
@@ -35,7 +36,7 @@ def test_record_ip_account_refreshes_row_created_after_snapshot(request):
                     RiskIPAccount(
                         namespace=identity[0],
                         ip_address=identity[1],
-                        username=identity[2],
+                        user_id=identity[2],
                         last_attempt=1.0,
                     )
                 )
@@ -45,6 +46,7 @@ def test_record_ip_account_refreshes_row_created_after_snapshot(request):
         with session_factory() as session:
             rows = session.scalars(select(RiskIPAccount)).all()
             assert len(rows) == 1
+            assert rows[0].user_id == identity[2]
             assert rows[0].last_attempt == 2.0
     finally:
         RiskIPAccount.__table__.drop(engine, checkfirst=True)

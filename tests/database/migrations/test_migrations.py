@@ -1,3 +1,4 @@
+import uuid
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -282,6 +283,11 @@ def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
         config.attributes["connection"] = resources.enter_context(engine.connect())
         database_models.User.metadata.create_all(engine)
         with engine.begin() as connection:
+            admin_id = uuid.uuid4()
+            connection.execute(
+                database_models.User.__table__.insert(),
+                {"id": admin_id, "username": "admin", "created_time": 1.0},
+            )
             connection.execute(
                 schedules.insert(),
                 [
@@ -300,9 +306,9 @@ def test_system_schedule_migration_preserves_user_schedules_and_is_reversible(
                         "enabled": True,
                         "status": "active",
                         "revision": 1,
-                        "created_by": "admin",
+                        "created_by": admin_id,
                         "created_at": 1.0,
-                        "updated_by": "admin",
+                        "updated_by": admin_id,
                         "updated_at": 1.0,
                     },
                     {

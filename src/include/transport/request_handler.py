@@ -10,6 +10,7 @@ __all__ = [
     "validate_request_handler_models",
 ]
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -18,6 +19,7 @@ lazy from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
+from include.domains.identity.tokens import TokenPurpose
 from include.types import JsonInteger, NonEmptyString
 lazy from include.transport.connection import ConnectionHandler
 
@@ -27,7 +29,7 @@ class Result:
     code: int
     target: str | None = None
     data: dict[str, Any] | None = None
-    username: str | None = None
+    user_id: uuid.UUID | None = None
 
 
 class _RequestUnset(Enum):
@@ -51,7 +53,7 @@ class EmptyRequestDataModel(RequestDataModel):
     pass
 
 
-class RequestHandler(ABC):
+class RequestHandler[RequestT: RequestDataModel](ABC):
     """
     Abstract base class for handling requests.
     Attributes:
@@ -67,9 +69,13 @@ class RequestHandler(ABC):
                     The result is submitted as audit information.
     """
 
-    request_model: ClassVar[type[RequestDataModel]]
-    # Defines whether the handler needs auth check before handling a request.
-    require_auth: bool = False
+    request_model: type[RequestT]
+
+    # Indicates whether the request handler requires authentication.
+    # If True, the router will enforce that a valid token is present in the request.
+    requires_auth: bool = False
+    required_token_purpose: TokenPurpose = TokenPurpose.GENERAL
+
     # Relative token cost used by transport-wide request rate control.
     rate_limit_cost: ClassVar[int] = 1
 

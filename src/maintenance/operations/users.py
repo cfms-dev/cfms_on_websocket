@@ -2,10 +2,14 @@ import secrets
 import string
 from dataclasses import dataclass
 
+from sqlalchemy import select
+
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
+lazy from include.database.models.auth import UserTotpCredential
 lazy from include.database.models.identity import User
 lazy from include.database.session import Session
+lazy from include.domains.identity.commands.credentials import remove_totp, set_password
 
 
 @dataclass(frozen=True)
@@ -31,17 +35,29 @@ def reset_password(username: str, password: str | None = None) -> PasswordResetR
 
     new_password = password or build_random_password()
     with Session() as session:
-        user = session.get(User, username)
+        user = session.scalar(select(User).where(User.username == username))
         if user is None:
             raise MaintenanceOperationError(f"User {username!r} was not found.")
 
-        user.set_password(new_password, force_update_after_login=True)
+        set_password(session, user, new_password, force_update_after_login=True)
         session.commit()
 
     return PasswordResetResult(
         username=username,
         generated_password=None if password else new_password,
     )
+
+
+def rotate_secrets() -> int:
+    """Invalidate every user's existing tokens with independent signing keys."""
+    enter_server_root()
+    load_database_models()
+
+    with Session.begin() as session:
+        users = session.scalars(select(User)).all()
+        for user in users:
+            user.secret_key = secrets.token_hex(32)
+    return len(users)
 
 
 def clear_totp(
@@ -58,24 +74,20 @@ def clear_totp(
 
     with Session() as session:
         if all_users:
-            updated_count = session.query(User).update(
-                {
-                    User.totp_enabled: False,
-                    User.totp_secret: None,
-                    User.totp_backup_codes: None,
-                }
-            )
+            credentials = session.scalars(select(UserTotpCredential)).all()
+            updated_count = len(credentials)
+            for credential in credentials:
+                remove_totp(session, credential.user, credential)
             session.commit()
             return TotpClearResult(username=None, updated_count=updated_count)
 
-        user = session.get(User, username)
+        user = session.scalar(select(User).where(User.username == username))
         if user is None:
             raise MaintenanceOperationError(f"User {username!r} was not found.")
 
-        user.totp_enabled = False
-        user.totp_secret = None
-        user.totp_backup_codes = None
-        session.add(user)
-        session.commit()
+        credential = session.get(UserTotpCredential, user.id)
+        if credential is not None:
+            remove_totp(session, user, credential)
+            session.commit()
 
     return TotpClearResult(username=username, updated_count=1)

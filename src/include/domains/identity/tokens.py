@@ -1,54 +1,114 @@
 __all__ = ["Token"]
 
 import time
+import uuid
+from enum import IntFlag
 
 import jwt
+from pydantic import Field, TypeAdapter, ValidationError
+from pydantic.dataclasses import dataclass
+
+from include.domains.identity.auth.types import AuthenticationContext
 
 
+class TokenPurpose(IntFlag):
+    """Enumeration of token purposes.
+
+    Since a single token may serve multiple purposes, this class is defined as a
+    subclass of `IntFlag`.
+
+    The `auto()` function is not used to determine the flag values because we
+    prefer to explicitly define the flags corresponding to each purpose within
+    the communication protocol, rather than relying on an automated mechanism
+    that might appear to be a "black box" (though it is not, in fact, a black
+    box—see the
+    [documentation](https://docs.python.org/3.15/library/enum.html#enum.IntFlag)).
+
+    However, we still employed the `auto()` determination method, ensuring that
+    each flag is a power of 2, starting from 1.
+    """
+
+    AUTH = 1  # Used for further authentication (e.g., 2FA, etc.)
+    GENERAL = 2  # Used for general purposes (e.g., API access, etc.)
+    ESCALATION = 4  # Token with superuser privileges
+    POST_AUTH = 8  # Restricted actions after all authentication has completed.
+
+
+@dataclass
 class Token:
-    def __init__(
-        self,
+    """Data class representing a token.
+
+    Many of the properties in this class are non-null, as any valid token issued
+    by CFMS is required by the specification to adhere to this constraint.
+    """
+
+    sub: uuid.UUID  # is user.id
+    purpose: TokenPurpose
+    exp: float
+    nbf: float
+    iat: float
+    _secret: str = Field(exclude=True, repr=False)
+
+    # only used for AUTH and POST_AUTH tokens, otherwise None and will not be included
+    auth_context: AuthenticationContext | None = None
+
+    @classmethod
+    def from_raw(cls, raw_token: str, secret: str) -> Token:
+        """Create a Token instance from a raw JWT token string.
+
+        The provided token will be verified during decoding; therefore, the SECRET
+        used must also be provided.
+        """
+        decoded = jwt.decode(raw_token, secret, algorithms="HS256")
+
+        purpose = decoded.get("purpose", 0)
+        if not isinstance(purpose, int) or isinstance(purpose, bool):
+            raise jwt.InvalidTokenError("Invalid token purpose")
+
+        if purpose & (TokenPurpose.AUTH | TokenPurpose.POST_AUTH):
+            context = decoded.get("auth_context")
+            if (
+                purpose not in (TokenPurpose.AUTH, TokenPurpose.POST_AUTH)
+                or not isinstance(context, dict)
+                or not context.get("login_method")
+            ):
+                raise jwt.InvalidTokenError("Invalid authentication context")
+
+        try:
+            return TypeAdapter(cls).validate_python({**decoded, "_secret": secret})
+        except ValidationError as exc:
+            raise jwt.InvalidTokenError("Invalid token claims") from exc
+
+    @classmethod
+    def new(
+        cls,
+        user_id: uuid.UUID,
+        duration: float,
         secret: str,
-        username: str | None = None,
-        raw_token: str | None = None,
-    ):
-        self._raw = None
-
-        self.exp = None
-        self.username = username
-        self.secret = secret
-
-        # Invoke raw.setter.
-        self.raw = raw_token
-
-    @property
-    def raw(self):
-        return self._raw
-
-    @raw.setter
-    def raw(self, raw_token):
-        self._raw = raw_token
-        if not raw_token:
-            self.exp = None
-            return
-
-        # Decode the token.
-        decoded = jwt.decode(self._raw, self.secret, algorithms="HS256")
-        if self.username:  # Avoid presetting username before assigning raw_token.
-            if decoded.get("username") != self.username:
-                raise ValueError("New token does not belong to the assigned user")
-        else:
-            self.username = decoded.get("username")
-        self.exp = decoded.get("exp")
+        purpose=TokenPurpose.GENERAL,
+        *,
+        auth_context: AuthenticationContext | None = None,
+    ) -> Token:
+        nbf = iat = time.time()
+        exp = nbf + duration
+        return cls(
+            sub=user_id,
+            purpose=purpose,
+            exp=exp,
+            nbf=nbf,
+            iat=iat,
+            _secret=secret,
+            auth_context=auth_context,
+        )
 
     @property
-    def is_valid(self):
-        if not self._raw:
-            return False
-        now = time.time()
-        return now < self.exp if self.exp else True
+    def raw(self) -> str:
+        return jwt.encode(
+            TypeAdapter(Token).dump_python(self, mode="json", exclude_none=True),
+            self._secret,
+            algorithm="HS256",
+        )
 
-    def new(self, duration: float):
-        payload = {"username": self.username, "exp": time.time() + duration}
-        self._raw = jwt.encode(payload, self.secret, algorithm="HS256")
-        self.exp = payload["exp"]
+    def has_purpose(self, purpose: TokenPurpose, /) -> bool:
+        """Check if the token has the specified purpose."""
+        return self.purpose & purpose == purpose

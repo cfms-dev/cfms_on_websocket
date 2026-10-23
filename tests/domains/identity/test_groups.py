@@ -106,7 +106,7 @@ class TestGroupOperations:
         )
 
         data = assert_success(
-            await authenticated_client.get_user_info(user["username"])
+            await authenticated_client.get_user_info(username=user["username"])
         )
         assert data["effective_own_permissions"] == ["list_users"]
         assert data["effective_inherited_permissions"] == []
@@ -130,8 +130,7 @@ class TestGroupOperations:
         response = await authenticated_client.get_group_info(
             "nonexistent_group_xyz_12345"
         )
-        error = assert_error(response, 404)
-        assert error["message"] == "Group does not exist"
+        assert_error(response, 404)
 
     @pytest.mark.asyncio
     async def test_delete_group(

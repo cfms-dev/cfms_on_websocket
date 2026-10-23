@@ -628,7 +628,7 @@ def _active_oae_exists(target_type_column, target_id_column, user: User, now: fl
     entity_match = or_(
         and_(
             ObjectAccessEntry.entity_type == "user",
-            ObjectAccessEntry.entity_identifier == user.username,
+            ObjectAccessEntry.entity_identifier == str(user.id),
         ),
         and_(
             ObjectAccessEntry.entity_type == "group",
@@ -770,7 +770,7 @@ def _target_is_blocked(target_id_column, user: User, now: float):
             )
         )
         .where(
-            UserBlockEntry.username == user.username,
+            UserBlockEntry.user_id == user.id,
             UserBlockEntry.not_before <= now,
             or_(UserBlockEntry.not_after == -1, UserBlockEntry.not_after >= now),
             UserBlockSubEntry.block_type == "read",
@@ -790,7 +790,7 @@ def _user_is_globally_blocked(user: User, now: float):
             )
         )
         .where(
-            UserBlockEntry.username == user.username,
+            UserBlockEntry.user_id == user.id,
             UserBlockEntry.not_before <= now,
             or_(UserBlockEntry.not_after == -1, UserBlockEntry.not_after >= now),
             UserBlockSubEntry.block_type == "read",

@@ -1,12 +1,14 @@
 import datetime as dt
 import logging
+import uuid
 from typing import Any
 lazy from collections.abc import Iterator
 lazy from pathlib import Path
 
 import orjson
-from sqlalchemy import DateTime, Table
+from sqlalchemy import DateTime, Table, Uuid
 
+from include.domains.identity.auth.types import AuthPurpose, auth_chains_adapter
 from maintenance.backup.archive import _safe_payload_path
 from maintenance.backup.constants import MAX_JSONL_ROW_BYTES
 from maintenance.backup.models import BackupFormatError
@@ -82,6 +84,21 @@ def _iter_table_row_batches(
 ) -> Iterator[list[dict[str, Any]]]:
     batch = []
     for row in _iter_raw_table_rows(extract_dir, manifest, table.name):
+        if (
+            table.name in {"user_passwords", "user_totp_credentials"}
+            and "user_auth_policies" in manifest["tables"]
+        ):
+            credential_id = row.get("credential_id")
+            if not isinstance(credential_id, str) or len(credential_id) != 32:
+                raise BackupFormatError(
+                    "Missing or invalid credential identity in backup"
+                )
+        if (
+            table.name in {"user_passwords", "user_totp_credentials"}
+            and "credential_id" not in row
+            and "user_auth_policies" not in manifest["tables"]
+        ):
+            row = {**row, "credential_id": uuid.uuid4().hex}
         batch.append(_decode_row(row, table))
         if len(batch) == _RESTORE_BATCH_SIZE:
             yield batch
@@ -92,6 +109,21 @@ def _iter_table_row_batches(
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
+    declaration = table.info.get("extension_data")
+    if declaration is not None:
+        try:
+            if declaration.decode_row is not None:
+                row = declaration.decode_row(row)
+        except ValueError as exc:
+            raise BackupFormatError(str(exc)) from exc
+    if table.name == "user_auth_policies":
+        try:
+            AuthPurpose(row["purpose"])
+            auth_chains_adapter.validate_python(row["chains"])
+            if type(row["revision"]) is not int or row["revision"] <= 0:
+                raise ValueError("Invalid revision")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BackupFormatError("Invalid authentication policy in backup") from exc
     stored_columns = {
         column.name for column in table.columns if column.computed is None
     }
@@ -138,10 +170,18 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
         if column.name not in row:
             decoded[column.name] = None
             continue
-        value = row[column.name]
+        raw_value = row[column.name]
+        value = raw_value
+        if value is not None and isinstance(column.type, Uuid):
+            try:
+                value = uuid.UUID(raw_value)
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise BackupFormatError(
+                    f"Invalid UUID for {table.name}.{column.name}"
+                ) from exc
         if value is not None and isinstance(column.type, DateTime):
             try:
-                value = dt.datetime.fromisoformat(value)
+                value = dt.datetime.fromisoformat(raw_value)
             except (TypeError, ValueError) as exc:
                 raise BackupFormatError(
                     f"Invalid datetime for {table.name}.{column.name}"
@@ -159,5 +199,21 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
                 raise BackupFormatError("Invalid comment digest in backup") from exc
             if len(value) != 32:
                 raise BackupFormatError("Invalid comment digest in backup")
+        if (
+            value is not None
+            and table.name == "user_auth_public_keys"
+            and column.name in {"public_key_der", "fingerprint"}
+        ):
+            try:
+                value = bytes.fromhex(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise BackupFormatError("Invalid public key bytes in backup") from exc
+            if column.name == "fingerprint" and len(value) != 32:
+                raise BackupFormatError("Invalid public key fingerprint in backup")
         decoded[column.name] = value
+    if declaration is not None and declaration.validate_row is not None:
+        try:
+            declaration.validate_row(decoded)
+        except ValueError as exc:
+            raise BackupFormatError(str(exc)) from exc
     return decoded

@@ -1,3 +1,4 @@
+import uuid
 from typing import ClassVar
 
 import pytest
@@ -17,7 +18,10 @@ from include.domains.documents.handlers.documents import (
     RequestGetDocumentInfoHandler,
 )
 from include.domains.documents.handlers.search import RequestSearchHandler
-from include.domains.identity.handlers.auth import RequestLoginHandler
+from include.domains.identity.handlers.auth import (
+    RequestCompleteMFAHandler,
+    RequestLoginHandler,
+)
 from include.domains.identity.handlers.groups import (
     RequestChangeGroupPermissionsHandler,
     RequestCreateGroupHandler,
@@ -163,18 +167,65 @@ def test_omittable_non_nullable_field_rejects_null():
         OptionalRequest.model_validate({"value": None})
 
 
-def test_login_request_accepts_protocol_two_factor_alias():
+def test_login_request_selects_existing_user_by_username():
     request = RequestLoginHandler.request_model.model_validate(
-        {"username": "alice", "password": "secret", "2fa_token": "123456"}
+        {
+            "method": "password",
+            "credential": {"username": "alice", "password": "secret"},
+        }
     )
+    assert request.method == "password"
+    assert request.credential == {"username": "alice", "password": "secret"}
 
-    assert request.two_factor_token == "123456"
+
+def test_login_envelope_accepts_extension_method():
+    request = RequestLoginHandler.request_model.model_validate(
+        {"method": "extension_method", "credential": {"proof": "opaque"}}
+    )
+    assert request.method == "extension_method"
+    assert request.credential == {"proof": "opaque"}
 
 
-def test_login_request_rejects_internal_two_factor_field_name():
-    with pytest.raises(ValidationError, match="two_factor_token"):
+@pytest.mark.parametrize("target_purpose", [2, 6])
+def test_complete_mfa_request_accepts_totp_token(target_purpose):
+    request = RequestCompleteMFAHandler.request_model.model_validate(
+        {
+            "method": "totp",
+            "data": {"token": "123456"},
+            "target_purpose": target_purpose,
+        }
+    )
+    assert request.method == "totp"
+    assert request.data == {"token": "123456"}
+    assert request.target_purpose == target_purpose
+
+
+@pytest.mark.parametrize("target_purpose", [0, 1, 3, 4, 8, True, False, "2", None, 2.5])
+def test_complete_mfa_request_rejects_invalid_target_purpose(target_purpose):
+    with pytest.raises(ValidationError) as exc_info:
+        RequestCompleteMFAHandler.request_model.model_validate(
+            {
+                "method": "totp",
+                "data": {"token": "123456"},
+                "target_purpose": target_purpose,
+            }
+        )
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["loc"] == ("target_purpose",)
+    assert errors[0]["type"] == "literal_error"
+
+
+@pytest.mark.parametrize("field", ["2fa_token", "two_factor_token"])
+def test_login_request_rejects_inline_two_factor_fields(field):
+    with pytest.raises(ValidationError, match=field):
         RequestLoginHandler.request_model.model_validate(
-            {"username": "alice", "password": "secret", "two_factor_token": "123456"}
+            {
+                "method": "password",
+                "credential": {"username": "alice", "password": "secret"},
+                field: "123456",
+            }
         )
 
 
@@ -195,7 +246,7 @@ def test_group_rename_request_requires_display_name():
 @pytest.mark.parametrize("reason", ["incident", None], ids=["text", "null"])
 def test_disabled_user_status_accepts_optional_reason(reason):
     request = RequestManageUserStatusHandler.request_model.model_validate(
-        {"status": "disabled", "username": "alice", "reason": reason}
+        {"status": "disabled", "user_id": str(uuid.uuid4()), "reason": reason}
     )
 
     assert request.reason == reason
@@ -205,7 +256,7 @@ def test_disabled_user_status_accepts_optional_reason(reason):
 def test_active_user_status_rejects_reason_field(reason):
     with pytest.raises(ValidationError, match="reason"):
         RequestManageUserStatusHandler.request_model.model_validate(
-            {"status": "active", "username": "alice", "reason": reason}
+            {"status": "active", "user_id": str(uuid.uuid4()), "reason": reason}
         )
 
 
@@ -238,7 +289,15 @@ def test_password_request_preserves_old_password_mode(
     old_password_fields, expected, provided
 ):
     request = RequestSetPasswdHandler.request_model.model_validate(
-        {"username": "alice", "new_passwd": "NewPassword123!", **old_password_fields}
+        {
+            **(
+                {"user_id": str(uuid.uuid4())}
+                if expected is None
+                else {"username": "alice"}
+            ),
+            "new_passwd": "NewPassword123!",
+            **old_password_fields,
+        }
     )
 
     assert request.old_passwd == expected
@@ -259,7 +318,7 @@ _PERMISSION_REQUESTS = [
     ),
     pytest.param(
         RequestChangeUserPermissionsHandler,
-        {"username": "alice"},
+        {"user_id": str(uuid.uuid4())},
         id="change-user-permissions",
     ),
     pytest.param(RequestCreateGroupHandler, {"group_name": "staff"}, id="create-group"),
@@ -310,11 +369,9 @@ def test_list_user_keys_accepts_integral_float_pagination():
     assert request.count == 10
 
 
-def test_list_user_keys_rejects_null_target_username():
-    with pytest.raises(ValidationError, match="target_username"):
-        RequestListUserKeysHandler.request_model.model_validate(
-            {"target_username": None}
-        )
+def test_list_user_keys_rejects_null_user_id():
+    with pytest.raises(ValidationError, match="user_id"):
+        RequestListUserKeysHandler.request_model.model_validate({"user_id": None})
 
 
 @pytest.mark.parametrize(
@@ -392,7 +449,7 @@ class EmptyRequest(RequestDataModel):
     pass
 
 
-class ValidHandler(RequestHandler):
+class ValidHandler(RequestHandler[EmptyRequest]):
     request_model = EmptyRequest
 
     def handle(self, _handler):

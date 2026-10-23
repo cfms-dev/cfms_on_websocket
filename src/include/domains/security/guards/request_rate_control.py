@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 
 from loguru import logger as log
@@ -53,7 +54,7 @@ def _evaluate(
     policy: RequestRateControlPolicy,
     *,
     action: str | None,
-    username: str | None,
+    user_id: uuid.UUID | None,
     ip_address: str,
 ) -> RequestRateControlDecision:
     if policy.mode == "disabled":
@@ -66,7 +67,7 @@ def _evaluate(
         if _should_log(("provider_error",), 60):
             logger.bind(
                 action=action,
-                username=username,
+                user_id=user_id,
                 remote_address=ip_address,
             ).exception("Request rate-limit provider failed; allowing request")
         return RequestRateControlDecision(True)
@@ -78,7 +79,7 @@ def _evaluate(
     ):
         logger.bind(
             action=action,
-            username=username,
+            user_id=user_id,
             remote_address=ip_address,
             scope=decision.scope,
             limit=decision.effective_limit,
@@ -110,7 +111,7 @@ def check_connection_attempt(ip_address: str) -> RequestRateControlDecision:
         ),
         policy,
         action=None,
-        username=None,
+        user_id=None,
         ip_address=ip_address,
     )
 
@@ -120,7 +121,7 @@ def check_request_rate(
     handler_cost: int,
     ip_address: str,
     *,
-    username: str | None,
+    user_id: uuid.UUID | None,
     bypass: bool,
 ) -> RequestRateControlDecision:
     if bypass:
@@ -137,10 +138,10 @@ def check_request_rate(
             cost=cost,
         )
     ]
-    if username is not None:
+    if user_id is not None:
         charges.append(
             RateLimitCharge(
-                key=_bucket_key("request", "account", username),
+                key=_bucket_key("request", "account", str(user_id)),
                 scope="account",
                 capacity=policy.account_capacity,
                 refill_tokens=policy.account_refill_tokens,
@@ -152,7 +153,7 @@ def check_request_rate(
         tuple(charges),
         policy,
         action=action,
-        username=username,
+        user_id=user_id,
         ip_address=ip_address,
     )
 

@@ -1,5 +1,6 @@
 import math
 import time
+import uuid
 from dataclasses import dataclass
 
 from loguru import logger
@@ -46,7 +47,7 @@ class CreationLimitDecision:
     would_block: bool = False
 
 
-def count_pending_documents(session: Session, creator_username: str, now: float) -> int:
+def count_pending_documents(session: Session, creator_id: uuid.UUID, now: float) -> int:
     active_revision = exists(
         select(DocumentRevision.id)
         .join(File, File.id == DocumentRevision.file_id)
@@ -75,7 +76,7 @@ def count_pending_documents(session: Session, creator_username: str, now: float)
             )
             .where(
                 Document.status == EntityStatus.OK,
-                DocumentMetadata.creator_username == creator_username,
+                DocumentMetadata.creator_id == creator_id,
                 ~active_revision,
                 live_upload,
             )
@@ -86,7 +87,7 @@ def count_pending_documents(session: Session, creator_username: str, now: float)
 
 def _pending_limit_decision(
     session: Session,
-    username: str,
+    user_id: uuid.UUID,
     now: float,
     pending_count: int,
     limit: int,
@@ -103,7 +104,7 @@ def _pending_limit_decision(
             DocumentMetadata.document_id == Document.id,
         )
         .where(
-            DocumentMetadata.creator_username == username,
+            DocumentMetadata.creator_id == user_id,
             FileTask.mode == TransferMode.UPLOAD,
             FileTask.status.in_((FileTaskStatus.PENDING, FileTaskStatus.IN_PROGRESS)),
             FileTask.end_time > now,
@@ -144,7 +145,7 @@ def cleanup_document_creation_risk_state(
 
 def check_document_creation_limits(
     session: Session,
-    username: str,
+    user_id: uuid.UUID,
     ip_address: str,
     *,
     account_created_at: float | None = None,
@@ -160,16 +161,16 @@ def check_document_creation_limits(
         session,
         _RISK_NAMESPACE,
         "account",
-        username,
+        str(user_id),
         now,
         risk_policy.account_capacity,
     )
     touch_rate_bucket(session, account_bucket, now)
     session.flush()
-    pending_count = count_pending_documents(session, username, now)
+    pending_count = count_pending_documents(session, user_id, now)
     pending_decision = _pending_limit_decision(
         session,
-        username,
+        user_id,
         now,
         pending_count,
         upload_policy.max_pending_documents_per_creator,
@@ -185,7 +186,7 @@ def check_document_creation_limits(
         now,
         risk_policy.ip_capacity,
     )
-    record_ip_account(session, _RISK_NAMESPACE, ip_address, username, now)
+    record_ip_account(session, _RISK_NAMESPACE, ip_address, user_id, now)
     refresh_denials(account_bucket, now, risk_policy.denial_window_seconds)
     refresh_denials(ip_bucket, now, risk_policy.denial_window_seconds)
     ip_account_count = count_ip_accounts(
@@ -240,7 +241,7 @@ def check_document_creation_limits(
     if assessment.level != CreationRiskLevel.NORMAL or would_block:
         log = logger.bind(
             name="document_creation_risk",
-            username=username,
+            user_id=user_id,
             remote_address=ip_address,
             risk_level=assessment.level.value,
             risk_reasons=assessment.reasons,

@@ -32,7 +32,7 @@ class _FakeServer:
 
 
 class _FakeConnectionHandler:
-    username = "admin"
+    user_id = "admin"
 
     def __init__(self):
         self.responses = []
@@ -246,6 +246,7 @@ def test_extension_handler_overrides_and_unregistration_keep_existing_order(
     core_list_handler = server_main.available_functions["list_schedules"]
     replacement_handler = server_main.available_functions["get_schedule"]
     hook = SimpleNamespace(
+        ext_register_auth_methods=list,
         ext_register_handlers=lambda: [
             {
                 "list_schedules": replacement_handler,
@@ -333,7 +334,7 @@ def test_builtin_shutdown_handler_stops_active_server(monkeypatch, builtin_exten
     finally:
         builtin_extension.ext_on_shutdown()
 
-    assert handler.responses == [(200, {}, "Server is shutting down")]
+    assert [response[:-1] for response in handler.responses] == [(200, {})]
     assert server.shutdown_calls == 1
 
 

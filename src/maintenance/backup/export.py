@@ -11,13 +11,18 @@ from pathlib import Path
 from typing import Any
 
 import orjson
-from sqlalchemy import case, select
+from sqlalchemy import case, inspect, select
 lazy from rich.progress import Progress
 lazy from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import CORE_VERSION
 from include.config.settings import global_config
-from include.database.session import Session
+from include.database.session import Base, Session
+from include.extensions.data import (
+    extension_metadata,
+    load_extension_data,
+    prepare_extension_tables,
+)
 from include.providers.manager import ProviderManager
 from maintenance.backup.archive import _write_json
 from maintenance.backup.constants import (
@@ -47,7 +52,6 @@ from maintenance.backup.progress import (
 )
 from maintenance.backup.rows import _iter_raw_table_rows
 from maintenance.backup.selection import (
-    BACKUP_TABLE_NAMES,
     EXCLUDED_TABLE_NAMES,
     BackupComponent,
     BackupExportSelection,
@@ -274,7 +278,25 @@ def _export_tables(
         active_compiled_rule_set_ids = _active_compiled_rule_set_id_query(
             metadata_tables,
         )
-        table_names = BACKUP_TABLE_NAMES
+        declarations = load_extension_data(Base.metadata)
+        existing_tables = set(inspect(connection).get_table_names())
+        unknown_tables = (
+            existing_tables
+            - set(Base.metadata.tables)
+            - set(declarations)
+            - {"alembic_version"}
+        )
+        if unknown_tables:
+            raise BackupIntegrityError(
+                f"Unregistered database tables: {sorted(unknown_tables)}"
+            )
+        prepare_extension_tables(
+            connection,
+            extension_metadata(Base.metadata, declarations),
+            set(declarations) & existing_tables,
+            create=False,
+        )
+        table_names = tuple(metadata_tables)
         if not full_export:
             table_names = _selected_table_names(
                 components,
@@ -284,6 +306,11 @@ def _export_tables(
                 ),
             )
 
+        table_names = tuple(
+            name
+            for name in table_names
+            if name not in declarations or name in existing_tables
+        )
         for table_index, table_name in enumerate(table_names, start=1):
             LOGGER.debug(
                 "Exporting table %s (%d/%d)",
@@ -345,9 +372,19 @@ def _export_tables(
 
             with rows_path.open("wb") as f:
                 for row in connection.execute(statement).mappings():
+                    values = dict(row)
+                    declaration = declarations.get(table_name)
+                    if declaration is not None:
+                        try:
+                            if declaration.validate_row is not None:
+                                declaration.validate_row(values)
+                            if declaration.encode_row is not None:
+                                values = declaration.encode_row(values)
+                        except ValueError as exc:
+                            raise BackupIntegrityError(str(exc)) from exc
                     encoded = {}
                     for column in stored_columns:
-                        value = row[column.name]
+                        value = values[column.name]
                         encoded[str(column.name)] = _serialize_table_value(
                             table_name,
                             column.name,

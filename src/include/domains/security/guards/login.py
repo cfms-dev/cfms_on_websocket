@@ -31,6 +31,7 @@ logger = log.bind(name="login_guard")
 class AuthFactor(StrEnum):
     PASSWORD = "password"
     TOTP = "totp"
+    PUBLICKEY = "publickey"
 
 
 class ThrottleScope(StrEnum):
@@ -189,7 +190,7 @@ class LoginGuard:
         cls,
         ip_address: str,
         username: str | None = None,
-        factor: AuthFactor | None = None,
+        factor: AuthFactor | str | None = None,
     ) -> ThrottleDecision:
         subnet = cls.evaluate_subnet_access(ip_address)
         if not subnet.allowed:
@@ -210,12 +211,13 @@ class LoginGuard:
                 )
             )
         if username and factor:
+            factor_val = factor.value if isinstance(factor, AuthFactor) else str(factor)
             checks.append(
                 (
                     ThrottleScope.ACCOUNT,
-                    AccountThrottle.make_cache_key(username, factor.value),
+                    AccountThrottle.make_cache_key(username, factor_val),
                     AccountThrottle,
-                    (username, factor.value),
+                    (username, factor_val),
                 )
             )
         if username and ip_address:
@@ -326,12 +328,13 @@ class LoginGuard:
         cls,
         ip_address: str,
         username: str,
-        factor: AuthFactor = AuthFactor.PASSWORD,
+        factor: AuthFactor | str = AuthFactor.PASSWORD,
     ) -> ThrottleDecision:
         policy = AuthThrottlePolicy.from_config()
         if not policy.enabled:
             return ThrottleDecision(True)
 
+        factor_val = factor.value if isinstance(factor, AuthFactor) else str(factor)
         now = time.time()
         locked: list[tuple[ThrottleScope, tuple[str, ...], float]] = []
         with cls._write_lock, Session.begin() as session:
@@ -367,11 +370,11 @@ class LoginGuard:
                 AccountThrottle,
                 (
                     AccountThrottle.username == username,
-                    AccountThrottle.factor == factor.value,
+                    AccountThrottle.factor == factor_val,
                 ),
                 {
                     "username": username,
-                    "factor": factor.value,
+                    "factor": factor_val,
                     "failed_attempts": 0,
                     "last_attempt": now,
                 },
@@ -381,7 +384,7 @@ class LoginGuard:
                 locked.append(
                     (
                         ThrottleScope.ACCOUNT,
-                        AccountThrottle.make_cache_key(username, factor.value),
+                        AccountThrottle.make_cache_key(username, factor_val),
                         account_lock,
                     )
                 )
@@ -424,7 +427,7 @@ class LoginGuard:
         scope, key, locked_until = max(locked, key=lambda item: item[2])
         logger.bind(
             scope=scope.value,
-            factor=factor.value,
+            factor=factor_val,
             username=username,
             ip_address=ip_address,
             locked_until=locked_until,
@@ -436,7 +439,7 @@ class LoginGuard:
             target=username,
             data={
                 "scope": scope.value,
-                "factor": factor.value,
+                "factor": factor_val,
                 "retry_after_seconds": decision.retry_after_seconds,
             },
             remote_address=ip_address,
@@ -448,13 +451,14 @@ class LoginGuard:
         cls,
         ip_address: str,
         username: str,
-        factor: AuthFactor = AuthFactor.PASSWORD,
+        factor: AuthFactor | str = AuthFactor.PASSWORD,
         *,
         completed_authentication: bool = False,
     ) -> None:
-        cache_keys = [AccountThrottle.make_cache_key(username, factor.value)]
+        factor_val = factor.value if isinstance(factor, AuthFactor) else str(factor)
+        cache_keys = [AccountThrottle.make_cache_key(username, factor_val)]
         with cls._write_lock, Session.begin() as session:
-            account_record = AccountThrottle.get_record(session, username, factor.value)
+            account_record = AccountThrottle.get_record(session, username, factor_val)
             if account_record:
                 session.delete(account_record)
             if completed_authentication:

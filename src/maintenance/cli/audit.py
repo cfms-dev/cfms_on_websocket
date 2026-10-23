@@ -241,6 +241,7 @@ def purge_audit_logs(
         _print_success("No audit entries are eligible for deletion.")
         return
 
+    assert archive_path is not None
     _confirm_or_abort(
         f"Archive and permanently delete {inspection.total} audit entries?",
         yes,

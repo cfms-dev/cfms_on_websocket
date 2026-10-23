@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from maintenance.cli import app
 
 COMMANDS = {
-    "user": ("reset-password", "clear-totp"),
+    "user": ("reset-password", "rotate-secrets", "clear-totp"),
     "config": ("fill-pepper", "sync-template"),
     "backup": ("export", "info", "import"),
     "audit": ("export", "purge"),

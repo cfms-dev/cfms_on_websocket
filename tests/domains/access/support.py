@@ -22,23 +22,18 @@ def _make_rule_user(models, session, *, permissions=(), groups=(), username="ali
     now = time.time()
     user = models.User(
         username=username,
-        pass_hash="hash",
-        passwd_last_modified=now,
         nickname=username,
         avatar_id=None,
         last_login=None,
         created_time=now,
         status=0,
         secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     for permission in permissions:
         user.rights.append(
             models.UserPermission(
-                username=username,
+                user=user,
                 permission=permission,
                 granted=True,
                 start_time=0.0,
@@ -55,7 +50,7 @@ def _make_rule_user(models, session, *, permissions=(), groups=(), username="ali
             )
         user.groups.append(
             models.UserMembership(
-                username=username,
+                user=user,
                 group_name=group_name,
                 start_time=0.0,
                 end_time=None,
@@ -70,17 +65,12 @@ def _make_access_rule_user(models, session, username="alice"):
     now = time.time()
     user = models.User(
         username=username,
-        pass_hash="hash",
-        passwd_last_modified=now,
         nickname=username,
         avatar_id=None,
         last_login=None,
         created_time=now,
         status=0,
         secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     for permission in (
@@ -90,7 +80,7 @@ def _make_access_rule_user(models, session, username="alice"):
     ):
         user.rights.append(
             models.UserPermission(
-                username=username,
+                user=user,
                 permission=permission,
                 granted=True,
                 start_time=0.0,

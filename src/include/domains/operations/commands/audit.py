@@ -1,3 +1,5 @@
+import uuid
+
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
 
@@ -5,7 +7,7 @@ from include.database.session import Session
 def log_audit(
     action: str,
     result: int,
-    username: str | None = None,
+    user_id: uuid.UUID | None = None,
     target: str | None = None,
     data: dict | None = None,
     remote_address: str | None = None,
@@ -17,7 +19,7 @@ def log_audit(
     with Session() as session:
         new_entry = AuditEntry(
             action=action,
-            username=username,
+            user_id=user_id,
             target=target,
             result=result,
             data=data,

@@ -9,6 +9,7 @@ import lzma
 import os
 import secrets
 import tarfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,7 @@ from maintenance.backup.models import (
     BackupHeader,
     BackupIntegrityError,
 )
-from maintenance.backup.selection import BACKUP_TABLE_NAMES
+from maintenance.backup.selection import _backup_tables
 lazy from maintenance.backup.progress import _BackupProgressReporter
 
 LOGGER = logging.getLogger(__name__)
@@ -189,7 +190,7 @@ def _write_compressed_payload(
             staged_tables / f"{table_name}.jsonl",
             f"tables/{table_name}.jsonl",
         )
-        for table_name in BACKUP_TABLE_NAMES
+        for table_name in _backup_tables()
         if (staged_tables / f"{table_name}.jsonl").is_file()
     )
     file_count = sum(1 for path in files_dir.iterdir() if path.is_file())
@@ -349,6 +350,8 @@ def _header_prefix(header_bytes: bytes) -> bytes:
 
 
 def _serialize_value(value: Any) -> Any:
+    if isinstance(value, uuid.UUID):
+        return str(value)
     if isinstance(value, dt.datetime):
         return value.isoformat()
     if isinstance(value, enum.Enum):
@@ -374,6 +377,12 @@ def _serialize_table_value(table_name: str, column_name: str, value: Any) -> Any
         if len(digest) != 32:
             raise BackupIntegrityError("Invalid binary comment digest in database")
         return digest.hex()
+    if (
+        value is not None
+        and table_name == "user_auth_public_keys"
+        and column_name in {"public_key_der", "fingerprint"}
+    ):
+        return value.hex()
     return _serialize_value(value)
 
 

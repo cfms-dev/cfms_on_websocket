@@ -1,7 +1,10 @@
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+ALICE_ID = uuid.UUID("c2ef90b9-02bc-5d53-93cd-92652b6e1b41")
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +63,7 @@ def test_request_rate_control_observes_or_enforces_and_hashes_identities(
         "search",
         4,
         "192.0.2.55",
-        username="alice",
+        user_id=ALICE_ID,
         bypass=False,
     )
 
@@ -72,7 +75,7 @@ def test_request_rate_control_observes_or_enforces_and_hashes_identities(
     assert provider.charges is not None
     assert [charge.scope for charge in provider.charges] == ["ip", "account"]
     assert all(charge.cost == 4 for charge in provider.charges)
-    assert all("alice" not in charge.key for charge in provider.charges)
+    assert all(str(ALICE_ID) not in charge.key for charge in provider.charges)
     assert all("192.0.2.55" not in charge.key for charge in provider.charges)
 
 
@@ -86,7 +89,11 @@ def test_request_rate_control_bypass_skips_provider(monkeypatch):
     )
 
     decision = guard.check_request_rate(
-        "search", 1, "192.0.2.55", username="alice", bypass=True
+        "search",
+        1,
+        "192.0.2.55",
+        user_id=ALICE_ID,
+        bypass=True,
     )
 
     assert decision.allowed

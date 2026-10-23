@@ -157,7 +157,7 @@ def load_user_folder_access_context(
 
     seed_folder_ids = list({folder.parent_id for folder in folders if folder.parent_id})
     matched_ids = {folder.id for folder in folders}
-    entity_identifiers = {user.username, *user.all_groups}
+    entity_identifiers = {str(user.id), *user.all_groups}
     return _fetch_ancestors_and_oae(
         session=session,
         seed_folder_ids=seed_folder_ids,

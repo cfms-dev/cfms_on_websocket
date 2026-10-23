@@ -55,10 +55,10 @@ class _SetDocumentRevisionRequest(RequestDataModel):
     revision_id: RevisionID
 
 
-class RequestListRevisionsHandler(RequestHandler):
+class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
     request_model = _ListRevisionsRequest
 
-    require_auth = True  # when True, handler.username is guaranteed to be not None
+    requires_auth = True  # when True, handler.user_id is guaranteed to be not None
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -67,19 +67,19 @@ class RequestListRevisionsHandler(RequestHandler):
         cursor = handler.data.get("cursor")
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
 
             if document is None:
                 handler.conclude_request(404, {}, "Document not found")
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if (
                 Permissions.LIST_REVISIONS not in user.all_permissions
                 or not check_access_requirements(session, user, document, "read")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             filters = {"document_id": document_id}
             sort = "created_time_id:asc"
@@ -94,7 +94,7 @@ class RequestListRevisionsHandler(RequestHandler):
                 last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
-                return Result(code=400, target=document_id, username=handler.username)
+                return Result(code=400, target=document_id, user_id=handler.user_id)
 
             revisions_query = session.query(DocumentRevision).filter(
                 DocumentRevision.document_id == document_id
@@ -138,20 +138,20 @@ class RequestListRevisionsHandler(RequestHandler):
             )
 
         handler.conclude_request(200, response_data, "Revisions listed successfully")
-        return Result(code=200, target=document_id, username=handler.username)
+        return Result(code=200, target=document_id, user_id=handler.user_id)
 
 
-class RequestGetRevisionHandler(RequestHandler):
+class RequestGetRevisionHandler(RequestHandler[_RevisionIDRequest]):
     request_model = _RevisionIDRequest
 
-    require_auth = True  # when True, handler.username is guaranteed to be not None
+    requires_auth = True  # when True, handler.user_id is guaranteed to be not None
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
         revision_id = handler.data["id"]
 
         with Session() as session, risk_control_transaction(session):
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             revision = session.get(DocumentRevision, revision_id)
 
             if revision is None:
@@ -170,7 +170,7 @@ class RequestGetRevisionHandler(RequestHandler):
             else:
                 limit_decision = check_download_issue_limits(
                     session,
-                    user.username,
+                    user.id,
                     handler.remote_address,
                     account_created_at=user.created_time,
                     bypass_rate_limit=(
@@ -190,7 +190,7 @@ class RequestGetRevisionHandler(RequestHandler):
                     task_data = create_file_task(
                         session,
                         revision.file,
-                        issued_by_username=user.username,
+                        issued_by_id=user.id,
                     )
                     response_code = result_code = 200
                     data = {"task_data": task_data}
@@ -201,14 +201,14 @@ class RequestGetRevisionHandler(RequestHandler):
             code=result_code,
             target=revision_id,
             data=data if result_code == 429 else None,
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
-class RequestSetDocumentRevisionHandler(RequestHandler):
+class RequestSetDocumentRevisionHandler(RequestHandler[_SetDocumentRevisionRequest]):
     request_model = _SetDocumentRevisionRequest
 
-    require_auth = True  # when True, handler.username is guaranteed to be not None
+    requires_auth = True  # when True, handler.user_id is guaranteed to be not None
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -216,7 +216,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
         revision_id = handler.data["revision_id"]
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
             revision = session.get(DocumentRevision, revision_id)
 
@@ -226,27 +226,27 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
                 or revision.document_id != document.id
             ):
                 handler.conclude_request(404, {}, "Document or Revision not found")
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if (
                 Permissions.SET_CURRENT_REVISION not in user.all_permissions
                 or not check_access_requirements(session, user, document, "write")
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             document.current_revision_id = revision.id
-            mark_document_modified(document, user.username)
+            mark_document_modified(document, user.id)
             session.commit()
 
         handler.conclude_request(200, {}, "Current revision set successfully")
-        return Result(code=200, target=document_id, username=handler.username)
+        return Result(code=200, target=document_id, user_id=handler.user_id)
 
 
-class RequestDeleteRevisionHandler(RequestHandler):
+class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
     request_model = _RevisionIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -256,12 +256,12 @@ class RequestDeleteRevisionHandler(RequestHandler):
 
         cancelled_task_ids: list[str] = []
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             revision = session.get(DocumentRevision, revision_id)
 
             if revision is None:
                 handler.conclude_request(404, {}, "Revision not found")
-                return Result(code=404, target=revision_id, username=handler.username)
+                return Result(code=404, target=revision_id, user_id=handler.user_id)
 
             document = revision.document
             if (
@@ -269,14 +269,14 @@ class RequestDeleteRevisionHandler(RequestHandler):
                 or len(document.revisions) == 1  # backward compatibility
             ):
                 handler.conclude_request(400, {}, "Cannot delete the current revision")
-                return Result(code=400, target=revision_id, username=handler.username)
+                return Result(code=400, target=revision_id, user_id=handler.user_id)
 
             if (
                 Permissions.DELETE_REVISION not in user.all_permissions
                 or check_access_requirements(session, user, document, "write") is False
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return Result(code=403, target=revision_id, username=handler.username)
+                return Result(code=403, target=revision_id, user_id=handler.user_id)
 
             with session.no_autoflush:
                 # Try to connect parent and child revisions directly
@@ -289,11 +289,11 @@ class RequestDeleteRevisionHandler(RequestHandler):
                 cancelled_task_ids = cancel_file_tasks_for_files(
                     session, unreachable_file_ids
                 )
-                mark_document_modified(document, user.username)
+                mark_document_modified(document, user.id)
                 delete_revision_and_unreferenced_file(session, revision)
             session.commit()
 
         publish_cancelled_file_tasks(cancelled_task_ids)
 
         handler.conclude_request(200, {}, "Revision deleted successfully")
-        return Result(code=200, target=revision_id, username=handler.username)
+        return Result(code=200, target=revision_id, user_id=handler.user_id)

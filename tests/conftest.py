@@ -178,8 +178,14 @@ async def user_factory(
             permissions=permissions,
         )
         assert_success(response)
-        created_users.append(username)
-        return {"username": username, "password": password, "nickname": nickname}
+        user_id = response["data"]["user_id"]
+        created_users.append(user_id)
+        return {
+            "user_id": user_id,
+            "username": username,
+            "password": password,
+            "nickname": nickname,
+        }
 
     yield _creator
 

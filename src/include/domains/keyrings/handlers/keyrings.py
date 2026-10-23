@@ -22,6 +22,7 @@ __all__ = [
 ]
 
 import time
+import uuid
 from typing import Annotated
 
 from pydantic import StringConstraints
@@ -43,6 +44,7 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+lazy from include.domains.identity.types import RequestUserID
 lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString
 
@@ -52,7 +54,7 @@ _KeyContent = Annotated[str, StringConstraints(min_length=1, max_length=512)]
 class _UploadUserKeyRequest(RequestDataModel):
     content: _KeyContent
     label: Omittable[str] = REQUEST_UNSET
-    target_username: Omittable[NonEmptyString] = REQUEST_UNSET
+    user_id: Omittable[RequestUserID] = REQUEST_UNSET
 
 
 class _KeyIDRequest(RequestDataModel):
@@ -60,23 +62,23 @@ class _KeyIDRequest(RequestDataModel):
 
 
 class _ListUserKeysRequest(RequestDataModel):
-    target_username: Omittable[NonEmptyString] = REQUEST_UNSET
+    user_id: Omittable[RequestUserID] = REQUEST_UNSET
     offset: Omittable[PaginationOffset] = REQUEST_UNSET
     count: Omittable[PaginationPageSize] = REQUEST_UNSET
 
 
-class RequestUploadUserKeyHandler(RequestHandler):
+class RequestUploadUserKeyHandler(RequestHandler[_UploadUserKeyRequest]):
     """
     Upload a new key into the user's keyring.
 
     The caller must be authenticated. The key is bound to the authenticated user
     unless the caller has ``manage_keyrings`` permission and explicitly passes a
-    ``target_username``.
+    ``user_id``.
 
     Request data:
         content  (str, required)  - The key material / encrypted DEK.
         label        (str, optional)  - Human-readable label.
-        target_username (str, opt.)   - Admin-only: operate on another user.
+        user_id (UUID string, opt.)   - Admin-only: operate on another user.
 
     Response codes:
         200 - Key uploaded successfully; ``key_id`` is returned in data.
@@ -86,36 +88,40 @@ class RequestUploadUserKeyHandler(RequestHandler):
 
     request_model = _UploadUserKeyRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         key_content: str = handler.data["content"]
         label: str | None = handler.data.get("label")
-        target_username: str | None = handler.data.get("target_username")
+        target_user_id = (
+            uuid.UUID(handler.data["user_id"])
+            if "user_id" in handler.data
+            else handler.user_id
+        )
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             # Determine which user's keyring to write to
-            if target_username and target_username != handler.username:
+            if target_user_id != this_user.id:
                 if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
                     handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
                     return Result(
-                        code=403, target=target_username, username=handler.username
+                        code=403, target=str(target_user_id), user_id=handler.user_id
                     )
-                owner = session.get(User, target_username)
+                owner = session.get(User, target_user_id)
                 if not owner:
                     handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
                     return Result(
-                        code=404, target=target_username, username=handler.username
+                        code=404, target=str(target_user_id), user_id=handler.user_id
                     )
             else:
-                target_username = handler.username
                 owner = this_user
 
+            target_username = owner.username
             key = UserKey(
-                username=target_username,
+                user_id=owner.id,
                 content=key_content,
                 label=label,
                 created_time=time.time(),
@@ -128,10 +134,15 @@ class RequestUploadUserKeyHandler(RequestHandler):
                 {"id": key.id},
                 "Key uploaded successfully",
             )
-            return Result(code=200, target=target_username, username=handler.username)
+            return Result(
+                code=200,
+                target=str(target_user_id),
+                data={"target_username": target_username},
+                user_id=handler.user_id,
+            )
 
 
-class RequestGetUserKeyHandler(RequestHandler):
+class RequestGetUserKeyHandler(RequestHandler[_KeyIDRequest]):
     """
     Retrieve a single key from the keyring by its ``key_id``.
 
@@ -149,44 +160,47 @@ class RequestGetUserKeyHandler(RequestHandler):
 
     request_model = _KeyIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 1
 
     def handle(self, handler: ConnectionHandler):
         key_id: str = handler.data["id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return Result(code=404, target=key_id, username=handler.username)
+                return Result(code=404, target=key_id, user_id=handler.user_id)
 
             # Authorisation: the key must belong to the requesting user, or the
             # user must have admin-level manage_keyrings permission.
             if (
-                key.username != handler.username
+                key.user_id != handler.user_id
                 and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=key_id, username=handler.username)
+                return Result(code=403, target=key_id, user_id=handler.user_id)
 
+            audit_data = {"target_user_id": str(key.user_id)}
             handler.conclude_request(
                 200,
                 {
                     "key_id": key.id,
-                    "username": key.username,
+                    "user_id": str(key.user_id),
                     "label": key.label,
                     "key_content": key.content,
                     "created_time": key.created_time,
                 },
                 "Key retrieved successfully",
             )
-            return Result(code=200, target=key_id, username=handler.username)
+            return Result(
+                code=200, target=key_id, data=audit_data, user_id=handler.user_id
+            )
 
 
-class RequestDeleteUserKeyHandler(RequestHandler):
+class RequestDeleteUserKeyHandler(RequestHandler[_KeyIDRequest]):
     """
     Delete a key from the keyring by its ``key_id``.
 
@@ -204,29 +218,30 @@ class RequestDeleteUserKeyHandler(RequestHandler):
 
     request_model = _KeyIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         key_id: str = handler.data["id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return Result(code=404, target=key_id, username=handler.username)
+                return Result(code=404, target=key_id, user_id=handler.user_id)
 
             if (
-                key.username != handler.username
+                key.user_id != handler.user_id
                 and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=key_id, username=handler.username)
+                return Result(code=403, target=key_id, user_id=handler.user_id)
 
+            audit_data = {"target_user_id": str(key.user_id)}
             # If this key is set as the owner's preference DEK, clear it before deletion
-            owner_user = session.get(User, key.username)
+            owner_user = session.get(User, key.user_id)
             if owner_user is not None:
                 # Prefer checking by id to avoid unnecessary loading of relations
                 preference_dek_id = getattr(owner_user, "preference_dek_id", None)
@@ -236,10 +251,12 @@ class RequestDeleteUserKeyHandler(RequestHandler):
             session.commit()
 
             handler.conclude_request(200, {}, "Key deleted successfully")
-            return Result(code=200, target=key_id, username=handler.username)
+            return Result(
+                code=200, target=key_id, data=audit_data, user_id=handler.user_id
+            )
 
 
-class RequestSetPreferenceDEKHandler(RequestHandler):
+class RequestSetPreferenceDEKHandler(RequestHandler[_KeyIDRequest]):
     """
     Designate a key as the preference data encryption key for the user.
 
@@ -258,45 +275,48 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
 
     request_model = _KeyIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
         key_id: str = handler.data["id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return Result(code=404, target=key_id, username=handler.username)
+                return Result(code=404, target=key_id, user_id=handler.user_id)
 
             if (
-                key.username != handler.username
+                key.user_id != handler.user_id
                 and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=key_id, username=handler.username)
+                return Result(code=403, target=key_id, user_id=handler.user_id)
 
-            key_owner = User.get_existing(session, key.username)
+            audit_data = {"target_user_id": str(key.user_id)}
+            key_owner = User.get_existing(session, key.user_id)
             key_owner.preference_dek = key
             session.add(key)
             session.commit()
 
             handler.conclude_request(200, {}, "Preference DEK updated successfully")
-            return Result(code=200, target=key_id, username=handler.username)
+            return Result(
+                code=200, target=key_id, data=audit_data, user_id=handler.user_id
+            )
 
 
-class RequestListUserKeysHandler(RequestHandler):
+class RequestListUserKeysHandler(RequestHandler[_ListUserKeysRequest]):
     """
     List all keys in the authenticated user's keyring (metadata only, no key_content).
 
     The authenticated user sees only their own keys unless they hold
-    ``manage_keyrings`` permission and pass ``target_username``.
+    ``manage_keyrings`` permission and pass ``user_id``.
 
     Request data:
-        target_username (str, optional) - Admin-only: list another user's keys.
+        user_id (UUID string, optional) - Admin-only: list another user's keys.
 
     Response codes:
         200 - List returned in ``data.keys``.
@@ -306,34 +326,38 @@ class RequestListUserKeysHandler(RequestHandler):
 
     request_model = _ListUserKeysRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
-        target_username: str = handler.data.get("target_username") or handler.username
+        target_user_id = (
+            uuid.UUID(handler.data["user_id"])
+            if "user_id" in handler.data
+            else handler.user_id
+        )
         offset, count = get_offset_pagination(handler.data)
 
         with Session() as session:
-            target_user = session.get(User, target_username)
-            operator = User.get_existing(session, handler.username)
+            operator = User.get_existing(session, handler.user_id)
 
             if (
-                target_username != handler.username
+                target_user_id != operator.id
                 and Permissions.MANAGE_KEYRINGS not in operator.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
                 return Result(
-                    code=403, target=target_username, username=handler.username
+                    code=403, target=str(target_user_id), user_id=handler.user_id
                 )
 
+            target_user = session.get(User, target_user_id)
             if not target_user:
                 handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
                 return Result(
-                    code=404, target=target_username, username=handler.username
+                    code=404, target=str(target_user_id), user_id=handler.user_id
                 )
 
             keys_query = session.query(UserKey).filter(
-                UserKey.username == target_username
+                UserKey.user_id == target_user.id
             )
             total = keys_query.count()
             keys = (
@@ -362,4 +386,9 @@ class RequestListUserKeysHandler(RequestHandler):
                 },
                 "Keyring listed successfully",
             )
-            return Result(code=200, target=target_username, username=handler.username)
+            return Result(
+                code=200,
+                target=str(target_user_id),
+                data={"target_username": target_user.username},
+                user_id=handler.user_id,
+            )

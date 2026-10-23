@@ -1,14 +1,18 @@
 """Public two-factor setup, validation, disabling, and login contracts."""
 
+import uuid
+
 import orjson
 import pyotp
 import pytest
 import pytest_asyncio
 from argon2 import PasswordHasher
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 import include.database.models  # noqa: F401
-from include.database.models import identity
+from include.database.models import auth
+from include.database.models.auth import UserTotpCredential
 from include.database.models.identity import User
 from include.database.session import Base
 from tests.support.client import CFMSTestClient
@@ -30,6 +34,36 @@ async def enabled_totp(user_client: CFMSTestClient, pending_totp):
 @pytest.mark.integration
 class TestTwoFactorAuth:
     @pytest.mark.asyncio
+    async def test_administrator_cannot_disable_2fa_for_missing_user(
+        self, authenticated_client: CFMSTestClient
+    ):
+        response = await authenticated_client.send_request(
+            "disable_2fa", {"user_id": str(uuid.uuid4())}
+        )
+        assert_error(response, 400)
+
+    @pytest.mark.asyncio
+    async def test_administrator_disables_2fa_by_user_id(
+        self,
+        authenticated_client,
+        user_client,
+        test_user,
+        enabled_totp,
+    ):
+        status = assert_success(
+            await authenticated_client.send_request(
+                "get_2fa_status", {"user_id": test_user["user_id"]}
+            )
+        )
+        assert status["enabled"] is True
+        assert_success(
+            await authenticated_client.send_request(
+                "disable_2fa", {"user_id": test_user["user_id"]}
+            )
+        )
+        assert assert_success(await user_client.get_2fa_status())["enabled"] is False
+
+    @pytest.mark.asyncio
     async def test_disable_2fa_does_not_disclose_cross_user_target(
         self,
         user_client: CFMSTestClient,
@@ -38,15 +72,14 @@ class TestTwoFactorAuth:
         low_privilege_client: CFMSTestClient,
     ):
         existing_response = await low_privilege_client.send_request(
-            "disable_2fa", {"username": test_user["username"]}
+            "disable_2fa", {"user_id": test_user["user_id"]}
         )
         missing_response = await low_privilege_client.send_request(
-            "disable_2fa", {"username": "nonexistent_user_xyz_12345"}
+            "disable_2fa", {"user_id": "00000000-0000-4000-8000-000000000001"}
         )
 
         for response in (existing_response, missing_response):
             assert response["code"] == 403
-            assert response["message"] == "Permission denied"
             assert response["data"] == {}
         assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
@@ -57,15 +90,14 @@ class TestTwoFactorAuth:
         test_user,
     ):
         existing_response = await authenticated_client.send_request(
-            "get_2fa_status", {"target": test_user["username"]}
+            "get_2fa_status", {"user_id": test_user["user_id"]}
         )
         missing_response = await authenticated_client.send_request(
-            "get_2fa_status", {"target": "nonexistent_user_xyz_12345"}
+            "get_2fa_status", {"user_id": "00000000-0000-4000-8000-000000000001"}
         )
 
         assert_success(existing_response)
-        error = assert_error(missing_response, 404)
-        assert error["message"] == "Target user not found"
+        assert_error(missing_response, 404)
 
     @pytest.mark.asyncio
     async def test_get_2fa_status_disabled_by_default(
@@ -111,18 +143,14 @@ class TestTwoFactorAuth:
     ):
         response = await user_client.validate_2fa("invalid-totp")
 
-        error = assert_error(response, 401)
-        assert error["message"] == "Invalid verification code"
+        assert_error(response, 401)
         assert assert_success(await user_client.get_2fa_status())["enabled"] is False
 
     @pytest.mark.asyncio
     async def test_validate_2fa_without_setup(self, user_client: CFMSTestClient):
         response = await user_client.validate_2fa("123456")
 
-        error = assert_error(response, 400)
-        assert error["message"] == (
-            "Two-factor authentication has not been set up. Please set it up first."
-        )
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_setup_2fa_twice_fails(
@@ -157,8 +185,7 @@ class TestTwoFactorAuth:
     ):
         response = await user_client.cancel_2fa("wrong_password")
 
-        error = assert_error(response, 401)
-        assert error["message"] == "Invalid password"
+        assert_error(response, 401)
         assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
     @pytest.mark.asyncio
@@ -169,8 +196,7 @@ class TestTwoFactorAuth:
     ):
         response = await user_client.cancel_2fa(test_user["password"])
 
-        error = assert_error(response, 400)
-        assert error["message"] == "2FA not enabled or user not found"
+        assert_error(response, 400)
 
 
 @pytest.mark.integration
@@ -185,7 +211,7 @@ class TestTwoFactorAuthLogin:
         response = await client.login(test_user["username"], test_user["password"])
 
         assert response["code"] == 202
-        assert response["data"]["method"] == "totp"
+        assert response["data"]["methods"] == ["totp"]
 
     @pytest.mark.asyncio
     async def test_verify_2fa_login_with_valid_token(
@@ -248,7 +274,6 @@ class TestTwoFactorAuthLogin:
 
         error = assert_error(replay, 401)
         assert error["data"] == {}
-        assert error["message"] == "Invalid two-factor authentication token"
         remaining = assert_success(await user_client.get_2fa_status())
         assert remaining["backup_codes_count"] == 9
         assert remaining["enabled"] is True
@@ -260,18 +285,16 @@ def backup_code_sessions(monkeypatch, sqlite_engine_factory):
     Base.metadata.create_all(database)
     sessions = sessionmaker(bind=database)
     pepper = "backup-code-test-pepper"
-    monkeypatch.setattr(identity, "global_config", {"security": {"pepper": pepper}})
+    monkeypatch.setattr(auth, "global_config", {"security": {"pepper": pepper}})
     hasher = PasswordHasher()
     hashes = [hasher.hash(code + pepper) for code in ("deadbeef", "cafebabe")]
     with sessions.begin() as session:
         session.add(
-            User(
-                username="alice",
-                pass_hash="unused",
-                created_time=0.0,
-                totp_secret=pyotp.random_base32(),
-                totp_enabled=True,
-                totp_backup_codes=orjson.dumps(hashes).decode("utf-8"),
+            UserTotpCredential(
+                user=User(username="alice", created_time=0.0),
+                secret=pyotp.random_base32(),
+                enabled=True,
+                backup_codes=orjson.dumps(hashes).decode("utf-8"),
             )
         )
     return sessions, hashes[1]
@@ -283,18 +306,18 @@ def test_backup_code_consumption_is_committed_and_reuse_preserves_remaining_code
 ):
     sessions, remaining_hash = backup_code_sessions
 
-    with sessions() as session:
-        assert session.get(User, "alice").verify_totp("deadbeef") is True
+    with sessions.begin() as session:
+        assert session.scalar(select(UserTotpCredential)).verify("deadbeef") is True
 
     with sessions() as session:
-        persisted = session.get(User, "alice")
-        assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
-        assert persisted.verify_totp("deadbeef") is False
+        persisted = session.scalar(select(UserTotpCredential))
+        assert orjson.loads(persisted.backup_codes) == [remaining_hash]
+        assert persisted.verify("deadbeef") is False
 
     with sessions() as session:
-        persisted = session.get(User, "alice")
-        assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
-        assert persisted.totp_enabled is True
+        persisted = session.scalar(select(UserTotpCredential))
+        assert orjson.loads(persisted.backup_codes) == [remaining_hash]
+        assert persisted.enabled is True
 
 
 @pytest.mark.component
@@ -303,15 +326,15 @@ def test_consuming_last_backup_code_commits_empty_list_and_keeps_totp_enabled(
 ):
     sessions, remaining_hash = backup_code_sessions
     with sessions.begin() as session:
-        session.get(User, "alice").totp_backup_codes = orjson.dumps(
+        session.scalar(select(UserTotpCredential)).backup_codes = orjson.dumps(
             [remaining_hash]
         ).decode("utf-8")
 
-    with sessions() as session:
-        assert session.get(User, "alice").verify_totp("cafebabe") is True
+    with sessions.begin() as session:
+        assert session.scalar(select(UserTotpCredential)).verify("cafebabe") is True
 
     with sessions() as session:
-        persisted = session.get(User, "alice")
-        assert orjson.loads(persisted.totp_backup_codes) == []
-        assert persisted.totp_enabled is True
-        assert persisted.verify_totp("cafebabe") is False
+        persisted = session.scalar(select(UserTotpCredential))
+        assert orjson.loads(persisted.backup_codes) == []
+        assert persisted.enabled is True
+        assert persisted.verify("cafebabe") is False

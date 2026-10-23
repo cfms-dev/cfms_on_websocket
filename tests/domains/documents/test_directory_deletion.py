@@ -131,7 +131,6 @@ def test_document_task_cancellation_uses_remaining_file_reachability(
                 models.DocumentRevision(document=first, file=avatar),
                 models.User(
                     username="avatar-owner",
-                    pass_hash="hash",
                     avatar=avatar,
                     created_time=0.0,
                 ),

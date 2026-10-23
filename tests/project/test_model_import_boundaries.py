@@ -25,3 +25,30 @@ def test_document_models_do_not_import_domain_modules() -> None:
             domain_imports.append(node.module)
 
     assert domain_imports == []
+
+
+def test_oidc_persistence_is_owned_exclusively_by_the_extension() -> None:
+    source = Path(__file__).resolve().parents[2] / "src"
+    extension_packages = tuple(
+        manifest.parent
+        for manifest in (source / "include/extensions").glob("*/manifest.toml")
+    )
+    violations = []
+    for path in source.rglob("*.py"):
+        if any(
+            path.is_relative_to(package) for package in extension_packages
+        ) or path.is_relative_to(source / "alembic/versions"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        if any(
+            name in text
+            for name in (
+                "UserOidcCredential",
+                "user_oidc_credentials",
+                "bind_oidc_identity",
+                "find_oidc_credential",
+                "include.extensions.oidc_sso",
+            )
+        ):
+            violations.append(str(path.relative_to(source)))
+    assert violations == []

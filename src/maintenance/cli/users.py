@@ -59,6 +59,29 @@ def reset_password(
 
 
 @app.command(
+    "rotate-secrets",
+    epilog="Example: maintain user rotate-secrets --yes",
+)
+def rotate_secrets(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip confirmation for high-risk operations."),
+    ] = False,
+) -> None:
+    """Rotate all user signing keys and invalidate all tokens. Stop all servers first."""
+    _confirm_or_abort(
+        "Rotate every user's signing key and invalidate all existing tokens? "
+        "All server instances must be stopped.",
+        yes,
+    )
+    updated_count = _run(
+        operations.rotate_secrets,
+        status="Rotating user signing keys...",
+    )
+    _print_success(f"Rotated signing keys for {updated_count} user(s).")
+
+
+@app.command(
     "clear-totp",
     no_args_is_help=True,
     epilog=(

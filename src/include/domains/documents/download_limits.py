@@ -1,4 +1,5 @@
 import time
+import uuid
 from dataclasses import dataclass
 
 from loguru import logger
@@ -90,7 +91,7 @@ def _check_download_limits(
     session: Session,
     *,
     namespace: str,
-    username: str | None,
+    user_id: uuid.UUID | None,
     ip_address: str,
     account_created_at: float | None,
     task_id: str | None,
@@ -108,14 +109,14 @@ def _check_download_limits(
 
     buckets = []
     account_bucket = None
-    if username is not None:
+    if user_id is not None:
         capacity = (
             policy.issue_account_capacity
             if namespace == _ISSUE_NAMESPACE
             else policy.transfer_account_capacity
         )
         account_bucket = lock_rate_bucket(
-            session, namespace, "account", username, now, capacity
+            session, namespace, "account", str(user_id), now, capacity
         )
         buckets.append(account_bucket)
 
@@ -139,15 +140,15 @@ def _check_download_limits(
         )
         buckets.append(task_bucket)
 
-    if username is not None:
-        record_ip_account(session, namespace, ip_address, username, now)
+    if user_id is not None:
+        record_ip_account(session, namespace, ip_address, user_id, now)
     for bucket in buckets:
         refresh_denials(bucket, now, policy.denial_window_seconds)
 
     assessment = assess_download_risk(
         DownloadRiskSignals(
             new_account=(
-                username is not None
+                user_id is not None
                 and (
                     account_created_at is None
                     or now - account_created_at < policy.new_account_seconds
@@ -160,7 +161,7 @@ def _check_download_limits(
                     ip_address,
                     now - policy.ip_account_window_seconds,
                 )
-                if username is not None
+                if user_id is not None
                 else 0
             ),
             denial_count=max((bucket.denial_count for bucket in buckets), default=0),
@@ -226,7 +227,7 @@ def _check_download_limits(
         log = logger.bind(
             name="document_download_risk",
             phase=phase,
-            username=username,
+            user_id=user_id,
             remote_address=ip_address,
             risk_level=assessment.level.value,
             risk_reasons=assessment.reasons,
@@ -261,7 +262,7 @@ def _check_download_limits(
 
 def check_download_issue_limits(
     session: Session,
-    username: str,
+    user_id: uuid.UUID,
     ip_address: str,
     *,
     account_created_at: float | None,
@@ -271,7 +272,7 @@ def check_download_issue_limits(
     return _check_download_limits(
         session,
         namespace=_ISSUE_NAMESPACE,
-        username=username,
+        user_id=user_id,
         ip_address=ip_address,
         account_created_at=account_created_at,
         task_id=None,
@@ -282,7 +283,7 @@ def check_download_issue_limits(
 
 def check_download_transfer_limits(
     session: Session,
-    username: str | None,
+    user_id: uuid.UUID | None,
     ip_address: str,
     task_id: str,
     *,
@@ -293,7 +294,7 @@ def check_download_transfer_limits(
     return _check_download_limits(
         session,
         namespace=_TRANSFER_NAMESPACE,
-        username=username,
+        user_id=user_id,
         ip_address=ip_address,
         account_created_at=account_created_at,
         task_id=task_id,

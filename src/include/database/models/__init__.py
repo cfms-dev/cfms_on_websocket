@@ -8,6 +8,12 @@ from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
 )
+from include.database.models.auth import (
+    UserAuthPolicy,
+    UserAuthPublicKey,
+    UserPasswordCredential,
+    UserTotpCredential,
+)
 from include.database.models.comments import Comment
 from include.database.models.documents import (
     Document,
@@ -88,12 +94,16 @@ __all__ = [
     "TrafficThrottle",
     "TransferMode",
     "User",
+    "UserAuthPolicy",
+    "UserAuthPublicKey",
     "UserBlockEntry",
     "UserBlockSubEntry",
     "UserGroup",
     "UserGroupPermission",
     "UserKey",
     "UserMembership",
+    "UserPasswordCredential",
     "UserPermission",
     "UserStatus",
+    "UserTotpCredential",
 ]

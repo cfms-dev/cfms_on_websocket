@@ -1,0 +1,15 @@
+INSERT INTO "audit_entries" VALUES('legacy-audit','login','alice','alice',NULL,200,NULL,100.0);
+INSERT INTO "document_metadata" VALUES('legacy-document','alice','alice');
+INSERT INTO "documents" VALUES('legacy-document',1792768390.4887857,NULL);
+INSERT INTO "folders" VALUES('/',1792768390.4886503);
+INSERT INTO "keyrings" VALUES('legacy-key','alice','wrapped-key',NULL,100.0);
+INSERT INTO "nodes" VALUES('/','directory','/',NULL,1,0,NULL,NULL);
+INSERT INTO "nodes" VALUES('legacy-document','document','Report','/',1,0,NULL,NULL);
+INSERT INTO "object_access_entries" VALUES(1,'user','alice','directory','/','read',0.0,NULL);
+INSERT INTO "object_access_entries" VALUES(2,'user','deleted-user','directory','/','read',0.0,NULL);
+INSERT INTO "schedules" VALUES('legacy-schedule','test.record',1,'{}','interval','{"seconds": 60}','UTC',0,1,'active',1,NULL,NULL,NULL,'alice',1792768390.4893706,'alice',1792768390.4893711,NULL);
+INSERT INTO "user_groups" VALUES('user',NULL);
+INSERT INTO "user_memberships" VALUES(1,'alice','user',0.0,NULL);
+INSERT INTO "user_permissions" VALUES(1,'alice','search',1,0.0,NULL);
+INSERT INTO "users" VALUES('alice','$argon2id$v=19$m=65536,t=3,p=4$E7yNbXHJBdEENcgKqQ0K8A$gqFSW/kJodyLn8TfMsNXaBTnGjGzzyqrfBrPO+T3oHE',0.0,NULL,NULL,NULL,100.0,0,NULL,'ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss','JBSWY3DPEHPK3PXP',1,'[]','legacy-key');
+INSERT INTO "users" VALUES('pending','',100.0,NULL,NULL,NULL,200.0,0,NULL,'pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp','JBSWY3DPEHPK3PXP',0,'[]',NULL);

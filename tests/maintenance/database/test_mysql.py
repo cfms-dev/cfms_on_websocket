@@ -1,4 +1,5 @@
 import os
+import uuid
 from pathlib import Path
 
 import pytest
@@ -165,17 +166,16 @@ def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) 
                 "SET NULL"
             )
         tables = backup_context.Base.metadata.tables
+        owner_id = uuid.uuid4()
         with mysql_engine.begin() as connection:
             connection.execute(
                 tables["users"].insert(),
                 {
+                    "id": owner_id,
                     "username": "schedule-owner",
-                    "pass_hash": "hash",
-                    "passwd_last_modified": 100.0,
                     "created_time": 100.0,
                     "status": 0,
                     "secret_key": "secret",
-                    "totp_enabled": False,
                 },
             )
             connection.execute(
@@ -192,16 +192,14 @@ def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) 
                     "enabled": True,
                     "status": "active",
                     "revision": 1,
-                    "created_by": "schedule-owner",
+                    "created_by": owner_id,
                     "created_at": 100.0,
-                    "updated_by": "schedule-owner",
+                    "updated_by": owner_id,
                     "updated_at": 100.0,
                 },
             )
             connection.execute(
-                tables["users"]
-                .delete()
-                .where(tables["users"].c.username == "schedule-owner")
+                tables["users"].delete().where(tables["users"].c.id == owner_id)
             )
             assert connection.execute(
                 select(
@@ -209,6 +207,115 @@ def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) 
                     tables["schedules"].c.updated_by,
                 ).where(tables["schedules"].c.id == "user-schedule")
             ).one() == (None, None)
+    finally:
+        _clear_mysql_database(mysql_engine)
+
+
+def test_legacy_credentials_round_trip_on_mysql(backup_context, request) -> None:
+    mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
+    request.addfinalizer(mysql_engine.dispose)
+    _clear_mysql_database(mysql_engine)
+    config = Config(_PROJECT_ROOT / "src" / "alembic.ini")
+    tables = backup_context.Base.metadata.tables
+    owner_id = uuid.uuid4()
+    try:
+        backup_context.Base.metadata.create_all(mysql_engine)
+        with mysql_engine.begin() as connection:
+            connection.execute(
+                tables["users"].insert(),
+                {"id": owner_id, "username": "credential-owner"},
+            )
+            connection.execute(
+                tables["user_passwords"].insert(),
+                {
+                    "user_id": owner_id,
+                    "credential_id": "password-credential",
+                    "pass_hash": "retained-hash",
+                    "passwd_last_modified": 0,
+                },
+            )
+            connection.execute(
+                tables["user_totp_credentials"].insert(),
+                {
+                    "user_id": owner_id,
+                    "credential_id": "totp-credential",
+                    "secret": "JBSWY3DPEHPK3PXP",
+                    "enabled": True,
+                    "backup_codes": "[]",
+                },
+            )
+            connection.execute(
+                tables["user_auth_policies"].insert(),
+                [
+                    {
+                        "user_id": owner_id,
+                        "purpose": purpose,
+                        "revision": 1,
+                        "chains": chains,
+                    }
+                    for purpose, chains in (
+                        (
+                            "login",
+                            [
+                                [
+                                    {
+                                        "method": "password",
+                                        "credential_ids": ["password-credential"],
+                                    }
+                                ]
+                            ],
+                        ),
+                        (
+                            "mfa",
+                            [
+                                [
+                                    {
+                                        "method": "totp",
+                                        "credential_ids": ["totp-credential"],
+                                    }
+                                ]
+                            ],
+                        ),
+                        ("escalation", []),
+                    )
+                ],
+            )
+            config.attributes["connection"] = connection
+            command.stamp(config, "head")
+
+        with mysql_engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.downgrade(config, "0460356a5ba6")
+            assert connection.execute(
+                text(
+                    "SELECT pass_hash, passwd_last_modified, totp_secret, "
+                    "totp_enabled, totp_backup_codes FROM users "
+                    "WHERE username = 'credential-owner'"
+                )
+            ).one() == ("retained-hash", 0, "JBSWY3DPEHPK3PXP", True, "[]")
+            assert "user_passwords" not in inspect(connection).get_table_names()
+            command.upgrade(config, "head")
+
+        with mysql_engine.connect() as connection:
+            user_id = connection.scalar(
+                select(tables["users"].c.id).where(
+                    tables["users"].c.username == "credential-owner"
+                )
+            )
+            assert isinstance(user_id, uuid.UUID)
+            assert connection.execute(
+                select(
+                    tables["user_passwords"].c.pass_hash,
+                    tables["user_passwords"].c.passwd_last_modified,
+                ).where(tables["user_passwords"].c.user_id == user_id)
+            ).one() == ("retained-hash", 0)
+            assert connection.execute(
+                select(
+                    tables["user_totp_credentials"].c.secret,
+                    tables["user_totp_credentials"].c.enabled,
+                    tables["user_totp_credentials"].c.backup_codes,
+                ).where(tables["user_totp_credentials"].c.user_id == user_id)
+            ).one() == ("JBSWY3DPEHPK3PXP", True, "[]")
     finally:
         _clear_mysql_database(mysql_engine)
 

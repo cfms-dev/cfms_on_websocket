@@ -1,3 +1,4 @@
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -5,6 +6,10 @@ from threading import Event
 import pytest
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import sessionmaker
+
+ALICE_ID = uuid.UUID("c2ef90b9-02bc-5d53-93cd-92652b6e1b41")
+BOB_ID = uuid.UUID("ef45d397-0411-5f5e-8940-9bdbdef3958b")
+CHARLIE_ID = uuid.UUID("68b56d94-b678-57d9-8c1b-6971efe9569c")
 
 pytestmark = pytest.mark.component
 
@@ -54,10 +59,16 @@ def download_limit_context(monkeypatch, sqlite_engine_factory):
     return download_limits, models, session_factory, policy
 
 
-def _issue(download_limits, session, username="alice", ip="203.0.113.1", **kwargs):
+def _issue(
+    download_limits,
+    session,
+    user_id=ALICE_ID,
+    ip="203.0.113.1",
+    **kwargs,
+):
     return download_limits.check_download_issue_limits(
         session,
-        username,
+        user_id,
         ip,
         account_created_at=0.0,
         now=1000.0,
@@ -81,14 +92,22 @@ def test_download_issue_uses_independent_account_and_ip_buckets(
         assert (
             session.get(
                 models.RateLimitBucket,
-                ("download_issue", "account", "alice"),
+                (
+                    "download_issue",
+                    "account",
+                    str(ALICE_ID),
+                ),
             )
             is not None
         )
         assert (
             session.get(
                 models.RateLimitBucket,
-                ("document_creation", "account", "alice"),
+                (
+                    "document_creation",
+                    "account",
+                    str(ALICE_ID),
+                ),
             )
             is None
         )
@@ -99,8 +118,12 @@ def test_download_ip_account_fanout_escalates_risk(download_limit_context):
 
     with session_factory.begin() as session:
         levels = [
-            _issue(download_limits, session, username=username).risk_level
-            for username in ("alice", "bob", "charlie")
+            _issue(download_limits, session, user_id=username).risk_level
+            for username in (
+                ALICE_ID,
+                BOB_ID,
+                CHARLIE_ID,
+            )
         ]
 
     assert levels == [
@@ -203,7 +226,7 @@ def test_download_cleanup_removes_stale_state_from_both_namespaces(
                     models.RiskIPAccount(
                         namespace=namespace,
                         ip_address="198.51.100.1",
-                        username="stale",
+                        user_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
                         last_attempt=1.0,
                     ),
                 ]
@@ -243,7 +266,13 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
     with concurrent_sessions.begin() as session:
         download_file = models.File(id="download-file", path="download.bin")
         download_file.size = 1
-        session.add(models.User(username="alice", pass_hash="unused", created_time=0.0))
+        session.add(
+            models.User(
+                username="alice",
+                id=ALICE_ID,
+                created_time=0.0,
+            )
+        )
         session.flush()
         session.add_all(
             [
@@ -252,7 +281,7 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
                 models.FileTask(
                     id="download-task",
                     file=download_file,
-                    issued_by_username="alice",
+                    issued_by_id=ALICE_ID,
                     mode=models.TransferMode.DOWNLOAD,
                     status=models.FileTaskStatus.PENDING,
                     start_time=900.0,
@@ -291,7 +320,7 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
             assert isinstance(claimed, ClaimedFileTask)
             decision = download_limits.check_download_transfer_limits(
                 session,
-                "alice",
+                ALICE_ID,
                 "203.0.113.1",
                 "download-task",
                 account_created_at=0.0,
@@ -309,7 +338,7 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
                 models.FileTask(
                     id="issued-task",
                     file_id="issued-file",
-                    issued_by_username="alice",
+                    issued_by_id=ALICE_ID,
                     mode=models.TransferMode.DOWNLOAD,
                     status=models.FileTaskStatus.PENDING,
                     start_time=1000.0,
@@ -329,11 +358,19 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
         issued_task = session.get(models.FileTask, "issued-task")
         issue_bucket = session.get(
             models.RateLimitBucket,
-            ("download_issue", "account", "alice"),
+            (
+                "download_issue",
+                "account",
+                str(ALICE_ID),
+            ),
         )
         transfer_bucket = session.get(
             models.RateLimitBucket,
-            ("download_transfer", "account", "alice"),
+            (
+                "download_transfer",
+                "account",
+                str(ALICE_ID),
+            ),
         )
         assert task.status == models.FileTaskStatus.IN_PROGRESS
         assert issued_task.status == models.FileTaskStatus.PENDING

@@ -45,7 +45,7 @@ def _seed_permission_entries(context) -> None:
     UserPermission = context["UserPermission"]
 
     with context["session"].begin() as session:
-        user = User(username="alice", pass_hash="hash", created_time=0.0)
+        user = User(username="alice", created_time=0.0)
         user.rights.extend(
             [
                 UserPermission(
@@ -119,7 +119,9 @@ def test_cleanup_uses_strict_cutoff_and_preserves_active_entries(
     _seed_permission_entries(context)
 
     with context["session"]() as session:
-        user = session.get(context["User"], "alice")
+        user = session.scalar(
+            select(context["User"]).where(context["User"].username == "alice")
+        )
         group = session.get(context["UserGroup"], "staff")
         assert user.own_permissions == {"active"}
         assert group.all_permissions == {"active_group"}
@@ -132,7 +134,9 @@ def test_cleanup_uses_strict_cutoff_and_preserves_active_entries(
     assert removed.user_entries == 2
     assert removed.group_entries == 1
     with context["session"]() as session:
-        user = session.get(context["User"], "alice")
+        user = session.scalar(
+            select(context["User"]).where(context["User"].username == "alice")
+        )
         group = session.get(context["UserGroup"], "staff")
         assert user.own_permissions == {"active"}
         assert group.all_permissions == {"active_group"}
@@ -187,7 +191,7 @@ def test_cleanup_rechecks_cutoff_when_deleting(permission_cleanup_context) -> No
     User = context["User"]
     UserPermission = context["UserPermission"]
     with context["session"].begin() as session:
-        user = User(username="alice", pass_hash="hash", created_time=0.0)
+        user = User(username="alice", created_time=0.0)
         entry = UserPermission(
             permission="rescheduled",
             granted=True,

@@ -5,6 +5,7 @@ import include.database.models  # noqa: F401
 from include.config.settings import global_config
 from include.database.engine import create_database_engine, database_url
 from include.database.session import Base
+from include.extensions.data import load_extension_data
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -13,9 +14,16 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
+extension_table_names = set(load_extension_data(Base.metadata))
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    if type_ == "table" and name in extension_table_names:
+        return False
+    return True
 
 
 def run_migrations_offline() -> None:
@@ -34,6 +42,7 @@ def run_migrations_offline() -> None:
     context.configure(
         url=url,
         target_metadata=target_metadata,
+        include_object=include_object,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,
@@ -55,6 +64,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=supplied_connection,
             target_metadata=target_metadata,
+            include_object=include_object,
             render_as_batch=True,
         )
         with context.begin_transaction():
@@ -67,6 +77,7 @@ def run_migrations_online() -> None:
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
+                include_object=include_object,
                 render_as_batch=True,
             )
 

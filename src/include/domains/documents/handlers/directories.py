@@ -172,7 +172,7 @@ def _evaluate_directory_read_access(
     return True, visible_parent_id, context
 
 
-class RequestListDirectoryHandler(RequestHandler):
+class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
     """Handles directory listing requests.
     This util processes a directory listing request by generating a list of files and directories in the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -190,7 +190,7 @@ class RequestListDirectoryHandler(RequestHandler):
 
     request_model = _ListDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -201,7 +201,7 @@ class RequestListDirectoryHandler(RequestHandler):
         cursor = handler.data.get("cursor")
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             # Determine parent folder and fetch children/documents
             if not folder_id:
@@ -210,7 +210,7 @@ class RequestListDirectoryHandler(RequestHandler):
             folder = session.query(Folder).filter(Folder.id == folder_id).first()
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=folder_id, username=handler.username)
+                return Result(code=404, target=folder_id, user_id=handler.user_id)
 
             has_permission, parent_id, _ = _evaluate_directory_read_access(
                 session,
@@ -221,7 +221,7 @@ class RequestListDirectoryHandler(RequestHandler):
 
             if not has_permission:
                 handler.conclude_access_denial()
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             filters = {"folder_id": folder_id}
             sort = "type_name_id:asc"
@@ -236,7 +236,7 @@ class RequestListDirectoryHandler(RequestHandler):
                 last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
-                return Result(code=400, target=folder_id, username=handler.username)
+                return Result(code=400, target=folder_id, user_id=handler.user_id)
 
             items = fetch_directory_listing_items(
                 session,
@@ -262,10 +262,10 @@ class RequestListDirectoryHandler(RequestHandler):
 
         # Send the response back to the client
         handler.conclude_request(**response)
-        return Result(code=200, target=folder_id, username=handler.username)
+        return Result(code=200, target=folder_id, user_id=handler.user_id)
 
 
-class RequestGetDirectoryInfoHandler(RequestHandler):
+class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
     """Handles directory information requests.
     This util processes a directory information request by retrieving information about the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -283,7 +283,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
 
     request_model = _DirectoryIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -295,14 +295,14 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
             return
 
         with Session() as session:
-            # require_auth ensures this
-            user = User.get_existing(session, handler.username)
+            # requires_auth ensures this
+            user = User.get_existing(session, handler.user_id)
 
             directory = session.get(Folder, directory_id)
 
             if not directory:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=directory_id, username=handler.username)
+                return Result(code=404, target=directory_id, user_id=handler.user_id)
 
             can_view_access_rules = (
                 Permissions.VIEW_ACCESS_RULES in user.all_permissions
@@ -316,7 +316,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
             )
             if not has_permission:
                 handler.conclude_access_denial()
-                return Result(code=403, target=directory_id, username=handler.username)
+                return Result(code=403, target=directory_id, user_id=handler.user_id)
 
             info_code = 0
             access_rules = []
@@ -343,12 +343,12 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
             }
 
             handler.conclude_request(200, data, "Directory info retrieved successfully")
-            return Result(code=0, target=directory_id, username=handler.username)
+            return Result(code=0, target=directory_id, user_id=handler.user_id)
 
 
-class RequestGetDirectoryAccessRulesHandler(RequestHandler):
+class RequestGetDirectoryAccessRulesHandler(RequestHandler[_DirectoryIDRequest]):
     request_model = _DirectoryIDRequest
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
@@ -356,12 +356,12 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
         directory_id: str = handler.data["directory_id"]
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             directory = session.get(Folder, directory_id)
 
             if not directory:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=directory_id, username=handler.username)
+                return Result(code=404, target=directory_id, user_id=handler.user_id)
 
             if (
                 not check_access_requirements(
@@ -370,7 +370,7 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
                 or Permissions.VIEW_ACCESS_RULES not in user.all_permissions
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=directory_id, username=handler.username)
+                return Result(code=403, target=directory_id, user_id=handler.user_id)
 
             handler.conclude_request(
                 200,
@@ -384,10 +384,10 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
                 },
                 "Directory access rules retrieved successfully",
             )
-            return Result(code=0, target=directory_id, username=handler.username)
+            return Result(code=0, target=directory_id, user_id=handler.user_id)
 
 
-class RequestCreateDirectoryHandler(RequestHandler):
+class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
     """Handles directory creation requests.
     This util processes a directory creation request by creating a new directory in the specified parent directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -405,7 +405,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
 
     request_model = _CreateDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -420,18 +420,18 @@ class RequestCreateDirectoryHandler(RequestHandler):
             parent_id = ROOT_DIRECTORY_ID
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.CREATE_DIRECTORY not in this_user.all_permissions:
                 handler.conclude_request(
                     403, {}, "You have no permissions to create directories"
                 )
-                return Result(code=403, target=parent_id, username=handler.username)
+                return Result(code=403, target=parent_id, user_id=handler.user_id)
 
             parent = session.get(Folder, parent_id)
             if not parent:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=parent_id, username=handler.username)
+                return Result(code=404, target=parent_id, user_id=handler.user_id)
             if not check_access_requirements(session, this_user, parent, "write"):
                 if (
                     parent_id == ROOT_DIRECTORY_ID
@@ -441,7 +441,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
                     pass
                 else:
                     handler.conclude_access_denial()
-                    return Result(code=403, target=parent_id, username=handler.username)
+                    return Result(code=403, target=parent_id, user_id=handler.user_id)
 
             folder = Folder(name=name, parent=parent)
             session.add(folder)
@@ -455,7 +455,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
                         return Result(
                             code=403,
                             target=parent_id,
-                            username=handler.username,
+                            user_id=handler.user_id,
                         )
                     session.commit()
             except NodeNameConflictError:
@@ -473,7 +473,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
                         },
                         "Directory already exists",
                     )
-                    return Result(code=0, target=parent_id, username=handler.username)
+                    return Result(code=0, target=parent_id, user_id=handler.user_id)
                 return respond_to_node_name_conflict(
                     handler,
                     payload,
@@ -491,10 +491,10 @@ class RequestCreateDirectoryHandler(RequestHandler):
                 },
                 "Directory created successfully",
             )
-            return Result(code=0, target=parent_id, username=handler.username)
+            return Result(code=0, target=parent_id, user_id=handler.user_id)
 
 
-class RequestDeleteDirectoryHandler(RequestHandler):
+class RequestDeleteDirectoryHandler(RequestHandler[_FolderIDRequest]):
     """Handles directory deletion requests.
     This util processes a directory deletion request by deleting the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -512,7 +512,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
 
     request_model = _FolderIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
@@ -522,21 +522,21 @@ class RequestDeleteDirectoryHandler(RequestHandler):
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-            return Result(code=404, target=folder_id, username=handler.username)
+            return Result(code=404, target=folder_id, user_id=handler.user_id)
 
         cancelled_task_ids: list[str] = []
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
             folder = session.get(Folder, folder_id)
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=folder_id, username=handler.username)
+                return Result(code=404, target=folder_id, user_id=handler.user_id)
             if (
                 Permissions.DELETE_DIRECTORY not in this_user.all_permissions
                 or not check_access_requirements(session, this_user, folder, "write")
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             operation_id = f"OP_DEL_{secrets.token_hex(8)}_{int(time.time())}"
             now = time.time()
@@ -589,15 +589,15 @@ class RequestDeleteDirectoryHandler(RequestHandler):
                     },
                     "Directory partially deleted: some items could not be removed due to insufficient permissions.",
                 )
-                return Result(code=207, target=folder_id, username=handler.username)
+                return Result(code=207, target=folder_id, user_id=handler.user_id)
             else:
                 handler.conclude_request(
                     200, {}, "Directory marked as deleted successfully"
                 )
-                return Result(code=0, target=folder_id, username=handler.username)
+                return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestRenameDirectoryHandler(RequestHandler):
+class RequestRenameDirectoryHandler(RequestHandler[_RenameDirectoryRequest]):
     """Handles directory renaming requests.
     This util processes a directory renaming request by updating the name of the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -615,7 +615,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
     request_model = _RenameDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -626,22 +626,22 @@ class RequestRenameDirectoryHandler(RequestHandler):
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-            return Result(code=404, target=folder_id, username=handler.username)
+            return Result(code=404, target=folder_id, user_id=handler.user_id)
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             folder = session.get(Folder, folder_id)
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=folder_id, username=handler.username)
+                return Result(code=404, target=folder_id, user_id=handler.user_id)
 
             if (
                 Permissions.RENAME_DIRECTORY not in this_user.all_permissions
                 or not check_access_requirements(session, this_user, folder, "write")
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             if folder.name == new_name:
                 handler.conclude_request(
@@ -671,13 +671,13 @@ class RequestRenameDirectoryHandler(RequestHandler):
             handler.conclude_request(
                 code=200, message="Directory renamed successfully", data={}
             )
-            return Result(code=0, target=folder_id, username=handler.username)
+            return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestMoveDirectoryHandler(RequestHandler):
+class RequestMoveDirectoryHandler(RequestHandler[_MoveDirectoryRequest]):
     request_model = _MoveDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -690,14 +690,14 @@ class RequestMoveDirectoryHandler(RequestHandler):
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-            return Result(code=404, target=folder_id, username=handler.username)
+            return Result(code=404, target=folder_id, user_id=handler.user_id)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.MOVE not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MOVE_DIRECTORY)
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             folder = session.get(Folder, folder_id)
 
@@ -705,18 +705,18 @@ class RequestMoveDirectoryHandler(RequestHandler):
                 handler.conclude_request(
                     code=404, message=smsg.SUBJECT_DIRECTORY_NOT_FOUND, data={}
                 )
-                return Result(code=404, target=folder_id, username=handler.username)
+                return Result(code=404, target=folder_id, user_id=handler.user_id)
 
             if not check_access_requirements(session, user, folder, "move"):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MOVE_DIRECTORY)
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             target_folder = session.get(Folder, target_folder_id)
             if not target_folder:
                 handler.conclude_request(
                     code=404, message=smsg.TARGET_DIRECTORY_NOT_FOUND, data={}
                 )
-                return Result(code=404, target=folder_id, username=handler.username)
+                return Result(code=404, target=folder_id, user_id=handler.user_id)
 
             if not check_access_requirements(session, user, target_folder, "write"):
                 if (
@@ -728,14 +728,14 @@ class RequestMoveDirectoryHandler(RequestHandler):
                     handler.conclude_request(
                         403, {}, smsg.ACCESS_DENIED_WRITE_DIRECTORY
                     )
-                    return Result(code=403, target=folder_id, username=handler.username)
+                    return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             # Check if target folder is a descendant of the folder being moved
             if target_folder.id == folder.id or target_folder.is_descendant_of(folder):
                 handler.conclude_request(
                     400, {}, smsg.CANNOT_MOVE_DIRECTORY_INTO_SUBDIRECTORY
                 )
-                return Result(code=400, target=folder_id, username=handler.username)
+                return Result(code=400, target=folder_id, user_id=handler.user_id)
 
             name = folder.name
             try:
@@ -755,15 +755,15 @@ class RequestMoveDirectoryHandler(RequestHandler):
                 )
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
-        return Result(code=0, target=folder_id, username=handler.username)
+        return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestSetDirectoryRulesHandler(RequestHandler):
+class RequestSetDirectoryRulesHandler(RequestHandler[_SetDirectoryRulesRequest]):
     """Handles the "set_directory_rules" action."""
 
     request_model = _SetDirectoryRulesRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -772,28 +772,28 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
         access_rules_to_apply: dict = handler.data["access_rules"]
         inherit_parent: bool = handler.data.get("inherit_parent", True)
 
-        if not handler.username:
+        if not handler.user_id:
             handler.conclude_request(401, {}, smsg.AUTHENTICATION_REQUIRED)
             return Result(code=401, target=directory_id)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             directory = session.get(Folder, directory_id)
 
             if not directory:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=directory_id, username=handler.username)
+                return Result(code=404, target=directory_id, user_id=handler.user_id)
 
             if Permissions.SET_ACCESS_RULES not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_SET_ACCESS_RULES)
-                return Result(code=403, target=directory_id, username=handler.username)
+                return Result(code=403, target=directory_id, user_id=handler.user_id)
 
             if not check_access_requirements(
                 session, user, directory, access_type="manage"
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=directory_id, username=handler.username)
+                return Result(code=403, target=directory_id, user_id=handler.user_id)
 
             try:
                 if apply_access_rules(
@@ -801,22 +801,20 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
                 ):
                     session.commit()
                     handler.conclude_request(200, {}, "Set access rules successfully")
-                    return Result(
-                        code=0, target=directory_id, username=handler.username
-                    )
+                    return Result(code=0, target=directory_id, user_id=handler.user_id)
                 else:
                     session.rollback()
                     handler.conclude_access_denial()
                     return Result(
-                        code=403, target=directory_id, username=handler.username
+                        code=403, target=directory_id, user_id=handler.user_id
                     )
             except (ValueError, jsonschema.ValidationError) as exc:
                 session.rollback()
                 handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
-                return Result(code=400, target=directory_id, username=handler.username)
+                return Result(code=400, target=directory_id, user_id=handler.user_id)
 
 
-class RequestPurgeDirectoryHandler(RequestHandler):
+class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
     """Handles the "purge_directory" action.
     Permanently removes a directory, all its subdirectories, and all documents within.
     This action is irreversible.
@@ -824,7 +822,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
 
     request_model = _FolderIDRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 20
 
     def handle(self, handler: ConnectionHandler):
@@ -832,14 +830,14 @@ class RequestPurgeDirectoryHandler(RequestHandler):
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(403, {}, smsg.CANNOT_PURGE_ROOT_DIRECTORY)
-            return Result(code=403, target=folder_id, username=handler.username)
+            return Result(code=403, target=folder_id, user_id=handler.user_id)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.PURGE not in user.all_permissions:
                 handler.conclude_permission_denial()
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             folder = session.get(
                 Folder, folder_id, execution_options={"include_deleted": True}
@@ -847,17 +845,17 @@ class RequestPurgeDirectoryHandler(RequestHandler):
 
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=folder_id, username=handler.username)
+                return Result(code=404, target=folder_id, user_id=handler.user_id)
 
             if folder.status != EntityStatus.DELETED:
                 handler.conclude_request(
                     400, {}, "Directory must be marked as deleted before purging"
                 )
-                return Result(code=400, target=folder_id, username=handler.username)
+                return Result(code=400, target=folder_id, user_id=handler.user_id)
 
             if not check_access_requirements(session, user, folder, "write"):
                 handler.conclude_access_denial()
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             try:
                 (
@@ -876,7 +874,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
                         {"failed": failed_items},
                         "Some items in the directory cannot be purged due to insufficient permissions",
                     )
-                    return Result(code=403, target=folder_id, username=handler.username)
+                    return Result(code=403, target=folder_id, user_id=handler.user_id)
 
                 session.autoflush = False
 
@@ -905,20 +903,20 @@ class RequestPurgeDirectoryHandler(RequestHandler):
                     {},
                     "Directory and all its contents have been permanently purged",
                 )
-                return Result(code=0, target=folder_id, username=handler.username)
+                return Result(code=0, target=folder_id, user_id=handler.user_id)
 
             finally:
                 session.autoflush = True
 
 
-class RequestRestoreDirectoryHandler(RequestHandler):
+class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
     """Handles the "restore_directory" action.
     Supports virtual ROOT_DIRECTORY_ID translation to database None.
     """
 
     request_model = _RestoreDirectoryRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 10
 
     def handle(self, handler: ConnectionHandler):
@@ -929,14 +927,14 @@ class RequestRestoreDirectoryHandler(RequestHandler):
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(400, {}, smsg.CANNOT_RESTORE_ROOT_DIRECTORY)
-            return Result(code=400, target=folder_id, username=handler.username)
+            return Result(code=400, target=folder_id, user_id=handler.user_id)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.RESTORE not in user.all_permissions:
                 handler.conclude_permission_denial()
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             folder = session.get(
                 Folder, folder_id, execution_options={"include_deleted": True}
@@ -944,11 +942,11 @@ class RequestRestoreDirectoryHandler(RequestHandler):
 
             if not folder or folder.status != EntityStatus.DELETED:
                 handler.conclude_request(404, {}, smsg.DELETED_DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=folder_id, username=handler.username)
+                return Result(code=404, target=folder_id, user_id=handler.user_id)
 
             if not check_access_requirements(session, user, folder, "write"):
                 handler.conclude_access_denial()
-                return Result(code=403, target=folder_id, username=handler.username)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             if target_parent_provided:
                 db_parent_id = target_parent_id or ROOT_DIRECTORY_ID
@@ -965,11 +963,11 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             )
             if not target_parent or target_parent.status != EntityStatus.OK:
                 handler.conclude_request(409, {}, smsg.TARGET_DIRECTORY_NOT_ACTIVE)
-                return Result(code=409, target=db_parent_id, username=handler.username)
+                return Result(code=409, target=db_parent_id, user_id=handler.user_id)
 
             if not check_access_requirements(session, user, target_parent, "write"):
                 handler.conclude_access_denial()
-                return Result(code=403, target=db_parent_id, username=handler.username)
+                return Result(code=403, target=db_parent_id, user_id=handler.user_id)
 
             op_id = folder.status_operation_id
             try:
@@ -1010,10 +1008,10 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             handler.conclude_request(
                 200, {"parent_id": db_parent_id, "name": final_name}, smsg.SUCCESS
             )
-            return Result(code=0, target=folder_id, username=handler.username)
+            return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestListDeletedItemsHandler(RequestHandler):
+class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
     """Handles the "list_deleted_items" action.
     Lists folders and documents that have been marked as deleted within
      a specific parent directory.
@@ -1021,7 +1019,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
 
     request_model = _ListDeletedItemsRequest
 
-    require_auth = True
+    requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler: ConnectionHandler):
@@ -1030,11 +1028,11 @@ class RequestListDeletedItemsHandler(RequestHandler):
         cursor = handler.data.get("cursor")
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.LIST_DELETED_ITEMS not in user.all_permissions:
                 handler.conclude_permission_denial()
-                return Result(code=403, target=parent_id, username=handler.username)
+                return Result(code=403, target=parent_id, user_id=handler.user_id)
 
             db_parent_id = parent_id
 
@@ -1046,14 +1044,14 @@ class RequestListDeletedItemsHandler(RequestHandler):
 
             if not parent_folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=parent_id, username=handler.username)
+                return Result(code=404, target=parent_id, user_id=handler.user_id)
 
             if (
                 Permissions.SUPER_LIST_DIRECTORY not in user.all_permissions
                 and not check_access_requirements(session, user, parent_folder, "read")
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=parent_id, username=handler.username)
+                return Result(code=403, target=parent_id, user_id=handler.user_id)
 
             filters = {"folder_id": db_parent_id}
             sort = "type_name_id:asc"
@@ -1068,7 +1066,7 @@ class RequestListDeletedItemsHandler(RequestHandler):
                 last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
-                return Result(code=400, target=parent_id, username=handler.username)
+                return Result(code=400, target=parent_id, user_id=handler.user_id)
 
             items = fetch_deleted_listing_items(
                 session,
@@ -1088,4 +1086,4 @@ class RequestListDeletedItemsHandler(RequestHandler):
             result_data["parent_id"] = parent_id
 
             handler.conclude_request(200, result_data, "Deleted items retrieved")
-            return Result(code=0, target=parent_id, username=handler.username)
+            return Result(code=0, target=parent_id, user_id=handler.user_id)

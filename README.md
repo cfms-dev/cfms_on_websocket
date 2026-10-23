@@ -67,8 +67,13 @@ More detailed guides are available for
 ```bash
 uv sync --dev
 uv run pre-commit install
+uv run --locked pyright
 uv run pytest
 ```
+
+Pyright checks `src/include` using Python 3.15 and the standard rule set.
+Install all optional dependencies with `uv sync --dev --all-extras` to check
+every provider and extension import.
 
 See [tests/README.md](tests/README.md) for test-suite details.
 

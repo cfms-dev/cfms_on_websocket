@@ -19,6 +19,11 @@ lazy from alembic.script import ScriptDirectory
 lazy from rich.progress import Progress, TaskID
 lazy from sqlalchemy.engine import Connection, Engine
 
+from include.extensions.data import (
+    extension_metadata,
+    load_extension_data,
+    prepare_extension_tables,
+)
 from maintenance.operations.database.copying import (
     copy_tables,
     restore_deferred_columns,
@@ -33,7 +38,10 @@ from maintenance.operations.database.progress import (
     advance_progress,
     update_progress,
 )
-from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
+from maintenance.operations.database.tables import (
+    APPLICATION_TABLE_NAMES,
+    application_table_names,
+)
 
 _BATCH_SIZE = 1000
 _ALEMBIC_TABLE_NAME = "alembic_version"
@@ -61,6 +69,10 @@ def migrate_database(
 
     with source_engine.connect() as source_connection:
         _validate_mysql_version(source_connection)
+        declarations = load_extension_data(metadata)
+        present = set(inspect(source_connection).get_table_names()) & set(declarations)
+        metadata = extension_metadata(metadata, declarations, present)
+        prepare_extension_tables(source_connection, metadata, present, create=False)
         _validate_source_schema(source_connection, metadata, expected_head)
     with target_engine.connect() as target_connection:
         _validate_mysql_version(target_connection)
@@ -91,7 +103,12 @@ def transfer_database_contents(
     *,
     progress: Progress | None = None,
 ) -> tuple[TableMigrationResult, ...]:
-    _validate_metadata(metadata)
+    declarations = load_extension_data(metadata)
+    with source_engine.connect() as connection:
+        present = set(inspect(connection).get_table_names()) & set(declarations)
+        metadata = extension_metadata(metadata, declarations, present)
+        prepare_extension_tables(connection, metadata, present, create=False)
+        _validate_source_tables(connection, metadata)
     target_schema_created = False
     try:
         target_schema_created = True
@@ -102,7 +119,9 @@ def transfer_database_contents(
             source_connection.begin(),
             target_connection.begin(),
         ):
-            task_id = add_progress_task(progress)
+            task_id = add_progress_task(
+                progress, len(application_table_names(metadata))
+            )
             copy_tables(
                 source_connection,
                 target_connection,
@@ -163,9 +182,10 @@ def _validate_mysql_version(connection: Connection) -> None:
 def _validate_metadata(metadata: MetaData) -> None:
     actual = set(metadata.tables)
     expected = set(APPLICATION_TABLE_NAMES)
-    if actual != expected:
+    declarations = load_extension_data(metadata)
+    if not expected <= actual or actual - expected - set(declarations):
         missing = sorted(expected - actual)
-        unexpected = sorted(actual - expected)
+        unexpected = sorted(actual - expected - set(declarations))
         details = []
         if missing:
             details.append("missing: " + ", ".join(missing))
@@ -178,14 +198,10 @@ def _validate_metadata(metadata: MetaData) -> None:
         )
 
 
-def _validate_source_schema(
-    connection: Connection,
-    metadata: MetaData,
-    expected_head: str,
-) -> None:
+def _validate_source_tables(connection: Connection, metadata: MetaData) -> None:
     _validate_metadata(metadata)
     actual = set(inspect(connection).get_table_names())
-    expected = set(APPLICATION_TABLE_NAMES)
+    expected = set(application_table_names(metadata))
     missing = sorted(expected - actual)
     unexpected = sorted(actual - expected - {_ALEMBIC_TABLE_NAME})
     if missing or unexpected:
@@ -200,6 +216,13 @@ def _validate_source_schema(
             + ")"
         )
 
+
+def _validate_source_schema(
+    connection: Connection,
+    metadata: MetaData,
+    expected_head: str,
+) -> None:
+    _validate_source_tables(connection, metadata)
     current_heads = MigrationContext.configure(connection).get_current_heads()
     if current_heads != (expected_head,):
         rendered = ", ".join(current_heads) if current_heads else "unversioned"
@@ -225,7 +248,7 @@ def _verify_tables(
     task_id: TaskID | None,
 ) -> tuple[TableMigrationResult, ...]:
     results = []
-    for table_name in APPLICATION_TABLE_NAMES:
+    for table_name in application_table_names(metadata):
         update_progress(progress, task_id, f"Verifying table {table_name}")
         table = metadata.tables[table_name]
         source_count, source_digest = _table_signature(source, table)

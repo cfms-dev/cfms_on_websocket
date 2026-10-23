@@ -10,6 +10,7 @@ import base64
 import hashlib
 import secrets
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import jwt
@@ -17,18 +18,36 @@ import orjson
 import requests
 from authlib.integrations.requests_client import OAuth2Session
 from loguru import logger as log
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from include.config.settings import global_config
-from include.database.models.identity import User, UserGroup
+from include.database.models.identity import User, UserGroup, UserMembership
 from include.database.session import Session
-from include.domains.identity.commands.users import create_user
-from include.domains.identity.sessions import (
-    build_login_success_data,
-    issue_login_token,
+from include.domains.identity.auth.base import (
+    AuthFactorCategory,
+    AuthVerificationResult,
+    BaseAuthMethodProvider,
 )
-from include.exceptions.misc import UserNotActiveError
+from include.domains.identity.auth.flows import (
+    AuthenticationAttempt,
+    AuthenticationFailure,
+)
+from include.domains.identity.auth.types import (
+    AuthPurpose,
+    RegisteredCredential,
+)
+from include.domains.identity.commands.auth_policies import replace_auth_policy
+from include.domains.identity.handlers.auth import authenticate_request
 from include.extensions.manager import hookimpl
+from include.extensions.oidc_sso.credentials import (
+    bind_oidc_identity,
+    find_oidc_credential,
+)
+from include.extensions.oidc_sso.models import UserOidcCredential
 from include.providers.manager import ProviderManager
+from include.transport.client_address import get_client_ip
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -296,57 +315,178 @@ def _validate_id_token(
     return claims
 
 
-def _resolve_or_create_user(cfg: dict[str, Any], claims: dict[str, Any]) -> User | None:
+@dataclass(frozen=True)
+class VerifiedOidcIdentity:
+    issuer: str
+    subject: str
+
+
+class OIDCCredentialSchema(BaseModel):
+    state: str
+    code: str = Field(repr=False)
+
+
+class OIDCAuthProvider(BaseAuthMethodProvider):
+    method_id = "oidc"
+    category = AuthFactorCategory.FEDERATED
+    throttle_factor = "oidc"
+    credential_schema = OIDCCredentialSchema
+    supported_purposes = frozenset({AuthPurpose.LOGIN})
+
+    def authenticate(
+        self,
+        handler: ConnectionHandler,
+        attempt: AuthenticationAttempt,
+        payload: dict[str, Any],
+    ) -> None:
+        request = _OIDCCallbackRequest.model_validate(payload)
+        if request.error is not REQUEST_UNSET:
+            raise AuthenticationFailure(401, request.error, {"error": request.error})
+        if request.code is REQUEST_UNSET:
+            raise AuthenticationFailure(400, "OIDC authorization code is required")
+        try:
+            cfg = _get_validated_oidc_config()
+            state_data = _pop_state(request.state)
+            if state_data is None:
+                raise AuthenticationFailure(401, "Invalid or expired OIDC state")
+            if (
+                request.redirect_uri is not REQUEST_UNSET
+                and request.redirect_uri != state_data["redirect_uri"]
+            ):
+                raise AuthenticationFailure(401, "OIDC redirect_uri mismatch")
+            metadata = _get_provider_metadata(cfg)
+            oidc_token = _exchange_code_for_token(
+                cfg, metadata, request.code, state_data
+            )
+            claims = _validate_id_token(cfg, metadata, oidc_token, state_data["nonce"])
+            with Session() as session:
+                user = _resolve_or_create_user(session, cfg, claims)
+                if user is None:
+                    raise AuthenticationFailure(401, "SSO user is not allowed")
+                attempt.bind(session, user)
+                attempt.check_throttle(self)
+                attempt.permitted_credentials(session, user)
+                verified = self.verify(
+                    session,
+                    user,
+                    {},
+                    {
+                        "verified_identity": VerifiedOidcIdentity(
+                            claims["iss"], claims["sub"]
+                        )
+                    },
+                )
+                progress = attempt.accept(session, user, self, verified)
+                if not progress.satisfied and progress.purpose == AuthPurpose.LOGIN:
+                    raise AuthenticationFailure(
+                        403, "OIDC authentication cannot satisfy this policy"
+                    )
+        except (
+            OIDCConfigurationError,
+            OIDCAuthenticationError,
+            jwt.PyJWTError,
+            IntegrityError,
+        ) as exc:
+            raise AuthenticationFailure(401, "OIDC authentication failed") from exc
+
+    def list_credentials(self, session, user: User) -> list[RegisteredCredential]:
+        issuer = _get_oidc_config()["issuer"]
+        return [
+            RegisteredCredential(
+                method=self.method_id,
+                credential_id=c.id,
+                active=c.issuer == issuer,
+                label=c.issuer,
+            )
+            for c in session.scalars(
+                select(UserOidcCredential)
+                .where(UserOidcCredential.user_id == user.id)
+                .order_by(UserOidcCredential.id)
+            )
+        ]
+
+    def verify(self, session, user: User, payload, context) -> AuthVerificationResult:
+        identity = context.get("verified_identity")
+        if not isinstance(identity, VerifiedOidcIdentity):
+            return AuthVerificationResult(
+                success=False, error_message="OIDC callback verification required"
+            )
+        credential = find_oidc_credential(session, identity.issuer, identity.subject)
+        if (
+            credential is None
+            or credential.user_id != user.id
+            or identity.issuer != _get_oidc_config()["issuer"]
+        ):
+            return AuthVerificationResult(
+                success=False, error_message="Invalid credentials"
+            )
+        return AuthVerificationResult(success=True, credential_id=credential.id)
+
+
+def _resolve_or_create_user(
+    session, cfg: dict[str, Any], claims: dict[str, Any]
+) -> User | None:
+    credential = find_oidc_credential(session, claims["iss"], claims["sub"])
+    if credential is not None:
+        return session.get(User, credential.user_id)
+    if not cfg["auto_provision"]:
+        return None
     username = claims.get(cfg["username_claim"])
     if not isinstance(username, str) or not username:
         raise OIDCAuthenticationError(
             f"OIDC claim '{cfg['username_claim']}' is missing"
         )
-
-    with Session() as session:
-        user = session.get(User, username)
-        if user is not None:
-            return user
-
-    if not cfg["auto_provision"]:
-        return None
-
+    if session.scalar(select(User.id).where(User.username == username)) is not None:
+        raise OIDCAuthenticationError("OIDC identity is not linked to this account")
     default_groups = cfg["default_groups"]
-    with Session() as session:
-        existing_groups = {
-            group_name
-            for (group_name,) in session.query(UserGroup.group_name)
-            .filter(UserGroup.group_name.in_(default_groups))
-            .all()
-        }
+    existing_groups = set(
+        session.scalars(
+            select(UserGroup.group_name).where(UserGroup.group_name.in_(default_groups))
+        )
+    )
     missing_groups = set(default_groups) - existing_groups
     if missing_groups:
         raise OIDCConfigurationError(
             "OIDC auto_provision references missing groups: "
             + ", ".join(sorted(missing_groups))
         )
-
-    now = time.time()
-    create_user(
+    user = User(
         username=username,
-        password=secrets.token_urlsafe(48),
         nickname=claims.get("name") or username,
-        groups=[
-            {"group_name": group_name, "start_time": now, "end_time": None}
-            for group_name in default_groups
-        ],
-        permissions=[],
+        last_login=0,
+        created_time=time.time(),
     )
-
-    with Session() as session:
-        return session.get(User, username)
+    session.add(user)
+    session.flush()
+    credential = bind_oidc_identity(session, user, claims["iss"], claims["sub"])
+    session.add_all(
+        [
+            UserMembership(user=user, group_name=name, start_time=time.time())
+            for name in default_groups
+        ]
+    )
+    replace_auth_policy(
+        session,
+        user,
+        AuthPurpose.LOGIN,
+        [
+            [
+                {
+                    "method": "oidc",
+                    "credential_ids": [credential.id],
+                }
+            ]
+        ],
+        expected_revision=0,
+    )
+    return user
 
 
 class _OIDCStartRequest(RequestDataModel):
     redirect_uri: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
-class RequestOIDCStartHandler(RequestHandler):
+class RequestOIDCStartHandler(RequestHandler[_OIDCStartRequest]):
     request_model = _OIDCStartRequest
     rate_limit_cost = 3
 
@@ -385,73 +525,24 @@ class RequestOIDCStartHandler(RequestHandler):
 
 class _OIDCCallbackRequest(RequestDataModel):
     state: NonEmptyString
-    code: Omittable[NonEmptyString] = REQUEST_UNSET
+    code: Omittable[NonEmptyString] = Field(default=REQUEST_UNSET, repr=False)
     redirect_uri: Omittable[NonEmptyString] = REQUEST_UNSET
     error: Omittable[NonEmptyString] = REQUEST_UNSET
     error_description: Omittable[str] = REQUEST_UNSET
 
 
-class RequestOIDCCallbackHandler(RequestHandler):
+class RequestOIDCCallbackHandler(RequestHandler[_OIDCCallbackRequest]):
     request_model = _OIDCCallbackRequest
     rate_limit_cost = 10
 
-    def handle(self, handler: ConnectionHandler) -> Result | None:
-        state = handler.data["state"]
-        error = handler.data.get("error")
-        if error:
-            message = handler.data.get("error_description") or error
-            handler.conclude_request(401, {"error": error}, message)
-            return Result(code=401)
-
-        code = handler.data.get("code")
-        if not code:
-            handler.conclude_request(400, {}, "OIDC authorization code is required")
-            return Result(code=400)
-
-        try:
-            cfg = _get_validated_oidc_config()
-            state_data = _pop_state(state)
-            if state_data is None:
-                handler.conclude_request(401, {}, "Invalid or expired OIDC state")
-                return Result(code=401)
-
-            if handler.data.get("redirect_uri"):
-                state_redirect_uri = state_data["redirect_uri"]
-                if handler.data["redirect_uri"] != state_redirect_uri:
-                    handler.conclude_request(401, {}, "OIDC redirect_uri mismatch")
-                    return Result(code=401)
-
-            metadata = _get_provider_metadata(cfg)
-            oidc_token = _exchange_code_for_token(cfg, metadata, code, state_data)
-            claims = _validate_id_token(cfg, metadata, oidc_token, state_data["nonce"])
-            user = _resolve_or_create_user(cfg, claims)
-            if user is None:
-                handler.conclude_request(401, {}, "SSO user is not allowed")
-                return Result(code=401)
-
-            username = user.username
-            with Session() as session:
-                user = User.get_existing(session, username)
-                token = issue_login_token(user)
-                data = build_login_success_data(session, user, token)
-
-                user.last_login = time.time()
-                session.commit()
-        except UserNotActiveError as exc:
-            handler.conclude_request(
-                4003, {"reason": exc.reason}, "User account is not active"
-            )
-            return Result(code=4003)
-        except (OIDCConfigurationError, OIDCAuthenticationError, jwt.PyJWTError) as exc:
-            handler.conclude_request(401, {}, str(exc))
-            return Result(code=401)
-        except Exception as exc:
-            logger.exception("Failed to complete OIDC SSO")
-            handler.report_error(exc, context="Failed to complete OIDC SSO")
-            return None
-
-        handler.conclude_request(200, data, "Login successful")
-        return Result(code=200, target=username, username=username)
+    def handle(self, handler: ConnectionHandler) -> Result:
+        attempt = AuthenticationAttempt(
+            "oidc",
+            AuthPurpose.LOGIN,
+            get_client_ip(handler.stream.connection._ws),
+            self.rate_limit_cost,
+        )
+        return authenticate_request(handler, attempt, handler.data)
 
 
 @hookimpl
@@ -470,3 +561,8 @@ def ext_register_whitelisted_actions() -> set[str]:
 @hookimpl
 def ext_register_extension_flags() -> set[str]:
     return {"oidc_sso"}
+
+
+@hookimpl
+def ext_register_auth_methods() -> list["BaseAuthMethodProvider"]:
+    return [OIDCAuthProvider()]

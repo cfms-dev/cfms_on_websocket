@@ -58,12 +58,16 @@ requires `--archive`; the final archive path must not already exist.
 
 ## Filters and archive behavior
 
+The `--username` selector resolves currently existing accounts to their UUIDs.
+Audit rows store the UUID in `user_id`; `target` retains the submitted target,
+including usernames for authentication attempts.
+
 The `export` and `purge` commands accept repeatable `--action`, `--username`,
 `--target`, `--result`, and `--remote-address` filters. Values within one field
 are combined with OR, while different fields are combined with AND.
 
 JSONL rows are ordered by `logged_time` and then `id`. Every row contains the
-stored `id`, `action`, `username`, `target`, `data`, `result`, `remote_address`,
+stored `id`, `action`, `user_id`, `target`, `data`, `result`, `remote_address`,
 and `logged_time` values. The export is readable and may expose usernames, IP
 addresses, targets, and operation details; store it as sensitive data.
 

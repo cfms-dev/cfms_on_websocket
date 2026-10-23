@@ -80,6 +80,12 @@ Configuration overrides are checked at startup, including handlers registered by
 extensions. An override for an unknown action produces a warning. Costs cannot
 exceed either request bucket capacity.
 
+Protocol 30 authentication dialogs charge each continuation frame against the
+current action's request-rate policy (`login`: 5; `complete_mfa`: 2 by default).
+These frames remain part of the same Request and also undergo factor-specific
+authentication throttling. AUTH/POST_AUTH holders receive no GENERAL account
+quota or permission-based bypass.
+
 ### Default action costs
 
 Built-in handlers use six relative cost tiers. With the default account refill

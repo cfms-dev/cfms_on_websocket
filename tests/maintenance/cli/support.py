@@ -150,23 +150,27 @@ load_database_models()
 
 from include.database.session import Base, Session, engine
 from include.database.models.identity import User
+from include.database.models.auth import UserPasswordCredential, UserTotpCredential
 
 Base.metadata.create_all(engine)
 hasher = PasswordHasher()
 with Session() as session:
     for username in ("alice", "bob"):
-        session.add(
-            User(
-                username=username,
-                pass_hash=hasher.hash("OldPass123!"),
-                nickname=username.title(),
-                last_login=None,
-                created_time=1.0,
-                totp_enabled=True,
-                totp_secret="JBSWY3DPEHPK3PXP",
-                totp_backup_codes='["backup-code"]',
-            )
+        user = User(
+            username=username,
+            nickname=username.title(),
+            last_login=None,
+            created_time=1.0,
         )
+        session.add_all([
+            UserPasswordCredential(user=user, pass_hash=hasher.hash("OldPass123!")),
+            UserTotpCredential(
+                user=user,
+                enabled=True,
+                secret="JBSWY3DPEHPK3PXP",
+                backup_codes='["backup-code"]',
+            ),
+        ])
     session.commit()
 """,
     )
@@ -184,16 +188,19 @@ load_database_models()
 
 from include.database.session import Session
 from include.database.models.identity import User
+from include.database.models.auth import UserPasswordCredential, UserTotpCredential
 
 with Session() as session:
     data = {{}}
     for user in session.query(User).order_by(User.username):
+        password_credential = session.get(UserPasswordCredential, user.id)
+        totp_credential = session.get(UserTotpCredential, user.id)
         data[user.username] = {{
-            "password_ok": user.verify_password({password!r}),
-            "passwd_last_modified": user.passwd_last_modified,
-            "totp_enabled": user.totp_enabled,
-            "totp_secret": user.totp_secret,
-            "totp_backup_codes": user.totp_backup_codes,
+            "password_ok": password_credential.verify({password!r}),
+            "passwd_last_modified": password_credential.passwd_last_modified,
+            "totp_enabled": totp_credential is not None and totp_credential.enabled,
+            "totp_secret": totp_credential.secret if totp_credential else None,
+            "totp_backup_codes": totp_credential.backup_codes if totp_credential else None,
         }}
     print(json.dumps(data, sort_keys=True))
 """,
@@ -223,7 +230,7 @@ old_end = now - 31 * 24 * 60 * 60
 recent_end = now - 29 * 24 * 60 * 60
 cutoff = 1_408_000.0
 with Session.begin() as session:
-    user = User(username="alice", pass_hash="hash", created_time=now)
+    user = User(username="alice", created_time=now)
     user.rights.extend(
         [
             UserPermission(permission="old_user", granted=True, start_time=0.0, end_time=old_end),
@@ -292,13 +299,16 @@ from include.database.session import Base, Session, engine
 
 Base.metadata.create_all(engine)
 with Session.begin() as session:
-    session.add(User(username="alice", pass_hash="hash", created_time=1.0))
+    from uuid import UUID
+    user = User(id=UUID("12345678-1234-4234-9234-123456789abc"), username="alice", created_time=1.0)
+    session.add(user)
+    session.flush()
     session.add_all(
         [
             AuditEntry(
                 id="old-login",
                 action="login",
-                username="alice",
+                user=user,
                 target="alice",
                 data={"detail": {"message": "重要记录"}},
                 result=401,
@@ -308,7 +318,7 @@ with Session.begin() as session:
             AuditEntry(
                 id="old-update",
                 action="update_document",
-                username=None,
+                user_id=None,
                 target="document-1",
                 data=None,
                 result=0,
@@ -318,7 +328,7 @@ with Session.begin() as session:
             AuditEntry(
                 id="cutoff",
                 action="login",
-                username="alice",
+                user=user,
                 target="alice",
                 data={},
                 result=401,
@@ -328,7 +338,7 @@ with Session.begin() as session:
             AuditEntry(
                 id="new-entry",
                 action="login",
-                username="alice",
+                user=user,
                 target="alice",
                 data={},
                 result=0,

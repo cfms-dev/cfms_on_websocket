@@ -151,7 +151,7 @@ class TestKeyringWithoutAuth:
             ),
         ],
     )
-    async def test_keyring_operations_require_authentication(
+    async def test_keyring_operations_requires_authentication(
         self,
         client: CFMSTestClient,
         action,

@@ -2,7 +2,9 @@ import base64
 import hashlib
 import os
 import time
+import uuid
 from enum import IntEnum
+from typing import Any
 lazy import threading
 
 import jsonschema
@@ -51,6 +53,7 @@ from include.domains.documents.download_limits import (
     check_download_transfer_limits,
 )
 from include.domains.documents.file_task_signals import watch_file_task
+from include.domains.identity.tokens import Token
 from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.extensions.manager import pm
 from include.messages import Messages as smsg
@@ -83,7 +86,7 @@ def send_conclusion(
             "timestamp": time.time(),
         }
     )
-    logger.debug(f"Sending response: {response_json}")
+    logger.debug(f"Sending conclusion: code={code}")
     stream.send(response_json, frame_type=FrameType.CONCLUSION)
 
 
@@ -120,10 +123,6 @@ _REQUEST_ENVELOPE_SCHEMA = {
         "timestamp": {"type": "number"},
     },
     "required": ["action", "data"],
-    "dependentRequired": {
-        "username": ["token"],
-        "token": ["username"],
-    },
 }
 
 
@@ -142,10 +141,13 @@ class ConnectionHandler:
         jsonschema.validate(self.request, _REQUEST_ENVELOPE_SCHEMA)
 
         self.action: str = self.request["action"]
-        self.data: dict = self.request["data"]
+        self.data: dict[str, Any] = self.request[
+            "data"
+        ]  # JSON key names must be strings.
 
-        self.username: str = self.request.get("username", "")
-        self.token: str = self.request.get("token", "")
+        # user_id and token are checked and set by the router.
+        self.user_id: uuid.UUID | None = None
+        self.token: Token | None = None
 
         self.nonce: str = self.request.get("nonce", "")
         self.request_timestamp: float = self.request.get("timestamp", 0.0)
@@ -298,13 +300,13 @@ class ConnectionHandler:
             claim_result = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
             if isinstance(claim_result, ClaimedFileTask):
                 issuer = (
-                    session.get(User, claim_result.issued_by_username)
-                    if claim_result.issued_by_username is not None
+                    session.get(User, claim_result.issued_by_id)
+                    if claim_result.issued_by_id is not None
                     else None
                 )
                 limit_decision = check_download_transfer_limits(
                     session,
-                    issuer.username if issuer is not None else None,
+                    issuer.id if issuer is not None else None,
                     self.remote_address,
                     task_id,
                     account_created_at=(
@@ -427,7 +429,7 @@ class ConnectionHandler:
         self.logger.bind(
             name="document_download_transfer",
             task_id=task_id,
-            issued_by_username=claimed.issued_by_username,
+            issued_by_id=claimed.issued_by_id,
             remote_address=self.remote_address,
             remaining_bytes=max(0, file_size - offset),
             active_downloads=limit_decision.active_downloads,

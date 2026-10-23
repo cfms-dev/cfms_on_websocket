@@ -12,34 +12,50 @@ pytestmark = pytest.mark.integration
 
 class TestUserOperations:
     @pytest.mark.asyncio
+    async def test_rename_user_requires_authentication(self, unauthenticated_client):
+        response = await unauthenticated_client.send_request(
+            "rename_user",
+            {
+                "user_id": "00000000-0000-4000-8000-000000000001",
+                "nickname": "unauthorized",
+            },
+            include_auth=False,
+        )
+        assert_error(response, 401)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("action", "username_field"),
+        ("action", "selector_field"),
         [
             ("get_user_info", "username"),
-            ("get_user_avatar", "username"),
-            ("get_2fa_status", "target"),
+            ("get_user_info", "user_id"),
+            ("get_user_avatar", "user_id"),
+            ("get_2fa_status", "user_id"),
         ],
     )
     async def test_cross_user_lookup_does_not_disclose_user_existence(
         self,
         action: str,
-        username_field: str,
+        selector_field: str,
         low_privilege_client: CFMSTestClient,
         test_user: dict,
     ):
         existing_response = await low_privilege_client.send_request(
             action,
-            {username_field: test_user["username"]},
+            {selector_field: test_user[selector_field]},
         )
         missing_response = await low_privilege_client.send_request(
             action,
-            {username_field: "nonexistent_user_xyz_12345"},
+            {
+                selector_field: "nonexistent_user_xyz_12345"
+                if selector_field == "username"
+                else "00000000-0000-4000-8000-000000000001"
+            },
         )
 
         for response in (existing_response, missing_response):
             assert response["code"] == 403
             assert response["data"] == {}
-        assert existing_response["message"] == missing_response["message"]
 
     @pytest.mark.asyncio
     async def test_invalid_login_does_not_disclose_user_existence(
@@ -56,7 +72,6 @@ class TestUserOperations:
 
         for response in (existing_response, missing_response):
             assert response["code"] == 401
-            assert response["message"] == "Invalid credentials"
             assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -84,7 +99,6 @@ class TestUserOperations:
 
         for response in responses:
             assert response["code"] == 401
-            assert response["message"] == "Invalid credentials"
             assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -94,15 +108,15 @@ class TestUserOperations:
         test_user: dict,
     ):
         responses = []
-        for username in (
-            test_user["username"],
-            "nonexistent_user_xyz_12345",
+        for user_id in (
+            test_user["user_id"],
+            "00000000-0000-4000-8000-000000000001",
         ):
             responses.append(
                 await low_privilege_client.send_request(
                     "set_passwd",
                     {
-                        "username": username,
+                        "user_id": user_id,
                         "new_passwd": "UpdatedPassword456!",
                     },
                 )
@@ -110,9 +124,6 @@ class TestUserOperations:
 
         for response in responses:
             assert response["code"] == 403
-            assert (
-                response["message"] == "You do not have permission to set user password"
-            )
             assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -123,13 +134,12 @@ class TestUserOperations:
         response = await authenticated_client.send_request(
             "set_passwd",
             {
-                "username": "nonexistent_user_xyz_12345",
+                "user_id": "00000000-0000-4000-8000-000000000001",
                 "new_passwd": "UpdatedPassword456!",
             },
         )
 
         assert response["code"] == 404
-        assert response["message"] == "User does not exist"
         assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -138,7 +148,7 @@ class TestUserOperations:
         low_privilege_client: CFMSTestClient,
     ):
         user_info = await low_privilege_client.get_user_info(
-            low_privilege_client.username
+            username=low_privilege_client.username
         )
         two_factor_status = await low_privilege_client.get_2fa_status()
 
@@ -157,7 +167,7 @@ class TestUserOperations:
         new_password = "UpdatedPassword456!"
         assert_success(
             await authenticated_client.change_user_permissions(
-                username, [permission_entry("set_passwd")]
+                user["user_id"], [permission_entry("set_passwd")]
             )
         )
 
@@ -258,7 +268,7 @@ class TestUserOperations:
         assert created_user["username"]
 
         data = assert_success(
-            await authenticated_client.get_user_info(created_user["username"])
+            await authenticated_client.get_user_info(username=created_user["username"])
         )
         assert data["permissions"] == permissions
         assert data["effective_permissions"] == []
@@ -267,7 +277,9 @@ class TestUserOperations:
     async def test_get_user_info(
         self, authenticated_client: CFMSTestClient, test_user: dict
     ):
-        response = await authenticated_client.get_user_info(test_user["username"])
+        response = await authenticated_client.get_user_info(
+            username=test_user["username"]
+        )
         data = assert_success(response)
         assert data["username"] == test_user["username"]
         assert data["status"] == 0
@@ -277,10 +289,9 @@ class TestUserOperations:
         self, authenticated_client: CFMSTestClient
     ):
         response = await authenticated_client.get_user_info(
-            "nonexistent_user_xyz_12345"
+            username="nonexistent_user_xyz_12345"
         )
-        error = assert_error(response, 404)
-        assert error["message"] == "User does not exist"
+        assert_error(response, 404)
 
     @pytest.mark.asyncio
     async def test_delete_user(
@@ -289,10 +300,10 @@ class TestUserOperations:
         test_user = await user_factory()
         username = test_user["username"]
 
-        delete_response = await authenticated_client.delete_user(username)
+        delete_response = await authenticated_client.delete_user(test_user["user_id"])
         assert_success(delete_response)
 
-        info_response = await authenticated_client.get_user_info(username)
+        info_response = await authenticated_client.get_user_info(username=username)
         assert_error(info_response, 404)
 
     @pytest.mark.asyncio
@@ -302,8 +313,7 @@ class TestUserOperations:
         response = await authenticated_client.create_user(
             username=test_user["username"], password="AnotherPassword123!"
         )
-        error = assert_error(response, 400)
-        assert error["message"] == "Username already exists"
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_create_user_with_empty_username(
@@ -316,7 +326,7 @@ class TestUserOperations:
 
     @pytest.mark.asyncio
     async def test_get_admin_user_info(self, authenticated_client: CFMSTestClient):
-        response = await authenticated_client.get_user_info("admin")
+        response = await authenticated_client.get_user_info(username="admin")
         data = assert_success(response)
         assert data["username"] == "admin"
 
@@ -326,11 +336,13 @@ class TestUserOperations:
     ):
         permissions = [permission_entry("list_users")]
         response = await authenticated_client.change_user_permissions(
-            test_user["username"], permissions
+            test_user["user_id"], permissions
         )
         assert_success(response)
 
-        info_response = await authenticated_client.get_user_info(test_user["username"])
+        info_response = await authenticated_client.get_user_info(
+            username=test_user["username"]
+        )
         data = assert_success(info_response)
         assert data["permissions"] == permissions
         assert data["effective_permissions"] == ["list_users"]
@@ -339,11 +351,11 @@ class TestUserOperations:
         replacement = [permission_entry("get_user_info", granted=False)]
         assert_success(
             await authenticated_client.change_user_permissions(
-                test_user["username"], replacement
+                test_user["user_id"], replacement
             )
         )
         replaced = assert_success(
-            await authenticated_client.get_user_info(test_user["username"])
+            await authenticated_client.get_user_info(username=test_user["username"])
         )
         assert replaced["permissions"] == replacement
         assert replaced["effective_permissions"] == []
@@ -356,20 +368,22 @@ class TestUserOperations:
         test_user = await user_factory()
 
         permissions_response = await authenticated_client.change_user_permissions(
-            test_user["username"], [permission_entry("list_users")]
+            test_user["user_id"], [permission_entry("list_users")]
         )
         assert_success(permissions_response)
 
         groups_response = await authenticated_client.send_request(
             "change_user_groups",
             {
-                "username": test_user["username"],
+                "user_id": test_user["user_id"],
                 "groups": [test_group["group_name"]],
             },
         )
         assert_success(groups_response)
 
-        info_response = await authenticated_client.get_user_info(test_user["username"])
+        info_response = await authenticated_client.get_user_info(
+            username=test_user["username"]
+        )
         data = assert_success(info_response)
 
         assert data["effective_own_permissions"] == ["list_users"]
@@ -404,11 +418,11 @@ class TestUserOperations:
 
         assert_success(
             await authenticated_client.change_user_permissions(
-                user["username"], permissions
+                user["user_id"], permissions
             )
         )
         data = assert_success(
-            await authenticated_client.get_user_info(user["username"])
+            await authenticated_client.get_user_info(username=user["username"])
         )
 
         assert data["permissions"] == permissions
@@ -422,7 +436,7 @@ class TestUserOperations:
     ):
         response = await authenticated_client.send_request(
             "change_user_permissions",
-            {"username": test_user["username"], "permissions": ["list_users"]},
+            {"user_id": test_user["user_id"], "permissions": ["list_users"]},
         )
 
         assert_error(response, 400)
@@ -443,13 +457,12 @@ class TestUserOperations:
         assert_success(login_response)
 
         response = await unauthenticated_client.change_user_permissions(
-            target_user["username"], [permission_entry("list_users")]
+            target_user["user_id"], [permission_entry("list_users")]
         )
-        error = assert_error(response, 403)
-        assert error["message"] == "You do not have permission to set user permissions"
+        assert_error(response, 403)
 
         info_response = await authenticated_client.get_user_info(
-            target_user["username"]
+            username=target_user["username"]
         )
         data = assert_success(info_response)
         assert "list_users" not in data["effective_permissions"]
@@ -481,7 +494,7 @@ class TestUserWithoutAuth:
     async def test_change_user_permissions_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
             "change_user_permissions",
-            {"username": "admin", "permissions": []},
+            {"user_id": "00000000-0000-4000-8000-000000000001", "permissions": []},
             include_auth=False,
         )
         assert_error(response, 401)

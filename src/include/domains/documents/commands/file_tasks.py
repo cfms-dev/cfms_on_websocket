@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, cast
@@ -22,7 +23,7 @@ class ClaimedFileTask:
     file_id: str
     file_path: str
     stored_file_size: int | None
-    issued_by_username: str | None
+    issued_by_id: uuid.UUID | None
     encryption_key: str | None = field(repr=False)
     chunk_size: int | None
     upload_file_size: int | None
@@ -319,7 +320,7 @@ def claim_file_task(
             file_id=task.file_id,
             file_path=stored_file.path,
             stored_file_size=(stored_file.size if not is_upload else None),
-            issued_by_username=task.issued_by_username,
+            issued_by_id=task.issued_by_id,
             encryption_key=(task.encryption_key if not is_upload else None),
             chunk_size=task.chunk_size,
             upload_file_size=(task.upload_file_size if is_upload else None),
