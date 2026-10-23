@@ -1251,6 +1251,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     return respond(401, "Invalid user or token")
 
             if old_passwd is not None:
+                assert target_username is not None
                 user = session.scalar(
                     select(User).where(User.username == target_username)
                 )

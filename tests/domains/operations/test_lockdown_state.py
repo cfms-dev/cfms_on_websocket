@@ -224,6 +224,23 @@ def test_lockdown_payload_shape_is_stable(lockdown_database) -> None:
 
 
 @pytest.mark.component
+def test_unknown_source_cannot_be_persisted_as_current_lockdown_state(
+    lockdown_database,
+) -> None:
+    sessions, _database_path = lockdown_database
+    with sessions.begin() as session:
+        with pytest.raises(ValidationError, match="source"):
+            lockdown_state._persist_lockdown_state(
+                session,
+                None,
+                LockdownState(enabled=True),
+                LockdownSource.UNKNOWN,
+                0.0,
+            )
+        assert session.get(SystemStateEntry, ("core", "lockdown")) is None
+
+
+@pytest.mark.component
 @pytest.mark.parametrize(
     "payload",
     [

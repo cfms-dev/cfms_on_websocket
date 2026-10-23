@@ -45,7 +45,7 @@ def register_data() -> tuple[ExtensionDataTable, ...]:
     return (
         ExtensionDataTable(
             owner="oidc_sso",
-            table=UserOidcCredential.__table__,
+            table=UserOidcCredential.metadata.tables[UserOidcCredential.__tablename__],
             backup_component="accounts",
             encode_row=encode_binding,
             decode_row=decode_binding,

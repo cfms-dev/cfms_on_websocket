@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import Column, Integer, MetaData, Table, inspect
+from sqlalchemy.engine.reflection import Inspector
 
 from include.database.session import Base
 from include.extensions.data import (
@@ -87,6 +88,36 @@ def test_incompatible_existing_extension_table_is_rejected(
             set(declarations),
         )
     assert inspect(engine).get_table_names() == ["example_parent"]
+
+
+def test_schema_preparation_accepts_foreign_keys_without_optional_options(
+    example_data, sqlite_engine_factory, monkeypatch
+):
+    engine = sqlite_engine_factory()
+    declarations = load_extension_data(Base.metadata)
+    metadata = extension_metadata(Base.metadata, declarations)
+    get_foreign_keys = Inspector.get_foreign_keys
+
+    def reflect_without_options(self, table_name, *args, **kwargs):
+        return [
+            {key: value for key, value in foreign_key.items() if key != "options"}
+            for foreign_key in get_foreign_keys(self, table_name, *args, **kwargs)
+        ]
+
+    with engine.begin() as connection:
+        prepare_extension_tables(connection, metadata, set(declarations))
+        connection.execute(metadata.tables["example_parent"].insert(), {"id": 1})
+        connection.execute(
+            metadata.tables["example_child"].insert(),
+            {"id": 2, "parent_id": 1, "value": b"preserved"},
+        )
+        monkeypatch.setattr(Inspector, "get_foreign_keys", reflect_without_options)
+
+        prepare_extension_tables(connection, metadata, set(declarations), create=False)
+
+        assert connection.execute(metadata.tables["example_child"].select()).all() == [
+            (2, 1, b"preserved")
+        ]
 
 
 def test_oidc_data_import_does_not_require_network_dependencies(protected_test_config):

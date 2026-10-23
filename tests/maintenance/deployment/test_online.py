@@ -68,11 +68,15 @@ def test_online_check_compares_latest_release_version(
         "draft",
         "prerelease",
         "release-url",
+        "non-string-release-url",
         "missing-package",
         "duplicate-package",
         "pending-package",
         "oversized-package",
         "missing-digest",
+        "non-string-digest",
+        "malformed-digest",
+        "non-string-url",
         "foreign-url",
     ],
 )
@@ -90,6 +94,8 @@ def test_online_release_metadata_is_fail_closed(
         metadata["prerelease"] = True
     elif invalid_part == "release-url":
         metadata["html_url"] = "https://example.com/release"
+    elif invalid_part == "non-string-release-url":
+        metadata["html_url"] = None
     elif invalid_part == "missing-package":
         metadata["assets"] = metadata["assets"][1:]
     elif invalid_part == "duplicate-package":
@@ -100,6 +106,12 @@ def test_online_release_metadata_is_fail_closed(
         metadata["assets"][0]["size"] = MAX_PACKAGE_BYTES + 1
     elif invalid_part == "missing-digest":
         metadata["assets"][0]["digest"] = None
+    elif invalid_part == "non-string-digest":
+        metadata["assets"][0]["digest"] = 42
+    elif invalid_part == "malformed-digest":
+        metadata["assets"][0]["digest"] = "sha256:not-a-digest"
+    elif invalid_part == "non-string-url":
+        metadata["assets"][0]["browser_download_url"] = None
     else:
         metadata["assets"][0]["browser_download_url"] = (
             "https://example.com/cfms-on-websocket-1.1.0.zip"

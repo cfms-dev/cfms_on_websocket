@@ -4,7 +4,7 @@ import os
 import secrets
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -85,7 +85,7 @@ def fill_pepper(config_path: str | Path = "config.toml") -> PepperFillResult:
         added_security_section = True
 
     security_section = doc["security"]
-    if not isinstance(security_section, Mapping):
+    if not isinstance(security_section, MutableMapping):
         raise MaintenanceOperationError("Configuration security must be a table")
     if security_section.get("pepper"):
         return PepperFillResult(

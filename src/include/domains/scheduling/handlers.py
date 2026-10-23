@@ -156,6 +156,7 @@ class RequestListScheduledTaskTypesHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         """Filter task registrations by view and task-specific permissions."""
 
+        assert handler.user_id is not None
         if error := _provider_error(handler, handler.user_id):
             return error
         permissions = _permissions(handler.user_id)
@@ -188,6 +189,7 @@ class RequestCreateScheduleHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         """Create a schedule transactionally, then wake the active Provider."""
 
+        assert handler.user_id is not None
         if error := _provider_error(handler, handler.user_id):
             return error
         permissions = _permissions(handler.user_id)
@@ -235,6 +237,7 @@ class RequestGetScheduleHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         """Hide deleted and system-managed rows from direct lookup."""
 
+        assert handler.user_id is not None
         if error := _provider_error(handler, handler.user_id):
             return error
         if Permissions.VIEW_SCHEDULES not in _permissions(handler.user_id):
@@ -263,6 +266,7 @@ class RequestListSchedulesHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         """Return one descending page without exposing system-managed rows."""
 
+        assert handler.user_id is not None
         if error := _provider_error(handler, handler.user_id):
             return error
         if Permissions.VIEW_SCHEDULES not in _permissions(handler.user_id):
@@ -328,6 +332,7 @@ class RequestUpdateScheduleHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         """Authorize against locked current state and apply supplied fields."""
 
+        assert handler.user_id is not None
         if error := _provider_error(handler, handler.user_id):
             return error
         registry = collect_scheduled_tasks()
@@ -400,6 +405,7 @@ class RequestDeleteScheduleHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         """Retire a user schedule at the expected revision and wake the Provider."""
 
+        assert handler.user_id is not None
         if error := _provider_error(handler, handler.user_id):
             return error
         if Permissions.MANAGE_SCHEDULES not in _permissions(handler.user_id):

@@ -249,11 +249,13 @@ def _persist_lockdown_state(
     source: LockdownSource | None,
     last_disabled_at: float,
 ) -> int:
-    payload = _LockdownPayload(
-        enabled=state.enabled,
-        reason=state.reason,
-        source=None if source is None else source.value,
-        last_disabled_at=last_disabled_at,
+    payload = _LockdownPayload.model_validate(
+        {
+            "enabled": state.enabled,
+            "reason": state.reason,
+            "source": None if source is None else source.value,
+            "last_disabled_at": last_disabled_at,
+        }
     ).model_dump(mode="json")
     if current is None:
         applied = create_system_state(

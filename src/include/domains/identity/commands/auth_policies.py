@@ -1,4 +1,7 @@
+from typing import Any, cast
+
 from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -52,14 +55,17 @@ def replace_auth_policy(
         except IntegrityError as exc:
             raise AuthPolicyConflict("Authentication policy changed") from exc
     else:
-        result = session.execute(
-            update(UserAuthPolicy)
-            .where(
-                UserAuthPolicy.user_id == user.id,
-                UserAuthPolicy.purpose == purpose.value,
-                UserAuthPolicy.revision == expected_revision,
-            )
-            .values(chains=data, revision=expected_revision + 1)
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                update(UserAuthPolicy)
+                .where(
+                    UserAuthPolicy.user_id == user.id,
+                    UserAuthPolicy.purpose == purpose.value,
+                    UserAuthPolicy.revision == expected_revision,
+                )
+                .values(chains=data, revision=expected_revision + 1)
+            ),
         )
         if result.rowcount != 1:
             raise AuthPolicyConflict("Authentication policy changed")

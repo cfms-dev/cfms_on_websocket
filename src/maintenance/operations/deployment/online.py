@@ -212,13 +212,12 @@ def _asset(
     item = matches[0]
     url = item.get("browser_download_url")
     size = item.get("size")
-    digest_match = (
-        _ASSET_DIGEST_PATTERN(item.get("digest"))
-        if isinstance(item.get("digest"), str)
-        else None
-    )
+    digest = item.get("digest")
+    digest_match = _ASSET_DIGEST_PATTERN(digest) if isinstance(digest, str) else None
     expected_path = f"/cfms-dev/cfms_on_websocket/releases/download/v{version}/{name}"
-    parsed_url = urlsplit(url) if isinstance(url, str) else None
+    if not isinstance(url, str):
+        raise MaintenanceOperationError(f"GitHub release asset {name} is invalid")
+    parsed_url = urlsplit(url)
     if (
         item.get("state") != "uploaded"
         or isinstance(size, bool)
@@ -226,7 +225,6 @@ def _asset(
         or size < 0
         or size > maximum
         or digest_match is None
-        or parsed_url is None
         or parsed_url.scheme != "https"
         or parsed_url.netloc != "github.com"
         or parsed_url.path != expected_path
@@ -265,7 +263,11 @@ def _fetch_latest_release() -> _OnlineRelease:
         f"https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v{version}"
     )
     assets = metadata.get("assets")
-    if release_url != expected_release_url or not isinstance(assets, list):
+    if (
+        not isinstance(release_url, str)
+        or release_url != expected_release_url
+        or not isinstance(assets, list)
+    ):
         raise MaintenanceOperationError("GitHub release metadata is invalid")
     package_name = f"cfms-on-websocket-{version}.zip"
     return _OnlineRelease(

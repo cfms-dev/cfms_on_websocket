@@ -405,6 +405,12 @@ class TestSystemManagement:
             )
         )
         assert len(reordered_filter_page["items"]) == 1
+        first_entry = first_page["items"][0]
+        next_entry = reordered_filter_page["items"][0]
+        assert (first_entry["logged_time"], first_entry["id"]) > (
+            next_entry["logged_time"],
+            next_entry["id"],
+        )
 
         changed_filter_response = await authenticated_client.view_audit_logs(
             page_size=1,

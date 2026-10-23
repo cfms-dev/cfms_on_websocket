@@ -110,7 +110,7 @@ def inspect_audit_entries(selection: AuditSelection) -> AuditInspectionResult:
     enter_server_root()
     load_database_models()
 
-    table = AuditEntry.__table__
+    table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     conditions = _selection_conditions(table, selection)
     try:
         with Session() as session:
@@ -156,7 +156,7 @@ def export_audit_entries(
     load_database_models()
 
     policy = AuditRetentionPolicy.from_config()
-    table = AuditEntry.__table__
+    table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     output = Path(output_path)
     if output.exists():
         raise MaintenanceOperationError(f"Audit export already exists: {output}")
@@ -234,7 +234,7 @@ def purge_audit_entries(
         )
 
     policy = AuditRetentionPolicy.from_config()
-    table = AuditEntry.__table__
+    table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     deleted_count = 0
     pending_ids: list[str] = []
     try:

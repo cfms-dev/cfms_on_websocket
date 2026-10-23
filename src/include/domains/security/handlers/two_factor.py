@@ -271,7 +271,7 @@ class RequestDisable2FAHandler(RequestHandler):
             if user is not None:
                 audit_data["target_username"] = user.username
             credential = session.get(UserTotpCredential, user.id) if user else None
-            if credential is None or not credential.enabled:
+            if user is None or credential is None or not credential.enabled:
                 handler.conclude_request(400, {}, "2FA not enabled or user not found")
                 return Result(
                     code=400,

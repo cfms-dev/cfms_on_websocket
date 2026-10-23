@@ -55,7 +55,7 @@ def create_user(**kwargs) -> uuid.UUID:
             session.flush()
             set_password(session, user, raw_password)
             session.flush()
-            credential = session.get(UserPasswordCredential, user.id)
+            credential = UserPasswordCredential.get_existing(session, user.id)
             replace_auth_policy(
                 session,
                 user,

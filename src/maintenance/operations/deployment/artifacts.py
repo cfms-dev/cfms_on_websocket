@@ -37,14 +37,14 @@ def _expected_digest(
         raise MaintenanceOperationError(
             "Choose at most one package digest source: --sha256 or --checksums"
         )
-    if expected_sha256 is None and checksums_path is None:
-        return None
     if expected_sha256 is not None:
         if _SHA256_PATTERN(expected_sha256) is None:
             raise MaintenanceOperationError(
                 "--sha256 must be exactly 64 hexadecimal digits"
             )
         return expected_sha256.lower()
+    if checksums_path is None:
+        return None
 
     checksum_file = Path(checksums_path).expanduser().resolve()
     contents = _read_limited_bytes(

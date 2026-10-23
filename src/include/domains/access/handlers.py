@@ -4,6 +4,7 @@ import uuid
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, TypeAdapter, model_validator
+from sqlalchemy import false
 
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import (
@@ -216,7 +217,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                     ObjectAccessEntry.entity_identifier == object_identifier,
                 )
                 if object_type == "user" and target_user is None:
-                    access_query = access_query.filter(False)
+                    access_query = access_query.filter(false())
             else:
                 access_query = session.query(ObjectAccessEntry).filter(
                     ObjectAccessEntry.target_type == object_type,

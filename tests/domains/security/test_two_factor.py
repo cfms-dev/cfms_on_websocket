@@ -1,5 +1,7 @@
 """Public two-factor setup, validation, disabling, and login contracts."""
 
+import uuid
+
 import orjson
 import pyotp
 import pytest
@@ -31,6 +33,16 @@ async def enabled_totp(user_client: CFMSTestClient, pending_totp):
 
 @pytest.mark.integration
 class TestTwoFactorAuth:
+    @pytest.mark.asyncio
+    async def test_administrator_cannot_disable_2fa_for_missing_user(
+        self, authenticated_client: CFMSTestClient
+    ):
+        response = await authenticated_client.send_request(
+            "disable_2fa", {"user_id": str(uuid.uuid4())}
+        )
+        error = assert_error(response, 400)
+        assert error["message"] == "2FA not enabled or user not found"
+
     @pytest.mark.asyncio
     async def test_administrator_disables_2fa_by_user_id(
         self,

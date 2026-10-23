@@ -170,7 +170,7 @@ def prepare_extension_tables(
                 tuple(key["constrained_columns"]),
                 key["referred_table"],
                 tuple(key["referred_columns"]),
-                key["options"].get("ondelete"),
+                key.get("options", {}).get("ondelete"),
             )
             for key in inspector.get_foreign_keys(name)
         }

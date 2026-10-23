@@ -522,11 +522,12 @@ class RequestOIDCCallbackHandler(RequestHandler):
                         ),
                     },
                 )
-                context = (
-                    start_login_attempt(session, user, "oidc", verified.credential_id)
-                    if verified.success
-                    else None
-                )
+                context = None
+                if verified.success:
+                    assert verified.credential_id is not None
+                    context = start_login_attempt(
+                        session, user, "oidc", verified.credential_id
+                    )
                 if context is None:
                     handler.conclude_request(401, {}, "Invalid credentials")
                     return Result(code=401)

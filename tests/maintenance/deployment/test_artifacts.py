@@ -253,6 +253,20 @@ def test_stage_rejects_multiple_external_digest_sources(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("separator", ["  ", " *"])
+def test_checksum_file_selects_and_normalizes_requested_package_digest(
+    tmp_path: Path, separator: str
+) -> None:
+    package = tmp_path / "release.zip"
+    checksums = tmp_path / "SHA256SUMS.txt"
+    checksums.write_text(
+        f"{'0' * 64}  other.zip\n{'AB' * 32}{separator}{package.name}\n",
+        encoding="utf-8",
+    )
+
+    assert deployment_artifacts._expected_digest(package, None, checksums) == "ab" * 32
+
+
 def test_zip_member_limit_is_checked_before_opening_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

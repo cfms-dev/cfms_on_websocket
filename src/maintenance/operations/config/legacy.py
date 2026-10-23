@@ -1,6 +1,6 @@
 import copy
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
 
 from maintenance.operations.exceptions import MaintenanceOperationError
@@ -44,7 +44,7 @@ def apply_legacy_migrations(
         target = "extensions.oidc_sso"
         if isinstance(old_oidc, Mapping):
             target_section = get_path(candidate, target)
-            if not isinstance(target_section, Mapping):
+            if not isinstance(target_section, MutableMapping):
                 raise MaintenanceOperationError(
                     f"Configuration template is missing migration target {target}"
                 )
@@ -207,7 +207,7 @@ def set_path(config: Any, dotted_path: str, value: Any) -> None:
                 f"Configuration template is missing migration target {dotted_path}"
             )
         target = target[part]
-    if not isinstance(target, Mapping) or parts[-1] not in target:
+    if not isinstance(target, MutableMapping) or parts[-1] not in target:
         raise MaintenanceOperationError(
             f"Configuration template is missing migration target {dotted_path}"
         )

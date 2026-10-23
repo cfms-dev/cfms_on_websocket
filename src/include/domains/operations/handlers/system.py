@@ -1,7 +1,7 @@
 from typing import Self
 
 from pydantic import model_validator
-from sqlalchemy import and_, desc, or_, true
+from sqlalchemy import and_, or_, true
 
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
@@ -130,7 +130,9 @@ class RequestViewAuditLogsHandler(RequestHandler):
                 )
 
             queried_entries = (
-                audit_query.order_by(desc(AuditEntry.logged_time), desc(AuditEntry.id))
+                audit_query.order_by(
+                    AuditEntry.logged_time.desc(), AuditEntry.id.desc()
+                )
                 .limit(page_size + 1)
                 .all()
             )

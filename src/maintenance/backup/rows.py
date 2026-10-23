@@ -170,17 +170,18 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
         if column.name not in row:
             decoded[column.name] = None
             continue
-        value = row[column.name]
+        raw_value = row[column.name]
+        value = raw_value
         if value is not None and isinstance(column.type, Uuid):
             try:
-                value = uuid.UUID(value)
+                value = uuid.UUID(raw_value)
             except (TypeError, ValueError, AttributeError) as exc:
                 raise BackupFormatError(
                     f"Invalid UUID for {table.name}.{column.name}"
                 ) from exc
         if value is not None and isinstance(column.type, DateTime):
             try:
-                value = dt.datetime.fromisoformat(value)
+                value = dt.datetime.fromisoformat(raw_value)
             except (TypeError, ValueError) as exc:
                 raise BackupFormatError(
                     f"Invalid datetime for {table.name}.{column.name}"
@@ -204,7 +205,7 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
             and column.name in {"public_key_der", "fingerprint"}
         ):
             try:
-                value = bytes.fromhex(value)
+                value = bytes.fromhex(raw_value)
             except (TypeError, ValueError) as exc:
                 raise BackupFormatError("Invalid public key bytes in backup") from exc
             if column.name == "fingerprint" and len(value) != 32:
