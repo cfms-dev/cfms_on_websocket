@@ -30,7 +30,6 @@ from pydantic import ValidationError
 assert EXECUTABLE_ABSPATH == Path.cwd()
 
 handler_payloads = (
-    (RequestLoginHandler, {"username": "u", "password": "secret"}),
     (RequestCreateUserHandler, {"username": "u", "password": "secret"}),
     (
         RequestSetPasswdHandler,
@@ -51,11 +50,21 @@ for handler_type, payload in handler_payloads:
     else:
         raise AssertionError(f"{handler_type.__name__} accepted an oversized username")
 
+for length in (USERNAME_MAX_LENGTH, USERNAME_MAX_LENGTH + 1):
+    payload = {"method": "password", "credential": {"username": "u" * length, "password": "secret"}}
+    if length == USERNAME_MAX_LENGTH:
+        RequestLoginHandler.request_model.model_validate(payload)
+    else:
+        try:
+            RequestLoginHandler.request_model.model_validate(payload)
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError("login accepted an oversized username")
+
 username_columns = (
     User.__table__.c.username,
     AccountThrottle.__table__.c.username,
-    DocumentMetadata.__table__.c.creator_username,
-    DocumentMetadata.__table__.c.last_modified_by_username,
 )
 for column in username_columns:
     assert column.type.length == USERNAME_DATABASE_MAX_LENGTH

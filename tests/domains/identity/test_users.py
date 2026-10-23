@@ -12,6 +12,15 @@ pytestmark = pytest.mark.integration
 
 class TestUserOperations:
     @pytest.mark.asyncio
+    async def test_rename_user_requires_authentication(self, unauthenticated_client):
+        response = await unauthenticated_client.send_request(
+            "rename_user",
+            {"username": "admin", "nickname": "unauthorized"},
+            include_auth=False,
+        )
+        assert_error(response, 401)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("action", "username_field"),
         [

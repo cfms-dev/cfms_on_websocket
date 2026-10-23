@@ -76,14 +76,14 @@ class RequestSearchHandler(RequestHandler):
             handler: The connection handler containing request data
 
         Returns:
-            Tuple containing status code, query, and username for audit logging
+            Result containing the query and authenticated user ID for audit logging.
         """
         query: str = handler.data["query"].strip()
         if not query:
             handler.conclude_request(
                 400, {}, "Query must not be empty or whitespace only"
             )
-            return Result(code=400, target=query, username=handler.username)
+            return Result(code=400, target=query, user_id=handler.user_id)
 
         page_size = get_page_size(handler.data)
         cursor = handler.data.get("cursor")
@@ -110,16 +110,16 @@ class RequestSearchHandler(RequestHandler):
             last_key = None if decoded_cursor is None else decoded_cursor.last
         except CursorError as exc:
             handler.conclude_request(400, {}, str(exc))
-            return Result(code=400, target=query, username=handler.username)
+            return Result(code=400, target=query, user_id=handler.user_id)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.SEARCH not in user.all_permissions:
                 handler.conclude_request(
                     403, {}, "User does not have permission to perform search"
                 )
-                return Result(code=403, target=query, username=handler.username)
+                return Result(code=403, target=query, user_id=handler.user_id)
 
             now = time.time()
             all_results = fetch_visible_search_candidate_rows(
@@ -150,4 +150,4 @@ class RequestSearchHandler(RequestHandler):
                 response_data,
                 f"Search completed successfully. Found {len(response_data['items'])} result(s).",
             )
-            return Result(code=0, target=query, username=handler.username)
+            return Result(code=0, target=query, user_id=handler.user_id)

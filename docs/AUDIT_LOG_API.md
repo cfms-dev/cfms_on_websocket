@@ -9,7 +9,6 @@ permission and uses a request-rate cost of 3.
 ```json
 {
   "action": "view_audit_logs",
-  "username": "admin",
   "token": "<token>",
   "nonce": "<unique nonce>",
   "timestamp": 1786600000,
@@ -41,7 +40,7 @@ extensions; they are not a closed enum.
     {
       "id": "<audit entry id>",
       "action": "create_directory",
-      "username": "admin",
+      "user_id": "<user UUID>",
       "target": null,
       "data": null,
       "result": 0,

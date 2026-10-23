@@ -42,7 +42,7 @@ class PublicKeyAuthProvider(BaseAuthMethodProvider):
     def create_challenge(self, session: Session, user: User) -> dict[str, Any] | None:
         nonce = secrets.token_urlsafe(32)
         cache = ProviderManager().caching
-        cache.set(f"auth:challenge:{user.username}:{nonce}", 1, ttl=60)
+        cache.set(f"auth:challenge:{user.id}:{nonce}", 1, ttl=60)
         return {"nonce": nonce, "expires_in": 60}
 
     def verify(
@@ -64,7 +64,7 @@ class PublicKeyAuthProvider(BaseAuthMethodProvider):
             )
 
         cache = ProviderManager().caching
-        cache_key = f"auth:challenge:{user.username}:{nonce}"
+        cache_key = f"auth:challenge:{user.id}:{nonce}"
         if not cache.get(cache_key):
             return AuthVerificationResult(
                 success=False,
@@ -90,7 +90,7 @@ class PublicKeyAuthProvider(BaseAuthMethodProvider):
         key_entry = (
             session.query(UserAuthPublicKey)
             .filter(
-                UserAuthPublicKey.username == user.username,
+                UserAuthPublicKey.user_id == user.id,
                 UserAuthPublicKey.fingerprint == fp_bytes,
             )
             .one_or_none()

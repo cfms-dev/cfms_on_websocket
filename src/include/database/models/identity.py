@@ -1,5 +1,6 @@
 import secrets
 import time
+import uuid
 from enum import IntEnum
 from functools import cached_property
 from typing import Any
@@ -14,6 +15,8 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
+    Uuid,
     event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -94,10 +97,19 @@ def _replace_permission_entries(
 
 class User(Base):
     __tablename__ = "users"
-    username: Mapped[str] = mapped_column(
-        VARCHAR(USERNAME_DATABASE_MAX_LENGTH), primary_key=True
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        # UUID v4 avoids exposing the user's creation timestamp.
+        default=uuid.uuid4,
     )
-    nickname: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    username: Mapped[str] = mapped_column(
+        String(USERNAME_DATABASE_MAX_LENGTH),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    nickname: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     avatar_id: Mapped[str | None] = mapped_column(
         ForeignKey("files.id"), nullable=True, index=True
@@ -124,27 +136,6 @@ class User(Base):
         VARCHAR(64), default=lambda: secrets.token_hex(32), nullable=True
     )
 
-    password_credential: Mapped["UserPasswordCredential | None"] = relationship(
-        "UserPasswordCredential",
-        back_populates="user",
-        uselist=False,
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    totp_credential: Mapped["UserTotpCredential | None"] = relationship(
-        "UserTotpCredential",
-        back_populates="user",
-        uselist=False,
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    auth_public_keys: Mapped[list["UserAuthPublicKey"]] = relationship(
-        "UserAuthPublicKey",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-
     groups: Mapped[list[UserMembership]] = relationship(
         "UserMembership", back_populates="user", cascade="all, delete-orphan"
     )
@@ -155,18 +146,27 @@ class User(Base):
     block_entries: Mapped[list["UserBlockEntry"]] = relationship(
         "UserBlockEntry", back_populates="user", cascade="all, delete-orphan"
     )
+    password_credential: Mapped["UserPasswordCredential | None"] = relationship(
+        "UserPasswordCredential", back_populates="user", cascade="all, delete-orphan"
+    )
+    totp_credential: Mapped["UserTotpCredential | None"] = relationship(
+        "UserTotpCredential", back_populates="user", cascade="all, delete-orphan"
+    )
+    auth_public_keys: Mapped[list["UserAuthPublicKey"]] = relationship(
+        "UserAuthPublicKey", back_populates="user", cascade="all, delete-orphan"
+    )
     audit_entries: Mapped[list["AuditEntry"]] = relationship(
         "AuditEntry", back_populates="user"
     )
     keyring: Mapped[list["UserKey"]] = relationship(
         "UserKey",
         back_populates="user",
-        foreign_keys="UserKey.username",
+        foreign_keys="UserKey.user_id",
         cascade="all, delete-orphan",
     )
 
     preference_dek_id: Mapped[str | None] = mapped_column(
-        VARCHAR(64),
+        String(64),
         ForeignKey(
             "keyrings.id",
             name="fk_users_preference_dek_id",
@@ -205,7 +205,7 @@ class User(Base):
             return
         if not self.password_credential:
             self.password_credential = UserPasswordCredential(
-                username=self.username,
+                user_id=self.id,
                 pass_hash=value,
                 passwd_last_modified=time.time(),
             )
@@ -234,7 +234,7 @@ class User(Base):
         if value is not None:
             if not self.totp_credential:
                 self.totp_credential = UserTotpCredential(
-                    username=self.username,
+                    user_id=self.id,
                     secret=value,
                     enabled=False,
                     created_time=time.time(),
@@ -252,7 +252,7 @@ class User(Base):
     def totp_enabled(self, value: bool) -> None:
         if not self.totp_credential:
             self.totp_credential = UserTotpCredential(
-                username=self.username,
+                user_id=self.id,
                 secret="",
                 enabled=value,
                 created_time=time.time(),
@@ -268,7 +268,7 @@ class User(Base):
     def totp_backup_codes(self, value: str | None) -> None:
         if not self.totp_credential:
             self.totp_credential = UserTotpCredential(
-                username=self.username,
+                user_id=self.id,
                 secret="",
                 enabled=False,
                 backup_codes=value,
@@ -288,7 +288,7 @@ class User(Base):
         if not self.password_credential:
             session = object_session(self)
             cred = UserPasswordCredential(
-                username=self.username,
+                user_id=self.id,
                 pass_hash="",
                 passwd_last_modified=0.0,
             )
@@ -311,7 +311,7 @@ class User(Base):
             if not self.secret_key
             else self.secret_key
         )
-        token = Token.new(self.username, DEFAULT_TOKEN_EXPIRY_SECONDS, secret)
+        token = Token.new(self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, secret)
 
         session = object_session(self)
         if session is not None:
@@ -335,40 +335,28 @@ class User(Base):
             return False
         raw_token = token.raw if isinstance(token, Token) else str(token)
         try:
-            payload = jwt.decode(
+            verified = Token.from_raw(
                 raw_token,
                 (
                     global_config["server"]["secret_key"]
                     if not self.secret_key
                     else self.secret_key
                 ),
-                algorithms=["HS256"],
             )
-            return payload.get("username") == self.username and bool(
-                payload.get("purpose", 0) & purpose
-            )
+            return verified.sub == self.id and bool(verified.purpose & purpose)
         except jwt.ExpiredSignatureError, jwt.InvalidTokenError:
             return False
 
     def renew_token(self, old: Token | None = None) -> Token:
-        secret: str
-        purpose: TokenPurpose
+        if old is not None and not self.is_token_valid(old, purpose=old.purpose):
+            raise jwt.InvalidTokenError("Cannot renew an invalid token")
+        secret = self.secret_key or global_config["server"]["secret_key"]
+        purpose = old.purpose if old is not None else TokenPurpose.GENERAL
 
-        if not old:
-            secret = (
-                global_config["server"]["secret_key"]
-                if not self.secret_key
-                else self.secret_key
-            )
-            purpose = TokenPurpose.GENERAL
-        else:
-            secret = old._secret
-            purpose = old.purpose
-
-        return Token.new(self.username, DEFAULT_TOKEN_EXPIRY_SECONDS, secret, purpose)
+        return Token.new(self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, secret, purpose)
 
     def setup_totp(self) -> tuple[str, list[str]]:
-        credential, backup_codes = UserTotpCredential.create_pending(self.username)
+        credential, backup_codes = UserTotpCredential.create_pending(self.id)
         session = object_session(self)
         if self.totp_credential and session is not None:
             session.delete(self.totp_credential)
@@ -450,7 +438,7 @@ class User(Base):
             new_permission_entries,
             lambda entry: UserPermission(
                 user=self,
-                username=self.username,
+                user_id=self.id,
                 permission=entry["permission"],
                 granted=entry["granted"],
                 start_time=entry["start_time"],
@@ -530,8 +518,8 @@ class UserPermission(Base):
     __tablename__ = "user_permissions"
     __table_args__ = (Index("ix_user_permissions_end_time_id", "end_time", "id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE")
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
     )
     permission: Mapped[Permissions] = mapped_column(VARCHAR(255))
     granted: Mapped[bool] = mapped_column(
@@ -547,7 +535,7 @@ class UserPermission(Base):
 
     def __repr__(self) -> str:
         return (
-            f"UserPermission(id={self.id!r}, username={self.username!r}, "
+            f"UserPermission(id={self.id!r}, user_id={self.user_id!r}, "
             f"permission={self.permission!r}, granted={self.granted!r}, "
             f"start_time={self.start_time!r}, end_time={self.end_time!r})"
         )
@@ -557,8 +545,8 @@ class UserPermission(Base):
 class UserMembership(Base):
     __tablename__ = "user_memberships"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE")
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
     )
     group_name: Mapped[str] = mapped_column(
         ForeignKey("user_groups.group_name", ondelete="CASCADE")
@@ -572,7 +560,7 @@ class UserMembership(Base):
 
     def __repr__(self) -> str:
         return (
-            f"UserMembership(id={self.id!r}, username={self.username!r}, "
+            f"UserMembership(id={self.id!r}, user_id={self.user_id!r}, "
             f"group_name={self.group_name!r}, start_time={self.start_time!r}, "
             f"end_time={self.end_time!r})"
         )
@@ -623,7 +611,7 @@ class UserGroup(Base):
         )
 
     @property
-    def members(self) -> set[str]:
+    def members(self) -> set[uuid.UUID]:
         session = object_session(self)
         if not session:
             raise RuntimeError("No active object session found")
@@ -636,7 +624,7 @@ class UserGroup(Base):
             .all()
         ):
             if membership.end_time is None or membership.end_time >= now:
-                _members.add(membership.username)
+                _members.add(membership.user_id)
 
         return _members
 

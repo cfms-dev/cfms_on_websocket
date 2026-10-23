@@ -26,7 +26,7 @@ def _write_audit_rows(extract_dir: Path, row_count: int) -> None:
         {
             "id": f"audit-{index:04d}",
             "action": "batch-test",
-            "username": None,
+            "user_id": None,
             "target": None,
             "data": {"sequence": index},
             "result": 200,
@@ -1202,7 +1202,7 @@ def test_export_rejects_json_row_larger_than_restore_limit(
             {
                 "id": "oversized-audit",
                 "action": "export-limit",
-                "username": None,
+                "user_id": None,
                 "target": None,
                 "data": {"payload": "too large"},
                 "result": 200,

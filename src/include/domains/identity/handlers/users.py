@@ -17,11 +17,12 @@ __all__ = [
 ]
 
 import time
+import uuid
 from typing import Annotated, Literal, Self
 
 import filetype
 from pydantic import Field, model_validator
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from include.config.constants import AVAILABLE_BLOCK_TYPES
@@ -182,6 +183,9 @@ def _serialize_user_block(entry: UserBlockEntry) -> dict:
     }
 
 
+# TODO: User management features should use user_id to identify users, unless listing users
+
+
 class RequestListUsersHandler(RequestHandler):
     request_model = OffsetPaginationRequest
 
@@ -192,7 +196,7 @@ class RequestListUsersHandler(RequestHandler):
         offset, count = get_offset_pagination(handler.data)
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.LIST_USERS not in this_user.all_permissions:
                 handler.conclude_request(
@@ -200,7 +204,7 @@ class RequestListUsersHandler(RequestHandler):
                     message="You do not have permission to list users",
                     data={},
                 )
-                return Result(code=403, username=handler.username)
+                return Result(code=403, user_id=handler.user_id)
 
             total = session.query(func.count(User.username)).scalar()
             users = (
@@ -212,6 +216,7 @@ class RequestListUsersHandler(RequestHandler):
             )
             users_data = [
                 {
+                    "user_id": str(user.id),
                     "username": user.username,
                     "nickname": user.nickname,
                     "created_time": user.created_time,
@@ -241,7 +246,7 @@ class RequestListUsersHandler(RequestHandler):
             return Result(
                 code=0,
                 data={"offset": offset, "count": count},
-                username=handler.username,
+                user_id=handler.user_id,
             )
 
 
@@ -260,7 +265,7 @@ class RequestCreateUserHandler(RequestHandler):
         new_user_groups = data.get("groups", [])
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             # currently handle_create_user() will not judge whether the requesting
             # user is eligible to apply the given permissions for the new user.
@@ -306,7 +311,7 @@ class RequestCreateUserHandler(RequestHandler):
             )
 
         handler.conclude_request(200, {}, "User created successfully")
-        return Result(code=0, target=new_username, username=handler.username)
+        return Result(code=0, target=new_username, user_id=handler.user_id)
 
 
 class RequestDeleteUserHandler(RequestHandler):
@@ -318,7 +323,7 @@ class RequestDeleteUserHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.DELETE_USER not in this_user.all_permissions:
                 handler.conclude_request(
@@ -330,7 +335,9 @@ class RequestDeleteUserHandler(RequestHandler):
 
             user_to_delete_username = handler.data["username"]
 
-            user_to_delete = session.get(User, user_to_delete_username)
+            user_to_delete = session.scalar(
+                select(User).where(User.username == user_to_delete_username)
+            )
             if not user_to_delete:
                 handler.conclude_request(
                     code=404, message="User does not exist", data={}
@@ -381,6 +388,7 @@ class RequestDeleteUserHandler(RequestHandler):
 
 class RequestRenameUserHandler(RequestHandler):
     request_model = _RenameUserRequest
+    requires_auth = True
     rate_limit_cost = 5
 
     def handle(self, handler: ConnectionHandler):
@@ -388,13 +396,7 @@ class RequestRenameUserHandler(RequestHandler):
         target_username: str = handler.data["username"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
-
-            if not this_user or not this_user.is_token_valid(handler.token):
-                handler.conclude_request(
-                    code=403, message="Invalid user or token", data={}
-                )
-                return
+            this_user = User.get_existing(session, handler.user_id)
 
             permissions = this_user.all_permissions
             is_renaming_self = target_username == this_user.username
@@ -417,7 +419,9 @@ class RequestRenameUserHandler(RequestHandler):
 
             new_nickname = handler.data.get("nickname", None)
 
-            user_to_rename = session.get(User, target_username)
+            user_to_rename = session.scalar(
+                select(User).where(User.username == target_username)
+            )
             if not user_to_rename:
                 handler.conclude_request(
                     code=400, message="User does not exist", data={}
@@ -472,20 +476,25 @@ class RequestBlockUserHandler(RequestHandler):
             return Result(code=400, target=target_username)
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.BLOCK not in this_user.all_permissions:
                 handler.conclude_request(
                     403, {}, "You do not have permission to block users"
                 )
-                return Result(
-                    code=403, target=target_username, username=handler.username
-                )
+                return Result(code=403, target=target_username, user_id=handler.user_id)
+
+            target_user = session.scalar(
+                select(User).where(User.username == target_username)
+            )
+            if target_user is None:
+                handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
+                return Result(code=404, target=target_username, user_id=handler.user_id)
 
             # Create the parent entry.
             now = time.time()
             block_entry = UserBlockEntry(
-                username=target_username,
+                user_id=target_user.id,
                 timestamp=now,
                 not_before=not_before,
                 not_after=not_after,
@@ -517,7 +526,7 @@ class RequestBlockUserHandler(RequestHandler):
                 "block_id": response_data["block_id"],
                 **reason_change_audit_data(None, response_data["reason"]),
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -536,26 +545,22 @@ class RequestUnblockUserHandler(RequestHandler):
         block_id: str = handler.data["block_id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
-
-            if not this_user or not this_user.is_token_valid(handler.token):
-                handler.conclude_request(401, {}, "Invalid user or token")
-                return Result(code=401, target=block_id)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.UNBLOCK not in this_user.all_permissions:
                 handler.conclude_request(
                     403, {}, "You do not have permission to unblock users"
                 )
-                return Result(code=403, target=block_id, username=handler.username)
+                return Result(code=403, target=block_id, user_id=handler.user_id)
 
             block_entry = session.get(UserBlockEntry, block_id)
             if not block_entry:
                 handler.conclude_request(404, {}, "Specified entry not found")
-                return Result(code=404, target=block_id, username=handler.username)
+                return Result(code=404, target=block_id, user_id=handler.user_id)
 
             if 0 <= block_entry.not_after < time.time():
                 handler.conclude_request(400, {}, "The specified block has ended")
-                return Result(code=400, target=block_id, username=handler.username)
+                return Result(code=400, target=block_id, user_id=handler.user_id)
 
             # Currently, the operation of unblocking is to remove entries from
             # the database. However, an alternative approach is to set their
@@ -564,7 +569,7 @@ class RequestUnblockUserHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, "Unblocked user")
-        return Result(code=200, target=block_id, username=handler.username)
+        return Result(code=200, target=block_id, user_id=handler.user_id)
 
 
 class RequestUpdateUserBlockHandler(RequestHandler):
@@ -577,12 +582,12 @@ class RequestUpdateUserBlockHandler(RequestHandler):
         reason: str | None = handler.data["reason"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
             if Permissions.BLOCK not in this_user.all_permissions:
                 handler.conclude_request(
                     403, {}, "You do not have permission to update user blocks"
                 )
-                return Result(code=403, target=block_id, username=handler.username)
+                return Result(code=403, target=block_id, user_id=handler.user_id)
 
             block_entry = session.get(
                 UserBlockEntry,
@@ -591,7 +596,7 @@ class RequestUpdateUserBlockHandler(RequestHandler):
             )
             if block_entry is None:
                 handler.conclude_request(404, {}, "Specified entry not found")
-                return Result(code=404, target=block_id, username=handler.username)
+                return Result(code=404, target=block_id, user_id=handler.user_id)
 
             previous_reason = block_entry.reason
             if previous_reason != reason:
@@ -605,7 +610,7 @@ class RequestUpdateUserBlockHandler(RequestHandler):
                 **_serialize_user_block(block_entry),
                 "reason": reason,
             }
-            target_username = block_entry.username
+            target_username = block_entry.user.username
             session.commit()
 
         handler.conclude_request(200, response_data, "User block updated")
@@ -616,7 +621,7 @@ class RequestUpdateUserBlockHandler(RequestHandler):
                 "username": target_username,
                 **reason_change_audit_data(previous_reason, reason),
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -633,11 +638,7 @@ class RequestListUserBlocksHandler(RequestHandler):
         cursor = handler.data.get("cursor")
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
-
-            if not this_user or not this_user.is_token_valid(handler.token):
-                handler.conclude_request(401, {}, "Invalid user or token")
-                return Result(code=401, target=target_username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if (
                 Permissions.LIST_USER_BLOCKS not in this_user.all_permissions
@@ -646,9 +647,7 @@ class RequestListUserBlocksHandler(RequestHandler):
                 handler.conclude_request(
                     403, {}, "You do not have permission to list user blocks"
                 )
-                return Result(
-                    code=403, target=target_username, username=handler.username
-                )
+                return Result(code=403, target=target_username, user_id=handler.user_id)
 
             filters = {"username": target_username}
             sort = "timestamp_block_id:desc"
@@ -663,9 +662,7 @@ class RequestListUserBlocksHandler(RequestHandler):
                 last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
-                return Result(
-                    code=400, target=target_username, username=handler.username
-                )
+                return Result(code=400, target=target_username, user_id=handler.user_id)
 
             block_query = (
                 session.query(UserBlockEntry)
@@ -673,7 +670,8 @@ class RequestListUserBlocksHandler(RequestHandler):
                     selectinload(UserBlockEntry.sub_entries),
                     selectinload(UserBlockEntry.reason_comment),
                 )
-                .filter(UserBlockEntry.username == target_username)
+                .join(User, User.id == UserBlockEntry.user_id)
+                .filter(User.username == target_username)
             )
             if last_key is not None:
                 last_timestamp, last_block_id = last_key
@@ -707,7 +705,7 @@ class RequestListUserBlocksHandler(RequestHandler):
             )
 
         handler.conclude_request(200, response_data, "List of user blocks")
-        return Result(code=200, target=target_username, username=handler.username)
+        return Result(code=200, target=target_username, user_id=handler.user_id)
 
 
 class RequestGetUserInfoHandler(RequestHandler):
@@ -720,7 +718,7 @@ class RequestGetUserInfoHandler(RequestHandler):
         user_to_get_username = handler.data["username"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if (
                 user_to_get_username != this_user.username
@@ -733,7 +731,9 @@ class RequestGetUserInfoHandler(RequestHandler):
                 )
                 return
 
-            user_to_get = session.get(User, user_to_get_username)
+            user_to_get = session.scalar(
+                select(User).where(User.username == user_to_get_username)
+            )
             if not user_to_get:
                 handler.conclude_request(
                     code=404, message="User does not exist", data={}
@@ -742,6 +742,7 @@ class RequestGetUserInfoHandler(RequestHandler):
 
             user_info = {
                 "nickname": user_to_get.nickname,
+                "user_id": str(user_to_get.id),
                 "username": user_to_get.username,
                 "status": user_to_get.status,
                 "permissions": serialize_permission_entries(user_to_get.rights),
@@ -781,7 +782,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
 
         with Session() as session:
             # when requires_auth is True, user authentication has been verified
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if (
                 user_to_get_username != this_user.username
@@ -794,7 +795,9 @@ class RequestGetUserAvatarHandler(RequestHandler):
                 )
                 return
 
-            user_to_get = session.get(User, user_to_get_username)
+            user_to_get = session.scalar(
+                select(User).where(User.username == user_to_get_username)
+            )
             if not user_to_get:
                 handler.conclude_request(
                     code=404, message="User does not exist", data={}
@@ -836,7 +839,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
         document_id: str | None = handler.data["document_id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             permissions = this_user.all_permissions
             is_setting_own_avatar = target_username == this_user.username
@@ -858,10 +861,12 @@ class RequestSetUserAvatarHandler(RequestHandler):
                 return Result(
                     code=403,
                     target=target_username,
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
 
-            user_to_update = session.get(User, target_username)
+            user_to_update = session.scalar(
+                select(User).where(User.username == target_username)
+            )
             if not user_to_update:
                 handler.conclude_request(404, {}, "User does not exist")
                 return
@@ -891,7 +896,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, "User avatar updated successfully")
-        return Result(code=200, target=target_username, username=handler.username)
+        return Result(code=200, target=target_username, user_id=handler.user_id)
 
 
 class RequestChangeUserGroupsHandler(RequestHandler):
@@ -903,7 +908,7 @@ class RequestChangeUserGroupsHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.CHANGE_USER_GROUPS not in this_user.all_permissions:
                 handler.conclude_request(
@@ -920,7 +925,9 @@ class RequestChangeUserGroupsHandler(RequestHandler):
                 )
                 return
 
-            user_to_change = session.get(User, user_to_change_username)
+            user_to_change = session.scalar(
+                select(User).where(User.username == user_to_change_username)
+            )
             if not user_to_change:
                 handler.conclude_request(
                     code=404, message="User does not exist", data={}
@@ -950,7 +957,7 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.SET_USER_PERMISSIONS not in this_user.all_permissions:
                 handler.conclude_request(
@@ -959,7 +966,7 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
                     data={},
                 )
                 return Result(
-                    code=403, target=handler.data["username"], username=handler.username
+                    code=403, target=handler.data["username"], user_id=handler.user_id
                 )
 
             target_username = handler.data["username"]
@@ -969,14 +976,14 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
                 )
                 return
 
-            user_to_change = session.get(User, target_username)
+            user_to_change = session.scalar(
+                select(User).where(User.username == target_username)
+            )
             if not user_to_change:
                 handler.conclude_request(
                     code=404, message="User does not exist", data={}
                 )
-                return Result(
-                    code=404, target=target_username, username=handler.username
-                )
+                return Result(code=404, target=target_username, user_id=handler.user_id)
 
             new_permissions = handler.data.get("permissions", [])
             user_to_change.own_permissions = new_permissions
@@ -989,9 +996,7 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
         }
 
         handler.conclude_request(**response)
-        return Result(
-            code=0, target=handler.data["username"], username=handler.username
-        )
+        return Result(code=0, target=handler.data["username"], user_id=handler.user_id)
 
 
 class RequestSetPasswdHandler(RequestHandler):
@@ -1002,7 +1007,7 @@ class RequestSetPasswdHandler(RequestHandler):
         target_username: str = handler.data["username"]
         old_passwd: str | None = handler.data.get("old_passwd")
         new_passwd: str = handler.data["new_passwd"]
-        operator_username = handler.username
+        operator_user_id = handler.user_id
         bypass_passwd_requirements: bool = handler.data.get(
             "bypass_passwd_requirements", False
         )
@@ -1016,10 +1021,10 @@ class RequestSetPasswdHandler(RequestHandler):
             message: str,
             data: dict | None = None,
             *,
-            username: str | None = None,
+            user_id: uuid.UUID | None = None,
         ) -> Result:
             handler.conclude_request(code=code, data=data or {}, message=message)
-            return Result(code=code, target=target_username, username=username)
+            return Result(code=code, target=target_username, user_id=user_id)
 
         if old_passwd is not None:
             ip = get_client_ip(handler.stream.connection._ws)
@@ -1036,16 +1041,18 @@ class RequestSetPasswdHandler(RequestHandler):
 
         with Session() as session:
             operator_user = None
-            if operator_username:
+            if operator_user_id:
                 if not handler.token:
                     return respond(400, "Given an operator, token is required")
 
-                operator_user = session.get(User, operator_username)
+                operator_user = session.get(User, operator_user_id)
                 if not operator_user or not operator_user.is_token_valid(handler.token):
                     return respond(401, "Invalid user or token")
 
             if old_passwd is not None:
-                user = session.get(User, target_username)
+                user = session.scalar(
+                    select(User).where(User.username == target_username)
+                )
                 if not verify_password_or_dummy(user, old_passwd):
                     assert ip is not None
                     LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
@@ -1059,7 +1066,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     AuthFactor.PASSWORD,
                     completed_authentication=True,
                 )
-                actor_username = target_username
+                actor_user_id = user.id
 
                 flags_set = []
                 if bypass_passwd_requirements:
@@ -1073,12 +1080,10 @@ class RequestSetPasswdHandler(RequestHandler):
                         "The following options cannot be set to True when "
                         "changing your own password: " + ", ".join(flags_set),
                         {flag: True for flag in flags_set},
-                        username=actor_username,
+                        user_id=actor_user_id,
                     )
                 if user.status != UserStatus.ACTIVE:
-                    return respond(
-                        403, "Account is not active", username=actor_username
-                    )
+                    return respond(403, "Account is not active", user_id=actor_user_id)
 
                 if not (
                     {Permissions.SET_PASSWD, Permissions.SUPER_SET_PASSWD}
@@ -1087,7 +1092,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     return respond(
                         403,
                         "You do not have permission to change your own password",
-                        username=actor_username,
+                        user_id=actor_user_id,
                     )
             else:
                 if not operator_user:
@@ -1098,13 +1103,15 @@ class RequestSetPasswdHandler(RequestHandler):
                     return respond(
                         403,
                         "You do not have permission to set user password",
-                        username=operator_username,
+                        user_id=operator_user_id,
                     )
 
-                actor_username = operator_username
-                user = session.get(User, target_username)
+                actor_user_id = operator_user_id
+                user = session.scalar(
+                    select(User).where(User.username == target_username)
+                )
                 if user is None:
-                    return respond(404, "User does not exist", username=actor_username)
+                    return respond(404, "User does not exist", user_id=actor_user_id)
 
             try:
                 if not bypass_passwd_requirements:
@@ -1120,7 +1127,7 @@ class RequestSetPasswdHandler(RequestHandler):
                     400,
                     str(e),
                     {"min_length": e.min_length, "max_length": e.max_length},
-                    username=actor_username,
+                    user_id=actor_user_id,
                 )
             except RuleRequirementsNotMetError as e:
                 return respond(
@@ -1131,14 +1138,14 @@ class RequestSetPasswdHandler(RequestHandler):
                         "min_passed_count": e.min_passed_count,
                         "unpassed_rules": tuple(e.unpassed_rules),
                     },
-                    username=actor_username,
+                    user_id=actor_user_id,
                 )
 
             if user.verify_password(new_passwd):
                 return respond(
                     400,
                     "New password should not be the same",
-                    username=actor_username,
+                    user_id=actor_user_id,
                 )
 
             user.set_password(
@@ -1146,7 +1153,7 @@ class RequestSetPasswdHandler(RequestHandler):
             )
             session.commit()
 
-        return respond(200, "Password set successfully", username=actor_username)
+        return respond(200, "Password set successfully", user_id=actor_user_id)
 
 
 class RequestManageUserStatusHandler(RequestHandler):
@@ -1162,29 +1169,29 @@ class RequestManageUserStatusHandler(RequestHandler):
         reason_provided = "reason" in handler.data
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if Permissions.MANAGE_USER_STATUS not in this_user.all_permissions:
                 handler.conclude_request(
                     403, {}, "You do not have permission to manage user status"
                 )
-                return Result(code=403, target=None, username=handler.username)
+                return Result(code=403, target=None, user_id=handler.user_id)
 
             mapping = {
                 "active": UserStatus.ACTIVE,
                 "disabled": UserStatus.DISABLED,
             }
 
-            if username == handler.username:
+            if username == this_user.username:
                 handler.conclude_request(
                     400, {}, "Cannot change your own account status"
                 )
-                return Result(code=400, target=username, username=handler.username)
+                return Result(code=400, target=username, user_id=handler.user_id)
 
-            user = session.get(User, username)
+            user = session.scalar(select(User).where(User.username == username))
             if not user:
                 handler.conclude_request(404, {}, "User does not exist")
-                return Result(code=404, target=None, username=handler.username)
+                return Result(code=404, target=None, user_id=handler.user_id)
 
             previous_reason = user.status_reason
             status_changed = user.status != mapping[new_status]
@@ -1225,5 +1232,5 @@ class RequestManageUserStatusHandler(RequestHandler):
                 "status": new_status,
                 **reason_change_audit_data(previous_reason, response_data["reason"]),
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )

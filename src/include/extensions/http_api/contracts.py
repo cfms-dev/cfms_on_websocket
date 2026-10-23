@@ -7,6 +7,7 @@ __all__ = [
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from uuid import UUID
 
 lazy from fastapi import APIRouter
 
@@ -24,7 +25,7 @@ class HttpRouterRegistration:
 
 @dataclass(frozen=True, slots=True)
 class HttpPrincipal:
-    username: str
+    user_id: UUID
     permissions: frozenset[Permissions]
     groups: frozenset[str]
 

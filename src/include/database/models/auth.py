@@ -1,5 +1,6 @@
 import secrets
 import time
+import uuid
 
 import orjson
 import pyotp
@@ -29,8 +30,8 @@ _password_hasher = PasswordHasher()
 class UserPasswordCredential(Base):
     __tablename__ = "user_passwords"
 
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE"),
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
     pass_hash: Mapped[str] = mapped_column(
@@ -67,8 +68,8 @@ class UserPasswordCredential(Base):
 class UserTotpCredential(Base):
     __tablename__ = "user_totp_credentials"
 
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE"),
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
     secret: Mapped[str] = mapped_column(
@@ -131,16 +132,18 @@ class UserTotpCredential(Base):
     @property
     def provisioning_uri(self) -> str:
         totp = pyotp.TOTP(self.secret)
-        return totp.provisioning_uri(name=self.username, issuer_name="CFMS")
+        return totp.provisioning_uri(name=self.user.username, issuer_name="CFMS")
 
     @classmethod
-    def create_pending(cls, username: str) -> tuple["UserTotpCredential", list[str]]:
+    def create_pending(
+        cls, user_id: uuid.UUID
+    ) -> tuple["UserTotpCredential", list[str]]:
         secret = pyotp.random_base32()
         backup_codes = [secrets.token_hex(4) for _ in range(10)]
         pepper = global_config["security"]["pepper"]
         hashed_codes = [_password_hasher.hash(code + pepper) for code in backup_codes]
         credential = cls(
-            username=username,
+            user_id=user_id,
             secret=secret,
             enabled=False,
             backup_codes=orjson.dumps(hashed_codes).decode("utf-8"),
@@ -154,7 +157,7 @@ class UserAuthPublicKey(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "username",
+            "user_id",
             "fingerprint",
             name="uq_user_auth_public_keys_user_fingerprint",
         ),
@@ -170,8 +173,8 @@ class UserAuthPublicKey(Base):
         default=lambda: secrets.token_hex(16),
     )
 
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE"),
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
 

@@ -2,10 +2,39 @@ import datetime as dt
 import hashlib
 import io
 import tarfile
+import uuid
 
 import pytest
 
 pytestmark = pytest.mark.component
+
+
+@pytest.mark.parametrize("value", ["not-a-uuid", 42, [], {}])
+def test_backup_rejects_invalid_user_id(backup_context, value):
+    table = backup_context.Base.metadata.tables["user_passwords"]
+    with pytest.raises(backup_context.BackupFormatError, match="Invalid UUID"):
+        backup_context.backup_core._decode_row({"user_id": value}, table)
+
+
+def test_backup_round_trips_native_user_id(backup_context):
+    from maintenance.backup.format import _serialize_value
+
+    user_id = uuid.uuid4()
+    table = backup_context.Base.metadata.tables["user_passwords"]
+    decoded = backup_context.backup_core._decode_row(
+        {"user_id": _serialize_value(user_id)}, table
+    )
+    assert decoded["user_id"] == user_id
+
+
+@pytest.mark.parametrize("fingerprint", ["zz", "00", 42, []])
+def test_backup_rejects_invalid_public_key_fingerprint(backup_context, fingerprint):
+    table = backup_context.Base.metadata.tables["user_auth_public_keys"]
+    with pytest.raises(backup_context.BackupFormatError, match="Invalid public key"):
+        backup_context.backup_core._decode_row(
+            {"id": "key", "user_id": str(uuid.uuid4()), "fingerprint": fingerprint},
+            table,
+        )
 
 
 def test_legacy_banned_subnet_times_are_upgraded(backup_context):

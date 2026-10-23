@@ -2,6 +2,7 @@
 
 import secrets
 import time
+import uuid
 from typing import Any
 
 from sqlalchemy import (
@@ -67,12 +68,12 @@ class Schedule(Base):
     next_run_at: Mapped[float | None] = mapped_column(Double, nullable=True)
     active_execution_id: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
     pending_scheduled_for: Mapped[float | None] = mapped_column(Double, nullable=True)
-    created_by: Mapped[str | None] = mapped_column(
-        ForeignKey("users.username", ondelete="SET NULL"), nullable=True
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[float] = mapped_column(Double, nullable=False, default=time.time)
-    updated_by: Mapped[str | None] = mapped_column(
-        ForeignKey("users.username", ondelete="SET NULL"), nullable=True
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     updated_at: Mapped[float] = mapped_column(Double, nullable=False, default=time.time)
     deleted_at: Mapped[float | None] = mapped_column(Double, nullable=True)

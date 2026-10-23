@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import jwt
 import pytest
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
@@ -64,7 +65,7 @@ def test_log_handler_result_maps_all_audit_fields(monkeypatch):
     def fake_log_audit(
         action,
         result,
-        username=None,
+        user_id=None,
         target=None,
         data=None,
         remote_address=None,
@@ -73,7 +74,7 @@ def test_log_handler_result_maps_all_audit_fields(monkeypatch):
             {
                 "action": action,
                 "result": result,
-                "username": username,
+                "user_id": user_id,
                 "target": target,
                 "data": data,
                 "remote_address": remote_address,
@@ -88,7 +89,7 @@ def test_log_handler_result_maps_all_audit_fields(monkeypatch):
             code=207,
             target="target-id",
             data={"changed": True},
-            username="actor",
+            user_id="actor",
         ),
         "203.0.113.10",
     )
@@ -97,7 +98,7 @@ def test_log_handler_result_maps_all_audit_fields(monkeypatch):
         {
             "action": "sample_action",
             "result": 207,
-            "username": "actor",
+            "user_id": "actor",
             "target": "target-id",
             "data": {"changed": True},
             "remote_address": "203.0.113.10",
@@ -116,9 +117,10 @@ def test_router_returns_429_before_constructing_rate_limited_handler(monkeypatch
     class FakeConnectionHandler:
         def __init__(self, stream):
             self.stream = stream
+            self.request = {}
             self.action = "limited_action"
             self.data = {}
-            self.username = ""
+            self.user_id = ""
             self.token = ""
 
         def conclude_request(self, code, data, message):
@@ -299,6 +301,7 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
     class FakeConnectionHandler:
         def __init__(self, stream):
             self.stream = stream
+            self.request = {}
             self.action = "pydantic_action"
             self.data = {
                 "item": {
@@ -308,7 +311,7 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
                 },
                 "extra": "private-extra",
             }
-            self.username = ""
+            self.user_id = ""
             self.token = ""
             self.remote_address = "192.0.2.10"
 
@@ -400,9 +403,10 @@ def test_router_keeps_validated_request_data_as_the_original_dict(monkeypatch):
     class FakeConnectionHandler:
         def __init__(self, stream):
             self.stream = stream
+            self.request = {}
             self.action = "pydantic_action"
             self.data = request_data
-            self.username = ""
+            self.user_id = ""
             self.token = ""
             self.remote_address = "192.0.2.10"
 
@@ -465,9 +469,16 @@ def test_authentication_pool_timeout_returns_retryable_503(monkeypatch):
 
     class FakeConnectionHandler:
         def __init__(self, _stream):
+            self.request = {
+                "token": jwt.encode(
+                    {"sub": "12345678-1234-4234-9234-123456789abc"},
+                    "s" * 64,
+                    algorithm="HS256",
+                )
+            }
             self.action = "authenticated_action"
             self.data = {}
-            self.username = "alice"
+            self.user_id = "alice"
             self.token = "token"
             self.remote_address = "192.0.2.10"
 
@@ -501,9 +512,10 @@ def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(monkeypatch):
 
     class FakeConnectionHandler:
         def __init__(self, _stream):
+            self.request = {}
             self.action = "pool_timeout_action"
             self.data = {}
-            self.username = ""
+            self.user_id = ""
             self.token = ""
             self.remote_address = "192.0.2.10"
 
@@ -553,9 +565,10 @@ def test_non_pool_handler_failure_keeps_generic_500_response(monkeypatch):
 
     class FakeConnectionHandler:
         def __init__(self, _stream):
+            self.request = {}
             self.action = "failing_action"
             self.data = {}
-            self.username = ""
+            self.user_id = ""
             self.token = ""
             self.remote_address = "192.0.2.10"
 
@@ -598,7 +611,10 @@ def test_login_throttled_response_returns_result(monkeypatch):
 
     responses = []
     handler = SimpleNamespace(
-        data={"username": "alice", "password": "secret"},
+        data={
+            "method": "password",
+            "credential": {"username": "alice", "password": "secret"},
+        },
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
         conclude_request=lambda **kwargs: responses.append(kwargs),
     )
@@ -638,6 +654,7 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(monkeypatch)
     from include.domains.security.handlers.two_factor import RequestValidate2FAHandler
 
     class FakeUser:
+        username = "alice"
         totp_secret = "secret"
         totp_enabled = False
         valid_token = False
@@ -655,7 +672,7 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(monkeypatch)
         def __exit__(self, *_args):
             return None
 
-        def get(self, _model, _username):
+        def get(self, _model, _user_id):
             return user
 
     def unexpected_throttle_call(*_args, **_kwargs):
@@ -666,7 +683,7 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(monkeypatch)
     user = FakeUser()
     responses = []
     handler = SimpleNamespace(
-        username="alice",
+        user_id="alice",
         data={"token": "000000"},
         conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
     )
@@ -710,7 +727,7 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
 
     responses = []
     handler = SimpleNamespace(
-        username="alice",
+        user_id="alice",
         data={"password": "wrong"},
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
         conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
@@ -718,6 +735,12 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
     monkeypatch.setattr(two_factor, "get_client_ip", lambda _websocket: "127.0.0.1")
     monkeypatch.setattr(
         two_factor.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
+    )
+
+    monkeypatch.setattr(
+        two_factor,
+        "Session",
+        lambda: _PasswordSession({"alice": SimpleNamespace(username="alice")}),
     )
 
     result = RequestDisable2FAHandler().handle(handler)
@@ -757,7 +780,7 @@ def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
 
     responses = []
     handler = SimpleNamespace(
-        username="",
+        user_id="",
         token="",
         data={
             "username": "alice",
@@ -788,6 +811,8 @@ def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
 
 
 class _PasswordUser:
+    id = "alice"
+
     def __init__(
         self,
         password,
@@ -825,7 +850,12 @@ class _PasswordSession:
     def __exit__(self, *_args):
         return None
 
-    def get(self, _model, username):
+    def get(self, _model, user_id):
+        self.get_calls.append(user_id)
+        return self.users.get(user_id)
+
+    def scalar(self, statement):
+        username = next(iter(statement.compile().params.values()))
         self.get_calls.append(username)
         return self.users.get(username)
 
@@ -833,10 +863,10 @@ class _PasswordSession:
         self.commit_count += 1
 
 
-def _password_request(data, *, username="", token=""):
+def _password_request(data, *, user_id="", token=""):
     responses = []
     handler = SimpleNamespace(
-        username=username,
+        user_id=user_id,
         token=token,
         data=data,
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
@@ -930,14 +960,14 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
 
-    operator_username = "operator" if operator is not None else ""
+    operator_user_id = "operator" if operator is not None else ""
     records = {"operator": operator} if operator is not None else {}
     records["alice"] = _PasswordUser("old-password")
     session = _PasswordSession(records)
     monkeypatch.setattr(users, "Session", lambda: session)
     handler, responses = _password_request(
         {"username": "alice", "new_passwd": "NewPassword123!"},
-        username=operator_username,
+        user_id=operator_user_id,
         token=token,
     )
 
@@ -945,7 +975,7 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
 
     assert result.code == expected_code
     assert result.target == "alice"
-    assert result.username == ("operator" if expected_code == 403 else None)
+    assert result.user_id == ("operator" if expected_code == 403 else None)
     assert result.data is None
     assert responses == [
         {"code": expected_code, "data": {}, "message": expected_message}
@@ -967,13 +997,13 @@ def test_password_reset_reports_missing_target_after_operator_authorization(
     monkeypatch.setattr(users, "Session", lambda: session)
     handler, responses = _password_request(
         {"username": "missing", "new_passwd": "NewPassword123!"},
-        username="operator",
+        user_id="operator",
         token="token",
     )
 
     result = RequestSetPasswdHandler().handle(handler)
 
-    assert result == Result(code=404, target="missing", username="operator")
+    assert result == Result(code=404, target="missing", user_id="operator")
     assert result.data is None
     assert responses == [{"code": 404, "data": {}, "message": "User does not exist"}]
     assert session.get_calls == ["operator", "missing"]
@@ -1005,7 +1035,7 @@ def test_self_password_change_commits_and_attributes_audit_to_target(monkeypatch
 
     result = RequestSetPasswdHandler().handle(handler)
 
-    assert result == Result(code=200, target="alice", username="alice")
+    assert result == Result(code=200, target="alice", user_id="alice")
     assert result.data is None
     assert responses == [
         {"code": 200, "data": {}, "message": "Password set successfully"}
@@ -1037,7 +1067,7 @@ def test_self_password_change_rejects_privileged_flags_after_authentication(
 
     result = RequestSetPasswdHandler().handle(handler)
 
-    assert result == Result(code=400, target="alice", username="alice")
+    assert result == Result(code=400, target="alice", user_id="alice")
     assert result.data is None
     assert responses == [
         {
@@ -1080,13 +1110,13 @@ def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkey
             "bypass_passwd_requirements": True,
             "force_update_after_login": True,
         },
-        username="operator",
+        user_id="operator",
         token="token",
     )
 
     result = RequestSetPasswdHandler().handle(handler)
 
-    assert result == Result(code=200, target="alice", username="operator")
+    assert result == Result(code=200, target="alice", user_id="operator")
     assert result.data is None
     assert responses == [
         {"code": 200, "data": {}, "message": "Password set successfully"}

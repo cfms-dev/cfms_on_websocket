@@ -14,6 +14,7 @@ from include.scheduling.commands import (
     schedule_response,
     update_schedule,
 )
+from tests.scheduling.conftest import ADMIN_ID
 
 pytestmark = pytest.mark.component
 
@@ -55,7 +56,7 @@ def user_schedule_id(schedule_sessions, registry):
         schedule = create_schedule(
             session,
             registry,
-            username="admin",
+            user_id=ADMIN_ID,
             task_name="test.record",
             payload={"value": 1},
             trigger_type="date",
@@ -74,7 +75,7 @@ def test_schedule_creation_persists_contract_and_initial_revision(
         schedule = create_schedule(
             session,
             registry,
-            username="admin",
+            user_id=ADMIN_ID,
             task_name="test.record",
             payload={"value": 1},
             trigger_type="date",
@@ -103,7 +104,7 @@ def test_schedule_update_persists_changes_and_increments_revision(
             user_schedule_id,
             1,
             {"payload": {"value": 2}, "enabled": False},
-            username="admin",
+            user_id=ADMIN_ID,
             now=200.0,
         )
 
@@ -118,7 +119,7 @@ def test_schedule_deletion_persists_terminal_status_and_increments_revision(
     schedule_sessions, user_schedule_id
 ):
     with schedule_sessions.begin() as session:
-        delete_schedule(session, user_schedule_id, 1, username="admin", now=300.0)
+        delete_schedule(session, user_schedule_id, 1, user_id=ADMIN_ID, now=300.0)
 
     with schedule_sessions() as session:
         deleted = session.get(Schedule, user_schedule_id)
@@ -135,7 +136,7 @@ def test_schedule_creation_uses_database_clock(
         schedule = create_schedule(
             session,
             registry,
-            username="admin",
+            user_id=ADMIN_ID,
             task_name="test.record",
             payload={"value": 1},
             trigger_type="date",
@@ -163,7 +164,7 @@ def test_schedule_update_uses_database_clock(
             user_schedule_id,
             1,
             {"payload": {"value": 2}},
-            username="admin",
+            user_id=ADMIN_ID,
         )
 
     with schedule_sessions() as session:
@@ -176,7 +177,7 @@ def test_schedule_deletion_uses_database_clock(
     monkeypatch.setattr(scheduling_commands, "database_now", lambda _session: 300.0)
 
     with schedule_sessions.begin() as session:
-        delete_schedule(session, user_schedule_id, 1, username="admin")
+        delete_schedule(session, user_schedule_id, 1, user_id=ADMIN_ID)
 
     with schedule_sessions() as session:
         schedule = session.get(Schedule, user_schedule_id)
@@ -197,7 +198,7 @@ def test_schedule_update_rejects_stale_revision(
             user_schedule_id,
             2,
             {},
-            username="admin",
+            user_id=ADMIN_ID,
             now=200.0,
         )
 
@@ -215,7 +216,7 @@ def test_system_task_cannot_be_scheduled_by_users(schedule_sessions, registry):
         create_schedule(
             session,
             registry,
-            username="admin",
+            user_id=ADMIN_ID,
             task_name="test.system_cleanup",
             payload={"value": 1},
             trigger_type="date",
@@ -257,13 +258,13 @@ def test_system_schedule_rejects_user_mutations(schedule_sessions, registry, ope
                     "test.system_cleanup",
                     1,
                     {},
-                    username="admin",
+                    user_id=ADMIN_ID,
                     now=200.0,
                 )
         else:
             with pytest.raises(ScheduleConflictError, match="cannot be deleted"):
                 delete_schedule(
-                    session, "test.system_cleanup", 1, username="admin", now=200.0
+                    session, "test.system_cleanup", 1, user_id=ADMIN_ID, now=200.0
                 )
 
     with schedule_sessions() as session:

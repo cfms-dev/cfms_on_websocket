@@ -25,6 +25,7 @@ import time
 from typing import Annotated
 
 from pydantic import StringConstraints
+from sqlalchemy import select
 
 from include.database.models.identity import User
 from include.database.models.keyrings import UserKey
@@ -95,27 +96,29 @@ class RequestUploadUserKeyHandler(RequestHandler):
         target_username: str | None = handler.data.get("target_username")
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             # Determine which user's keyring to write to
-            if target_username and target_username != handler.username:
+            if target_username and target_username != this_user.username:
                 if Permissions.MANAGE_KEYRINGS not in this_user.all_permissions:
                     handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
                     return Result(
-                        code=403, target=target_username, username=handler.username
+                        code=403, target=target_username, user_id=handler.user_id
                     )
-                owner = session.get(User, target_username)
+                owner = session.scalar(
+                    select(User).where(User.username == target_username)
+                )
                 if not owner:
                     handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
                     return Result(
-                        code=404, target=target_username, username=handler.username
+                        code=404, target=target_username, user_id=handler.user_id
                     )
             else:
-                target_username = handler.username
+                target_username = this_user.username
                 owner = this_user
 
             key = UserKey(
-                username=target_username,
+                user_id=owner.id,
                 content=key_content,
                 label=label,
                 created_time=time.time(),
@@ -128,7 +131,7 @@ class RequestUploadUserKeyHandler(RequestHandler):
                 {"id": key.id},
                 "Key uploaded successfully",
             )
-            return Result(code=200, target=target_username, username=handler.username)
+            return Result(code=200, target=target_username, user_id=handler.user_id)
 
 
 class RequestGetUserKeyHandler(RequestHandler):
@@ -156,34 +159,34 @@ class RequestGetUserKeyHandler(RequestHandler):
         key_id: str = handler.data["id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return Result(code=404, target=key_id, username=handler.username)
+                return Result(code=404, target=key_id, user_id=handler.user_id)
 
             # Authorisation: the key must belong to the requesting user, or the
             # user must have admin-level manage_keyrings permission.
             if (
-                key.username != handler.username
+                key.user_id != handler.user_id
                 and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=key_id, username=handler.username)
+                return Result(code=403, target=key_id, user_id=handler.user_id)
 
             handler.conclude_request(
                 200,
                 {
                     "key_id": key.id,
-                    "username": key.username,
+                    "user_id": str(key.user_id),
                     "label": key.label,
                     "key_content": key.content,
                     "created_time": key.created_time,
                 },
                 "Key retrieved successfully",
             )
-            return Result(code=200, target=key_id, username=handler.username)
+            return Result(code=200, target=key_id, user_id=handler.user_id)
 
 
 class RequestDeleteUserKeyHandler(RequestHandler):
@@ -211,22 +214,22 @@ class RequestDeleteUserKeyHandler(RequestHandler):
         key_id: str = handler.data["id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return Result(code=404, target=key_id, username=handler.username)
+                return Result(code=404, target=key_id, user_id=handler.user_id)
 
             if (
-                key.username != handler.username
+                key.user_id != handler.user_id
                 and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=key_id, username=handler.username)
+                return Result(code=403, target=key_id, user_id=handler.user_id)
 
             # If this key is set as the owner's preference DEK, clear it before deletion
-            owner_user = session.get(User, key.username)
+            owner_user = session.get(User, key.user_id)
             if owner_user is not None:
                 # Prefer checking by id to avoid unnecessary loading of relations
                 preference_dek_id = getattr(owner_user, "preference_dek_id", None)
@@ -236,7 +239,7 @@ class RequestDeleteUserKeyHandler(RequestHandler):
             session.commit()
 
             handler.conclude_request(200, {}, "Key deleted successfully")
-            return Result(code=200, target=key_id, username=handler.username)
+            return Result(code=200, target=key_id, user_id=handler.user_id)
 
 
 class RequestSetPreferenceDEKHandler(RequestHandler):
@@ -265,27 +268,27 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
         key_id: str = handler.data["id"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             key = session.get(UserKey, key_id)
             if not key:
                 handler.conclude_request(404, {}, smsg.KEY_NOT_FOUND)
-                return Result(code=404, target=key_id, username=handler.username)
+                return Result(code=404, target=key_id, user_id=handler.user_id)
 
             if (
-                key.username != handler.username
+                key.user_id != handler.user_id
                 and Permissions.MANAGE_KEYRINGS not in this_user.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=key_id, username=handler.username)
+                return Result(code=403, target=key_id, user_id=handler.user_id)
 
-            key_owner = User.get_existing(session, key.username)
+            key_owner = User.get_existing(session, key.user_id)
             key_owner.preference_dek = key
             session.add(key)
             session.commit()
 
             handler.conclude_request(200, {}, "Preference DEK updated successfully")
-            return Result(code=200, target=key_id, username=handler.username)
+            return Result(code=200, target=key_id, user_id=handler.user_id)
 
 
 class RequestListUserKeysHandler(RequestHandler):
@@ -310,30 +313,29 @@ class RequestListUserKeysHandler(RequestHandler):
     rate_limit_cost = 2
 
     def handle(self, handler: ConnectionHandler):
-        target_username: str = handler.data.get("target_username") or handler.username
+        target_username: str | None = handler.data.get("target_username")
         offset, count = get_offset_pagination(handler.data)
 
         with Session() as session:
-            target_user = session.get(User, target_username)
-            operator = User.get_existing(session, handler.username)
+            operator = User.get_existing(session, handler.user_id)
+            target_username = target_username or operator.username
+            target_user = session.scalar(
+                select(User).where(User.username == target_username)
+            )
 
             if (
-                target_username != handler.username
+                target_username != operator.username
                 and Permissions.MANAGE_KEYRINGS not in operator.all_permissions
             ):
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(
-                    code=403, target=target_username, username=handler.username
-                )
+                return Result(code=403, target=target_username, user_id=handler.user_id)
 
             if not target_user:
                 handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
-                return Result(
-                    code=404, target=target_username, username=handler.username
-                )
+                return Result(code=404, target=target_username, user_id=handler.user_id)
 
             keys_query = session.query(UserKey).filter(
-                UserKey.username == target_username
+                UserKey.user_id == target_user.id
             )
             total = keys_query.count()
             keys = (
@@ -362,4 +364,4 @@ class RequestListUserKeysHandler(RequestHandler):
                 },
                 "Keyring listed successfully",
             )
-            return Result(code=200, target=target_username, username=handler.username)
+            return Result(code=200, target=target_username, user_id=handler.user_id)

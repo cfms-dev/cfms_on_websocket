@@ -1,4 +1,5 @@
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 class FakeHandler:
     def __init__(self, data, username="admin"):
         self.data = data
-        self.username = username
+        self.user_id = uuid.uuid5(uuid.NAMESPACE_DNS, username)
         self.token = "token"
         self.responses = []
         self.stream = SimpleNamespace(
@@ -65,10 +66,15 @@ def security_admin_context(monkeypatch, tmp_path, sqlite_engine_factory):
     monkeypatch.setattr(login.LoginGuard, "_networks_loaded", True)
 
     with test_session.begin() as session:
-        admin = User(username="admin", pass_hash="hash", created_time=0.0)
+        admin = User(
+            id=uuid.uuid5(uuid.NAMESPACE_DNS, "admin"),
+            username="admin",
+            pass_hash="hash",
+            created_time=0.0,
+        )
         admin.rights.extend(
             UserPermission(
-                username="admin",
+                user=admin,
                 permission=permission,
                 granted=True,
                 start_time=0.0,
@@ -81,7 +87,14 @@ def security_admin_context(monkeypatch, tmp_path, sqlite_engine_factory):
             )
         )
         session.add(admin)
-        session.add(User(username="viewer", pass_hash="hash", created_time=0.0))
+        session.add(
+            User(
+                id=uuid.uuid5(uuid.NAMESPACE_DNS, "viewer"),
+                username="viewer",
+                pass_hash="hash",
+                created_time=0.0,
+            )
+        )
 
     return SimpleNamespace(
         handlers=access_control,
@@ -606,14 +619,20 @@ async def test_unlock_auth_lockouts_over_websocket(
     for _index in range(5):
         response = await unauthenticated_client.send_request(
             "login",
-            {"username": username, "password": "incorrect"},
+            {
+                "method": "password",
+                "credential": {"username": username, "password": "incorrect"},
+            },
             include_auth=False,
         )
         assert_error(response, 401)
     assert_error(
         await unauthenticated_client.send_request(
             "login",
-            {"username": username, "password": "incorrect"},
+            {
+                "method": "password",
+                "credential": {"username": username, "password": "incorrect"},
+            },
             include_auth=False,
         ),
         429,
@@ -651,7 +670,10 @@ async def test_unlock_auth_lockouts_over_websocket(
     assert_error(
         await unauthenticated_client.send_request(
             "login",
-            {"username": username, "password": "incorrect"},
+            {
+                "method": "password",
+                "credential": {"username": username, "password": "incorrect"},
+            },
             include_auth=False,
         ),
         401,

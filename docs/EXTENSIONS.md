@@ -181,6 +181,7 @@ from include.transport.request_handler import (
     Result,
 )
 
+
 class EchoRequest(RequestDataModel):
     message: NonEmptyString
     label: Omittable[NonEmptyString] = REQUEST_UNSET
@@ -369,9 +370,9 @@ authentication, permission, shared rate-limit, client address, and audit helpers
 explicitly for each endpoint; public endpoints that accept anonymous traffic
 should still opt into IP rate limiting.
 
-Bearer authentication uses an unverified username only to locate the database
-row, then calls the user's complete token validator before building an immutable
-`HttpPrincipal`. Unverified claims never grant access. Blocking database work
+Bearer authentication parses the unverified JWT `sub` as a UUID only to locate
+the database row, then calls the user's complete token validator before building an immutable
+`HttpPrincipal` whose `user_id` is that UUID. Unverified claims never grant access. Blocking database work
 should be implemented in normal `def` endpoints so FastAPI runs it in its thread
 pool. Each endpoint must open, commit or roll back, and close its own SQLAlchemy
 session; sessions and ORM objects must not cross request threads.

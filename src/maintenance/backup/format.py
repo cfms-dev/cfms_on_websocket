@@ -9,6 +9,7 @@ import lzma
 import os
 import secrets
 import tarfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -349,6 +350,8 @@ def _header_prefix(header_bytes: bytes) -> bytes:
 
 
 def _serialize_value(value: Any) -> Any:
+    if isinstance(value, uuid.UUID):
+        return str(value)
     if isinstance(value, dt.datetime):
         return value.isoformat()
     if isinstance(value, enum.Enum):
@@ -374,6 +377,12 @@ def _serialize_table_value(table_name: str, column_name: str, value: Any) -> Any
         if len(digest) != 32:
             raise BackupIntegrityError("Invalid binary comment digest in database")
         return digest.hex()
+    if (
+        value is not None
+        and table_name == "user_auth_public_keys"
+        and column_name in {"public_key_der", "fingerprint"}
+    ):
+        return value.hex()
     return _serialize_value(value)
 
 

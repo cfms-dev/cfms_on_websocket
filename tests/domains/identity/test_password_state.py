@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from argon2 import PasswordHasher
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 pytestmark = pytest.mark.component
@@ -40,7 +41,7 @@ def test_set_password_participates_in_the_caller_transaction(
         session.rollback()
 
     with local_session() as session:
-        stored = session.get(User, "transaction-user")
+        stored = session.scalar(select(User).where(User.username == "transaction-user"))
         assert stored is not None
         assert stored.pass_hash == original_hash
         assert stored.secret_key == original_secret

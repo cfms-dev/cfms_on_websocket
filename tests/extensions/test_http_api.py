@@ -3,6 +3,7 @@ import datetime
 import socket
 import ssl
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -985,8 +986,8 @@ def _session_factory(user):
         def __exit__(self, *_args):
             return None
 
-        def get(self, _model, username):
-            return user if user is not None and user.username == username else None
+        def get(self, _model, user_id):
+            return user if user is not None and user.id == user_id else None
 
     return FakeSession
 
@@ -1009,24 +1010,24 @@ async def test_bearer_authentication_fully_validates_user_token(
 ):
     security = http_api_modules.security
     user = SimpleNamespace(
-        username="alice",
+        id=uuid.UUID("12345678-1234-4234-9234-123456789abc"),
         all_permissions={Permissions.SEARCH},
         all_groups={"user"},
     )
     secret = "correct-secret-with-at-least-32-bytes"
     now = datetime.datetime.now(datetime.UTC)
     valid_token = jwt.encode(
-        {"username": "alice", "exp": now + datetime.timedelta(minutes=5)},
+        {"sub": str(user.id), "exp": now + datetime.timedelta(minutes=5)},
         secret,
         algorithm="HS256",
     )
     expired_token = jwt.encode(
-        {"username": "alice", "exp": now - datetime.timedelta(minutes=5)},
+        {"sub": str(user.id), "exp": now - datetime.timedelta(minutes=5)},
         secret,
         algorithm="HS256",
     )
     wrong_token = jwt.encode(
-        {"username": "alice", "exp": now + datetime.timedelta(minutes=5)},
+        {"sub": str(user.id), "exp": now + datetime.timedelta(minutes=5)},
         "wrong-secret-with-at-least-32-bytes!!",
         algorithm="HS256",
     )
@@ -1048,7 +1049,7 @@ async def test_bearer_authentication_fully_validates_user_token(
     def endpoint(
         principal=Depends(security.require_http_principal),  # noqa: B008 - FastAPI dependency metadata.
     ):
-        return {"username": principal.username}
+        return {"user_id": principal.user_id}
 
     headers = {}
     if token_kind == "malformed":
@@ -1073,7 +1074,7 @@ async def test_bearer_authentication_fully_validates_user_token(
 async def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modules):
     security = http_api_modules.security
     principal = http_api_modules.contracts.HttpPrincipal(
-        username="alice",
+        user_id=uuid.UUID("12345678-1234-4234-9234-123456789abc"),
         permissions=frozenset({Permissions.SEARCH}),
         groups=frozenset({"user"}),
     )

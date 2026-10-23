@@ -10,6 +10,7 @@ __all__ = [
     "validate_request_handler_models",
 ]
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -28,7 +29,7 @@ class Result:
     code: int
     target: str | None = None
     data: dict[str, Any] | None = None
-    username: str | None = None
+    user_id: uuid.UUID | None = None
 
 
 class _RequestUnset(Enum):

@@ -17,6 +17,7 @@ lazy from sqlalchemy.sql.elements import ColumnElement
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
 lazy from include.config.validation import AuditRetentionPolicy
+lazy from include.database.models.identity import User
 lazy from include.database.models.operations import AuditEntry
 lazy from include.database.session import Session
 
@@ -24,7 +25,7 @@ _SECONDS_PER_DAY = 24 * 60 * 60
 _AUDIT_COLUMNS = (
     "id",
     "action",
-    "username",
+    "user_id",
     "target",
     "data",
     "result",
@@ -290,13 +291,18 @@ def _selection_conditions(
     conditions = [table.c.logged_time < selection.cutoff]
     for column_name, values in (
         ("action", selection.actions),
-        ("username", selection.usernames),
         ("target", selection.targets),
         ("result", selection.results),
         ("remote_address", selection.remote_addresses),
     ):
         if values:
             conditions.append(table.c[column_name].in_(values))
+    if selection.usernames:
+        conditions.append(
+            table.c.user_id.in_(
+                select(User.id).where(User.username.in_(selection.usernames))
+            )
+        )
     return tuple(conditions)
 
 

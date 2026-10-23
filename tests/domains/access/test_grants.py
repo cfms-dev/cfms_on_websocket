@@ -31,7 +31,7 @@ def _make_user(models, session, *, username="alice", memberships=()):
                 )
             )
         membership = models.UserMembership(
-            username=username,
+            user=user,
             group_name=group_name,
             start_time=start_time,
             end_time=None,
@@ -148,7 +148,7 @@ def test_direct_user_grant_still_matches(access_rule_session):
         models,
         session,
         entity_type="user",
-        entity_identifier=user.username,
+        entity_identifier=str(user.id),
     )
 
     assert _granted_ids(session, user) == {"folder"}

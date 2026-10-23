@@ -8,6 +8,7 @@ __all__ = [
 ]
 
 from typing import Annotated, Any
+from uuid import UUID
 lazy from collections.abc import Callable
 
 import jwt
@@ -21,7 +22,6 @@ from include.config.validation import get_trusted_proxy_networks
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.identity.types import RequestUsername
 from include.domains.operations.commands.audit import log_audit
 from include.domains.security.guards.request_rate_control import check_request_rate
 from include.transport.client_address import resolve_client_ip
@@ -30,7 +30,7 @@ from .contracts import HttpPrincipal
 
 logger = log.bind(name="http_api")
 _bearer = HTTPBearer(auto_error=False)
-_username_adapter = TypeAdapter(RequestUsername)
+_user_id_adapter = TypeAdapter(UUID)
 
 
 def get_http_client_address(request: Request) -> str:
@@ -71,20 +71,18 @@ def _principal_from_token(token: str) -> HttpPrincipal:
         )
         if not isinstance(payload, dict):
             raise _authentication_error()
-        username = _username_adapter.validate_python(
-            payload.get("username"), strict=True
-        )
+        user_id = _user_id_adapter.validate_python(payload.get("sub"))
     except HTTPException:
         raise
     except jwt.InvalidTokenError, ValidationError:
         raise _authentication_error() from None
 
     with Session() as session:
-        user = session.get(User, username)
+        user = session.get(User, user_id)
         if user is None or not user.is_token_valid(token):
             raise _authentication_error()
         return HttpPrincipal(
-            username=user.username,
+            user_id=user.id,
             permissions=frozenset(user.all_permissions),
             groups=frozenset(user.all_groups),
         )
@@ -152,7 +150,7 @@ def http_rate_limit(
             action,
             cost,
             get_http_client_address(request),
-            username=principal.username if principal else None,
+            user_id=principal.user_id if principal else None,
             bypass=(
                 principal is not None
                 and Permissions.BYPASS_REQUEST_RATE_LIMIT in principal.permissions
@@ -184,7 +182,7 @@ def audit_http_request(
     log_audit(
         f"http:{owner}:{operation}",
         result,
-        username=principal.username if principal else None,
+        user_id=principal.user_id if principal else None,
         target=target,
         data=data,
         remote_address=get_http_client_address(request),

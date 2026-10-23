@@ -114,7 +114,7 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
     )
     user.rights.append(
         models.UserPermission(
-            username="alice",
+            user=user,
             permission="list_users",
             granted=True,
             start_time=0.0,
@@ -124,7 +124,7 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
     group = models.UserGroup(group_name="staff", group_display_name="Staff")
     user.groups.append(
         models.UserMembership(
-            username="alice",
+            user=user,
             group_name="staff",
             start_time=0.0,
             end_time=None,

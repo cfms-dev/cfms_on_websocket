@@ -123,10 +123,10 @@ def _require_permission(
     handler: ConnectionHandler, permission: Permissions
 ) -> Result | None:
     with Session() as session:
-        user = User.get_existing(session, handler.username)
+        user = User.get_existing(session, handler.user_id)
         if permission not in user.all_permissions:
             handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-            return Result(code=403, target=None, username=handler.username)
+            return Result(code=403, target=None, user_id=handler.user_id)
     return None
 
 
@@ -208,7 +208,7 @@ class RequestListBannedSubnetsHandler(RequestHandler):
             )
         except CursorError as exc:
             handler.conclude_request(400, {}, str(exc))
-            return Result(code=400, target=None, username=handler.username)
+            return Result(code=400, target=None, user_id=handler.user_id)
 
         now = time.time()
         statement = select(BannedSubnet).options(
@@ -259,7 +259,7 @@ class RequestListBannedSubnetsHandler(RequestHandler):
             code=200,
             target=None,
             data={"page_size": page_size, "status": status},
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -278,7 +278,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
             return Result(
-                code=400, target=handler.data["subnet"], username=handler.username
+                code=400, target=handler.data["subnet"], user_id=handler.user_id
             )
 
         now = time.time()
@@ -290,7 +290,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
             handler.conclude_request(
                 400, {}, "`expires_at` must be later than `starts_at`"
             )
-            return Result(code=400, target=str(network), username=handler.username)
+            return Result(code=400, target=str(network), user_id=handler.user_id)
         if _contains_requester(handler, network, expires_at) and not handler.data.get(
             "confirm_self_block", False
         ):
@@ -299,7 +299,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
                 {},
                 "The subnet contains your current IP; set `confirm_self_block` to proceed",
             )
-            return Result(code=409, target=str(network), username=handler.username)
+            return Result(code=409, target=str(network), user_id=handler.user_id)
 
         try:
             with Session.begin() as session:
@@ -320,7 +320,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
                 response = _serialize_subnet(row, time.time())
         except IntegrityError:
             handler.conclude_request(409, {}, "Subnet rule already exists")
-            return Result(code=409, target=str(network), username=handler.username)
+            return Result(code=409, target=str(network), user_id=handler.user_id)
 
         _publish_guard_event({"type": "reload_subnets"})
         handler.conclude_request(200, response, "Banned subnet created")
@@ -332,7 +332,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
                 "expires_at": expires_at,
                 **reason_change_audit_data(None, reason),
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -348,7 +348,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
         if not {"reason", "starts_at", "expires_at"} & handler.data.keys():
             handler.conclude_request(400, {}, "No subnet rule changes specified")
             return Result(
-                code=400, target=handler.data["subnet"], username=handler.username
+                code=400, target=handler.data["subnet"], user_id=handler.user_id
             )
 
         try:
@@ -356,14 +356,14 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
             return Result(
-                code=400, target=handler.data["subnet"], username=handler.username
+                code=400, target=handler.data["subnet"], user_id=handler.user_id
             )
 
         with Session.begin() as session:
             row = session.get(BannedSubnet, str(network))
             if row is None:
                 handler.conclude_request(404, {}, "Subnet rule not found")
-                return Result(code=404, target=str(network), username=handler.username)
+                return Result(code=404, target=str(network), user_id=handler.user_id)
 
             starts_at = float(handler.data.get("starts_at", row.starts_at))
             expires_at = handler.data.get("expires_at", row.expires_at)
@@ -373,7 +373,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
                 handler.conclude_request(
                     400, {}, "`expires_at` must be later than `starts_at`"
                 )
-                return Result(code=400, target=str(network), username=handler.username)
+                return Result(code=400, target=str(network), user_id=handler.user_id)
             if _contains_requester(
                 handler, network, expires_at
             ) and not handler.data.get("confirm_self_block", False):
@@ -382,7 +382,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
                     {},
                     "The subnet contains your current IP; set `confirm_self_block` to proceed",
                 )
-                return Result(code=409, target=str(network), username=handler.username)
+                return Result(code=409, target=str(network), user_id=handler.user_id)
 
             previous_reason = row.reason
             current_reason = previous_reason
@@ -413,7 +413,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
                 "expires_at": expires_at,
                 **reason_change_audit_data(previous_reason, current_reason),
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -431,19 +431,19 @@ class RequestDeleteBannedSubnetHandler(RequestHandler):
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
             return Result(
-                code=400, target=handler.data["subnet"], username=handler.username
+                code=400, target=handler.data["subnet"], user_id=handler.user_id
             )
 
         with Session.begin() as session:
             row = session.get(BannedSubnet, subnet)
             if row is None:
                 handler.conclude_request(404, {}, "Subnet rule not found")
-                return Result(code=404, target=subnet, username=handler.username)
+                return Result(code=404, target=subnet, user_id=handler.user_id)
             session.delete(row)
 
         _publish_guard_event({"type": "reload_subnets"})
         handler.conclude_request(200, {}, "Banned subnet deleted")
-        return Result(code=200, target=subnet, username=handler.username)
+        return Result(code=200, target=subnet, user_id=handler.user_id)
 
 
 def _lockout_union():
@@ -526,7 +526,7 @@ class RequestListAuthLockoutsHandler(RequestHandler):
             )
         except CursorError as exc:
             handler.conclude_request(400, {}, str(exc))
-            return Result(code=400, target=None, username=handler.username)
+            return Result(code=400, target=None, user_id=handler.user_id)
 
         lockouts = _lockout_union()
         columns = lockouts.c
@@ -587,7 +587,7 @@ class RequestListAuthLockoutsHandler(RequestHandler):
             code=200,
             target=None,
             data={"page_size": page_size, **filters},
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -642,5 +642,5 @@ class RequestUnlockAuthLockoutsHandler(RequestHandler):
                 "requested": selectors,
                 "cleared_count": len(cleared),
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )

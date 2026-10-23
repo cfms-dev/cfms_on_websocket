@@ -7,6 +7,7 @@ import time
 import pytest
 
 from tests.support.client import CFMSTestClient
+from tests.support.utils import assert_success
 
 pytestmark = pytest.mark.integration
 
@@ -61,7 +62,10 @@ class TestAccessManagement:
         entry = entries[0]
         assert "id" in entry, "Access entry missing 'id' field"
         assert entry["entity_type"] == "user"
-        assert entry["entity_identifier"] == test_username
+        target_info = assert_success(
+            await authenticated_client.get_user_info(test_username)
+        )
+        assert entry["entity_identifier"] == target_info["user_id"]
         assert entry["target_type"] == "document"
         assert entry["target_identifier"] == document_id
         assert entry["access_type"] == "read"

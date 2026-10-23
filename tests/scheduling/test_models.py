@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 import include.database.models  # noqa: F401
@@ -20,17 +20,17 @@ def test_deleting_user_preserves_schedule_and_clears_attribution(
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
+    event.listen(database, "connect", _enable_sqlite_foreign_keys)
     Base.metadata.create_all(database)
     with Session(database) as session, session.begin():
-        session.add(
-            User(
-                username="schedule-owner",
-                pass_hash="hash",
-                passwd_last_modified=100.0,
-                created_time=100.0,
-                secret_key="secret",
-            )
+        user = User(
+            username="schedule-owner",
+            pass_hash="hash",
+            passwd_last_modified=100.0,
+            created_time=100.0,
+            secret_key="secret",
         )
+        session.add(user)
         session.flush()
         session.add(
             Schedule(
@@ -42,13 +42,13 @@ def test_deleting_user_preserves_schedule_and_clears_attribution(
                 trigger_data={"run_at": "2026-01-01T00:00:00+00:00"},
                 timezone="UTC",
                 next_run_at=200.0,
-                created_by="schedule-owner",
-                updated_by="schedule-owner",
+                created_by=user.id,
+                updated_by=user.id,
             )
         )
 
     with Session(database) as session, session.begin():
-        user = session.get(User, "schedule-owner")
+        user = session.scalar(select(User).where(User.username == "schedule-owner"))
         assert user is not None
         session.delete(user)
 

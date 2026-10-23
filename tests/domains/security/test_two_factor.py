@@ -5,10 +5,11 @@ import pyotp
 import pytest
 import pytest_asyncio
 from argon2 import PasswordHasher
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 import include.database.models  # noqa: F401
-from include.database.models import identity
+from include.database.models import auth
 from include.database.models.identity import User
 from include.database.session import Base
 from tests.support.client import CFMSTestClient
@@ -185,7 +186,7 @@ class TestTwoFactorAuthLogin:
         response = await client.login(test_user["username"], test_user["password"])
 
         assert response["code"] == 202
-        assert response["data"]["method"] == "totp"
+        assert response["data"]["methods"] == ["totp"]
 
     @pytest.mark.asyncio
     async def test_verify_2fa_login_with_valid_token(
@@ -260,7 +261,7 @@ def backup_code_sessions(monkeypatch, sqlite_engine_factory):
     Base.metadata.create_all(database)
     sessions = sessionmaker(bind=database)
     pepper = "backup-code-test-pepper"
-    monkeypatch.setattr(identity, "global_config", {"security": {"pepper": pepper}})
+    monkeypatch.setattr(auth, "global_config", {"security": {"pepper": pepper}})
     hasher = PasswordHasher()
     hashes = [hasher.hash(code + pepper) for code in ("deadbeef", "cafebabe")]
     with sessions.begin() as session:
@@ -284,15 +285,20 @@ def test_backup_code_consumption_is_committed_and_reuse_preserves_remaining_code
     sessions, remaining_hash = backup_code_sessions
 
     with sessions() as session:
-        assert session.get(User, "alice").verify_totp("deadbeef") is True
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).verify_totp(
+                "deadbeef"
+            )
+            is True
+        )
 
     with sessions() as session:
-        persisted = session.get(User, "alice")
+        persisted = session.scalar(select(User).where(User.username == "alice"))
         assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
         assert persisted.verify_totp("deadbeef") is False
 
     with sessions() as session:
-        persisted = session.get(User, "alice")
+        persisted = session.scalar(select(User).where(User.username == "alice"))
         assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
         assert persisted.totp_enabled is True
 
@@ -303,15 +309,20 @@ def test_consuming_last_backup_code_commits_empty_list_and_keeps_totp_enabled(
 ):
     sessions, remaining_hash = backup_code_sessions
     with sessions.begin() as session:
-        session.get(User, "alice").totp_backup_codes = orjson.dumps(
-            [remaining_hash]
-        ).decode("utf-8")
+        session.scalar(
+            select(User).where(User.username == "alice")
+        ).totp_backup_codes = orjson.dumps([remaining_hash]).decode("utf-8")
 
     with sessions() as session:
-        assert session.get(User, "alice").verify_totp("cafebabe") is True
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).verify_totp(
+                "cafebabe"
+            )
+            is True
+        )
 
     with sessions() as session:
-        persisted = session.get(User, "alice")
+        persisted = session.scalar(select(User).where(User.username == "alice"))
         assert orjson.loads(persisted.totp_backup_codes) == []
         assert persisted.totp_enabled is True
         assert persisted.verify_totp("cafebabe") is False

@@ -418,7 +418,7 @@ def test_detector_cancels_file_tasks_and_audits_once(detector_context):
         ).one()
         assert automatic_audit.result == 0
         assert automatic_audit.logged_time == 1000.0
-        assert automatic_audit.username is None
+        assert automatic_audit.user_id is None
         assert automatic_audit.target is None
         assert automatic_audit.remote_address is None
         assert automatic_audit.data == {

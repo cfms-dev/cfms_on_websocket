@@ -50,8 +50,8 @@ class TestDocumentOperations:
         info = assert_success(info_response)
         assert info["metadata"] == {
             "tags": [],
-            "creator": "admin",
-            "last_modified_by": "admin",
+            "creator": authenticated_client.user_id,
+            "last_modified_by": authenticated_client.user_id,
         }
 
         set_response = await authenticated_client.set_document_tags(
@@ -64,8 +64,8 @@ class TestDocumentOperations:
         info_response = await authenticated_client.get_document_info(document_id)
         info = assert_success(info_response)
         assert info["metadata"]["tags"] == ["secret", "finance", "topic"]
-        assert info["metadata"]["creator"] == "admin"
-        assert info["metadata"]["last_modified_by"] == "admin"
+        assert info["metadata"]["creator"] == authenticated_client.user_id
+        assert info["metadata"]["last_modified_by"] == authenticated_client.user_id
 
     @pytest.mark.asyncio
     async def test_get_document_info_omits_metadata_without_permission(

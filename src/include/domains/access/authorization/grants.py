@@ -24,7 +24,7 @@ def prefetch_user_blocks(
         session.query(UserBlockEntry)
         .join(UserBlockSubEntry, UserBlockSubEntry.parent_id == UserBlockEntry.block_id)
         .filter(
-            UserBlockEntry.username == user.username,
+            UserBlockEntry.user_id == user.id,
             UserBlockEntry.not_before <= now,
             (UserBlockEntry.not_after == -1) | (UserBlockEntry.not_after >= now),
             UserBlockSubEntry.block_type == access_type,
@@ -57,7 +57,7 @@ def batch_prefetch_granted_ids(
     has the requested access type at the given time.
     Args:
         session: SQLAlchemy session for database queries.
-        user (User): The user object containing username and group memberships.
+        user (User): The user object containing its ID and group memberships.
         obj_ids (list[str]): List of object identifiers to check access for.
         target_type (Literal["document", "directory"]): The type of target object.
         access_type (str): The type of access to check (e.g., "read", "write").
@@ -80,7 +80,7 @@ def batch_prefetch_granted_ids(
     principal_filters = [
         and_(
             ObjectAccessEntry.entity_type == "user",
-            ObjectAccessEntry.entity_identifier == user.username,
+            ObjectAccessEntry.entity_identifier == str(user.id),
         )
     ]
     if active_group_names:

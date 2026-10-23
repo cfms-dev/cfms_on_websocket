@@ -1,5 +1,6 @@
 import secrets
 import time
+import uuid
 
 from sqlalchemy import (
     JSON,
@@ -22,7 +23,9 @@ class AuditEntry(Base):
         VARCHAR(255), primary_key=True, default=lambda: secrets.token_hex(32)
     )
     action: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
-    username: Mapped[str] = mapped_column(ForeignKey("users.username"), nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     user: Mapped["User"] = relationship("User", back_populates="audit_entries")
     target: Mapped[str] = mapped_column(VARCHAR(255), nullable=True)
     data: Mapped[dict] = mapped_column(JSON, nullable=True)
@@ -53,7 +56,7 @@ class RiskIPAccount(Base):
 
     namespace: Mapped[str] = mapped_column(VARCHAR(64), primary_key=True)
     ip_address: Mapped[str] = mapped_column(VARCHAR(45), primary_key=True)
-    username: Mapped[str] = mapped_column(VARCHAR(256), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     last_attempt: Mapped[float] = mapped_column(
         Double, nullable=False, default=time.time, index=True
     )

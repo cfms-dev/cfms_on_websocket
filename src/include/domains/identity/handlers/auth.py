@@ -1,7 +1,9 @@
 import time
+import uuid
 from typing import Any, Literal, Self, TypedDict
 
 from pydantic import model_validator, with_config
+from sqlalchemy import select
 
 from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
 from include.config.settings import global_config
@@ -10,6 +12,7 @@ from include.database.session import Session
 from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.identity.sessions import build_login_success_data
 from include.domains.identity.tokens import Token, TokenPurpose
+from include.domains.identity.types import RequestUsername
 from include.domains.identity.validators.passwords import check_passwd_requirements
 from include.domains.security.guards.login import (
     AuthFactor,
@@ -30,13 +33,13 @@ lazy from include.types import NonEmptyString
 
 @with_config(extra="forbid")
 class PasswordCredential(TypedDict):
-    username: NonEmptyString
+    username: RequestUsername
     password: NonEmptyString
 
 
 @with_config(extra="forbid")
 class PublicKeyCredential(TypedDict):
-    username: NonEmptyString
+    username: RequestUsername
     publickey: NonEmptyString
 
 
@@ -88,12 +91,12 @@ class RequestLoginHandler(RequestHandler):
         username: str = credential["username"]
         password: str = credential["password"]
 
-        # totp_token: str = handler.data.get("2fa_token", "")
         ip = get_client_ip(handler.stream.connection._ws)
+        authenticated_user_id: uuid.UUID | None = None
 
         def respond(code: int, message: str, data: dict[str, Any] | None = None):
             handler.conclude_request(code=code, data=data or {}, message=message)
-            return Result(code=code, target=username)
+            return Result(code=code, target=username, user_id=authenticated_user_id)
 
         def throttled(decision: ThrottleDecision):
             if decision.scope == ThrottleScope.BANNED_SUBNET:
@@ -111,42 +114,14 @@ class RequestLoginHandler(RequestHandler):
 
         cfg = global_config["security"]
         with Session() as session:
-            user = session.get(User, username)
+            user = session.scalar(select(User).where(User.username == username))
             if not verify_password_or_dummy(user, password):
                 LoginGuard.report_failure(ip, username, AuthFactor.PASSWORD)
                 return respond(401, "Invalid credentials")
 
             assert user is not None
+            authenticated_user_id = user.id
             LoginGuard.report_success(ip, username, AuthFactor.PASSWORD)
-
-            if user.totp_enabled:
-                # FIXME: Abstract token generation logic
-                secret: str = user.secret_key or global_config["server"]["secret_key"]
-                token = Token.new(
-                    user.username,
-                    DEFAULT_TOKEN_EXPIRY_SECONDS
-                    / 2,  # FIXME: Specify expiration time for AUTH purposes
-                    secret,
-                    purpose=TokenPurpose.AUTH,
-                )
-
-                return respond(
-                    202,
-                    "Two-factor authentication required",
-                    {
-                        "methods": [
-                            "totp",
-                            # TODO: Add other 2FA methods in the future
-                        ]
-                    },
-                )
-            else:
-                LoginGuard.report_success(
-                    ip,
-                    username,
-                    AuthFactor.PASSWORD,
-                    completed_authentication=True,
-                )
 
             if user.status != UserStatus.ACTIVE:
                 return respond(
@@ -155,8 +130,7 @@ class RequestLoginHandler(RequestHandler):
                     {"reason": user.status_reason},
                 )
 
-            token = user.create_token_after_authentication(password)
-
+            # FIXME: Password requirement checks must be done after MFA verification
             try:
                 check_passwd_requirements(
                     password,
@@ -175,6 +149,39 @@ class RequestLoginHandler(RequestHandler):
                         4002, "Password should be changed because it's expired"
                     )
 
+            if user.totp_enabled:
+                # FIXME: Abstract token generation logic
+                secret: str = user.secret_key or global_config["server"]["secret_key"]
+                token = Token.new(
+                    user.id,
+                    DEFAULT_TOKEN_EXPIRY_SECONDS
+                    / 2,  # FIXME: Specify expiration time for AUTH purposes
+                    secret,
+                    purpose=TokenPurpose.AUTH,
+                )
+
+                return respond(
+                    202,
+                    "Two-factor authentication required",
+                    {
+                        "token": token.raw,
+                        "exp": token.exp,
+                        "methods": [
+                            "totp",
+                            # TODO: Add other 2FA methods in the future
+                        ],
+                    },
+                )
+            else:
+                LoginGuard.report_success(
+                    ip,
+                    username,
+                    AuthFactor.PASSWORD,
+                    completed_authentication=True,
+                )
+
+            token = user.create_token_after_authentication(password)
+
             return respond(
                 200, "Login successful", build_login_success_data(session, user, token)
             )
@@ -186,7 +193,7 @@ class RequestLoginHandler(RequestHandler):
         publickey: str = credential["publickey"]
 
         with Session() as session:
-            user = session.get(User, username)
+            user = session.scalar(select(User).where(User.username == username))
             if not user:
                 handler.conclude_request(401, message="Invalid credentials")
                 return Result(code=401, target=username)
@@ -200,6 +207,7 @@ class RequestLoginHandler(RequestHandler):
 
 
 class RequestCompleteMFAHandler(RequestHandler):
+    rate_limit_cost = 2
     request_model = _CompleteMFARequest
     requires_auth = True
     required_token_purpose = TokenPurpose.AUTH
@@ -209,7 +217,7 @@ class RequestCompleteMFAHandler(RequestHandler):
         # TODO: Abstract the response logic to a common function to avoid duplication.
         def respond(code: int, message: str, data: dict[str, Any] | None = None):
             handler.conclude_request(code=code, data=data or {}, message=message)
-            return Result(code=code, target=handler.username)
+            return Result(code=code, target=username, user_id=handler.user_id)
 
         def throttled(decision: ThrottleDecision):
             if decision.scope == ThrottleScope.BANNED_SUBNET:
@@ -221,32 +229,43 @@ class RequestCompleteMFAHandler(RequestHandler):
                 429, "Too many authentication attempts. Please try again later.", data
             )
 
-        assert handler.username
+        assert handler.user_id
         assert handler.token
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
+            username = user.username
+            if user.status != UserStatus.ACTIVE:
+                return respond(
+                    4003, "User account is not active", {"reason": user.status_reason}
+                )
             totp_token: str = handler.data["data"]["token"]
 
             ip = get_client_ip(handler.stream.connection._ws)
 
             # For different authentication factors, we evaluate the access
             # separately to ensure that each factor is throttled independently.
-            totp_access = LoginGuard.evaluate(ip, handler.username, AuthFactor.TOTP)
+            totp_access = LoginGuard.evaluate(ip, username, AuthFactor.TOTP)
 
             if not totp_access.allowed:
                 return throttled(totp_access)
             if not user.verify_totp(totp_token):
-                LoginGuard.report_failure(ip, handler.username, AuthFactor.TOTP)
+                LoginGuard.report_failure(ip, username, AuthFactor.TOTP)
                 return respond(401, "Invalid two-factor authentication token")
             LoginGuard.report_success(
                 ip,
-                handler.username,
+                username,
                 AuthFactor.TOTP,
                 completed_authentication=True,
             )
 
-            return Result(code=0, target=handler.username)
+            return respond(
+                200,
+                "Login successful",
+                build_login_success_data(
+                    session, user, user.create_token_after_authentication()
+                ),
+            )
 
 
 class RequestRefreshTokenHandler(RequestHandler):
@@ -256,8 +275,9 @@ class RequestRefreshTokenHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
+            username = user.username
             new_token = user.renew_token(handler.token)
             response = {
                 "code": 200,
@@ -266,4 +286,4 @@ class RequestRefreshTokenHandler(RequestHandler):
             }
 
         handler.conclude_request(**response)
-        return Result(code=0, target=handler.username)
+        return Result(code=0, target=username, user_id=handler.user_id)

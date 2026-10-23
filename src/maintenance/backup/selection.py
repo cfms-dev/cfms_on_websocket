@@ -14,6 +14,11 @@ from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
 )
+from include.database.models.auth import (
+    UserAuthPublicKey,
+    UserPasswordCredential,
+    UserTotpCredential,
+)
 from include.database.models.documents import (
     Document,
     DocumentMetadata,
@@ -36,6 +41,9 @@ from include.database.session import Base
 from maintenance.backup.models import BackupFormatError
 
 _MODEL_IMPORTS = (
+    UserPasswordCredential,
+    UserTotpCredential,
+    UserAuthPublicKey,
     UserBlockEntry,
     UserBlockSubEntry,
     AuditEntry,
@@ -65,6 +73,9 @@ BACKUP_TABLE_NAMES = (
     "files",
     "comments",
     "users",
+    "user_passwords",
+    "user_totp_credentials",
+    "user_auth_public_keys",
     "user_groups",
     "group_permissions",
     "user_memberships",
@@ -109,6 +120,9 @@ INSERT_ORDER = (
     "files",
     "comments",
     "users",
+    "user_passwords",
+    "user_totp_credentials",
+    "user_auth_public_keys",
     "user_groups",
     "group_permissions",
     "user_memberships",
@@ -146,6 +160,9 @@ BACKUP_COMPONENT_TABLES: dict[BackupComponent, tuple[str, ...]] = {
     BackupComponent.ACCOUNTS: (
         "comments",
         "users",
+        "user_passwords",
+        "user_totp_credentials",
+        "user_auth_public_keys",
         "user_groups",
         "group_permissions",
         "user_memberships",

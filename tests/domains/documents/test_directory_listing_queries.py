@@ -211,7 +211,7 @@ def test_document_info_reads_revision_and_file_consistently_during_deduplication
 
     handler = SimpleNamespace(
         data={"document_id": "doc"},
-        username="admin",
+        user_id="admin",
         conclude_request=lambda code, data, message: responses.append(
             {"code": code, "data": data, "message": message}
         ),

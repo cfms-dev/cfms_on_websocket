@@ -1,5 +1,6 @@
 import secrets
 import time
+import uuid
 
 from sqlalchemy import VARCHAR, BigInteger, Boolean, Double, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -15,8 +16,8 @@ class UserBlockEntry(Base):
     block_id: Mapped[str] = mapped_column(
         VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
     )
-    username: Mapped[str] = mapped_column(
-        ForeignKey("users.username", ondelete="CASCADE")
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
     )
     user: Mapped["User"] = relationship("User", back_populates="block_entries")
     sub_entries: Mapped[list["UserBlockSubEntry"]] = relationship(

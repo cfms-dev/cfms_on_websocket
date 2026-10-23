@@ -241,6 +241,7 @@ class CFMSTestClient:
         self.response_timeout = response_timeout
         self.websocket: ClientConnection | None = None
         self.multiplexer: AsyncMultiplexConnection | None = None
+        self.user_id: str | None = None
         self.username: str | None = None
         self.token: str | None = None
 
@@ -301,6 +302,7 @@ class CFMSTestClient:
                     await self.websocket.close()
             finally:
                 self.websocket = None
+                self.user_id = None
                 self.username = None
                 self.token = None
 
@@ -455,13 +457,22 @@ class CFMSTestClient:
         Returns:
             The login response from the server
         """
-        data = {"username": username, "password": password}
-        if two_fa_token:
-            data["2fa_token"] = two_fa_token
+        data = {
+            "method": "password",
+            "credential": {"username": username, "password": password},
+        }
 
         response = await self.send_request("login", data, include_auth=False)
 
+        if response.get("code") == 202 and two_fa_token:
+            response = await self.send_request(
+                "complete_mfa",
+                {"method": "totp", "data": {"token": two_fa_token}},
+                token=response["data"]["token"],
+            )
+
         if response.get("code") == 200:
+            self.user_id = response["data"]["user_id"]
             self.username = username
             self.token = response.get("data", {}).get("token")
 

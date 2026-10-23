@@ -18,7 +18,6 @@ and returned with cursor pagination.
 ```json
 {
     "action": "search",
-    "username": "<username>",
     "token": "<auth_token>",
     "data": {
         "query": "<search_query>",

@@ -54,11 +54,11 @@ class RequestLockdownHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         status_to_change: bool = handler.data["status"]
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.APPLY_LOCKDOWN not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return Result(code=403, target=None, username=handler.username)
+                return Result(code=403, target=None, user_id=handler.user_id)
 
         transition = (
             apply_lockdown(status_to_change, handler.data["reason"])
@@ -78,7 +78,7 @@ class RequestLockdownHandler(RequestHandler):
                     transition.state.reason,
                 ),
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -105,14 +105,14 @@ class RequestViewAuditLogsHandler(RequestHandler):
             last_key = None if decoded_cursor is None else decoded_cursor.last
         except CursorError as exc:
             handler.conclude_request(400, {}, str(exc))
-            return Result(code=400, target=None, username=handler.username)
+            return Result(code=400, target=None, user_id=handler.user_id)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.VIEW_AUDIT_LOGS not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return Result(code=403, target=None, username=handler.username)
+                return Result(code=403, target=None, user_id=handler.user_id)
 
             audit_query = session.query(AuditEntry).filter(
                 AuditEntry.action.in_(filtered_actions) if filtered_actions else true()
@@ -139,7 +139,7 @@ class RequestViewAuditLogsHandler(RequestHandler):
                 {
                     "id": entry.id,
                     "action": entry.action,
-                    "username": entry.username,
+                    "user_id": str(entry.user_id) if entry.user_id else None,
                     "target": entry.target,
                     "data": entry.data,
                     "result": entry.result,
@@ -162,5 +162,5 @@ class RequestViewAuditLogsHandler(RequestHandler):
             code=0,
             target=None,
             data={"page_size": page_size},
-            username=handler.username,
+            user_id=handler.user_id,
         )

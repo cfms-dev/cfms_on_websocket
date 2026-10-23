@@ -32,7 +32,7 @@ class _FakeServer:
 
 
 class _FakeConnectionHandler:
-    username = "admin"
+    user_id = "admin"
 
     def __init__(self):
         self.responses = []

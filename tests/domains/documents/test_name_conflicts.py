@@ -246,7 +246,7 @@ def test_conflict_response_hides_entity_and_propagates_visible_winner(
 
     responses = []
     handler = SimpleNamespace(
-        username="requester",
+        user_id="requester",
         conclude_request=lambda *args: responses.append(args),
     )
     entity = object()
@@ -267,7 +267,7 @@ def test_conflict_response_hides_entity_and_propagates_visible_winner(
     assert "entity" not in payload
     assert result.code == 409
     assert result.target == "parent"
-    assert result.username == "requester"
+    assert result.user_id == "requester"
     assert result.data == {
         "title": "Report",
         **({"duplicate_id": duplicate_id} if duplicate_id is not None else {}),

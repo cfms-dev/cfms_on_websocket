@@ -2,6 +2,8 @@ import secrets
 import string
 from dataclasses import dataclass
 
+from sqlalchemy import select
+
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.runtime import enter_server_root, load_database_models
 lazy from include.database.models.auth import UserTotpCredential
@@ -32,7 +34,7 @@ def reset_password(username: str, password: str | None = None) -> PasswordResetR
 
     new_password = password or build_random_password()
     with Session() as session:
-        user = session.get(User, username)
+        user = session.scalar(select(User).where(User.username == username))
         if user is None:
             raise MaintenanceOperationError(f"User {username!r} was not found.")
 
@@ -63,7 +65,7 @@ def clear_totp(
             session.commit()
             return TotpClearResult(username=None, updated_count=updated_count)
 
-        user = session.get(User, username)
+        user = session.scalar(select(User).where(User.username == username))
         if user is None:
             raise MaintenanceOperationError(f"User {username!r} was not found.")
 

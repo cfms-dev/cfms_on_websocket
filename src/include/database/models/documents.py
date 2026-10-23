@@ -11,6 +11,7 @@ __all__ = [
 
 import secrets
 import time
+import uuid
 from enum import IntEnum, StrEnum
 from typing import ClassVar
 from warnings import deprecated
@@ -31,7 +32,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from include.config.constants import (
     ROOT_DIRECTORY_ID,
-    USERNAME_DATABASE_MAX_LENGTH,
 )
 from include.database.session import Base
 from include.exceptions.misc import NoActiveRevisionsError
@@ -416,15 +416,13 @@ class DocumentMetadata(Base):
     document_id: Mapped[str] = mapped_column(
         VARCHAR(255), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
     )
-    creator_username: Mapped[str | None] = mapped_column(
-        VARCHAR(USERNAME_DATABASE_MAX_LENGTH),
-        ForeignKey("users.username", ondelete="SET NULL"),
+    creator_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
-    last_modified_by_username: Mapped[str | None] = mapped_column(
-        VARCHAR(USERNAME_DATABASE_MAX_LENGTH),
-        ForeignKey("users.username", ondelete="SET NULL"),
+    last_modified_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -434,11 +432,9 @@ class DocumentMetadata(Base):
         back_populates="metadata_record",
         foreign_keys=[document_id],
     )
-    creator: Mapped["User | None"] = relationship(
-        "User", foreign_keys=[creator_username]
-    )
+    creator: Mapped["User | None"] = relationship("User", foreign_keys=[creator_id])
     last_modified_by: Mapped["User | None"] = relationship(
-        "User", foreign_keys=[last_modified_by_username]
+        "User", foreign_keys=[last_modified_by_id]
     )
     tags: Mapped[list[DocumentMetadataTag]] = relationship(
         "DocumentMetadataTag",

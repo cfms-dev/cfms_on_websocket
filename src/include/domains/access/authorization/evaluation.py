@@ -216,7 +216,7 @@ def check_access_for_object(
         for entry in entries:
             if (
                 entry.entity_type == "user"
-                and entry.entity_identifier == user.username
+                and entry.entity_identifier == str(user.id)
                 and entry.target_type == target_type
                 and entry.access_type == access_type
             ):

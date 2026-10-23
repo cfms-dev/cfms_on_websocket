@@ -1,3 +1,4 @@
+import uuid
 from pathlib import Path
 
 from alembic.config import Config
@@ -5,6 +6,8 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import insert
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+ALICE_ID = uuid.UUID("12345678-1234-4234-9234-123456789abc")
 
 
 def _script_directory() -> ScriptDirectory:
@@ -42,7 +45,7 @@ def _seed_runtime_tables(base, source_engine) -> None:
             {
                 "namespace": "request",
                 "ip_address": "192.0.2.10",
-                "username": "alice",
+                "user_id": ALICE_ID,
                 "last_attempt": 1_700_000_000.0,
             },
         )

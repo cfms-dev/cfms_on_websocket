@@ -292,13 +292,16 @@ from include.database.session import Base, Session, engine
 
 Base.metadata.create_all(engine)
 with Session.begin() as session:
-    session.add(User(username="alice", pass_hash="hash", created_time=1.0))
+    from uuid import UUID
+    user = User(id=UUID("12345678-1234-4234-9234-123456789abc"), username="alice", pass_hash="hash", created_time=1.0)
+    session.add(user)
+    session.flush()
     session.add_all(
         [
             AuditEntry(
                 id="old-login",
                 action="login",
-                username="alice",
+                user=user,
                 target="alice",
                 data={"detail": {"message": "重要记录"}},
                 result=401,
@@ -308,7 +311,7 @@ with Session.begin() as session:
             AuditEntry(
                 id="old-update",
                 action="update_document",
-                username=None,
+                user_id=None,
                 target="document-1",
                 data=None,
                 result=0,
@@ -318,7 +321,7 @@ with Session.begin() as session:
             AuditEntry(
                 id="cutoff",
                 action="login",
-                username="alice",
+                user=user,
                 target="alice",
                 data={},
                 result=401,
@@ -328,7 +331,7 @@ with Session.begin() as session:
             AuditEntry(
                 id="new-entry",
                 action="login",
-                username="alice",
+                user=user,
                 target="alice",
                 data={},
                 result=0,

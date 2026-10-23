@@ -100,10 +100,10 @@ class RequestDiagnosticsHandler(RequestHandler):
 
     def handle(self, handler: ConnectionHandler):
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             if Permissions.DIAGNOSTICS not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
-                return Result(code=403, target=None, username=handler.username)
+                return Result(code=403, target=None, user_id=handler.user_id)
 
         lockdown_state = lockdown_state_manager.get_state()
         provider_config = global_config["provider"]
@@ -158,7 +158,7 @@ class RequestDiagnosticsHandler(RequestHandler):
         handler.conclude_request(
             200, diagnostics, "Server diagnostics retrieved successfully"
         )
-        return Result(code=0, target=None, username=handler.username)
+        return Result(code=0, target=None, user_id=handler.user_id)
 
 
 class RequestShutdownHandler(RequestHandler):
@@ -176,7 +176,7 @@ class RequestShutdownHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.SHUTDOWN not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)

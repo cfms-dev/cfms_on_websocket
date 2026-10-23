@@ -1,10 +1,11 @@
 __all__ = ["Token"]
 
 import time
+import uuid
 from enum import IntFlag
 
 import jwt
-from pydantic import Field, TypeAdapter
+from pydantic import Field, TypeAdapter, ValidationError
 from pydantic.dataclasses import dataclass
 
 
@@ -38,12 +39,12 @@ class Token:
     by CFMS is required by the specification to adhere to this constraint.
     """
 
-    username: str
+    sub: uuid.UUID  # is user.id
     purpose: TokenPurpose
     exp: float
     nbf: float
     iat: float
-    _secret: str = Field(exclude=True)
+    _secret: str = Field(exclude=True, repr=False)
 
     @classmethod
     def from_raw(cls, raw_token: str, secret: str) -> Token:
@@ -54,18 +55,23 @@ class Token:
         """
         decoded = jwt.decode(raw_token, secret, algorithms="HS256")
 
-        token = TypeAdapter(cls).validate_python(decoded)
-        token._secret = secret
-        return token
+        try:
+            return TypeAdapter(cls).validate_python({**decoded, "_secret": secret})
+        except ValidationError as exc:
+            raise jwt.InvalidTokenError("Invalid token claims") from exc
 
     @classmethod
     def new(
-        cls, username: str, duration: float, secret: str, purpose=TokenPurpose.GENERAL
+        cls,
+        user_id: uuid.UUID,
+        duration: float,
+        secret: str,
+        purpose=TokenPurpose.GENERAL,
     ) -> Token:
         nbf = iat = time.time()
         exp = nbf + duration
         return cls(
-            username=username,
+            sub=user_id,
             purpose=purpose,
             exp=exp,
             nbf=nbf,
@@ -76,5 +82,11 @@ class Token:
     @property
     def raw(self) -> str:
         return jwt.encode(
-            TypeAdapter(Token).dump_python(self), self._secret, algorithm="HS256"
+            TypeAdapter(Token).dump_python(self, mode="json"),
+            self._secret,
+            algorithm="HS256",
         )
+
+    def has_purpose(self, purpose: TokenPurpose, /) -> bool:
+        """Check if the token has the specified purpose."""
+        return self.purpose & purpose == purpose

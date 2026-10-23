@@ -11,6 +11,7 @@ from include.domains.access.permissions import Permissions
 from include.domains.scheduling import handlers
 from include.providers.base import SchedulingProviderStatus
 from include.scheduling import ScheduledTaskRegistration, ScheduledTaskRegistry
+from tests.scheduling.conftest import ADMIN_ID
 
 
 class _Payload(BaseModel):
@@ -30,7 +31,7 @@ _CORE_HANDLERS = {
 class _Connection:
     def __init__(self, data):
         self.data = data
-        self.username = "admin"
+        self.user_id = ADMIN_ID
         self.response = None
 
     def conclude_request(self, code, data, message):
@@ -248,8 +249,8 @@ def test_update_schedule_uses_locked_revision_for_task_authorization(
                 trigger_data={"run_at": "2026-12-01T00:00:00+00:00"},
                 timezone="UTC",
                 next_run_at=1_796_083_200.0,
-                created_by="admin",
-                updated_by="admin",
+                created_by=ADMIN_ID,
+                updated_by=ADMIN_ID,
             )
         )
 
@@ -308,8 +309,8 @@ def test_update_schedule_checks_permission_for_locked_current_task(
                 trigger_data={"run_at": "2026-12-01T00:00:00+00:00"},
                 timezone="UTC",
                 next_run_at=1_796_083_200.0,
-                created_by="admin",
-                updated_by="admin",
+                created_by=ADMIN_ID,
+                updated_by=ADMIN_ID,
             )
         )
     connection = _Connection(
@@ -345,8 +346,8 @@ def test_update_schedule_persists_and_notifies_provider(
                 trigger_data={"run_at": "2026-12-01T00:00:00+00:00"},
                 timezone="UTC",
                 next_run_at=1_796_083_200.0,
-                created_by="admin",
-                updated_by="admin",
+                created_by=ADMIN_ID,
+                updated_by=ADMIN_ID,
             )
         )
     connection = _Connection(

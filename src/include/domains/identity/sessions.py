@@ -21,6 +21,7 @@ def build_login_success_data(
     token: Token,
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
+        "user_id": str(user.id),
         "token": token.raw,
         "exp": token.exp,
         "nickname": user.nickname,

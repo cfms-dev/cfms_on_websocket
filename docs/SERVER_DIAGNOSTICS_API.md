@@ -14,7 +14,6 @@ response is returned before the diagnostics permission check.
 ```json
 {
   "action": "diagnostics",
-  "username": "admin",
   "token": "<token>",
   "nonce": "<unique nonce>",
   "timestamp": 1786600000,

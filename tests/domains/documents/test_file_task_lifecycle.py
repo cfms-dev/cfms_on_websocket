@@ -56,22 +56,23 @@ def test_download_task_records_issuer_without_binding_bearer(file_task_context) 
     from include.domains.documents.handlers.documents import create_file_task
 
     with file_task_context.session.begin() as session:
-        session.add(
-            file_task_context.User(
-                username="alice", pass_hash="unused", created_time=1.0
-            )
+        user = file_task_context.User(
+            username="alice", pass_hash="unused", created_time=1.0
         )
+        session.add(user)
+        session.flush()
+        user_id = user.id
         file = file_task_context.File(id="download-file", path="download.bin")
         session.add(file)
         task_data = create_file_task(
             session,
             file,
-            issued_by_username="alice",
+            issued_by_id=user_id,
         )
 
     with file_task_context.session() as session:
         task = session.get(file_task_context.FileTask, task_data["task_id"])
-        assert task.issued_by_username == "alice"
+        assert task.issued_by_id == user_id
 
 
 @pytest.mark.component
@@ -150,7 +151,7 @@ def test_claim_returns_read_only_transfer_snapshot(file_task_context) -> None:
     assert claimed.file_id == file_id
     assert claimed.file_path == "snapshot.bin"
     assert claimed.stored_file_size == 123
-    assert claimed.issued_by_username is None
+    assert claimed.issued_by_id is None
     assert claimed.encryption_key == "sensitive-key"
     assert "sensitive-key" not in repr(claimed)
     with pytest.raises(FrozenInstanceError):

@@ -68,7 +68,7 @@ def _make_user(context, *, permissions=(), username="alice"):
     for permission in permissions:
         user.rights.append(
             context.models.UserPermission(
-                username=username,
+                user=user,
                 permission=permission,
                 granted=True,
                 start_time=0.0,
@@ -119,7 +119,7 @@ def test_visible_search_query_honors_oae_direct_grant(search_query_context):
     context.session.add(
         context.models.ObjectAccessEntry(
             entity_type="user",
-            entity_identifier=user.username,
+            entity_identifier=str(user.id),
             target_type="directory",
             target_identifier=folder.id,
             access_type="read",
@@ -292,7 +292,7 @@ def test_visible_search_query_honors_read_block(search_query_context):
         "SearchBlockedTarget",
     )
     block = context.models.UserBlockEntry(
-        username=user.username,
+        user=user,
         timestamp=_NOW,
         not_before=_NOW - 1,
         not_after=-1,

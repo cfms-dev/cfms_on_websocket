@@ -17,6 +17,7 @@ import orjson
 import requests
 from authlib.integrations.requests_client import OAuth2Session
 from loguru import logger as log
+from sqlalchemy import select
 
 from include.config.settings import global_config
 from include.database.models.identity import User, UserGroup
@@ -304,7 +305,7 @@ def _resolve_or_create_user(cfg: dict[str, Any], claims: dict[str, Any]) -> User
         )
 
     with Session() as session:
-        user = session.get(User, username)
+        user = session.scalar(select(User).where(User.username == username))
         if user is not None:
             return user
 
@@ -339,7 +340,7 @@ def _resolve_or_create_user(cfg: dict[str, Any], claims: dict[str, Any]) -> User
     )
 
     with Session() as session:
-        return session.get(User, username)
+        return session.scalar(select(User).where(User.username == username))
 
 
 class _OIDCStartRequest(RequestDataModel):
@@ -430,8 +431,9 @@ class RequestOIDCCallbackHandler(RequestHandler):
                 return Result(code=401)
 
             username = user.username
+            user_id = user.id
             with Session() as session:
-                user = User.get_existing(session, username)
+                user = User.get_existing(session, user_id)
                 token = issue_login_token(user)
                 data = build_login_success_data(session, user, token)
 
@@ -451,7 +453,7 @@ class RequestOIDCCallbackHandler(RequestHandler):
             return None
 
         handler.conclude_request(200, data, "Login successful")
-        return Result(code=200, target=username, username=username)
+        return Result(code=200, target=username, user_id=user_id)
 
 
 @hookimpl

@@ -1,6 +1,7 @@
 import ssl
 import threading
 import time
+import uuid
 
 import jsonschema
 import jwt
@@ -14,7 +15,7 @@ lazy from websockets.sync.server import ServerConnection
 from include.config.constants import NONCE_MIN_LENGTH
 from include.config.settings import global_config
 from include.config.validation import AdmissionControlPolicy
-from include.database.models.identity import User
+from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.handlers import (
     RequestGrantAccessHandler,
@@ -59,6 +60,7 @@ from include.domains.documents.handlers.revisions import (
 )
 from include.domains.documents.handlers.search import RequestSearchHandler
 from include.domains.identity.handlers.auth import (
+    RequestCompleteMFAHandler,
     RequestLoginHandler,
     RequestRefreshTokenHandler,
 )
@@ -142,6 +144,7 @@ logger = log.bind(name="connection_handler")
 available_functions: dict[str, type[RequestHandler]] = {
     # Authentication
     "login": RequestLoginHandler,
+    "complete_mfa": RequestCompleteMFAHandler,
     "refresh_token": RequestRefreshTokenHandler,
     # Two-factor authentication
     "setup_2fa": RequestSetup2FAHandler,
@@ -240,6 +243,7 @@ available_functions: dict[str, type[RequestHandler]] = {
 whitelisted_functions = [
     "server_info",
     "login",
+    "complete_mfa",
     "refresh_token",
     "validate_2fa",
     "upload_file",
@@ -256,7 +260,7 @@ def _log_handler_result(
     log_audit(
         action,
         result.code,
-        username=result.username,
+        user_id=result.user_id,
         target=result.target,
         data=result.data,
         remote_address=remote_address,
@@ -460,20 +464,18 @@ def handle_request(stream: Stream):
 
     if unverified_raw_token := this_handler.request.get("token"):
         # CAUTION! Touching a unverified token requires careful handling.
-        unverified = jwt.decode(
-            unverified_raw_token,
-            options={"verify_signature": False},
-        )
+        try:
+            unverified = jwt.decode(
+                unverified_raw_token,
+                options={"verify_signature": False},
+            )
+            claimed_user_id = uuid.UUID(unverified["sub"])
+        except jwt.InvalidTokenError, KeyError, ValueError, TypeError, AttributeError:
+            this_handler.conclude_request(401, {}, "Invalid token")
+            return
 
         with Session() as session:
-            claimed_username = unverified.get("username")
-            if not claimed_username:
-                this_handler.conclude_request(
-                    401, {}, "Invalid token: missing username claim"
-                )
-                return
-
-            user = session.get(User, claimed_username)
+            user = session.get(User, claimed_user_id)
             if not user:  # User not found
                 this_handler.conclude_request(401, {}, "Invalid token")
                 return
@@ -490,6 +492,10 @@ def handle_request(stream: Stream):
                 this_handler.conclude_request(401, {}, "Invalid token")
                 return
 
+            if user.status != UserStatus.ACTIVE:
+                this_handler.conclude_request(401, {}, "Invalid token")
+                return
+
             # The purpose of the token is left to subsequent logic for validation.
             # However, it is obvious to say that a token lacking the GENERAL purpose
             # cannot be considered authenticated.
@@ -499,9 +505,7 @@ def handle_request(stream: Stream):
             else:
                 user_auth_state = AuthState.PARTIAL
 
-            this_handler.username = (
-                user.username
-            )  # FIXME: Retained as an alias; Consider using `token.username` directly
+            this_handler.user_id = user.id
             this_handler.token = token
 
     handler_type = available_functions.get(action)
@@ -513,7 +517,7 @@ def handle_request(stream: Stream):
         action,
         handler_type.rate_limit_cost,
         ip,
-        username=this_handler.username if user_auth_state == AuthState.FULL else None,
+        user_id=this_handler.user_id if user_auth_state == AuthState.FULL else None,
         bypass=(
             user_auth_state == AuthState.FULL
             and Permissions.BYPASS_REQUEST_RATE_LIMIT in user_permissions
@@ -597,7 +601,7 @@ def handle_request(stream: Stream):
                 log_audit(
                     action,
                     403,
-                    username=token.username,
+                    user_id=token.sub,
                     data=this_handler.data,
                     remote_address=this_handler.remote_address,
                 )

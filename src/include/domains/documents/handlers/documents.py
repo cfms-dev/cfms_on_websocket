@@ -15,6 +15,7 @@ __all__ = [
 import datetime
 import secrets
 import time
+import uuid
 from typing import Annotated, Any
 
 import jsonschema
@@ -176,7 +177,7 @@ def create_file_task(
     file: File,
     transfer_mode: TransferMode = TransferMode.DOWNLOAD,
     *,
-    issued_by_username: str | None = None,
+    issued_by_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Creates a new file processing task for the specified file.
 
@@ -208,7 +209,7 @@ def create_file_task(
         mode=transfer_mode,
         start_time=now,
         end_time=now + duration,
-        issued_by_username=issued_by_username,
+        issued_by_id=issued_by_id,
     )
     session.add(task)
     session.flush()
@@ -222,8 +223,8 @@ def get_or_create_document_metadata(document: Document) -> DocumentMetadata:
     return document.metadata_record
 
 
-def mark_document_modified(document: Document, username: str) -> None:
-    get_or_create_document_metadata(document).last_modified_by_username = username
+def mark_document_modified(document: Document, user_id: uuid.UUID) -> None:
+    get_or_create_document_metadata(document).last_modified_by_id = user_id
 
 
 def serialize_document_metadata(document: Document) -> dict:
@@ -237,8 +238,10 @@ def serialize_document_metadata(document: Document) -> dict:
 
     return {
         "tags": [tag.tag for tag in metadata.tags],
-        "creator": metadata.creator_username,
-        "last_modified_by": metadata.last_modified_by_username,
+        "creator": str(metadata.creator_id) if metadata.creator_id else None,
+        "last_modified_by": str(metadata.last_modified_by_id)
+        if metadata.last_modified_by_id
+        else None,
     }
 
 
@@ -259,13 +262,13 @@ class RequestGetDocumentInfoHandler(RequestHandler):
             return
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             document = session.get(Document, document_id)
 
             if not document:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             latest_revision = fetch_latest_active_revisions_by_document(
                 session, [document.id]
@@ -274,13 +277,13 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 handler.conclude_request(
                     404, {}, "No active revisions found for this document"
                 )
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if not check_access_requirements(
                 session, user, document, access_type="read"
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             info_code = 0
             access_rules = []
@@ -308,7 +311,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
                 data["metadata"] = serialize_document_metadata(document)
 
             handler.conclude_request(200, data, "Document info retrieved successfully")
-            return Result(code=0, target=document_id, username=handler.username)
+            return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
 class RequestGetDocumentAccessRulesHandler(RequestHandler):
@@ -321,12 +324,12 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
         document_id: str = handler.data["document_id"]
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
 
             if not document:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if (
                 not check_access_requirements(
@@ -335,7 +338,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
                 or Permissions.VIEW_ACCESS_RULES not in user.all_permissions
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             handler.conclude_request(
                 200,
@@ -349,7 +352,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
                 },
                 "Document access rules retrieved successfully",
             )
-            return Result(code=0, target=document_id, username=handler.username)
+            return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
 class RequestGetDocumentHandler(RequestHandler):
@@ -364,7 +367,7 @@ class RequestGetDocumentHandler(RequestHandler):
         document_id: str = handler.data["document_id"]
 
         with Session() as session, risk_control_transaction(session):
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
 
             if not document:
@@ -387,7 +390,7 @@ class RequestGetDocumentHandler(RequestHandler):
                 else:
                     limit_decision = check_download_issue_limits(
                         session,
-                        user.username,
+                        user.id,
                         handler.remote_address,
                         account_created_at=user.created_time,
                         bypass_rate_limit=(
@@ -409,7 +412,7 @@ class RequestGetDocumentHandler(RequestHandler):
                         task_data = create_file_task(
                             session,
                             latest_revision.file,
-                            issued_by_username=user.username,
+                            issued_by_id=user.id,
                         )
                         response_code = 200
                         result_code = 0
@@ -425,13 +428,13 @@ class RequestGetDocumentHandler(RequestHandler):
             code=result_code,
             target=document_id,
             data=data if result_code == 429 else None,
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
 def _create_document_in_transaction(
     session: ORMSession,
-    username: str,
+    user_id: uuid.UUID,
     remote_address: str,
     folder_id: str,
     title: str,
@@ -441,7 +444,7 @@ def _create_document_in_transaction(
     result_data = {"title": title}
 
     with risk_control_transaction(session):
-        user = User.get_existing(session, username)
+        user = User.get_existing(session, user_id)
         if Permissions.CREATE_DOCUMENT not in user.all_permissions:
             return (
                 403,
@@ -451,7 +454,7 @@ def _create_document_in_transaction(
                     code=403,
                     target=folder_id,
                     data=result_data,
-                    username=username,
+                    user_id=user_id,
                 ),
             )
 
@@ -470,13 +473,13 @@ def _create_document_in_transaction(
                     code=error_code,
                     target=folder_id,
                     data=result_data,
-                    username=username,
+                    user_id=user_id,
                 ),
             )
 
         limit_decision = check_document_creation_limits(
             session,
-            user.username,
+            user.id,
             remote_address,
             account_created_at=user.created_time,
             bypass_rate_limit=(
@@ -497,7 +500,7 @@ def _create_document_in_transaction(
                     code=429,
                     target=folder_id,
                     data={**result_data, **response_data},
-                    username=username,
+                    user_id=user_id,
                 ),
             )
 
@@ -512,8 +515,8 @@ def _create_document_in_transaction(
             folder_id=folder_id,
         )
         new_document.metadata_record = DocumentMetadata(
-            creator_username=user.username,
-            last_modified_by_username=user.username,
+            creator_id=user.id,
+            last_modified_by_id=user.id,
         )
         new_revision = DocumentRevision(file_id=new_file.id)
         new_document.revisions.append(new_revision)
@@ -535,7 +538,7 @@ def _create_document_in_transaction(
                         code=403,
                         target=folder_id,
                         data=result_data,
-                        username=username,
+                        user_id=user_id,
                     ),
                 )
 
@@ -556,7 +559,7 @@ def _create_document_in_transaction(
                     code=0,
                     target=folder_id,
                     data=result_data,
-                    username=username,
+                    user_id=user_id,
                 ),
             )
 
@@ -589,7 +592,7 @@ class RequestCreateDocumentHandler(RequestHandler):
             try:
                 outcome = _create_document_in_transaction(
                     session,
-                    handler.token.username,
+                    handler.token.sub,
                     handler.remote_address,
                     folder_id,
                     title,
@@ -597,7 +600,7 @@ class RequestCreateDocumentHandler(RequestHandler):
                     inherit_parent,
                 )
             except NodeNameConflictError:
-                user = User.get_existing(session, handler.username)
+                user = User.get_existing(session, handler.user_id)
                 conflict_response = describe_node_name_conflict(
                     session, user, folder_id, title
                 )
@@ -610,7 +613,7 @@ class RequestCreateDocumentHandler(RequestHandler):
                         code=400,
                         target=folder_id,
                         data={"title": title},
-                        username=handler.username,
+                        user_id=handler.user_id,
                     ),
                 )
 
@@ -645,16 +648,14 @@ class RequestUploadDocumentHandler(RequestHandler):
 
         with Session() as session:
             document = session.get(Document, document_id)
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
 
             if document:
                 if not check_access_requirements(
                     session, this_user, document, access_type="write"
                 ):
                     handler.conclude_access_denial()
-                    return Result(
-                        code=403, target=document_id, username=handler.username
-                    )
+                    return Result(code=403, target=document_id, user_id=handler.user_id)
 
                 existing_task = (
                     session.query(FileTask)
@@ -683,7 +684,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                             "Existing upload task has expired",
                         )
                         return Result(
-                            code=410, target=document_id, username=handler.username
+                            code=410, target=document_id, user_id=handler.user_id
                         )
                     if status == FileTaskStatus.IN_PROGRESS:
                         handler.conclude_request(
@@ -692,7 +693,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                             "Upload is already in progress",
                         )
                         return Result(
-                            code=409, target=document_id, username=handler.username
+                            code=409, target=document_id, user_id=handler.user_id
                         )
 
                     task_data = serialize_file_task(existing_task)
@@ -705,7 +706,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                         code=0,
                         target=document_id,
                         data=task_data,
-                        username=handler.username,
+                        user_id=handler.user_id,
                     )
 
                 today = datetime.datetime.now(datetime.UTC).date()
@@ -731,7 +732,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                             "Parent revision does not exist or does not belong to this document",
                         )
                         return Result(
-                            code=400, target=document_id, username=handler.username
+                            code=400, target=document_id, user_id=handler.user_id
                         )
                 else:
                     try:
@@ -748,7 +749,7 @@ class RequestUploadDocumentHandler(RequestHandler):
                 session.add(new_revision)
 
                 document.revisions.append(new_revision)
-                mark_document_modified(document, this_user.username)
+                mark_document_modified(document, this_user.id)
 
                 document.current_revision = new_revision
                 task_data = create_file_task(session, new_file, TransferMode.UPLOAD)
@@ -756,13 +757,13 @@ class RequestUploadDocumentHandler(RequestHandler):
 
             else:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
         handler.conclude_request(
             200, {"task_data": task_data}, "Task successfully created"
         )
         return Result(
-            code=0, target=document_id, data=task_data, username=handler.username
+            code=0, target=document_id, data=task_data, user_id=handler.user_id
         )
 
 
@@ -779,12 +780,12 @@ class RequestDeleteDocumentHandler(RequestHandler):
         cancelled_task_ids: list[str] = []
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
 
             if not document:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if (
                 Permissions.DELETE_DOCUMENT not in user.all_permissions
@@ -793,7 +794,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
                 )
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             document.status = EntityStatus.DELETED
             document.status_operation_id = (
@@ -805,13 +806,13 @@ class RequestDeleteDocumentHandler(RequestHandler):
             cancelled_task_ids = cancel_file_tasks_for_files(
                 session, unreachable_file_ids
             )
-            mark_document_modified(document, user.username)
+            mark_document_modified(document, user.id)
             session.commit()
 
         publish_cancelled_file_tasks(cancelled_task_ids)
 
         handler.conclude_request(200, {}, "Document successfully deleted")
-        return Result(code=0, target=document_id, username=handler.username)
+        return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
 class RequestRenameDocumentHandler(RequestHandler):
@@ -829,19 +830,19 @@ class RequestRenameDocumentHandler(RequestHandler):
         new_title: str = handler.data["new_title"]
 
         with Session() as session:
-            this_user = User.get_existing(session, handler.username)
+            this_user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
 
             if not document:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if (
                 Permissions.RENAME_DOCUMENT not in this_user.all_permissions
                 or not check_access_requirements(session, this_user, document, "write")
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             if document.title == new_title:
                 handler.conclude_request(
@@ -856,7 +857,7 @@ class RequestRenameDocumentHandler(RequestHandler):
             try:
                 with node_name_mutation(session, parent_id, new_title):
                     document.title = new_title
-                    mark_document_modified(document, this_user.username)
+                    mark_document_modified(document, this_user.id)
                     session.commit()
             except NodeNameConflictError:
                 payload, message = describe_node_name_conflict(
@@ -873,7 +874,7 @@ class RequestRenameDocumentHandler(RequestHandler):
             handler.conclude_request(
                 code=200, message="Document renamed successfully", data={}
             )
-            return Result(code=0, target=document_id, username=handler.username)
+            return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
 class RequestDownloadFileHandler(RequestHandler):
@@ -928,47 +929,45 @@ class RequestSetDocumentRulesHandler(RequestHandler):
         access_rules_to_apply: dict = handler.data["access_rules"]
         inherit_parent: bool = handler.data.get("inherit_parent", True)
 
-        if not handler.username:
+        if not handler.user_id:
             handler.conclude_request(401, {}, smsg.AUTHENTICATION_REQUIRED)
             return Result(code=401, target=document_id)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             document = session.get(Document, document_id)
 
             if not document:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if Permissions.SET_ACCESS_RULES not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_SET_ACCESS_RULES)
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             if not check_access_requirements(
                 session, user, document, access_type="manage"
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             try:
                 if apply_access_rules(
                     document, access_rules_to_apply, user, inherit_parent
                 ):
-                    mark_document_modified(document, user.username)
+                    mark_document_modified(document, user.id)
                     session.commit()
                     handler.conclude_request(200, {}, "Set access rules successfully")
-                    return Result(code=0, target=document_id, username=handler.username)
+                    return Result(code=0, target=document_id, user_id=handler.user_id)
                 else:
                     session.rollback()
                     handler.conclude_access_denial()
-                    return Result(
-                        code=403, target=document_id, username=handler.username
-                    )
+                    return Result(code=403, target=document_id, user_id=handler.user_id)
             except (ValueError, jsonschema.ValidationError) as exc:
                 session.rollback()
                 handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
-                return Result(code=400, target=document_id, username=handler.username)
+                return Result(code=400, target=document_id, user_id=handler.user_id)
 
 
 class RequestMoveDocumentHandler(RequestHandler):
@@ -988,7 +987,7 @@ class RequestMoveDocumentHandler(RequestHandler):
             target_folder_id = ROOT_DIRECTORY_ID
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.MOVE not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MOVE_DOCUMENT)
@@ -996,7 +995,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     code=403,
                     target=document_id,
                     data={"target_folder_id": target_folder_id},
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
 
             document = session.get(Document, document_id)
@@ -1008,7 +1007,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     code=404,
                     target=document_id,
                     data={"target_folder_id": target_folder_id},
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
 
             if document.folder_id == target_folder_id:
@@ -1017,7 +1016,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     code=400,
                     target=document_id,
                     data={"target_folder_id": target_folder_id},
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
 
             if not check_access_requirements(session, user, document, "move"):
@@ -1026,7 +1025,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     code=403,
                     target=document_id,
                     data={"target_folder_id": target_folder_id},
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
 
             target_folder = session.get(Folder, target_folder_id)
@@ -1038,7 +1037,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                     code=404,
                     target=document_id,
                     data={"target_folder_id": target_folder_id},
-                    username=handler.username,
+                    user_id=handler.user_id,
                 )
 
             if not check_access_requirements(session, user, target_folder, "write"):
@@ -1055,7 +1054,7 @@ class RequestMoveDocumentHandler(RequestHandler):
                         code=403,
                         target=document_id,
                         data={"target_folder_id": target_folder_id},
-                        username=handler.username,
+                        user_id=handler.user_id,
                     )
 
             source_folder_id = document.folder_id or ROOT_DIRECTORY_ID
@@ -1063,7 +1062,7 @@ class RequestMoveDocumentHandler(RequestHandler):
             try:
                 with node_name_mutation(session, target_folder_id, title):
                     document.folder = target_folder
-                    mark_document_modified(document, user.username)
+                    mark_document_modified(document, user.id)
                     session.commit()
             except NodeNameConflictError:
                 payload, message = describe_node_name_conflict(
@@ -1082,7 +1081,7 @@ class RequestMoveDocumentHandler(RequestHandler):
             code=0,
             target=document_id,
             data={"target_folder_id": target_folder_id},
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -1100,7 +1099,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         doc_id = handler.data["document_id"]
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.PURGE not in user.all_permissions:
                 handler.conclude_permission_denial()
@@ -1124,12 +1123,12 @@ class RequestPurgeDocumentHandler(RequestHandler):
                 return
 
             delete_all_document_revisions(session, document)
-            mark_document_modified(document, user.username)
+            mark_document_modified(document, user.id)
             session.delete(document)
             session.commit()
 
         handler.conclude_request(200, {}, "Document permanently deleted")
-        return Result(code=0, target=doc_id, username=handler.username)
+        return Result(code=0, target=doc_id, user_id=handler.user_id)
 
 
 class RequestRestoreDocumentHandler(RequestHandler):
@@ -1151,11 +1150,11 @@ class RequestRestoreDocumentHandler(RequestHandler):
         new_title = handler.data.get("new_title")
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
 
             if Permissions.RESTORE not in user.all_permissions:
                 handler.conclude_permission_denial()
-                return Result(code=403, target=doc_id, username=handler.username)
+                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
             document = session.get(
                 Document, doc_id, execution_options={"include_deleted": True}
@@ -1163,11 +1162,11 @@ class RequestRestoreDocumentHandler(RequestHandler):
 
             if not document or document.status != EntityStatus.DELETED:
                 handler.conclude_request(404, {}, smsg.DELETED_DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=doc_id, username=handler.username)
+                return Result(code=404, target=doc_id, user_id=handler.user_id)
 
             if not check_access_requirements(session, user, document, "write"):
                 handler.conclude_access_denial()
-                return Result(code=403, target=doc_id, username=handler.username)
+                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
             if target_folder_provided:
                 db_folder_id = target_folder_id or ROOT_DIRECTORY_ID
@@ -1181,11 +1180,11 @@ class RequestRestoreDocumentHandler(RequestHandler):
             )
             if not target_folder:
                 handler.conclude_request(404, {}, smsg.TARGET_DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=db_folder_id, username=handler.username)
+                return Result(code=404, target=db_folder_id, user_id=handler.user_id)
 
             if not check_access_requirements(session, user, target_folder, "write"):
                 handler.conclude_access_denial()
-                return Result(code=403, target=db_folder_id, username=handler.username)
+                return Result(code=403, target=db_folder_id, user_id=handler.user_id)
 
             if target_folder.status != EntityStatus.OK:
                 handler.conclude_request(
@@ -1193,7 +1192,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
                     {"folder_id": db_folder_id},
                     "Cannot restore: Target folder is deleted. Restore it first.",
                 )
-                return Result(code=409, target=doc_id, username=handler.username)
+                return Result(code=409, target=doc_id, user_id=handler.user_id)
 
             try:
                 with node_name_mutation(session, db_folder_id, final_title):
@@ -1201,7 +1200,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
                     document.status_operation_id = None
                     document.title = final_title
                     document.folder_id = db_folder_id
-                    mark_document_modified(document, user.username)
+                    mark_document_modified(document, user.id)
                     session.commit()
             except NodeNameConflictError:
                 payload, message = describe_node_name_conflict(
@@ -1223,7 +1222,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
                 },
                 "Document successfully restored",
             )
-            return Result(code=0, target=doc_id, username=handler.username)
+            return Result(code=0, target=doc_id, user_id=handler.user_id)
 
 
 class RequestSetDocumentTagsHandler(RequestHandler):
@@ -1241,18 +1240,18 @@ class RequestSetDocumentTagsHandler(RequestHandler):
             tag = raw_tag.strip()
             if not tag:
                 handler.conclude_request(400, {}, "Tags cannot be blank")
-                return Result(code=400, target=document_id, username=handler.username)
+                return Result(code=400, target=document_id, user_id=handler.user_id)
             if tag not in seen_tags:
                 normalized_tags.append(tag)
                 seen_tags.add(tag)
 
         with Session() as session:
-            user = User.get_existing(session, handler.username)
+            user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
 
             if not document:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, username=handler.username)
+                return Result(code=404, target=document_id, user_id=handler.user_id)
 
             if (
                 Permissions.SET_METADATA_TAGS not in user.all_permissions
@@ -1261,7 +1260,7 @@ class RequestSetDocumentTagsHandler(RequestHandler):
                 )
             ):
                 handler.conclude_access_denial()
-                return Result(code=403, target=document_id, username=handler.username)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             metadata = get_or_create_document_metadata(document)
             existing_by_tag = {
@@ -1281,7 +1280,7 @@ class RequestSetDocumentTagsHandler(RequestHandler):
                         DocumentMetadataTag(tag=tag, position=position)
                     )
 
-            metadata.last_modified_by_username = user.username
+            metadata.last_modified_by_id = user.id
             session.commit()
 
             handler.conclude_request(
@@ -1293,5 +1292,5 @@ class RequestSetDocumentTagsHandler(RequestHandler):
                 code=0,
                 target=document_id,
                 data={"tags": normalized_tags},
-                username=handler.username,
+                user_id=handler.user_id,
             )

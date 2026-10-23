@@ -59,7 +59,7 @@ class TestSystemManagement:
         denied = next(
             item
             for item in audit_items
-            if item["username"] == low_privilege_client.username
+            if item["user_id"] == low_privilege_client.user_id
         )
         assert denied["result"] == 403
         assert denied["data"] is None

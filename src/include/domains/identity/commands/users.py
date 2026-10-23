@@ -55,7 +55,7 @@ def create_user(**kwargs) -> None:
         if raw_password:
             pass_hash = _password_hasher.hash(raw_password)
             user.password_credential = UserPasswordCredential(
-                username=user.username,
+                user=user,
                 pass_hash=pass_hash,
                 passwd_last_modified=time.time(),
             )

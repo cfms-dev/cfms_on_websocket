@@ -3,6 +3,7 @@ __all__ = ["RequestGrantAccessHandler", "RequestRevokeAccessHandler"]
 from typing import Annotated, Literal
 
 from pydantic import Field
+from sqlalchemy import select
 
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import (
@@ -35,7 +36,6 @@ from include.transport.request_handler import (
 lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import JsonInteger, NonEmptyString, NonNegativeFloat
 
-ENTITY_TYPE_MAPPING = {"user": User, "group": UserGroup}
 TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}
 
 
@@ -84,22 +84,24 @@ class RequestGrantAccessHandler(RequestHandler):
                     400, {}, "The start time should be before the end time"
                 )
                 return Result(
-                    code=400, target=None, data=handler.data, username=handler.username
+                    code=400, target=None, data=handler.data, user_id=handler.user_id
                 )
 
-            operator = User.get_existing(session, handler.username)
+            operator = User.get_existing(session, handler.user_id)
 
             if Permissions.MANAGE_ACCESS not in operator.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MANAGE_ACCESS)
-                return Result(code=403, target=handler.username)
+                return Result(code=403, target=operator.username, user_id=operator.id)
 
-            entity: User | UserGroup | None = session.get(
-                ENTITY_TYPE_MAPPING[entity_type], entity_identifier
+            entity: User | UserGroup | None = (
+                session.scalar(select(User).where(User.username == entity_identifier))
+                if entity_type == "user"
+                else session.get(UserGroup, entity_identifier)
             )
             if not entity:
                 handler.conclude_request(404, {}, smsg.ENTITY_NOT_FOUND)
                 return Result(
-                    code=404, target=None, data=handler.data, username=handler.username
+                    code=404, target=None, data=handler.data, user_id=handler.user_id
                 )
 
             target: Document | Folder | None = session.get(
@@ -108,7 +110,7 @@ class RequestGrantAccessHandler(RequestHandler):
             if not target:
                 handler.conclude_request(404, {}, smsg.TARGET_NOT_FOUND)
                 return Result(
-                    code=404, target=None, data=handler.data, username=handler.username
+                    code=404, target=None, data=handler.data, user_id=handler.user_id
                 )
 
             for access_type in access_types:
@@ -120,12 +122,14 @@ class RequestGrantAccessHandler(RequestHandler):
                         code=403,
                         target=None,
                         data=handler.data,
-                        username=handler.username,
+                        user_id=handler.user_id,
                     )
 
                 new = ObjectAccessEntry(
                     entity_type=entity_type,
-                    entity_identifier=entity_identifier,
+                    entity_identifier=str(entity.id)
+                    if entity_type == "user"
+                    else entity_identifier,  # TODO: use a better way
                     target_type=target_type,
                     target_identifier=target_identifier,
                     access_type=access_type,
@@ -137,9 +141,7 @@ class RequestGrantAccessHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
-        return Result(
-            code=200, target=None, data=handler.data, username=handler.username
-        )
+        return Result(code=200, target=None, data=handler.data, user_id=handler.user_id)
 
 
 class RequestViewAccessEntriesHandler(RequestHandler):
@@ -155,7 +157,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
         cursor = handler.data.get("cursor")
 
         with Session() as session:
-            operator = User.get_existing(session, handler.username)
+            operator = User.get_existing(session, handler.user_id)
 
             if Permissions.VIEW_ACCESS_ENTRIES not in operator.all_permissions:
                 handler.conclude_request(
@@ -163,7 +165,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                     message="You do not have permission to view access entries",
                     data={},
                 )
-                return Result(code=403, target=handler.username)
+                return Result(code=403, target=operator.username, user_id=operator.id)
 
             filters = {
                 "object_type": object_type,
@@ -181,12 +183,18 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                 last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
-                return Result(code=400, target=handler.username)
+                return Result(code=400, target=operator.username, user_id=operator.id)
 
             if object_type in ["user", "group"]:
+                entity_identifier = object_identifier
+                if object_type == "user":
+                    target_user = session.scalar(
+                        select(User).where(User.username == object_identifier)
+                    )
+                    entity_identifier = str(target_user.id) if target_user else ""
                 access_query = session.query(ObjectAccessEntry).filter(
                     ObjectAccessEntry.entity_type == object_type,
-                    ObjectAccessEntry.entity_identifier == object_identifier,
+                    ObjectAccessEntry.entity_identifier == entity_identifier,
                 )
             else:
                 access_query = session.query(ObjectAccessEntry).filter(
@@ -233,7 +241,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                 "object_type": object_type,
                 "object_identifier": object_identifier,
             },
-            username=handler.username,
+            user_id=handler.user_id,
         )
 
 
@@ -247,18 +255,18 @@ class RequestRevokeAccessHandler(RequestHandler):
         entry_id: int = handler.data["entry_id"]
 
         with Session() as session:
-            operator = User.get_existing(session, handler.username)
+            operator = User.get_existing(session, handler.user_id)
 
             if Permissions.MANAGE_ACCESS not in operator.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MANAGE_ACCESS)
-                return Result(code=403, target=None, username=handler.username)
+                return Result(code=403, target=None, user_id=handler.user_id)
 
             # Get the access entry
             entry = session.get(ObjectAccessEntry, entry_id)
             if not entry:
                 handler.conclude_request(404, {}, smsg.ACCESS_ENTRY_NOT_FOUND)
                 return Result(
-                    code=404, target=None, data=handler.data, username=handler.username
+                    code=404, target=None, data=handler.data, user_id=handler.user_id
                 )
 
             # Delete the entry
@@ -266,6 +274,4 @@ class RequestRevokeAccessHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
-        return Result(
-            code=200, target=None, data=handler.data, username=handler.username
-        )
+        return Result(code=200, target=None, data=handler.data, user_id=handler.user_id)

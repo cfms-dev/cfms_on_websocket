@@ -17,7 +17,10 @@ from include.domains.documents.handlers.documents import (
     RequestGetDocumentInfoHandler,
 )
 from include.domains.documents.handlers.search import RequestSearchHandler
-from include.domains.identity.handlers.auth import RequestLoginHandler
+from include.domains.identity.handlers.auth import (
+    RequestCompleteMFAHandler,
+    RequestLoginHandler,
+)
 from include.domains.identity.handlers.groups import (
     RequestChangeGroupPermissionsHandler,
     RequestCreateGroupHandler,
@@ -163,18 +166,34 @@ def test_omittable_non_nullable_field_rejects_null():
         OptionalRequest.model_validate({"value": None})
 
 
-def test_login_request_accepts_protocol_two_factor_alias():
+def test_login_request_selects_existing_user_by_username():
     request = RequestLoginHandler.request_model.model_validate(
-        {"username": "alice", "password": "secret", "2fa_token": "123456"}
+        {
+            "method": "password",
+            "credential": {"username": "alice", "password": "secret"},
+        }
     )
+    assert request.method == "password"
+    assert request.credential == {"username": "alice", "password": "secret"}
 
-    assert request.two_factor_token == "123456"
+
+def test_complete_mfa_request_accepts_totp_token():
+    request = RequestCompleteMFAHandler.request_model.model_validate(
+        {"method": "totp", "data": {"token": "123456"}}
+    )
+    assert request.method == "totp"
+    assert request.data == {"token": "123456"}
 
 
-def test_login_request_rejects_internal_two_factor_field_name():
-    with pytest.raises(ValidationError, match="two_factor_token"):
+@pytest.mark.parametrize("field", ["2fa_token", "two_factor_token"])
+def test_login_request_rejects_inline_two_factor_fields(field):
+    with pytest.raises(ValidationError, match=field):
         RequestLoginHandler.request_model.model_validate(
-            {"username": "alice", "password": "secret", "two_factor_token": "123456"}
+            {
+                "method": "password",
+                "credential": {"username": "alice", "password": "secret"},
+                field: "123456",
+            }
         )
 
 

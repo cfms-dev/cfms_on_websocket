@@ -1,11 +1,12 @@
 import datetime as dt
 import logging
+import uuid
 from typing import Any
 lazy from collections.abc import Iterator
 lazy from pathlib import Path
 
 import orjson
-from sqlalchemy import DateTime, Table
+from sqlalchemy import DateTime, Table, Uuid
 
 from maintenance.backup.archive import _safe_payload_path
 from maintenance.backup.constants import MAX_JSONL_ROW_BYTES
@@ -139,6 +140,13 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
             decoded[column.name] = None
             continue
         value = row[column.name]
+        if value is not None and isinstance(column.type, Uuid):
+            try:
+                value = uuid.UUID(value)
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise BackupFormatError(
+                    f"Invalid UUID for {table.name}.{column.name}"
+                ) from exc
         if value is not None and isinstance(column.type, DateTime):
             try:
                 value = dt.datetime.fromisoformat(value)
@@ -159,5 +167,16 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
                 raise BackupFormatError("Invalid comment digest in backup") from exc
             if len(value) != 32:
                 raise BackupFormatError("Invalid comment digest in backup")
+        if (
+            value is not None
+            and table.name == "user_auth_public_keys"
+            and column.name in {"public_key_der", "fingerprint"}
+        ):
+            try:
+                value = bytes.fromhex(value)
+            except (TypeError, ValueError) as exc:
+                raise BackupFormatError("Invalid public key bytes in backup") from exc
+            if column.name == "fingerprint" and len(value) != 32:
+                raise BackupFormatError("Invalid public key fingerprint in backup")
         decoded[column.name] = value
     return decoded

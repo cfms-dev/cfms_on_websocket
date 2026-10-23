@@ -2,6 +2,7 @@ import base64
 import hashlib
 import os
 import time
+import uuid
 from enum import IntEnum
 from typing import Any
 lazy import threading
@@ -122,10 +123,6 @@ _REQUEST_ENVELOPE_SCHEMA = {
         "timestamp": {"type": "number"},
     },
     "required": ["action", "data"],
-    "dependentRequired": {
-        "username": ["token"],
-        "token": ["username"],
-    },
 }
 
 
@@ -148,8 +145,8 @@ class ConnectionHandler:
             "data"
         ]  # JSON key names must be strings.
 
-        # Username and token are checked and set by the router.
-        self.username: str | None = None
+        # user_id and token are checked and set by the router.
+        self.user_id: uuid.UUID | None = None
         self.token: Token | None = None
 
         self.nonce: str = self.request.get("nonce", "")
@@ -303,13 +300,13 @@ class ConnectionHandler:
             claim_result = claim_file_task(session, task_id, TransferMode.DOWNLOAD)
             if isinstance(claim_result, ClaimedFileTask):
                 issuer = (
-                    session.get(User, claim_result.issued_by_username)
-                    if claim_result.issued_by_username is not None
+                    session.get(User, claim_result.issued_by_id)
+                    if claim_result.issued_by_id is not None
                     else None
                 )
                 limit_decision = check_download_transfer_limits(
                     session,
-                    issuer.username if issuer is not None else None,
+                    issuer.id if issuer is not None else None,
                     self.remote_address,
                     task_id,
                     account_created_at=(
@@ -432,7 +429,7 @@ class ConnectionHandler:
         self.logger.bind(
             name="document_download_transfer",
             task_id=task_id,
-            issued_by_username=claimed.issued_by_username,
+            issued_by_id=claimed.issued_by_id,
             remote_address=self.remote_address,
             remaining_bytes=max(0, file_size - offset),
             active_downloads=limit_decision.active_downloads,

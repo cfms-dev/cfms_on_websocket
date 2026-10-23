@@ -9,6 +9,7 @@ import jwt
 import orjson
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 import include.database.models  # noqa: F401
@@ -336,15 +337,16 @@ def test_oidc_callback_issues_local_token_and_commits_login(
 
     result = extension.RequestOIDCCallbackHandler().handle(connection)
 
-    assert (result.code, result.username, result.target) == (200, "alice", "alice")
+    assert (result.code, result.target) == (200, "alice")
     assert connection.response["code"] == 200
     data = connection.response["data"]
     with context.sessions() as session:
-        user = session.get(User, "alice")
+        user = session.scalar(select(User).where(User.username == "alice"))
         assert user.last_login == context.clock.now
         assert user.is_token_valid(data["token"])
         payload = jwt.decode(data["token"], user.secret_key, algorithms=["HS256"])
-        assert payload["username"] == "alice"
+        assert payload["sub"] == str(user.id)
+        assert result.user_id == user.id
         assert data["exp"] == payload["exp"]
     assert context.caching.get(context.state_key) is None
     assert len(context.token_requests) == 1
@@ -383,7 +385,10 @@ def test_oidc_callback_rejects_unavailable_state_before_token_exchange(
     assert context.token_requests == []
     context.jwks_fetch.assert_not_called()
     with context.sessions() as session:
-        assert session.get(User, "alice").last_login == 10.0
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
 
 
 @pytest.mark.component
@@ -406,7 +411,10 @@ def test_oidc_callback_consumes_state_before_rejecting_redirect_mismatch(
     assert context.caching.get(context.state_key) is None
     assert context.token_requests == []
     with context.sessions() as session:
-        assert session.get(User, "alice").last_login == 10.0
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
 
 
 @pytest.mark.component
@@ -428,7 +436,10 @@ def test_oidc_callback_rejects_state_reuse_after_success(oidc_callback_context):
     }
     assert len(context.token_requests) == 1
     with context.sessions() as session:
-        assert session.get(User, "alice").last_login == last_login
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == last_login
+        )
 
 
 @pytest.mark.component
@@ -447,7 +458,10 @@ def test_oidc_callback_rejects_id_token_missing_required_claim(
     assert connection.response["data"] == {}
     assert context.caching.get(context.state_key) is None
     with context.sessions() as session:
-        assert session.get(User, "alice").last_login == 10.0
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
 
 
 @pytest.mark.component
@@ -497,7 +511,10 @@ def test_oidc_callback_rejects_invalid_id_token_without_issuing_local_token(
     assert connection.response["data"] == {}
     assert context.caching.get(context.state_key) is None
     with context.sessions() as session:
-        assert session.get(User, "alice").last_login == 10.0
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
 
 
 @pytest.mark.component
@@ -519,7 +536,7 @@ def test_oidc_callback_requires_matching_authorized_party_for_multiple_audiences
     assert result.code == expected_code
     assert connection.response["code"] == expected_code
     with context.sessions() as session:
-        user = session.get(User, "alice")
+        user = session.scalar(select(User).where(User.username == "alice"))
         if expected_code == 200:
             assert user.last_login == context.clock.now
             assert user.is_token_valid(connection.response["data"]["token"])
@@ -545,8 +562,13 @@ def test_oidc_callback_rejects_unknown_user_when_provisioning_is_disabled(
         "message": "SSO user is not allowed",
     }
     with context.sessions() as session:
-        assert session.get(User, "unknown-user") is None
-        assert session.get(User, "alice").last_login == 10.0
+        assert (
+            session.scalar(select(User).where(User.username == "unknown-user")) is None
+        )
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
 
 
 @pytest.mark.component
@@ -565,7 +587,10 @@ def test_oidc_callback_rejects_invalid_username_claim(oidc_callback_context, use
     assert connection.response["code"] == 401
     assert connection.response["data"] == {}
     with context.sessions() as session:
-        assert session.get(User, "alice").last_login == 10.0
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
 
 
 @pytest.mark.component
@@ -581,16 +606,13 @@ def test_oidc_callback_provisions_user_with_configured_group_and_commits_login(
 
     result = extension.RequestOIDCCallbackHandler().handle(connection)
 
-    assert (result.code, result.username, result.target) == (
-        200,
-        "new-user",
-        "new-user",
-    )
+    assert (result.code, result.target) == (200, "new-user")
     data = connection.response["data"]
     assert data["groups"] == ["user"]
     assert data["nickname"] == "New User"
     with context.sessions() as session:
-        user = session.get(User, "new-user")
+        user = session.scalar(select(User).where(User.username == "new-user"))
+        assert result.user_id == user.id
         assert user.status == UserStatus.ACTIVE
         assert user.last_login == context.clock.now
         assert user.all_groups == {"user"}
@@ -612,8 +634,11 @@ def test_oidc_callback_does_not_provision_user_when_default_group_is_missing(
     assert connection.response["code"] == 401
     assert connection.response["data"] == {}
     with context.sessions() as session:
-        assert session.get(User, "new-user") is None
-        assert session.get(User, "alice").last_login == 10.0
+        assert session.scalar(select(User).where(User.username == "new-user")) is None
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
 
 
 @pytest.mark.component
@@ -622,7 +647,9 @@ def test_oidc_callback_rejects_inactive_user_without_updating_login(
 ):
     context = oidc_callback_context
     with context.sessions.begin() as session:
-        session.get(User, "alice").status = UserStatus.DISABLED
+        session.scalar(
+            select(User).where(User.username == "alice")
+        ).status = UserStatus.DISABLED
     connection = _Connection(context.request_data)
 
     result = extension.RequestOIDCCallbackHandler().handle(connection)
@@ -634,4 +661,7 @@ def test_oidc_callback_rejects_inactive_user_without_updating_login(
         "message": "User account is not active",
     }
     with context.sessions() as session:
-        assert session.get(User, "alice").last_login == 10.0
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )

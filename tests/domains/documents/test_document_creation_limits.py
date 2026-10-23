@@ -1,8 +1,13 @@
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from sqlalchemy.orm import sessionmaker
+
+ALICE_ID = uuid.UUID("c2ef90b9-02bc-5d53-93cd-92652b6e1b41")
+BOB_ID = uuid.UUID("ef45d397-0411-5f5e-8940-9bdbdef3958b")
+CHARLIE_ID = uuid.UUID("68b56d94-b678-57d9-8c1b-6971efe9569c")
 
 pytestmark = pytest.mark.component
 
@@ -60,14 +65,14 @@ def creation_limit_context(monkeypatch, sqlite_engine_factory):
 def _check(
     creation_limits,
     session,
-    username="alice",
+    user_id=ALICE_ID,
     ip_address="203.0.113.1",
     now=1000.0,
     **kwargs,
 ):
     return creation_limits.check_document_creation_limits(
         session,
-        username,
+        user_id,
         ip_address,
         account_created_at=0.0,
         now=now,
@@ -104,7 +109,7 @@ def test_new_account_uses_elevated_request_cost(creation_limit_context):
         for _ in range(3):
             decision = creation_limits.check_document_creation_limits(
                 session,
-                "alice",
+                ALICE_ID,
                 "203.0.113.1",
                 account_created_at=950.0,
                 now=1000.0,
@@ -114,7 +119,7 @@ def test_new_account_uses_elevated_request_cost(creation_limit_context):
     with session_factory.begin() as session:
         decision = creation_limits.check_document_creation_limits(
             session,
-            "alice",
+            ALICE_ID,
             "203.0.113.1",
             account_created_at=950.0,
             now=1000.0,
@@ -128,10 +133,12 @@ def test_ip_account_fanout_escalates_risk(creation_limit_context):
 
     levels = []
     with session_factory.begin() as session:
-        for username in ("alice", "bob", "charlie"):
-            levels.append(
-                _check(creation_limits, session, username=username).risk_level
-            )
+        for username in (
+            ALICE_ID,
+            BOB_ID,
+            CHARLIE_ID,
+        ):
+            levels.append(_check(creation_limits, session, user_id=username).risk_level)
 
     assert levels == [
         creation_limits.CreationRiskLevel.NORMAL,
@@ -178,7 +185,12 @@ def test_observe_mode_records_would_block_without_rate_denial(
 
 
 def _seed_pending_documents(models, session, count=2):
-    user = models.User(username="alice", pass_hash="unused", created_time=1.0)
+    user = models.User(
+        username="alice",
+        id=ALICE_ID,
+        pass_hash="unused",
+        created_time=1.0,
+    )
     root = models.Folder(id="/", name="/", inherit=False)
     session.add_all([user, root])
     for number in range(count):
@@ -186,8 +198,8 @@ def _seed_pending_documents(models, session, count=2):
             id=f"document-{number}", title=f"reserved-{number}", folder=root
         )
         document.metadata_record = models.DocumentMetadata(
-            creator_username=user.username,
-            last_modified_by_username=user.username,
+            creator_id=user.id,
+            last_modified_by_id=user.id,
         )
         file = models.File(id=f"file-{number}", path=f"pending-{number}")
         revision = models.DocumentRevision(
@@ -236,13 +248,22 @@ def test_rate_limit_bypass_preserves_pending_hard_limit(
     assert decision.scope == "pending_documents"
     with session_factory() as session:
         account_bucket = session.get(
-            models.RateLimitBucket, ("document_creation", "account", "alice")
+            models.RateLimitBucket,
+            (
+                "document_creation",
+                "account",
+                str(ALICE_ID),
+            ),
         )
         assert account_bucket.tokens == 6
         assert (
             session.get(
                 models.RiskIPAccount,
-                ("document_creation", "203.0.113.1", "alice"),
+                (
+                    "document_creation",
+                    "203.0.113.1",
+                    ALICE_ID,
+                ),
             )
             is None
         )
@@ -266,7 +287,7 @@ def test_cleanup_removes_stale_risk_state(creation_limit_context):
                 models.RiskIPAccount(
                     namespace="document_creation",
                     ip_address="198.51.100.1",
-                    username="stale",
+                    user_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
                     last_attempt=1.0,
                 ),
             ]
@@ -286,7 +307,11 @@ def test_cleanup_removes_stale_risk_state(creation_limit_context):
         assert (
             session.get(
                 models.RiskIPAccount,
-                ("document_creation", "198.51.100.1", "stale"),
+                (
+                    "document_creation",
+                    "198.51.100.1",
+                    uuid.UUID("00000000-0000-4000-8000-000000000001"),
+                ),
             )
             is None
         )
@@ -315,7 +340,12 @@ def test_reduced_capacity_caps_existing_balance(creation_limit_context, monkeypa
         assert _check(creation_limits, session).allowed
     with session_factory() as session:
         bucket = session.get(
-            models.RateLimitBucket, ("document_creation", "account", "alice")
+            models.RateLimitBucket,
+            (
+                "document_creation",
+                "account",
+                str(ALICE_ID),
+            ),
         )
         assert bucket.tokens == 2
 
@@ -336,7 +366,12 @@ def test_concurrent_bypass_requests_do_not_cross_pending_limit(
     with concurrent_sessions.begin() as session:
         session.add_all(
             [
-                models.User(username="alice", pass_hash="unused", created_time=1.0),
+                models.User(
+                    username="alice",
+                    id=ALICE_ID,
+                    pass_hash="unused",
+                    created_time=1.0,
+                ),
                 models.Folder(id="/", name="/", inherit=False),
             ]
         )
@@ -357,8 +392,8 @@ def test_concurrent_bypass_requests_do_not_cross_pending_limit(
                 folder_id="/",
             )
             document.metadata_record = models.DocumentMetadata(
-                creator_username="alice",
-                last_modified_by_username="alice",
+                creator_id=ALICE_ID,
+                last_modified_by_id=ALICE_ID,
             )
             file = models.File(
                 id=f"concurrent-file-{number}", path=f"concurrent-{number}"
@@ -383,4 +418,4 @@ def test_concurrent_bypass_requests_do_not_cross_pending_limit(
 
     assert sum(allowed) == upload_policy.max_pending_documents_per_creator
     with concurrent_sessions() as session:
-        assert creation_limits.count_pending_documents(session, "alice", 1004.0) == 2
+        assert creation_limits.count_pending_documents(session, ALICE_ID, 1004.0) == 2
