@@ -29,9 +29,9 @@ class TokenPurpose(IntFlag):
     """
 
     AUTH = 1  # Used for further authentication (e.g., 2FA, etc.)
-    GENERAL = 2  # Used for general purposes (e.g., API access, etc.)
-    ESCALATION = 4  # Token with superuser privileges
-    POST_AUTH = 8  # Restricted actions after all authentication has completed.
+    POST_AUTH = 2  # Restricted actions after all authentication has completed.
+    GENERAL = 4  # Used for general purposes (e.g., API access, etc.)
+    ESCALATION = 8  # Token with superuser privileges
 
 
 @dataclass
