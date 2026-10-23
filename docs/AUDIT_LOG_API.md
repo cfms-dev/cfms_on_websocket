@@ -60,6 +60,13 @@ to create it. Clients must repeat the same `filters` values when requesting the
 next page. The order of those values may differ, but adding or removing a value
 causes the server to reject the cursor with response code 400.
 
+Since protocol 28, user management actions record the target account UUID in
+`target` and, once resolved, its name snapshot in `data.target_username`.
+`user_id` identifies the actor. Resource actions keep their resource ID target
+and may include the owner in `data.target_user_id`. Credential authentication
+events still use username targets, and historical entries keep their original
+target format. See [account identity](USER_IDS.md#protocol-28-user-management).
+
 When there is no next page, `has_more` is `false` and `next_cursor` is `null`.
 The cursor is internal and must be replayed without decoding or modifying it.
 

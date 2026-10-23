@@ -807,36 +807,34 @@ class CFMSTestClient:
             data["permissions"] = permissions
         return await self.send_request("create_user", data)
 
-    async def delete_user(self, username: str) -> dict[str, Any]:
+    async def delete_user(self, user_id: str) -> dict[str, Any]:
         """
         Delete a user.
 
         Args:
-            username: Username of the user to delete
+            user_id: User UUID of the user to delete
 
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("delete_user", {"username": username})
+        return await self.send_request("delete_user", {"user_id": user_id})
 
-    async def get_user_info(self, username: str) -> dict[str, Any]:
-        """
-        Get information about a user.
-
-        Args:
-            username: Username of the user
-
-        Returns:
-            User information
-        """
-        return await self.send_request("get_user_info", {"username": username})
+    async def get_user_info(
+        self, *, username: str | None = None, user_id: str | None = None
+    ) -> dict[str, Any]:
+        data = {}
+        if username is not None:
+            data["username"] = username
+        if user_id is not None:
+            data["user_id"] = user_id
+        return await self.send_request("get_user_info", data)
 
     async def change_user_permissions(
-        self, username: str, permissions: list[dict[str, Any]]
+        self, user_id: str, permissions: list[dict[str, Any]]
     ) -> dict[str, Any]:
         return await self.send_request(
             "change_user_permissions",
-            {"username": username, "permissions": permissions},
+            {"user_id": user_id, "permissions": permissions},
         )
 
     async def list_users(
@@ -1349,7 +1347,7 @@ class CFMSTestClient:
 
         Args:
             entity_type: Type of entity ("user" or "group")
-            entity_identifier: Username or group name
+            entity_identifier: User UUID or group name
             target_type: Type of target ("document" or "directory")
             target_identifier: Document or folder ID
             access_types: List of access types to grant
@@ -1416,13 +1414,13 @@ class CFMSTestClient:
         self,
         key_content: str,
         label: str | None = None,
-        target_username: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         data: dict[str, Any] = {"content": key_content}
         if label is not None:
             data["label"] = label
-        if target_username is not None:
-            data["target_username"] = target_username
+        if user_id is not None:
+            data["user_id"] = user_id
         return await self.send_request("upload_user_key", data)
 
     async def get_keyring(
@@ -1445,13 +1443,13 @@ class CFMSTestClient:
 
     async def list_keyrings(
         self,
-        target_username: str | None = None,
+        user_id: str | None = None,
         count: int | None = None,
         offset: int | None = None,
     ) -> dict[str, Any]:
         data: dict[str, Any] = {}
-        if target_username is not None:
-            data["target_username"] = target_username
+        if user_id is not None:
+            data["user_id"] = user_id
         if count is not None:
             data["count"] = count
         if offset is not None:
@@ -1540,19 +1538,19 @@ class CFMSTestClient:
 
     async def update_user_status(
         self,
-        username: str,
+        user_id: str,
         status: str,
         reason: str | None | _RequestValueUnset = _REQUEST_VALUE_UNSET,
     ) -> dict[str, Any]:
         """Update user status ('active' or 'disabled')."""
-        data = {"username": username, "status": status}
+        data = {"user_id": user_id, "status": status}
         if not isinstance(reason, _RequestValueUnset):
             data["reason"] = reason
         return await self.send_request("manage_user_status", data)
 
     async def block_user(
         self,
-        username: str,
+        user_id: str,
         target_type: str,
         block_types: list[str],
         target_id: str | None = None,
@@ -1563,7 +1561,7 @@ class CFMSTestClient:
         block_types: e.g. ["read", "write"]
         """
         data = {
-            "username": username,
+            "user_id": user_id,
             "target": {"type": target_type},
             "block_types": block_types,
         }

@@ -60,7 +60,7 @@ class TestDirectoryOperations:
         assert_success(
             await authenticated_client.grant_access(
                 entity_type="user",
-                entity_identifier=test_user["username"],
+                entity_identifier=test_user["user_id"],
                 target_type="directory",
                 target_identifier=child["folder_id"],
                 access_types=["read"],
@@ -109,7 +109,7 @@ class TestDirectoryOperations:
         )
         assert_success(
             await authenticated_client.change_user_permissions(
-                test_user["username"], [permission_entry("super_list_directory")]
+                test_user["user_id"], [permission_entry("super_list_directory")]
             )
         )
 
@@ -230,7 +230,7 @@ class TestDirectoryOperations:
         )
         assert_success(
             await authenticated_client.change_user_permissions(
-                test_user["username"],
+                test_user["user_id"],
                 [
                     permission_entry("create_directory"),
                     permission_entry("super_create_directory"),
@@ -240,7 +240,7 @@ class TestDirectoryOperations:
         assert_success(
             await authenticated_client.grant_access(
                 entity_type="user",
-                entity_identifier=test_user["username"],
+                entity_identifier=test_user["user_id"],
                 target_type="directory",
                 target_identifier=parent["folder_id"],
                 access_types=["read", "write"],

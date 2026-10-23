@@ -68,6 +68,46 @@ def test_rename_preserves_token_identity(identity_session):
     assert user.is_token_valid(token)
 
 
+def test_management_id_survives_database_username_change(identity_session, monkeypatch):
+    from include.database.models.identity import UserPermission
+    from include.domains.identity.handlers import users
+
+    actor = User(
+        username="admin",
+        rights=[
+            UserPermission(
+                permission="super_rename_user",
+                granted=True,
+                start_time=0,
+            )
+        ],
+    )
+    target = User(username="before")
+    identity_session.add_all([actor, target])
+    identity_session.commit()
+    user_id = target.id
+    target.username = "after"
+    identity_session.commit()
+    monkeypatch.setattr(users, "Session", sessionmaker(bind=identity_session.bind))
+    responses = []
+    handler = SimpleNamespace(
+        user_id=actor.id,
+        data={"user_id": str(user_id), "nickname": "Changed"},
+        conclude_request=lambda **response: responses.append(response),
+    )
+
+    result = users.RequestRenameUserHandler().handle(handler)
+
+    assert responses[0]["code"] == 200
+    identity_session.refresh(target)
+    assert target.id == user_id
+    assert target.username == "after"
+    assert target.nickname == "Changed"
+    assert result.target == str(user_id)
+    assert result.user_id == actor.id
+    assert result.data == {"target_username": "after"}
+
+
 @pytest.mark.parametrize(
     "claims", [{"username": "alice"}, {"sub": "alice"}, {"sub": None}]
 )

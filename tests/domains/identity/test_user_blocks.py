@@ -31,11 +31,13 @@ class TestUserBlocksAndStatus:
         username = test_user["username"]
 
         response = await authenticated_client.update_user_status(
-            username, "disabled", **reason_data
+            test_user["user_id"], "disabled", **reason_data
         )
 
         assert_success(response)
-        info = assert_success(await authenticated_client.get_user_info(username))
+        info = assert_success(
+            await authenticated_client.get_user_info(username=username)
+        )
         assert info["status"] == 1
         error = assert_error(await client.login(username, test_user["password"]), 4003)
         assert error["data"] == {"reason": expected_reason}
@@ -64,12 +66,12 @@ class TestUserBlocksAndStatus:
         username = test_user["username"]
         assert_success(
             await authenticated_client.update_user_status(
-                username, "disabled", "Initial reason"
+                test_user["user_id"], "disabled", "Initial reason"
             )
         )
 
         response = await authenticated_client.update_user_status(
-            username, "disabled", **reason_data
+            test_user["user_id"], "disabled", **reason_data
         )
 
         assert assert_success(response)["reason"] == expected_reason
@@ -86,14 +88,18 @@ class TestUserBlocksAndStatus:
         username = test_user["username"]
         assert_success(
             await authenticated_client.update_user_status(
-                username, "disabled", "Initial reason"
+                test_user["user_id"], "disabled", "Initial reason"
             )
         )
 
-        response = await authenticated_client.update_user_status(username, "active")
+        response = await authenticated_client.update_user_status(
+            test_user["user_id"], "active"
+        )
 
         assert_success(response)
-        info = assert_success(await authenticated_client.get_user_info(username))
+        info = assert_success(
+            await authenticated_client.get_user_info(username=username)
+        )
         assert info["status"] == 0
         assert_success(await client.login(username, test_user["password"]))
 
@@ -109,7 +115,7 @@ class TestUserBlocksAndStatus:
         assert_success(await user_client.list_directory(directory["folder_id"]))
 
         response = await authenticated_client.block_user(
-            test_user["username"],
+            test_user["user_id"],
             "directory",
             ["read", "write"],
             target_id=directory["folder_id"],
@@ -127,23 +133,25 @@ class TestUserBlocksAndStatus:
         username = test_user["username"]
         first = assert_success(
             await authenticated_client.block_user(
-                username, "all", ["read"], reason="initial reason"
+                test_user["user_id"], "all", ["read"], reason="initial reason"
             )
         )
         second = assert_success(
-            await authenticated_client.block_user(username, "all", ["write"])
+            await authenticated_client.block_user(
+                test_user["user_id"], "all", ["write"]
+            )
         )
 
         first_page = assert_success(
             await authenticated_client.send_request(
-                "list_user_blocks", {"username": username, "page_size": 1}
+                "list_user_blocks", {"user_id": test_user["user_id"], "page_size": 1}
             )
         )
         second_page = assert_success(
             await authenticated_client.send_request(
                 "list_user_blocks",
                 {
-                    "username": username,
+                    "user_id": test_user["user_id"],
                     "page_size": 1,
                     "cursor": first_page["next_cursor"],
                 },
@@ -181,7 +189,7 @@ class TestUserBlocksAndStatus:
     ):
         block = assert_success(
             await authenticated_client.block_user(
-                test_user["username"], "all", ["read"], reason="initial reason"
+                test_user["user_id"], "all", ["read"], reason="initial reason"
             )
         )
 
@@ -192,7 +200,7 @@ class TestUserBlocksAndStatus:
         assert assert_success(response)["reason"] == reason
         page = assert_success(
             await authenticated_client.send_request(
-                "list_user_blocks", {"username": test_user["username"]}
+                "list_user_blocks", {"user_id": test_user["user_id"]}
             )
         )
         assert page["items"][0]["block_id"] == block["block_id"]

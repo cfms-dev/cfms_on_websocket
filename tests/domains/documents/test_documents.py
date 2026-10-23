@@ -84,7 +84,7 @@ class TestDocumentOperations:
         user = await user_factory()
         grant_response = await authenticated_client.grant_access(
             entity_type="user",
-            entity_identifier=user["username"],
+            entity_identifier=user["user_id"],
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
@@ -125,7 +125,7 @@ class TestDocumentOperations:
         try:
             grant_response = await authenticated_client.grant_access(
                 entity_type="user",
-                entity_identifier=username,
+                entity_identifier=response["data"]["user_id"],
                 target_type="document",
                 target_identifier=document_id,
                 access_types=["write"],
@@ -144,7 +144,7 @@ class TestDocumentOperations:
             finally:
                 await client.disconnect()
         finally:
-            await authenticated_client.delete_user(username)
+            await authenticated_client.delete_user(response["data"]["user_id"])
 
     @pytest.mark.asyncio
     async def test_rename_document(

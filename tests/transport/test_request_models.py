@@ -1,3 +1,4 @@
+import uuid
 from typing import ClassVar
 
 import pytest
@@ -214,7 +215,7 @@ def test_group_rename_request_requires_display_name():
 @pytest.mark.parametrize("reason", ["incident", None], ids=["text", "null"])
 def test_disabled_user_status_accepts_optional_reason(reason):
     request = RequestManageUserStatusHandler.request_model.model_validate(
-        {"status": "disabled", "username": "alice", "reason": reason}
+        {"status": "disabled", "user_id": str(uuid.uuid4()), "reason": reason}
     )
 
     assert request.reason == reason
@@ -224,7 +225,7 @@ def test_disabled_user_status_accepts_optional_reason(reason):
 def test_active_user_status_rejects_reason_field(reason):
     with pytest.raises(ValidationError, match="reason"):
         RequestManageUserStatusHandler.request_model.model_validate(
-            {"status": "active", "username": "alice", "reason": reason}
+            {"status": "active", "user_id": str(uuid.uuid4()), "reason": reason}
         )
 
 
@@ -257,7 +258,15 @@ def test_password_request_preserves_old_password_mode(
     old_password_fields, expected, provided
 ):
     request = RequestSetPasswdHandler.request_model.model_validate(
-        {"username": "alice", "new_passwd": "NewPassword123!", **old_password_fields}
+        {
+            **(
+                {"user_id": str(uuid.uuid4())}
+                if expected is None
+                else {"username": "alice"}
+            ),
+            "new_passwd": "NewPassword123!",
+            **old_password_fields,
+        }
     )
 
     assert request.old_passwd == expected
@@ -278,7 +287,7 @@ _PERMISSION_REQUESTS = [
     ),
     pytest.param(
         RequestChangeUserPermissionsHandler,
-        {"username": "alice"},
+        {"user_id": str(uuid.uuid4())},
         id="change-user-permissions",
     ),
     pytest.param(RequestCreateGroupHandler, {"group_name": "staff"}, id="create-group"),
@@ -329,11 +338,9 @@ def test_list_user_keys_accepts_integral_float_pagination():
     assert request.count == 10
 
 
-def test_list_user_keys_rejects_null_target_username():
-    with pytest.raises(ValidationError, match="target_username"):
-        RequestListUserKeysHandler.request_model.model_validate(
-            {"target_username": None}
-        )
+def test_list_user_keys_rejects_null_user_id():
+    with pytest.raises(ValidationError, match="user_id"):
+        RequestListUserKeysHandler.request_model.model_validate({"user_id": None})
 
 
 @pytest.mark.parametrize(

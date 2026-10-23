@@ -86,7 +86,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 27,
+            "protocol_version": 28,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {
@@ -176,7 +176,7 @@ class TestSystemManagement:
         user = await user_factory()
         assert_success(
             await authenticated_client.change_user_permissions(
-                user["username"], [permission_entry("diagnostics")]
+                user["user_id"], [permission_entry("diagnostics")]
             )
         )
         diagnostics_client = CFMSTestClient(

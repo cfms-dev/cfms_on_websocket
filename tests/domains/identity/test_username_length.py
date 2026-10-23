@@ -24,7 +24,6 @@ from include.domains.identity.handlers.users import (
     RequestCreateUserHandler,
     RequestSetPasswdHandler,
 )
-from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
 from pydantic import ValidationError
 
 assert EXECUTABLE_ABSPATH == Path.cwd()
@@ -33,9 +32,8 @@ handler_payloads = (
     (RequestCreateUserHandler, {"username": "u", "password": "secret"}),
     (
         RequestSetPasswdHandler,
-        {"username": "u", "new_passwd": "secret"},
+        {"username": "u", "old_passwd": "old-secret", "new_passwd": "secret"},
     ),
-    (RequestDisable2FAHandler, {"username": "u"}),
 )
 for handler_type, payload in handler_payloads:
     handler_type.request_model.model_validate(

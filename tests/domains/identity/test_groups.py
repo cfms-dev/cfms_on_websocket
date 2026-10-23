@@ -106,7 +106,7 @@ class TestGroupOperations:
         )
 
         data = assert_success(
-            await authenticated_client.get_user_info(user["username"])
+            await authenticated_client.get_user_info(username=user["username"])
         )
         assert data["effective_own_permissions"] == ["list_users"]
         assert data["effective_inherited_permissions"] == []

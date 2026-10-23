@@ -32,6 +32,27 @@ async def enabled_totp(user_client: CFMSTestClient, pending_totp):
 @pytest.mark.integration
 class TestTwoFactorAuth:
     @pytest.mark.asyncio
+    async def test_administrator_disables_2fa_by_user_id(
+        self,
+        authenticated_client,
+        user_client,
+        test_user,
+        enabled_totp,
+    ):
+        status = assert_success(
+            await authenticated_client.send_request(
+                "get_2fa_status", {"user_id": test_user["user_id"]}
+            )
+        )
+        assert status["enabled"] is True
+        assert_success(
+            await authenticated_client.send_request(
+                "disable_2fa", {"user_id": test_user["user_id"]}
+            )
+        )
+        assert assert_success(await user_client.get_2fa_status())["enabled"] is False
+
+    @pytest.mark.asyncio
     async def test_disable_2fa_does_not_disclose_cross_user_target(
         self,
         user_client: CFMSTestClient,
@@ -40,10 +61,10 @@ class TestTwoFactorAuth:
         low_privilege_client: CFMSTestClient,
     ):
         existing_response = await low_privilege_client.send_request(
-            "disable_2fa", {"username": test_user["username"]}
+            "disable_2fa", {"user_id": test_user["user_id"]}
         )
         missing_response = await low_privilege_client.send_request(
-            "disable_2fa", {"username": "nonexistent_user_xyz_12345"}
+            "disable_2fa", {"user_id": "00000000-0000-4000-8000-000000000001"}
         )
 
         for response in (existing_response, missing_response):
@@ -59,10 +80,10 @@ class TestTwoFactorAuth:
         test_user,
     ):
         existing_response = await authenticated_client.send_request(
-            "get_2fa_status", {"target": test_user["username"]}
+            "get_2fa_status", {"user_id": test_user["user_id"]}
         )
         missing_response = await authenticated_client.send_request(
-            "get_2fa_status", {"target": "nonexistent_user_xyz_12345"}
+            "get_2fa_status", {"user_id": "00000000-0000-4000-8000-000000000001"}
         )
 
         assert_success(existing_response)

@@ -1,4 +1,5 @@
 import time
+import uuid
 
 from include.database.models.auth import UserPasswordCredential
 from include.database.models.identity import User, UserMembership, UserPermission
@@ -8,7 +9,7 @@ from include.domains.identity.commands.auth_policies import replace_auth_policy
 from include.domains.identity.commands.credentials import set_password
 
 
-def create_user(**kwargs) -> None:
+def create_user(**kwargs) -> uuid.UUID:
     """
     Create a new user in the system.
 
@@ -38,7 +39,7 @@ def create_user(**kwargs) -> None:
                   membership (default is None).
 
     Returns:
-        None: Commits the new user to the database.
+        uuid.UUID: The ID of the committed user.
     """
 
     raw_password = kwargs.get("password")
@@ -89,4 +90,7 @@ def create_user(**kwargs) -> None:
             )
             session.add(membership)
 
+        session.flush()
+        user_id = user.id
         session.commit()
+        return user_id

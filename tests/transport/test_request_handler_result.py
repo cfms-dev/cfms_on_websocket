@@ -1,3 +1,4 @@
+import uuid
 from types import SimpleNamespace
 
 import jwt
@@ -8,6 +9,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from include.database.models.auth import UserPasswordCredential
 
 pytestmark = pytest.mark.unit
+TARGET_USER_ID = uuid.UUID("aabbccdd-0000-4000-8000-000000000001")
 
 
 def _allow_routed_request(monkeypatch, router):
@@ -743,6 +745,7 @@ def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
 
 class _PasswordUser:
     id = "alice"
+    username = "alice"
 
     def __init__(
         self,
@@ -896,7 +899,7 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
     session = _PasswordSession(records)
     monkeypatch.setattr(users, "Session", lambda: session)
     handler, responses = _password_request(
-        {"username": "alice", "new_passwd": "NewPassword123!"},
+        {"user_id": str(TARGET_USER_ID), "new_passwd": "NewPassword123!"},
         user_id=operator_user_id,
         token=token,
     )
@@ -904,13 +907,13 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
     result = RequestSetPasswdHandler().handle(handler)
 
     assert result.code == expected_code
-    assert result.target == "alice"
+    assert result.target == str(TARGET_USER_ID)
     assert result.user_id == ("operator" if expected_code == 403 else None)
     assert result.data is None
     assert responses == [
         {"code": expected_code, "data": {}, "message": expected_message}
     ]
-    assert "alice" not in session.get_calls
+    assert TARGET_USER_ID not in session.get_calls
     assert session.commit_count == 0
 
 
@@ -926,17 +929,17 @@ def test_password_reset_reports_missing_target_after_operator_authorization(
     session = _PasswordSession({"operator": operator})
     monkeypatch.setattr(users, "Session", lambda: session)
     handler, responses = _password_request(
-        {"username": "missing", "new_passwd": "NewPassword123!"},
+        {"user_id": str(TARGET_USER_ID), "new_passwd": "NewPassword123!"},
         user_id="operator",
         token="token",
     )
 
     result = RequestSetPasswdHandler().handle(handler)
 
-    assert result == Result(code=404, target="missing", user_id="operator")
+    assert result == Result(code=404, target=str(TARGET_USER_ID), user_id="operator")
     assert result.data is None
     assert responses == [{"code": 404, "data": {}, "message": "User does not exist"}]
-    assert session.get_calls == ["operator", "missing"]
+    assert session.get_calls == ["operator", TARGET_USER_ID]
     assert session.commit_count == 0
 
 
@@ -1025,7 +1028,8 @@ def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkey
 
     operator = _PasswordUser("unused", permissions={Permissions.SUPER_SET_PASSWD})
     target = _PasswordUser("OldPassword123!")
-    session = _PasswordSession({"operator": operator, "alice": target})
+    target.id = TARGET_USER_ID
+    session = _PasswordSession({"operator": operator, TARGET_USER_ID: target})
     monkeypatch.setattr(users, "Session", lambda: session)
     monkeypatch.setattr(
         users,
@@ -1036,7 +1040,7 @@ def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkey
     )
     handler, responses = _password_request(
         {
-            "username": "alice",
+            "user_id": str(TARGET_USER_ID),
             "new_passwd": "short",
             "bypass_passwd_requirements": True,
             "force_update_after_login": True,
@@ -1047,8 +1051,12 @@ def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkey
 
     result = RequestSetPasswdHandler().handle(handler)
 
-    assert result == Result(code=200, target="alice", user_id="operator")
-    assert result.data is None
+    assert result == Result(
+        code=200,
+        target=str(TARGET_USER_ID),
+        data={"target_username": "alice"},
+        user_id="operator",
+    )
     assert responses == [
         {"code": 200, "data": {}, "message": "Password set successfully"}
     ]

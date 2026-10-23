@@ -1,9 +1,9 @@
 __all__ = ["RequestGrantAccessHandler", "RequestRevokeAccessHandler"]
 
-from typing import Annotated, Literal
+import uuid
+from typing import Annotated, Literal, Self
 
-from pydantic import Field
-from sqlalchemy import select
+from pydantic import Field, TypeAdapter, model_validator
 
 from include.database.models.access import ObjectAccessEntry
 from include.database.models.documents import (
@@ -17,6 +17,7 @@ from include.database.models.identity import (
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import check_access_requirements
 from include.domains.access.permissions import Permissions
+from include.domains.identity.types import RequestUserID
 from include.domains.pagination import (
     CursorError,
     PaginationCursor,
@@ -37,6 +38,7 @@ lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import JsonInteger, NonEmptyString, NonNegativeFloat
 
 TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}
+_user_id_adapter = TypeAdapter(RequestUserID)
 
 
 class _GrantAccessRequest(RequestDataModel):
@@ -48,12 +50,24 @@ class _GrantAccessRequest(RequestDataModel):
     start_time: NonNegativeFloat
     end_time: Omittable[NonNegativeFloat] = REQUEST_UNSET
 
+    @model_validator(mode="after")
+    def validate_user_identifier(self) -> Self:
+        if self.entity_type == "user":
+            _user_id_adapter.validate_python(self.entity_identifier)
+        return self
+
 
 class _ViewAccessEntriesRequest(RequestDataModel):
     object_type: Literal["user", "group", "document", "directory"]
     object_identifier: NonEmptyString
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
+
+    @model_validator(mode="after")
+    def validate_user_identifier(self) -> Self:
+        if self.object_type == "user":
+            _user_id_adapter.validate_python(self.object_identifier)
+        return self
 
 
 class _RevokeAccessRequest(RequestDataModel):
@@ -70,6 +84,10 @@ class RequestGrantAccessHandler(RequestHandler):
 
         entity_type: str = handler.data["entity_type"]
         entity_identifier: str = handler.data["entity_identifier"]
+        if entity_type == "user":
+            entity_identifier = str(uuid.UUID(entity_identifier))
+
+        audit_data = {**handler.data, "entity_identifier": entity_identifier}
 
         target_type: str = handler.data["target_type"]
         target_identifier: str = handler.data["target_identifier"]
@@ -84,24 +102,24 @@ class RequestGrantAccessHandler(RequestHandler):
                     400, {}, "The start time should be before the end time"
                 )
                 return Result(
-                    code=400, target=None, data=handler.data, user_id=handler.user_id
+                    code=400, target=None, data=audit_data, user_id=handler.user_id
                 )
 
             operator = User.get_existing(session, handler.user_id)
 
             if Permissions.MANAGE_ACCESS not in operator.all_permissions:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MANAGE_ACCESS)
-                return Result(code=403, target=operator.username, user_id=operator.id)
+                return Result(code=403, target=None, user_id=operator.id)
 
             entity: User | UserGroup | None = (
-                session.scalar(select(User).where(User.username == entity_identifier))
+                session.get(User, uuid.UUID(entity_identifier))
                 if entity_type == "user"
                 else session.get(UserGroup, entity_identifier)
             )
             if not entity:
                 handler.conclude_request(404, {}, smsg.ENTITY_NOT_FOUND)
                 return Result(
-                    code=404, target=None, data=handler.data, user_id=handler.user_id
+                    code=404, target=None, data=audit_data, user_id=handler.user_id
                 )
 
             target: Document | Folder | None = session.get(
@@ -110,7 +128,7 @@ class RequestGrantAccessHandler(RequestHandler):
             if not target:
                 handler.conclude_request(404, {}, smsg.TARGET_NOT_FOUND)
                 return Result(
-                    code=404, target=None, data=handler.data, user_id=handler.user_id
+                    code=404, target=None, data=audit_data, user_id=handler.user_id
                 )
 
             for access_type in access_types:
@@ -121,15 +139,13 @@ class RequestGrantAccessHandler(RequestHandler):
                     return Result(
                         code=403,
                         target=None,
-                        data=handler.data,
+                        data=audit_data,
                         user_id=handler.user_id,
                     )
 
                 new = ObjectAccessEntry(
                     entity_type=entity_type,
-                    entity_identifier=str(entity.id)
-                    if entity_type == "user"
-                    else entity_identifier,  # TODO: use a better way
+                    entity_identifier=entity_identifier,
                     target_type=target_type,
                     target_identifier=target_identifier,
                     access_type=access_type,
@@ -141,7 +157,7 @@ class RequestGrantAccessHandler(RequestHandler):
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
-        return Result(code=200, target=None, data=handler.data, user_id=handler.user_id)
+        return Result(code=200, target=None, data=audit_data, user_id=handler.user_id)
 
 
 class RequestViewAccessEntriesHandler(RequestHandler):
@@ -153,6 +169,9 @@ class RequestViewAccessEntriesHandler(RequestHandler):
     def handle(self, handler: ConnectionHandler):
         object_type: str = handler.data["object_type"]
         object_identifier: str = handler.data["object_identifier"]
+        if object_type == "user":
+            object_identifier = str(uuid.UUID(object_identifier))
+        audit_target = object_identifier if object_type == "user" else None
         page_size = get_page_size(handler.data)
         cursor = handler.data.get("cursor")
 
@@ -165,12 +184,18 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                     message="You do not have permission to view access entries",
                     data={},
                 )
-                return Result(code=403, target=operator.username, user_id=operator.id)
+                return Result(code=403, target=audit_target, user_id=operator.id)
 
             filters = {
                 "object_type": object_type,
                 "object_identifier": object_identifier,
             }
+            audit_data = filters.copy()
+            target_user = None
+            if object_type == "user":
+                target_user = session.get(User, uuid.UUID(object_identifier))
+                if target_user is not None:
+                    audit_data["target_username"] = target_user.username
             sort = "id:asc"
             try:
                 decoded_cursor = PaginationCursor.decode(
@@ -183,19 +208,15 @@ class RequestViewAccessEntriesHandler(RequestHandler):
                 last_key = None if decoded_cursor is None else decoded_cursor.last
             except CursorError as exc:
                 handler.conclude_request(400, {}, str(exc))
-                return Result(code=400, target=operator.username, user_id=operator.id)
+                return Result(code=400, target=audit_target, user_id=operator.id)
 
             if object_type in ["user", "group"]:
-                entity_identifier = object_identifier
-                if object_type == "user":
-                    target_user = session.scalar(
-                        select(User).where(User.username == object_identifier)
-                    )
-                    entity_identifier = str(target_user.id) if target_user else ""
                 access_query = session.query(ObjectAccessEntry).filter(
                     ObjectAccessEntry.entity_type == object_type,
-                    ObjectAccessEntry.entity_identifier == entity_identifier,
+                    ObjectAccessEntry.entity_identifier == object_identifier,
                 )
+                if object_type == "user" and target_user is None:
+                    access_query = access_query.filter(False)
             else:
                 access_query = session.query(ObjectAccessEntry).filter(
                     ObjectAccessEntry.target_type == object_type,
@@ -236,11 +257,8 @@ class RequestViewAccessEntriesHandler(RequestHandler):
         handler.conclude_request(200, response_data, smsg.SUCCESS)
         return Result(
             code=200,
-            target=None,
-            data={
-                "object_type": object_type,
-                "object_identifier": object_identifier,
-            },
+            target=audit_target,
+            data=audit_data,
             user_id=handler.user_id,
         )
 
