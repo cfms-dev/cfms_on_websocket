@@ -2,6 +2,7 @@ import uuid
 from collections.abc import Sequence
 
 from include.domains.identity.auth.types import (
+    LOGIN_DISALLOWED_METHODS,
     AuthChains,
     AuthEvidence,
     AuthPolicyDecision,
@@ -34,6 +35,12 @@ def evaluate_auth_policy(
 
     next_steps: list[AuthStep] = []
     for chain in chains:
+        if len({step.method for step in chain}) != 1:
+            continue
+        if purpose == AuthPurpose.LOGIN and any(
+            step.method in LOGIN_DISALLOWED_METHODS for step in chain
+        ):
+            continue
         if any(
             not any((s.method, cid) in active for cid in s.credential_ids)
             for s in chain

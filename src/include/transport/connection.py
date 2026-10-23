@@ -86,7 +86,7 @@ def send_conclusion(
             "timestamp": time.time(),
         }
     )
-    logger.debug(f"Sending response: {response_json}")
+    logger.debug(f"Sending conclusion: code={code}")
     stream.send(response_json, frame_type=FrameType.CONCLUSION)
 
 

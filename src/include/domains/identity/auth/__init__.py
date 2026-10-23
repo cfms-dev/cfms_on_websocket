@@ -3,6 +3,10 @@ lazy from include.domains.identity.auth.base import (
     AuthVerificationResult,
     BaseAuthMethodProvider,
 )
+lazy from include.domains.identity.auth.flows import (
+    AuthenticationAttempt,
+    AuthenticationFailure,
+)
 lazy from include.domains.identity.auth.providers.password import (
     PasswordAuthProvider,
     PasswordCredentialSchema,
@@ -33,7 +37,9 @@ __all__ = [
     "AuthRegistry",
     "AuthStep",
     "AuthVerificationResult",
+    "AuthenticationAttempt",
     "AuthenticationContext",
+    "AuthenticationFailure",
     "BaseAuthMethodProvider",
     "PasswordAuthProvider",
     "PasswordCredentialSchema",

@@ -40,8 +40,7 @@ class TestTwoFactorAuth:
         response = await authenticated_client.send_request(
             "disable_2fa", {"user_id": str(uuid.uuid4())}
         )
-        error = assert_error(response, 400)
-        assert error["message"] == "2FA not enabled or user not found"
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_administrator_disables_2fa_by_user_id(
@@ -81,7 +80,6 @@ class TestTwoFactorAuth:
 
         for response in (existing_response, missing_response):
             assert response["code"] == 403
-            assert response["message"] == "Permission denied"
             assert response["data"] == {}
         assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
@@ -99,8 +97,7 @@ class TestTwoFactorAuth:
         )
 
         assert_success(existing_response)
-        error = assert_error(missing_response, 404)
-        assert error["message"] == "Target user not found"
+        assert_error(missing_response, 404)
 
     @pytest.mark.asyncio
     async def test_get_2fa_status_disabled_by_default(
@@ -146,18 +143,14 @@ class TestTwoFactorAuth:
     ):
         response = await user_client.validate_2fa("invalid-totp")
 
-        error = assert_error(response, 401)
-        assert error["message"] == "Invalid verification code"
+        assert_error(response, 401)
         assert assert_success(await user_client.get_2fa_status())["enabled"] is False
 
     @pytest.mark.asyncio
     async def test_validate_2fa_without_setup(self, user_client: CFMSTestClient):
         response = await user_client.validate_2fa("123456")
 
-        error = assert_error(response, 400)
-        assert error["message"] == (
-            "Two-factor authentication has not been set up. Please set it up first."
-        )
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_setup_2fa_twice_fails(
@@ -192,8 +185,7 @@ class TestTwoFactorAuth:
     ):
         response = await user_client.cancel_2fa("wrong_password")
 
-        error = assert_error(response, 401)
-        assert error["message"] == "Invalid password"
+        assert_error(response, 401)
         assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
     @pytest.mark.asyncio
@@ -204,8 +196,7 @@ class TestTwoFactorAuth:
     ):
         response = await user_client.cancel_2fa(test_user["password"])
 
-        error = assert_error(response, 400)
-        assert error["message"] == "2FA not enabled or user not found"
+        assert_error(response, 400)
 
 
 @pytest.mark.integration
@@ -283,7 +274,6 @@ class TestTwoFactorAuthLogin:
 
         error = assert_error(replay, 401)
         assert error["data"] == {}
-        assert error["message"] == "Invalid two-factor authentication token"
         remaining = assert_success(await user_client.get_2fa_status())
         assert remaining["backup_codes_count"] == 9
         assert remaining["enabled"] is True

@@ -31,6 +31,7 @@ class TokenPurpose(IntFlag):
     AUTH = 1  # Used for further authentication (e.g., 2FA, etc.)
     GENERAL = 2  # Used for general purposes (e.g., API access, etc.)
     ESCALATION = 4  # Token with superuser privileges
+    POST_AUTH = 8  # Restricted actions after all authentication has completed.
 
 
 @dataclass
@@ -47,6 +48,8 @@ class Token:
     nbf: float
     iat: float
     _secret: str = Field(exclude=True, repr=False)
+
+    # only used for AUTH and POST_AUTH tokens, otherwise None and will not be included
     auth_context: AuthenticationContext | None = None
 
     @classmethod
@@ -57,6 +60,19 @@ class Token:
         used must also be provided.
         """
         decoded = jwt.decode(raw_token, secret, algorithms="HS256")
+
+        purpose = decoded.get("purpose", 0)
+        if not isinstance(purpose, int) or isinstance(purpose, bool):
+            raise jwt.InvalidTokenError("Invalid token purpose")
+
+        if purpose & (TokenPurpose.AUTH | TokenPurpose.POST_AUTH):
+            context = decoded.get("auth_context")
+            if (
+                purpose not in (TokenPurpose.AUTH, TokenPurpose.POST_AUTH)
+                or not isinstance(context, dict)
+                or not context.get("login_method")
+            ):
+                raise jwt.InvalidTokenError("Invalid authentication context")
 
         try:
             return TypeAdapter(cls).validate_python({**decoded, "_secret": secret})

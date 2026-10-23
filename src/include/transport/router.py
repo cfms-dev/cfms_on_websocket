@@ -508,6 +508,14 @@ def handle_request(stream: Stream):
             this_handler.user_id = user.id
             this_handler.token = token
 
+    if (
+        token is not None
+        and token.purpose & TokenPurpose.POST_AUTH
+        and (token.purpose != TokenPurpose.POST_AUTH or action != "set_passwd")
+    ):
+        this_handler.conclude_request(403, {}, "POST_AUTH is restricted to set_passwd")
+        return
+
     handler_type = available_functions.get(action)
     if handler_type is None:
         this_handler.conclude_request(400, {}, f"Unknown action: {action}")
@@ -536,7 +544,15 @@ def handle_request(stream: Stream):
         return
 
     lockdown_state = lockdown_state_manager.get_state()
-    if lockdown_state.enabled and action not in whitelisted_functions:
+    if (
+        lockdown_state.enabled
+        and action not in whitelisted_functions
+        and not (
+            token is not None
+            and token.purpose == TokenPurpose.POST_AUTH
+            and action == "set_passwd"
+        )
+    ):
         can_bypass_lockdown = False
         if (
             user_auth_state == AuthState.FULL
@@ -584,7 +600,7 @@ def handle_request(stream: Stream):
                 log_audit(
                     action,
                     401,
-                    data=this_handler.data,
+                    data=None,
                     remote_address=this_handler.remote_address,
                 )
                 return
@@ -602,7 +618,7 @@ def handle_request(stream: Stream):
                     action,
                     403,
                     user_id=token.sub,
-                    data=this_handler.data,
+                    data=None,
                     remote_address=this_handler.remote_address,
                 )
                 return

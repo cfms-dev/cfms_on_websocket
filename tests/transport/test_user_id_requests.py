@@ -56,8 +56,12 @@ def test_user_management_requires_an_explicit_uuid(handler_type, data):
     request = handler_type.request_model.model_validate({**data, "user_id": USER_ID})
     assert request.user_id == uuid.UUID(USER_ID)
 
-    with pytest.raises(ValidationError):
-        handler_type.request_model.model_validate(data)
+    if handler_type is RequestSetPasswdHandler:
+        request = handler_type.request_model.model_validate(data)
+        assert request.model_fields_set == {"new_passwd"}
+    else:
+        with pytest.raises(ValidationError):
+            handler_type.request_model.model_validate(data)
     with pytest.raises(ValidationError):
         handler_type.request_model.model_validate({**data, "username": "alice"})
     with pytest.raises(ValidationError):

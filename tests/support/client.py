@@ -14,6 +14,7 @@ import secrets
 import ssl
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -362,6 +363,8 @@ class CFMSTestClient:
         username: str | None = None,
         token: str | None = None,
         include_auth: bool = True,
+        auth_responder: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+        | None = None,
     ) -> dict[str, Any]:
         """
         Send a request to the server and receive the response.
@@ -390,6 +393,27 @@ class CFMSTestClient:
         )
 
         payload = await self._parse_frame_data(frame)
+
+        while frame.frame_type == FrameType.PROCESS:
+            if (
+                action not in {"login", "complete_mfa"}
+                or not isinstance(payload, dict)
+                or payload.get("action") not in {"auth_continue", "auth_challenge"}
+                or auth_responder is None
+            ):
+                raise RuntimeError("Request requires an authentication responder")
+            answer = await auth_responder(payload)
+            await stream.send(
+                orjson.dumps(
+                    {
+                        "action": "auth_response",
+                        "interaction_id": payload["data"]["interaction_id"],
+                        **answer,
+                    }
+                )
+            )
+            frame = await stream.recv(timeout=self.response_timeout)
+            payload = await self._parse_frame_data(frame)
 
         if isinstance(payload, dict):
             return payload
@@ -444,7 +468,13 @@ class CFMSTestClient:
         raise RuntimeError("Unexpected response format from server")
 
     async def login(
-        self, username: str, password: str, two_fa_token: str | None = None
+        self,
+        username: str,
+        password: str,
+        two_fa_token: str | None = None,
+        *,
+        auth_responder: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+        | None = None,
     ) -> dict[str, Any]:
         """
         Authenticate with the server.
@@ -462,13 +492,20 @@ class CFMSTestClient:
             "credential": {"username": username, "password": password},
         }
 
-        response = await self.send_request("login", data, include_auth=False)
+        response = await self.send_request(
+            "login", data, include_auth=False, auth_responder=auth_responder
+        )
 
         if response.get("code") == 202 and two_fa_token:
             response = await self.send_request(
                 "complete_mfa",
-                {"method": "totp", "data": {"token": two_fa_token}},
+                {
+                    "method": "totp",
+                    "data": {"token": two_fa_token},
+                    "target_purpose": 2,
+                },
                 token=response["data"]["token"],
+                auth_responder=auth_responder,
             )
 
         if response.get("code") == 200:

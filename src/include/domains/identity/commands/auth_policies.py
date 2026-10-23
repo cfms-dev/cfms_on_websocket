@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from include.database.models.auth import UserAuthPolicy
 from include.database.models.identity import User
 from include.domains.identity.auth.registry import auth_registry
-from include.domains.identity.auth.types import AuthPurpose, auth_chains_adapter
+from include.domains.identity.auth.types import (
+    LOGIN_DISALLOWED_METHODS,
+    AuthPurpose,
+    auth_chains_adapter,
+)
 
 
 class AuthPolicyConflict(ValueError):
@@ -33,9 +37,20 @@ def replace_auth_policy(
         for c in auth_registry.list_user_credentials(session, user)
     }
     for chain in parsed:
+        if len({step.method for step in chain}) != 1:
+            raise ValueError("An authentication chain must use exactly one method")
         for step in chain:
-            if auth_registry.get(step.method) is None:
+            if purpose == AuthPurpose.LOGIN and step.method in LOGIN_DISALLOWED_METHODS:
+                raise ValueError(
+                    f"Authentication method {step.method!r} is not permitted for login"
+                )
+            provider = auth_registry.get(step.method)
+            if provider is None:
                 raise ValueError(f"Unknown authentication method {step.method!r}")
+            if purpose not in provider.supported_purposes:
+                raise ValueError(
+                    f"Authentication method {step.method!r} does not support {purpose}"
+                )
             if len(set(step.credential_ids)) != len(step.credential_ids):
                 raise ValueError("Duplicate credential selector")
             if any(

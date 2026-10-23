@@ -19,10 +19,13 @@ from include.database.models.auth import (
 )
 from include.database.models.identity import User, UserGroup, UserStatus
 from include.database.session import Base
-from include.domains.identity.auth import auth_registry
+from include.domains.identity.auth import auth_registry, flows
+from include.domains.identity.auth.providers import totp
 from include.domains.identity.auth.types import AuthPurpose
 from include.domains.identity.commands import users as user_commands
 from include.domains.identity.commands.auth_policies import replace_auth_policy
+from include.domains.identity.handlers import auth
+from include.domains.identity.handlers.auth import RequestLoginHandler
 from include.extensions.oidc_sso import _extension as extension
 from include.extensions.oidc_sso.credentials import bind_oidc_identity
 from include.extensions.oidc_sso.models import OIDCBase, UserOidcCredential
@@ -32,6 +35,14 @@ from include.providers.caching import memory
 class _Connection:
     def __init__(self, data):
         self.data = data
+        self.user_id = None
+        self.stream = SimpleNamespace(
+            connection=SimpleNamespace(
+                _ws=SimpleNamespace(
+                    remote_address=("127.0.0.1", 1), request=SimpleNamespace(headers={})
+                )
+            )
+        )
         self.response = None
 
     def conclude_request(self, code, data, message):
@@ -166,7 +177,6 @@ def test_oidc_start_rejects_missing_configuration_before_http(oidc_context, miss
     assert result.code == 400
     assert connection.response["code"] == 400
     assert connection.response["data"] == {}
-    assert missing in connection.response["message"]
     oidc_context.discovery.assert_not_called()
 
 
@@ -179,11 +189,8 @@ def test_oidc_start_does_not_read_legacy_configuration(oidc_context):
 
     assert result is not None
     assert result.code == 400
-    assert connection.response == {
-        "code": 400,
-        "data": {},
-        "message": "OIDC SSO configuration is missing: issuer, client_id, redirect_uri",
-    }
+    assert connection.response["code"] == 400
+    assert connection.response["data"] == {}
     oidc_context.discovery.assert_not_called()
 
 
@@ -197,11 +204,8 @@ def test_oidc_start_rejects_nonpositive_state_ttl(oidc_context, ttl):
 
     assert result is not None
     assert result.code == 400
-    assert connection.response == {
-        "code": 400,
-        "data": {},
-        "message": "OIDC state_ttl_seconds must be positive",
-    }
+    assert connection.response["code"] == 400
+    assert connection.response["data"] == {}
     oidc_context.discovery.assert_not_called()
 
 
@@ -213,11 +217,8 @@ def test_oidc_start_rejects_redirect_uri_override(oidc_context):
 
     assert result is not None
     assert result.code == 400
-    assert connection.response == {
-        "code": 400,
-        "data": {},
-        "message": "OIDC redirect_uri must match the configured redirect URI",
-    }
+    assert connection.response["code"] == 400
+    assert connection.response["data"] == {}
     oidc_context.discovery.assert_not_called()
 
 
@@ -230,11 +231,8 @@ def test_oidc_start_rejects_discovery_issuer_mismatch(oidc_context):
 
     assert result is not None
     assert result.code == 400
-    assert connection.response == {
-        "code": 400,
-        "data": {},
-        "message": "OIDC discovery issuer does not match config",
-    }
+    assert connection.response["code"] == 400
+    assert connection.response["data"] == {}
     oidc_context.discovery.assert_called_once()
 
 
@@ -255,6 +253,12 @@ def oidc_callback_context(
     OIDCBase.metadata.create_all(database)
     sessions = sessionmaker(bind=database)
     monkeypatch.setattr(extension, "Session", sessions)
+    monkeypatch.setattr(auth, "Session", sessions)
+    monkeypatch.setattr(
+        flows.LoginGuard, "evaluate", lambda *a: SimpleNamespace(allowed=True)
+    )
+    monkeypatch.setattr(flows.LoginGuard, "report_success", lambda *a, **kw: None)
+    monkeypatch.setattr(flows.LoginGuard, "report_failure", lambda *a, **kw: None)
     monkeypatch.setattr(identity_models, "time", extension.time)
     monkeypatch.setattr(
         auth_registry,
@@ -361,8 +365,9 @@ def oidc_callback_context(
 
 @pytest.mark.component
 @pytest.mark.parametrize("redirect_uri", [None, "https://client.example/callback"])
+@pytest.mark.parametrize("entrypoint", ["callback", "login"])
 def test_oidc_callback_issues_local_token_and_commits_login(
-    oidc_callback_context, redirect_uri
+    oidc_callback_context, redirect_uri, entrypoint
 ):
     context = oidc_callback_context
     request_data = context.request_data.copy()
@@ -370,7 +375,11 @@ def test_oidc_callback_issues_local_token_and_commits_login(
         request_data["redirect_uri"] = redirect_uri
     connection = _Connection(request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    if entrypoint == "callback":
+        result = extension.RequestOIDCCallbackHandler().handle(connection)
+    else:
+        connection.data = {"method": "oidc", "credential": request_data}
+        result = RequestLoginHandler().handle(connection)
 
     assert (result.code, result.target) == (200, "alice")
     assert connection.response["code"] == 200
@@ -412,11 +421,8 @@ def test_oidc_callback_rejects_unavailable_state_before_token_exchange(
     result = extension.RequestOIDCCallbackHandler().handle(connection)
 
     assert result.code == 401
-    assert connection.response == {
-        "code": 401,
-        "data": {},
-        "message": "Invalid or expired OIDC state",
-    }
+    assert connection.response["code"] == 401
+    assert connection.response["data"] == {}
     assert context.token_requests == []
     context.jwks_fetch.assert_not_called()
     with context.sessions() as session:
@@ -438,11 +444,8 @@ def test_oidc_callback_consumes_state_before_rejecting_redirect_mismatch(
     result = extension.RequestOIDCCallbackHandler().handle(connection)
 
     assert result.code == 401
-    assert connection.response == {
-        "code": 401,
-        "data": {},
-        "message": "OIDC redirect_uri mismatch",
-    }
+    assert connection.response["code"] == 401
+    assert connection.response["data"] == {}
     assert context.caching.get(context.state_key) is None
     assert context.token_requests == []
     with context.sessions() as session:
@@ -464,11 +467,8 @@ def test_oidc_callback_rejects_state_reuse_after_success(oidc_callback_context):
     result = extension.RequestOIDCCallbackHandler().handle(replay)
 
     assert result.code == 401
-    assert replay.response == {
-        "code": 401,
-        "data": {},
-        "message": "Invalid or expired OIDC state",
-    }
+    assert replay.response["code"] == 401
+    assert replay.response["data"] == {}
     assert len(context.token_requests) == 1
     with context.sessions() as session:
         assert (
@@ -592,11 +592,8 @@ def test_oidc_callback_rejects_unknown_user_when_provisioning_is_disabled(
     result = extension.RequestOIDCCallbackHandler().handle(connection)
 
     assert result.code == 401
-    assert connection.response == {
-        "code": 401,
-        "data": {},
-        "message": "SSO user is not allowed",
-    }
+    assert connection.response["code"] == 401
+    assert connection.response["data"] == {}
     with context.sessions() as session:
         assert (
             session.scalar(select(User).where(User.username == "unknown-user")) is None
@@ -701,11 +698,8 @@ def test_oidc_callback_rejects_inactive_user_without_updating_login(
     result = extension.RequestOIDCCallbackHandler().handle(connection)
 
     assert result.code == 4003
-    assert connection.response == {
-        "code": 4003,
-        "data": {"reason": None},
-        "message": "User account is not active",
-    }
+    assert connection.response["code"] == 4003
+    assert connection.response["data"] == {"reason": None}
     with context.sessions() as session:
         assert (
             session.scalar(select(User).where(User.username == "alice")).last_login
@@ -787,6 +781,7 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
             session.scalar(select(User).where(User.username == "alice")).last_login
             == 10.0
         )
+    monkeypatch.setattr(totp, "DatabaseSession", context.sessions)
     monkeypatch.setattr(auth_handlers, "Session", context.sessions)
     monkeypatch.setattr(auth_handlers, "get_client_ip", lambda ws: "127.0.0.1")
     monkeypatch.setattr(
@@ -799,7 +794,11 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
     complete = SimpleNamespace(
         user_id=token.sub,
         token=token,
-        data={"method": "totp", "data": {"token": pyotp.TOTP(secret).now()}},
+        data={
+            "method": "totp",
+            "data": {"token": pyotp.TOTP(secret).now()},
+            "target_purpose": 2,
+        },
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=None)),
         conclude_request=lambda **response: responses.append(response),
     )

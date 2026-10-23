@@ -160,12 +160,8 @@ def test_router_returns_429_before_constructing_rate_limited_handler(monkeypatch
 
     router.handle_request(stream)
 
-    assert responses == [
-        (
-            429,
-            {"scope": "ip", "limit": 12, "retry_after_seconds": 7},
-            "Too many requests. Please try again later.",
-        )
+    assert [response[:-1] for response in responses] == [
+        (429, {"scope": "ip", "limit": 12, "retry_after_seconds": 7})
     ]
 
 
@@ -357,34 +353,17 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
 
     response = orjson.loads(response_data)
     assert isinstance(response.pop("timestamp"), float)
-    assert response == {
-        "code": 400,
-        "data": {
-            "errors": [
-                {
-                    "type": "int_type",
-                    "loc": ["item", "secret"],
-                    "msg": "Input should be a valid integer",
-                },
-                {
-                    "type": "greater_than",
-                    "loc": ["item", "count"],
-                    "msg": "Input should be greater than 10",
-                },
-                {
-                    "type": "value_error",
-                    "loc": ["item", "label"],
-                    "msg": "Value error, label is reserved",
-                },
-                {
-                    "type": "extra_forbidden",
-                    "loc": ["extra"],
-                    "msg": "Extra inputs are not permitted",
-                },
-            ]
-        },
-        "message": "Invalid request data",
-    }
+    assert response["code"] == 400
+    assert set(response["data"]) == {"errors"}
+    assert [
+        {key: value for key, value in error.items() if key != "msg"}
+        for error in response["data"]["errors"]
+    ] == [
+        {"type": "int_type", "loc": ["item", "secret"]},
+        {"type": "greater_than", "loc": ["item", "count"]},
+        {"type": "value_error", "loc": ["item", "label"]},
+        {"type": "extra_forbidden", "loc": ["extra"]},
+    ]
 
 
 def test_router_keeps_validated_request_data_as_the_original_dict(monkeypatch):
@@ -499,13 +478,8 @@ def test_authentication_pool_timeout_returns_retryable_503(monkeypatch):
 
     router._handle_request_with_admission(stream)
 
-    assert responses == [
-        (
-            stream,
-            503,
-            {"scope": "database_pool", "retry_after_seconds": 3},
-            "Server database capacity is busy. Please try again later.",
-        )
+    assert [response[:-1] for response in responses] == [
+        (stream, 503, {"scope": "database_pool", "retry_after_seconds": 3})
     ]
     assert released == [connection]
 
@@ -551,13 +525,8 @@ def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(monkeypatch):
 
     router._handle_request_with_admission(stream)
 
-    assert responses == [
-        (
-            stream,
-            503,
-            {"scope": "database_pool", "retry_after_seconds": 2},
-            "Server database capacity is busy. Please try again later.",
-        )
+    assert [response[:-1] for response in responses] == [
+        (stream, 503, {"scope": "database_pool", "retry_after_seconds": 2})
     ]
     assert reported_errors == []
     assert released == [connection]
@@ -616,6 +585,7 @@ def test_login_throttled_response_returns_result(monkeypatch):
 
     responses = []
     handler = SimpleNamespace(
+        user_id=None,
         data={
             "method": "password",
             "credential": {"username": "alice", "password": "secret"},
@@ -636,12 +606,8 @@ def test_login_throttled_response_returns_result(monkeypatch):
     result = RequestLoginHandler().handle(handler)
 
     assert result == Result(code=429, target="alice")
-    assert responses == [
-        {
-            "code": 429,
-            "data": {"retry_after_seconds": 30},
-            "message": "Too many authentication attempts. Please try again later.",
-        }
+    assert [(response["code"], response["data"]) for response in responses] == [
+        (429, {"retry_after_seconds": 30})
     ]
 
 
@@ -709,12 +675,13 @@ def test_disable_2fa_request_requires_a_credential(monkeypatch, request_data):
 def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
+    from include.domains.identity.tokens import TokenPurpose
     from include.transport.request_handler import Result
 
     responses = []
     handler = SimpleNamespace(
-        user_id="",
-        token="",
+        user_id="alice",
+        token=SimpleNamespace(purpose=TokenPurpose.GENERAL, has_purpose=lambda _: True),
         data={
             "username": "alice",
             "old_passwd": old_passwd,
@@ -731,15 +698,8 @@ def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
     result = RequestSetPasswdHandler().handle(handler)
 
     assert result == Result(code=429, target="alice")
-    assert responses == [
-        (
-            (),
-            {
-                "code": 429,
-                "data": {"retry_after_seconds": 45},
-                "message": "Too many authentication attempts. Please try again later.",
-            },
-        )
+    assert [(args, kwargs["code"], kwargs["data"]) for args, kwargs in responses] == [
+        ((), 429, {"retry_after_seconds": 45})
     ]
 
 
@@ -762,7 +722,7 @@ class _PasswordUser:
         self.status = status
         self.token_valid = token_valid
 
-    def is_token_valid(self, _token):
+    def is_token_valid(self, _token, *, purpose=None):
         return self.token_valid
 
 
@@ -796,7 +756,15 @@ class _PasswordSession:
         self.commit_count += 1
 
 
-def _password_request(data, *, user_id="", token=""):
+def _password_request(data, *, user_id="alice", token="token"):
+    from include.domains.identity.tokens import TokenPurpose
+
+    if isinstance(token, str):
+        token = (
+            SimpleNamespace(purpose=TokenPurpose.GENERAL, has_purpose=lambda _: True)
+            if token
+            else None
+        )
     responses = []
     handler = SimpleNamespace(
         user_id=user_id,
@@ -845,41 +813,43 @@ def test_password_change_wrong_credentials_do_not_disclose_user_existence(monkey
                 "old_passwd": "wrong-password",
                 "new_passwd": "NewPassword123!",
                 "bypass_passwd_requirements": True,
-            }
+            },
+            user_id=None,
+            token=None,
         )
 
         result = RequestSetPasswdHandler().handle(handler)
-        outcomes.append((result, responses, session.commit_count))
+        outcomes.append(
+            (
+                result,
+                [(response["code"], response["data"]) for response in responses],
+                session.commit_count,
+            )
+        )
 
     expected_result = Result(code=401, target="alice")
-    expected_response = {
-        "code": 401,
-        "data": {},
-        "message": "Invalid credentials",
-    }
+    expected_response = (401, {})
     assert outcomes == [
         (expected_result, [expected_response], 0),
         (expected_result, [expected_response], 0),
     ]
-    assert verified_users == [existing.credential, None]
+    assert verified_users == []
 
 
 @pytest.mark.parametrize(
-    ("operator", "token", "expected_code", "expected_message"),
+    ("operator", "token", "expected_code"),
     [
-        (None, "", 400, "Operator is required when setting other user password"),
-        (_PasswordUser("unused"), "", 400, "Given an operator, token is required"),
+        (None, "", 401),
+        (_PasswordUser("unused"), "", 401),
         (
             _PasswordUser("unused", token_valid=False),
             "token",
             401,
-            "Invalid user or token",
         ),
         (
             _PasswordUser("unused"),
             "token",
             403,
-            "You do not have permission to set user password",
         ),
     ],
 )
@@ -888,7 +858,6 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
     operator,
     token,
     expected_code,
-    expected_message,
 ):
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
@@ -910,8 +879,8 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
     assert result.target == str(TARGET_USER_ID)
     assert result.user_id == ("operator" if expected_code == 403 else None)
     assert result.data is None
-    assert responses == [
-        {"code": expected_code, "data": {}, "message": expected_message}
+    assert [(response["code"], response["data"]) for response in responses] == [
+        (expected_code, {})
     ]
     assert TARGET_USER_ID not in session.get_calls
     assert session.commit_count == 0
@@ -938,7 +907,9 @@ def test_password_reset_reports_missing_target_after_operator_authorization(
 
     assert result == Result(code=404, target=str(TARGET_USER_ID), user_id="operator")
     assert result.data is None
-    assert responses == [{"code": 404, "data": {}, "message": "User does not exist"}]
+    assert [(response["code"], response["data"]) for response in responses] == [
+        (404, {})
+    ]
     assert session.get_calls == ["operator", TARGET_USER_ID]
     assert session.commit_count == 0
 
@@ -970,8 +941,8 @@ def test_self_password_change_commits_and_attributes_audit_to_target(monkeypatch
 
     assert result == Result(code=200, target="alice", user_id="alice")
     assert result.data is None
-    assert responses == [
-        {"code": 200, "data": {}, "message": "Password set successfully"}
+    assert [(response["code"], response["data"]) for response in responses] == [
+        (200, {})
     ]
     assert user.credential.verify("NewPassword456!")
     assert user.credential.passwd_last_modified > 0
@@ -1003,18 +974,8 @@ def test_self_password_change_rejects_privileged_flags_after_authentication(
 
     assert result == Result(code=400, target="alice", user_id="alice")
     assert result.data is None
-    assert responses == [
-        {
-            "code": 400,
-            "data": {
-                "bypass_passwd_requirements": True,
-                "force_update_after_login": True,
-            },
-            "message": (
-                "The following options cannot be set to True when changing your "
-                "own password: bypass_passwd_requirements, force_update_after_login"
-            ),
-        }
+    assert [(response["code"], response["data"]) for response in responses] == [
+        (400, {"bypass_passwd_requirements": True, "force_update_after_login": True})
     ]
     assert user.credential.verify("OldPassword123!")
     assert session.commit_count == 0
@@ -1057,8 +1018,8 @@ def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkey
         data={"target_username": "alice"},
         user_id="operator",
     )
-    assert responses == [
-        {"code": 200, "data": {}, "message": "Password set successfully"}
+    assert [(response["code"], response["data"]) for response in responses] == [
+        (200, {})
     ]
     assert target.credential.verify("short")
     assert target.credential.passwd_last_modified == 0

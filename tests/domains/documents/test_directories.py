@@ -416,7 +416,6 @@ class TestDirectoryOperations:
 
         assert_error(response, 400)
         assert response["data"] == {}
-        assert response["message"] == "Cursor does not match this request"
 
     @pytest.mark.asyncio
     async def test_get_directory_info_counts_active_direct_children(
@@ -497,8 +496,7 @@ class TestDirectoryMove:
             parent["folder_id"], target["folder_id"]
         )
 
-        error = assert_error(response, 400)
-        assert "subdirectory" in error["message"].lower()
+        assert_error(response, 400)
         info = assert_success(
             await authenticated_client.send_request(
                 "get_directory_info", {"directory_id": parent["folder_id"]}

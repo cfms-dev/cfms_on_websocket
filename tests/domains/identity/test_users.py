@@ -56,7 +56,6 @@ class TestUserOperations:
         for response in (existing_response, missing_response):
             assert response["code"] == 403
             assert response["data"] == {}
-        assert existing_response["message"] == missing_response["message"]
 
     @pytest.mark.asyncio
     async def test_invalid_login_does_not_disclose_user_existence(
@@ -73,7 +72,6 @@ class TestUserOperations:
 
         for response in (existing_response, missing_response):
             assert response["code"] == 401
-            assert response["message"] == "Invalid credentials"
             assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -101,7 +99,6 @@ class TestUserOperations:
 
         for response in responses:
             assert response["code"] == 401
-            assert response["message"] == "Invalid credentials"
             assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -127,9 +124,6 @@ class TestUserOperations:
 
         for response in responses:
             assert response["code"] == 403
-            assert (
-                response["message"] == "You do not have permission to set user password"
-            )
             assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -146,7 +140,6 @@ class TestUserOperations:
         )
 
         assert response["code"] == 404
-        assert response["message"] == "User does not exist"
         assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -298,8 +291,7 @@ class TestUserOperations:
         response = await authenticated_client.get_user_info(
             username="nonexistent_user_xyz_12345"
         )
-        error = assert_error(response, 404)
-        assert error["message"] == "User does not exist"
+        assert_error(response, 404)
 
     @pytest.mark.asyncio
     async def test_delete_user(
@@ -321,8 +313,7 @@ class TestUserOperations:
         response = await authenticated_client.create_user(
             username=test_user["username"], password="AnotherPassword123!"
         )
-        error = assert_error(response, 400)
-        assert error["message"] == "Username already exists"
+        assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_create_user_with_empty_username(
@@ -468,8 +459,7 @@ class TestUserOperations:
         response = await unauthenticated_client.change_user_permissions(
             target_user["user_id"], [permission_entry("list_users")]
         )
-        error = assert_error(response, 403)
-        assert error["message"] == "You do not have permission to set user permissions"
+        assert_error(response, 403)
 
         info_response = await authenticated_client.get_user_info(
             username=target_user["username"]

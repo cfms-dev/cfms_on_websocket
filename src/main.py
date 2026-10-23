@@ -404,6 +404,7 @@ def prepare_logger():
         sys.stderr,
         level="INFO",
         format=fmt,
+        diagnose=False,
     )
     logger.add(
         log_file,
@@ -413,6 +414,7 @@ def prepare_logger():
         retention="1 week",
         compression="zip",
         enqueue=True,
+        diagnose=False,
     )
 
 

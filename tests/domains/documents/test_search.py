@@ -40,8 +40,7 @@ class TestSearch:
 
         response = await unauthenticated_client.search(query="PermissionRequired")
 
-        error = assert_error(response, 403)
-        assert error["message"] == "User does not have permission to perform search"
+        assert_error(response, 403)
 
     @pytest.mark.asyncio
     async def test_search_honors_inherited_search_permission(

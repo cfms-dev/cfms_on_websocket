@@ -19,7 +19,8 @@ from include.config.paths import EXECUTABLE_ABSPATH
 from include.database.models.documents import DocumentMetadata
 from include.database.models.identity import User
 from include.database.models.security import AccountThrottle
-from include.domains.identity.handlers.auth import RequestLoginHandler
+from include.domains.identity.auth.providers.password import PasswordCredentialSchema
+from include.domains.identity.auth.providers.publickey import PublicKeyLoginRequest
 from include.domains.identity.handlers.users import (
     RequestCreateUserHandler,
     RequestSetPasswdHandler,
@@ -48,17 +49,17 @@ for handler_type, payload in handler_payloads:
     else:
         raise AssertionError(f"{handler_type.__name__} accepted an oversized username")
 
-for length in (USERNAME_MAX_LENGTH, USERNAME_MAX_LENGTH + 1):
-    payload = {"method": "password", "credential": {"username": "u" * length, "password": "secret"}}
-    if length == USERNAME_MAX_LENGTH:
-        RequestLoginHandler.request_model.model_validate(payload)
+for schema, credential in (
+    (PasswordCredentialSchema, {"password": "secret"}),
+    (PublicKeyLoginRequest, {"fingerprint": "f" * 64}),
+):
+    schema.model_validate(credential | {"username": "u" * USERNAME_MAX_LENGTH})
+    try:
+        schema.model_validate(credential | {"username": "u" * (USERNAME_MAX_LENGTH + 1)})
+    except ValidationError:
+        pass
     else:
-        try:
-            RequestLoginHandler.request_model.model_validate(payload)
-        except ValidationError:
-            pass
-        else:
-            raise AssertionError("login accepted an oversized username")
+        raise AssertionError(f"{schema.__name__} accepted an oversized username")
 
 username_columns = (
     User.__table__.c.username,

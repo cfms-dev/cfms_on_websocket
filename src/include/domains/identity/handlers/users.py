@@ -43,6 +43,9 @@ from include.database.session import Session
 from include.domains.access.authorization.evaluation import check_access_requirements
 from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import create_file_task
+from include.domains.identity.auth.flows import get_login_progress
+from include.domains.identity.auth.password_state import password_change_requirement
+from include.domains.identity.auth.types import InvalidAuthenticationAttempt
 from include.domains.identity.commands.credentials import set_password
 from include.domains.identity.commands.users import create_user
 from include.domains.identity.password_auth import verify_password_or_dummy
@@ -51,6 +54,7 @@ from include.domains.identity.request_models import (
     OffsetPaginationRequest,
     PermissionEntry,
 )
+from include.domains.identity.tokens import TokenPurpose
 from include.domains.identity.validators.passwords import (
     InvalidPasswordLengthError,
     RuleRequirementsNotMetError,
@@ -168,6 +172,8 @@ class _SetPasswordRequest(RequestDataModel):
     @model_validator(mode="after")
     def validate_password_selector(self) -> Self:
         selectors = {"username", "user_id"} & self.model_fields_set
+        if not selectors and self.old_passwd is None:
+            return self
         expected = {"username"} if self.old_passwd is not None else {"user_id"}
         if selectors != expected:
             raise ValueError(
@@ -1192,12 +1198,14 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
 class RequestSetPasswdHandler(RequestHandler):
     request_model = _SetPasswordRequest
     rate_limit_cost = 10
+    requires_auth = True
+    required_token_purpose = TokenPurpose.GENERAL | TokenPurpose.POST_AUTH
 
     def handle(self, handler: ConnectionHandler):
         target_username: str | None = handler.data.get("username")
         old_passwd: str | None = handler.data.get("old_passwd")
         target_user_id = (
-            uuid.UUID(handler.data["user_id"]) if old_passwd is None else None
+            uuid.UUID(handler.data["user_id"]) if "user_id" in handler.data else None
         )
         audit_data = {}
         new_passwd: str = handler.data["new_passwd"]
@@ -1209,6 +1217,10 @@ class RequestSetPasswdHandler(RequestHandler):
             "force_update_after_login", False
         )
         ip: str | None = None
+        post_auth = (
+            handler.token is not None
+            and handler.token.purpose == TokenPurpose.POST_AUTH
+        )
 
         def respond(
             code: int,
@@ -1221,11 +1233,18 @@ class RequestSetPasswdHandler(RequestHandler):
             return Result(
                 code=code,
                 target=target_username
-                if old_passwd is not None
+                if old_passwd is not None or post_auth
                 else str(target_user_id),
                 data=audit_data or None,
                 user_id=user_id,
             )
+
+        if handler.token is None or operator_user_id is None:
+            return respond(401, "Authentication required")
+        if not post_auth and not handler.token.has_purpose(TokenPurpose.GENERAL):
+            return respond(403, "A GENERAL or POST_AUTH token is required")
+        if post_auth and set(handler.data) != {"new_passwd"}:
+            return respond(400, "POST_AUTH accepts only new_passwd")
 
         if old_passwd is not None:
             ip = get_client_ip(handler.stream.connection._ws)
@@ -1241,31 +1260,46 @@ class RequestSetPasswdHandler(RequestHandler):
                 )
 
         with Session() as session:
-            operator_user = None
-            if operator_user_id:
-                if not handler.token:
-                    return respond(400, "Given an operator, token is required")
+            operator_user = session.get(User, operator_user_id)
+            if not operator_user or not operator_user.is_token_valid(
+                handler.token,
+                purpose=TokenPurpose.POST_AUTH if post_auth else TokenPurpose.GENERAL,
+            ):
+                return respond(401, "Invalid user or token")
 
-                operator_user = session.get(User, operator_user_id)
-                if not operator_user or not operator_user.is_token_valid(handler.token):
-                    return respond(401, "Invalid user or token")
-
-            if old_passwd is not None:
+            if post_auth:
+                user = operator_user
+                actor_user_id = operator_user_id
+                target_username = user.username
+                context = handler.token.auth_context
+                try:
+                    if (
+                        context is None
+                        or not get_login_progress(session, user, context).satisfied
+                        or password_change_requirement(session, user, context) is None
+                    ):
+                        return respond(
+                            403,
+                            "Password change is not authorized",
+                            user_id=actor_user_id,
+                        )
+                except InvalidAuthenticationAttempt as exc:
+                    return respond(401, str(exc), user_id=actor_user_id)
+            elif old_passwd is not None:
                 assert target_username is not None
-                user = session.scalar(
-                    select(User).where(User.username == target_username)
-                )
-                password_credential = (
-                    session.get(UserPasswordCredential, user.id)
-                    if user is not None
-                    else None
-                )
+                user = operator_user
+                if user.username != target_username:
+                    return respond(
+                        403,
+                        "Self-service password changes must target the authenticated user",
+                        user_id=operator_user_id,
+                    )
+                password_credential = session.get(UserPasswordCredential, user.id)
                 if not verify_password_or_dummy(password_credential, old_passwd):
                     assert ip is not None
                     LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                     return respond(401, "Invalid credentials")
 
-                assert user is not None
                 assert ip is not None
                 LoginGuard.report_success(
                     ip,
@@ -1302,10 +1336,8 @@ class RequestSetPasswdHandler(RequestHandler):
                         user_id=actor_user_id,
                     )
             else:
-                if not operator_user:
-                    return respond(
-                        400, "Operator is required when setting other user password"
-                    )
+                if target_user_id is None:
+                    return respond(400, "Specify user_id for administrator reset")
                 if Permissions.SUPER_SET_PASSWD not in operator_user.all_permissions:
                     return respond(
                         403,
@@ -1357,12 +1389,16 @@ class RequestSetPasswdHandler(RequestHandler):
                     user_id=actor_user_id,
                 )
 
-            set_password(
-                session,
-                user,
-                new_passwd,
-                force_update_after_login=force_update_after_login,
-            )
+            try:
+                set_password(
+                    session,
+                    user,
+                    new_passwd,
+                    force_update_after_login=force_update_after_login,
+                    expected_signing_key=handler.token._secret if post_auth else None,
+                )
+            except InvalidAuthenticationAttempt as exc:
+                return respond(401, str(exc), user_id=actor_user_id)
             session.commit()
 
         return respond(200, "Password set successfully", user_id=actor_user_id)

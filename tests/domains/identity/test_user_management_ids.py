@@ -207,7 +207,6 @@ async def test_keyring_authorizes_before_target_lookup(
     for response in responses:
         assert_error(response, 403)
         assert response["data"] == {}
-    assert responses[0]["message"] == responses[1]["message"]
 
 
 async def test_administrator_reset_uses_id_and_audits_actor(

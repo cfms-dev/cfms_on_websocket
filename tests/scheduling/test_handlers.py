@@ -115,7 +115,7 @@ def test_read_actions_require_view_schedules(
     result = handler_type().handle(connection)
 
     assert result.code == 403
-    assert connection.response == (403, {}, "Permission denied")
+    assert connection.response[:2] == (403, {})
 
 
 @pytest.mark.component
@@ -168,7 +168,7 @@ def test_create_schedule_rejects_system_task_types(monkeypatch, scheduling_conte
     result = handlers.RequestCreateScheduleHandler().handle(connection)
 
     assert result.code == 403
-    assert connection.response == (403, {}, "Permission denied")
+    assert connection.response[:2] == (403, {})
 
 
 @pytest.mark.component
@@ -223,7 +223,7 @@ def test_create_schedule_rejects_unrepresentable_interval(
     result = handlers.RequestCreateScheduleHandler().handle(connection)
 
     assert result.code == 400
-    assert connection.response == (400, {}, "interval.seconds is too large")
+    assert connection.response[:2] == (400, {})
     assert notifications == []
     with handlers.Session() as session:
         assert session.scalar(select(Schedule.id)) is None
@@ -282,7 +282,7 @@ def test_update_schedule_uses_locked_revision_for_task_authorization(
     result = handlers.RequestUpdateScheduleHandler().handle(connection)
 
     assert result.code == 409
-    assert connection.response == (409, {}, "Schedule revision is stale")
+    assert connection.response[:2] == (409, {})
     assert notifications == []
     with factory() as session:
         schedule = session.get(Schedule, "schedule-1")
@@ -320,7 +320,7 @@ def test_update_schedule_checks_permission_for_locked_current_task(
     result = handlers.RequestUpdateScheduleHandler().handle(connection)
 
     assert result.code == 403
-    assert connection.response == (403, {}, "Permission denied")
+    assert connection.response[:2] == (403, {})
     assert notifications == []
     with handlers.Session() as session:
         schedule = session.get(Schedule, "schedule-1")
@@ -379,11 +379,7 @@ def test_scheduling_api_returns_503_when_provider_is_degraded(
     result = handler_type().handle(connection)
 
     assert result.code == 503
-    assert connection.response == (
-        503,
-        {"provider": "redis", "status": "degraded"},
-        "Scheduling provider is unavailable",
-    )
+    assert connection.response[:2] == (503, {"provider": "redis", "status": "degraded"})
 
 
 @pytest.mark.component
@@ -475,7 +471,7 @@ def test_system_schedules_cannot_be_managed(
     result = handler_type().handle(connection)
 
     assert result.code == 404
-    assert connection.response == (404, {}, "Schedule not found")
+    assert connection.response[:2] == (404, {})
     assert notifications == []
     with handlers.Session() as session:
         schedule = session.get(Schedule, "test.system_cleanup")

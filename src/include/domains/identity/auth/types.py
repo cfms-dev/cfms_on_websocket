@@ -5,6 +5,12 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+LOGIN_DISALLOWED_METHODS = frozenset({"totp"})
+
+
+class InvalidAuthenticationAttempt(ValueError):
+    pass
+
 
 class AuthPurpose(StrEnum):
     LOGIN = "login"
@@ -47,11 +53,24 @@ class AuthenticationContext(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     attempt_id: str = Field(default_factory=lambda: secrets.token_hex(16))
+    login_method: str | None = None
+    signing_key_digest: str
     login_revision: int = Field(ge=0)
     mfa_revision: int = Field(ge=0)
+    escalation_revision: int = Field(default=0, ge=0)
     evidence: list[AuthEvidence] = Field(default_factory=list)
 
 
 class AuthPolicyDecision(BaseModel):
     satisfied: bool
     next_steps: list[AuthStep] = Field(default_factory=list)
+    purpose: AuthPurpose | None = None
+
+
+class PasswordAssessment(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    credential_id: str
+    modified_at: float
+    policy_digest: str
+    rules_satisfied: bool

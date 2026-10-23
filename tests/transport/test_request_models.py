@@ -178,12 +178,43 @@ def test_login_request_selects_existing_user_by_username():
     assert request.credential == {"username": "alice", "password": "secret"}
 
 
-def test_complete_mfa_request_accepts_totp_token():
+def test_login_envelope_accepts_extension_method():
+    request = RequestLoginHandler.request_model.model_validate(
+        {"method": "extension_method", "credential": {"proof": "opaque"}}
+    )
+    assert request.method == "extension_method"
+    assert request.credential == {"proof": "opaque"}
+
+
+@pytest.mark.parametrize("target_purpose", [2, 6])
+def test_complete_mfa_request_accepts_totp_token(target_purpose):
     request = RequestCompleteMFAHandler.request_model.model_validate(
-        {"method": "totp", "data": {"token": "123456"}}
+        {
+            "method": "totp",
+            "data": {"token": "123456"},
+            "target_purpose": target_purpose,
+        }
     )
     assert request.method == "totp"
     assert request.data == {"token": "123456"}
+    assert request.target_purpose == target_purpose
+
+
+@pytest.mark.parametrize("target_purpose", [0, 1, 3, 4, 8, True, False, "2", None, 2.5])
+def test_complete_mfa_request_rejects_invalid_target_purpose(target_purpose):
+    with pytest.raises(ValidationError) as exc_info:
+        RequestCompleteMFAHandler.request_model.model_validate(
+            {
+                "method": "totp",
+                "data": {"token": "123456"},
+                "target_purpose": target_purpose,
+            }
+        )
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["loc"] == ("target_purpose",)
+    assert errors[0]["type"] == "literal_error"
 
 
 @pytest.mark.parametrize("field", ["2fa_token", "two_factor_token"])

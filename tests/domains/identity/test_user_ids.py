@@ -184,22 +184,23 @@ def test_http_rejects_deleted_account_token_after_username_reuse(
 
 
 def test_public_key_challenge_cannot_transfer_to_replacement_account(
-    identity_session, monkeypatch
+    identity_session,
 ):
     from include.domains.identity.auth.providers import publickey
-    from include.providers.caching.memory import MemoryCachingProvider
 
     session = identity_session
     user = User(username="reused")
     session.add(user)
     session.commit()
-    cache = MemoryCachingProvider()
-    monkeypatch.setattr(
-        publickey, "ProviderManager", lambda: SimpleNamespace(caching=cache)
-    )
     provider = publickey.PublicKeyAuthProvider()
-    challenge = provider.create_challenge(session, user)
-    original_key = f"auth:challenge:{user.id}:{challenge['nonce']}"
+    context = {
+        "attempt_id": "attempt",
+        "stage": "login",
+        "stream_id": 1,
+        "interaction_id": "interaction",
+        "fingerprint": (b"f" * 32).hex(),
+    }
+    provider.create_challenge(session, user, context=context)
     session.delete(user)
     session.commit()
     replacement = User(username="reused")
@@ -210,17 +211,15 @@ def test_public_key_challenge_cannot_transfer_to_replacement_account(
         session,
         replacement,
         {
-            "nonce": challenge["nonce"],
             "fingerprint": (b"f" * 32).hex(),
             "signature": "AA==",
         },
-        {},
+        context,
     )
 
     assert not result.success
     assert result.error_code == 401
-    assert result.error_message == "Invalid or expired challenge nonce"
-    assert cache.get(original_key) == 1
+    assert "publickey_challenge" not in context
 
 
 @pytest.mark.parametrize("subject", [None, "alice", [], {}, 42])

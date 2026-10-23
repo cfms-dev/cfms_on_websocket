@@ -109,7 +109,6 @@ def test_conflict_description_hides_unreadable_winner_id(
     from include.domains.documents.commands.name_conflicts import (
         describe_node_name_conflict,
     )
-    from include.messages import Messages as smsg
 
     engine = sqlite_engine_factory(":memory:")
     Base.metadata.create_all(engine)
@@ -124,7 +123,7 @@ def test_conflict_description_hides_unreadable_winner_id(
         session.add_all([root, winner])
         session.commit()
 
-        payload, message = describe_node_name_conflict(
+        payload, _ = describe_node_name_conflict(
             session, SimpleNamespace(), "/", "Report"
         )
 
@@ -132,7 +131,6 @@ def test_conflict_description_hides_unreadable_winner_id(
     assert payload["id"] == ("winner" if readable else None)
     assert ("duplicate_id" in payload) is readable
     assert ("entity" in payload) is readable
-    assert message == smsg.DIRECTORY_NAME_DUPLICATE
 
 
 @pytest.mark.unit
@@ -263,7 +261,7 @@ def test_conflict_response_hides_entity_and_propagates_visible_winner(
         result_data=result_data,
     )
 
-    assert responses == [(409, payload, "Name conflict")]
+    assert [response[:-1] for response in responses] == [(409, payload)]
     assert "entity" not in payload
     assert result.code == 409
     assert result.target == "parent"

@@ -48,6 +48,18 @@ def reset_password(username: str, password: str | None = None) -> PasswordResetR
     )
 
 
+def rotate_secrets() -> int:
+    """Invalidate every user's existing tokens with independent signing keys."""
+    enter_server_root()
+    load_database_models()
+
+    with Session.begin() as session:
+        users = session.scalars(select(User)).all()
+        for user in users:
+            user.secret_key = secrets.token_hex(32)
+    return len(users)
+
+
 def clear_totp(
     username: str | None = None,
     *,

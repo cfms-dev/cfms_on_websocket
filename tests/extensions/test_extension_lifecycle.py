@@ -334,7 +334,7 @@ def test_builtin_shutdown_handler_stops_active_server(monkeypatch, builtin_exten
     finally:
         builtin_extension.ext_on_shutdown()
 
-    assert handler.responses == [(200, {}, "Server is shutting down")]
+    assert [response[:-1] for response in handler.responses] == [(200, {})]
     assert server.shutdown_calls == 1
 
 

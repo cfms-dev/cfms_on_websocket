@@ -585,3 +585,25 @@ default_groups = ["user"]
 Configurations from older releases can be migrated from `[sso.oidc]` to
 `[extensions.oidc_sso]` with `maintain config sync-template`. If both tables are
 present, values already stored under `[extensions.oidc_sso]` take precedence.
+
+## Authentication methods (protocol 30)
+
+`ext_register_auth_methods() -> list["BaseAuthMethodProvider"]` registers stateless
+provider instances before request serving. Each declares `method_id`, `category`,
+`throttle_factor`, `credential_schema`, and `supported_purposes` (a frozenset of
+`AuthPurpose` values). Keep TYPE_CHECKING-only hook annotations quoted.
+
+Implement `authenticate(handler, attempt, payload)` to own the method's entire
+flow, including its payload validation and any PROCESS exchanges. The login
+payload is `credential`; MFA/escalation supplies `data`. Resolve login identity
+inside the provider; continuation identity is fixed by `attempt.user_id`.
+Use the request-local `AuthenticationAttempt` and immutable
+`AuthVerificationResult` contracts described in
+[Authentication credentials](AUTHENTICATION_CREDENTIALS.md). Do not store attempt
+state on a shared provider or hold a database session while waiting for the peer.
+Methods may use different numbers of exchanges. A request never changes methods.
+
+Registration does not grant authorization: explicit purpose policies still
+select existing credentials. A method must declare support for that purpose.
+Password/public key support login, MFA and escalation; core TOTP supports only
+MFA and escalation; the bundled OIDC provider supports only login.

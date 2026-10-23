@@ -211,10 +211,16 @@ class User(Base):
             return False
 
     def renew_token(self, old: Token | None = None) -> Token:
+        if old is not None and old.purpose & (
+            TokenPurpose.AUTH | TokenPurpose.POST_AUTH
+        ):
+            raise jwt.InvalidTokenError(
+                "Cannot renew an authentication continuation token"
+            )
         if old is not None and not self.is_token_valid(old, purpose=old.purpose):
             raise jwt.InvalidTokenError("Cannot renew an invalid token")
         secret = self.secret_key or global_config["server"]["secret_key"]
-        purpose = old.purpose if old is not None else TokenPurpose.GENERAL
+        purpose = TokenPurpose.GENERAL
 
         return Token.new(self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, secret, purpose)
 

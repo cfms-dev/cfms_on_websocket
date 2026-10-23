@@ -1,9 +1,11 @@
 import secrets
 import time
+from typing import cast
 
 import orjson
 import pyotp
 from argon2 import PasswordHasher
+from sqlalchemy import CursorResult, update
 from sqlalchemy.orm import Session
 
 from include.config.settings import global_config
@@ -12,8 +14,11 @@ from include.database.models.auth import (
     UserPasswordCredential,
     UserTotpCredential,
 )
-from include.database.models.identity import User
-from include.domains.identity.auth.types import AuthPurpose
+from include.database.models.identity import User, UserStatus
+from include.domains.identity.auth.types import (
+    AuthPurpose,
+    InvalidAuthenticationAttempt,
+)
 from include.domains.identity.commands.auth_policies import replace_auth_policy
 
 _password_hasher = PasswordHasher()
@@ -24,13 +29,39 @@ def set_password(
     user: User,
     plain_password: str,
     force_update_after_login: bool = False,
+    *,
+    expected_signing_key: str | None = None,
 ) -> None:
+    new_secret = secrets.token_hex(32)
+    if expected_signing_key is not None:
+        if (
+            user.secret_key or global_config["server"]["secret_key"]
+        ) != expected_signing_key:
+            raise InvalidAuthenticationAttempt(
+                "Authentication credentials changed; restart login"
+            )
+        claimed = cast(
+            CursorResult,
+            session.execute(
+                update(User)
+                .where(
+                    User.id == user.id,
+                    User.secret_key == user.secret_key,
+                    User.status == UserStatus.ACTIVE,
+                )
+                .values(secret_key=new_secret)
+            ),
+        )
+        if claimed.rowcount != 1:
+            raise InvalidAuthenticationAttempt(
+                "Authentication credentials changed; restart login"
+            )
     credential = session.get(UserPasswordCredential, user.id)
     if credential is None:
         credential = UserPasswordCredential(user=user)
         session.add(credential)
     credential.set_password(plain_password, force_update_after_login)
-    user.secret_key = secrets.token_hex(32)
+    user.secret_key = new_secret
 
 
 def setup_totp(session: Session, user: User) -> tuple[UserTotpCredential, list[str]]:

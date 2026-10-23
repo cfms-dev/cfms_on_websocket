@@ -32,6 +32,7 @@
 - Clearly specify the contents of this submission, ensuring no necessary information is omitted.
 
 ## Testing instructions
+- Assert response status codes and structured data (such as error types, field locations, identifiers, and persisted state). Never match response message text, including `message`, validation error `msg`, or messages carried by authentication results, using equality, substrings, regular expressions, message constants, or whole-response comparisons. Message text is not a stable contract and may only be included in failure diagnostics.
 - Run tests only when necessary, as running tests will delete the original database (if SQLite is used as the database engine).
 - Back up the database (`app.db`) first, if available, before running any tests.
 - Use the provided MCP tools to run tests whenever possible, instead of the traditional command-line method.

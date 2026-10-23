@@ -43,6 +43,7 @@ class AuthRegistry:
             mid: {
                 "category": p.category.value,
                 "throttle_factor": p.throttle_factor,
+                "purposes": sorted(p.supported_purposes),
                 "schema": p.credential_schema.model_json_schema(),
             }
             for mid, p in self._providers.items()
@@ -94,15 +95,35 @@ class AuthRegistry:
         evidence: list[AuthEvidence],
         *,
         attempt_id: str,
+        method: str | None = None,
+        excluded_method: str | None = None,
     ) -> AuthPolicyDecision:
         policy = session.get(UserAuthPolicy, (user.id, purpose.value))
         chains = (
             [] if policy is None else auth_chains_adapter.validate_python(policy.chains)
         )
+        eligible = [
+            chain
+            for chain in chains
+            if len({step.method for step in chain}) == 1
+            and (method is None or chain[0].method == method)
+            and chain[0].method != excluded_method
+            and (provider := self.get(chain[0].method)) is not None
+            and purpose in provider.supported_purposes
+        ]
+        if chains and not eligible:
+            return AuthPolicyDecision(satisfied=False)
+        methods = {chain[0].method for chain in eligible} | {e.method for e in evidence}
+        credentials = [
+            credential
+            for mid in methods
+            if (provider := self.get(mid)) is not None
+            for credential in provider.list_credentials(session, user)
+        ]
         return evaluate_auth_policy(
             purpose,
-            chains,
-            self.list_user_credentials(session, user),
+            eligible,
+            credentials,
             evidence,
             user_id=user.id,
             attempt_id=attempt_id,
