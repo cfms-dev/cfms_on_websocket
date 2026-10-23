@@ -12,6 +12,40 @@ from include.domains.identity.auth.types import (
 )
 
 
+def can_complete_auth_chain(
+    chain: Sequence[AuthStep], credentials: Sequence[RegisteredCredential]
+) -> bool:
+    """Check availability, including distinct key assignment across public-key steps."""
+    active = {(c.method, c.credential_id): c for c in credentials if c.active}
+    pools = [
+        [
+            active[(step.method, cid)]
+            for cid in step.credential_ids
+            if (step.method, cid) in active
+        ]
+        for step in chain
+    ]
+    if any(not pool for pool in pools):
+        return False
+    if chain[0].method != "publickey":
+        return len(chain) == 1 or chain[0].method not in {"password", "totp", "oidc"}
+
+    assignments: dict[str, int] = {}
+
+    def assign(position: int, visited: set[str]) -> bool:
+        for credential in pools[position]:
+            identity = credential.key_identity
+            if identity is None or identity in visited:
+                continue
+            visited.add(identity)
+            if identity not in assignments or assign(assignments[identity], visited):
+                assignments[identity] = position
+                return True
+        return False
+
+    return all(assign(position, set()) for position in range(len(chain)))
+
+
 def evaluate_auth_policy(
     purpose: AuthPurpose,
     chains: AuthChains,

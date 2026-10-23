@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from include.database.models.auth import UserAuthPolicy
 from include.database.models.identity import User
+from include.domains.identity.auth.policies import can_complete_auth_chain
 from include.domains.identity.auth.registry import auth_registry
 from include.domains.identity.auth.types import (
     LOGIN_DISALLOWED_METHODS,
@@ -17,6 +18,49 @@ from include.domains.identity.auth.types import (
 
 class AuthPolicyConflict(ValueError):
     pass
+
+
+class AuthPolicyUnavailable(ValueError):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def ensure_authentication_available(session: Session, user: User) -> None:
+    """Require a complete login path and preserve any configured escalation path."""
+    credentials = auth_registry.list_user_credentials(session, user)
+    available: dict[AuthPurpose, set[str]] = {}
+    policies = {
+        purpose: session.get(UserAuthPolicy, (user.id, purpose.value))
+        for purpose in AuthPurpose
+    }
+    for purpose, policy in policies.items():
+        methods = set()
+        for chain in auth_chains_adapter.validate_python(
+            policy.chains if policy else []
+        ):
+            method = chain[0].method
+            provider = auth_registry.get(method)
+            if (
+                len({step.method for step in chain}) == 1
+                and provider is not None
+                and purpose in provider.supported_purposes
+                and not (
+                    purpose == AuthPurpose.LOGIN and method in LOGIN_DISALLOWED_METHODS
+                )
+                and can_complete_auth_chain(chain, credentials)
+            ):
+                methods.add(method)
+        available[purpose] = methods
+    mfa = policies[AuthPurpose.MFA]
+    if not any(
+        not (mfa and mfa.chains) or bool(available[AuthPurpose.MFA] - {login_method})
+        for login_method in available[AuthPurpose.LOGIN]
+    ):
+        raise AuthPolicyUnavailable("login_unavailable")
+    escalation = policies[AuthPurpose.ESCALATION]
+    if escalation and escalation.chains and not available[AuthPurpose.ESCALATION]:
+        raise AuthPolicyUnavailable("escalation_unavailable")
 
 
 def replace_auth_policy(

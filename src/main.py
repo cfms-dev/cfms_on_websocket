@@ -191,6 +191,7 @@ def server_init():
             {"permission": Permissions.SUPER_SET_USER_AVATAR},
             {"permission": Permissions.DEBUGGING},
             {"permission": Permissions.MANAGE_2FA},
+            {"permission": Permissions.MANAGE_USER_AUTHENTICATION},
             {"permission": Permissions.LIST_REVISIONS},
             {"permission": Permissions.VIEW_REVISION},
             {"permission": Permissions.SET_CURRENT_REVISION},

@@ -228,3 +228,227 @@ async def test_password_escalation_and_refresh_over_websocket(
         token=refreshed["data"]["token"],
     )
     assert rejected["code"] == 403
+
+
+@pytest.mark.asyncio
+async def test_user_manages_public_key_login_and_mfa_over_websocket(
+    user_factory, unauthenticated_client
+):
+    account = await user_factory()
+    client = unauthenticated_client
+    login = await client.login(account["username"], account["password"])
+    assert login["code"] == 200
+    general = login["data"]["token"]
+    inventory = await client.send_request("get_user_authentication", {}, token=general)
+    assert inventory["code"] == 200
+    password_id = next(
+        c["credential_id"]
+        for c in inventory["data"]["credentials"]
+        if c["method"] == "password"
+    )
+    private = ed25519.Ed25519PrivateKey.generate()
+    public = (
+        private.public_key()
+        .public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        .decode()
+    )
+    denied = await client.send_request(
+        "register_user_auth_public_key", {"public_key": public}, token=general
+    )
+    assert denied["code"] == 403
+    elevated = await client.send_request(
+        "complete_mfa", {"target_purpose": 6}, token=general
+    )
+    assert elevated["code"] == 200
+    assert elevated["data"]["purpose"] == 6
+    elevated_token = elevated["data"]["token"]
+    registered = await client.send_request(
+        "register_user_auth_public_key",
+        {"public_key": public, "label": "test key"},
+        token=elevated_token,
+    )
+    assert registered["code"] == 200
+    key = registered["data"]
+
+    async def respond(message):
+        challenge = base64.b64decode(message["data"]["challenge"])
+        return {
+            "method": "publickey",
+            "data": {
+                "fingerprint": key["fingerprint"],
+                "signature": base64.b64encode(private.sign(challenge)).decode(),
+            },
+        }
+
+    async def key_login():
+        return await client.send_request(
+            "login",
+            {
+                "method": "publickey",
+                "credential": {
+                    "username": account["username"],
+                    "fingerprint": key["fingerprint"],
+                },
+            },
+            include_auth=False,
+            auth_responder=respond,
+        )
+
+    unauthorized = await key_login()
+    assert unauthorized["code"] == 401
+    assert "token" not in unauthorized["data"]
+    configured = await client.send_request(
+        "set_user_auth_policies",
+        {
+            "policies": [
+                {
+                    "purpose": "login",
+                    "expected_revision": 1,
+                    "chains": [
+                        [
+                            {
+                                "method": "publickey",
+                                "credential_ids": [key["credential_id"]],
+                            }
+                        ]
+                    ],
+                },
+                {
+                    "purpose": "mfa",
+                    "expected_revision": 0,
+                    "chains": [
+                        [{"method": "password", "credential_ids": [password_id]}]
+                    ],
+                },
+                {
+                    "purpose": "escalation",
+                    "expected_revision": 0,
+                    "chains": [
+                        [
+                            {
+                                "method": "publickey",
+                                "credential_ids": [key["credential_id"]],
+                            }
+                        ]
+                    ],
+                },
+            ]
+        },
+        token=elevated_token,
+    )
+    assert configured["code"] == 200
+    assert configured["data"]["policies"]["login"]["revision"] == 2
+    updated = await client.send_request(
+        "update_user_auth_public_key",
+        {"credential_id": key["credential_id"], "label": None},
+        token=elevated_token,
+    )
+    assert updated["code"] == 200
+    assert updated["data"]["label"] is None
+    blocked = await client.send_request(
+        "delete_user_auth_public_key",
+        {"credential_id": key["credential_id"]},
+        token=elevated_token,
+    )
+    assert blocked["code"] == 409
+    assert blocked["data"]["reason"] == "login_unavailable"
+    new_login = await key_login()
+    assert new_login["code"] == 202
+    assert new_login["data"]["purpose"] == 1
+    assert "password" in new_login["data"]["methods"]
+    complete = await client.send_request(
+        "complete_mfa",
+        {
+            "target_purpose": 2,
+            "method": "password",
+            "data": {"password": account["password"]},
+        },
+        token=new_login["data"]["token"],
+    )
+    assert complete["code"] == 200
+    assert complete["data"]["purpose"] == 2
+    source = complete["data"]["token"]
+    missing_proof = await client.send_request(
+        "complete_mfa", {"target_purpose": 6}, token=source
+    )
+    assert missing_proof["code"] == 400
+    verified = await client.send_request(
+        "complete_mfa",
+        {
+            "target_purpose": 6,
+            "method": "publickey",
+            "data": {"fingerprint": key["fingerprint"]},
+        },
+        token=source,
+        auth_responder=respond,
+    )
+    assert verified["code"] == 200
+    assert verified["data"]["purpose"] == 6
+
+
+@pytest.mark.asyncio
+async def test_authentication_management_schema_rejects_invalid_fields(
+    user_factory, unauthenticated_client
+):
+    account = await user_factory()
+    client = unauthenticated_client
+    assert (await client.login(account["username"], account["password"]))["code"] == 200
+    for action, data, location in (
+        ("get_user_authentication", {"user_id": "invalid"}, ["user_id", "uuid"]),
+        (
+            "register_user_auth_public_key",
+            {"public_key": "key", "label": "x" * 256},
+            ["label"],
+        ),
+        ("set_user_auth_policies", {"policies": []}, ["policies"]),
+        ("update_user_auth_public_key", {"credential_id": "key"}, ["label"]),
+    ):
+        response = await client.send_request(action, data)
+        assert response["code"] == 400
+        assert response["data"]["errors"][0]["loc"] == location
+        assert "input" not in response["data"]["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_default_sysop_manages_another_users_authentication(
+    authenticated_client, user_factory
+):
+    account = await user_factory()
+    client = authenticated_client
+    user_id = account["user_id"]
+    inventory = await client.send_request(
+        "get_user_authentication", {"user_id": user_id}
+    )
+    assert inventory["code"] == 200
+    assert inventory["data"]["user_id"] == user_id
+    elevated = await client.send_request("complete_mfa", {"target_purpose": 6})
+    assert elevated["code"] == 200
+    token = elevated["data"]["token"]
+    public_key = (
+        ed25519.Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        .decode()
+    )
+    registered = await client.send_request(
+        "register_user_auth_public_key",
+        {"user_id": user_id, "public_key": public_key},
+        token=token,
+    )
+    assert registered["code"] == 200
+    key_id = registered["data"]["credential_id"]
+    for action, data in (
+        (
+            "set_user_auth_policies",
+            {"policies": [{"purpose": "mfa", "expected_revision": 0, "chains": []}]},
+        ),
+        (
+            "update_user_auth_public_key",
+            {"credential_id": key_id, "label": "managed by sysop"},
+        ),
+        ("delete_user_auth_public_key", {"credential_id": key_id}),
+    ):
+        response = await client.send_request(
+            action, {**data, "user_id": user_id}, token=token
+        )
+        assert response["code"] == 200

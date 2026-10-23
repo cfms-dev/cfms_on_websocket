@@ -174,7 +174,7 @@ class UserAuthPublicKey(Base):
         nullable=False,
     )
 
-    # SHA-256 of the canonical OpenSSH public key blob.
+    # SHA-256 of the canonical OpenSSH public key line without a comment.
     fingerprint: Mapped[bytes] = mapped_column(
         LargeBinary(32).with_variant(MySQLBinary(32), "mysql"),
         nullable=False,

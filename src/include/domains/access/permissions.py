@@ -50,6 +50,7 @@ class Permissions(StrEnum):
     GET_USER_INFO = "get_user_info"
     LIST_USERS = "list_users"
     MANAGE_2FA = "manage_2fa"
+    MANAGE_USER_AUTHENTICATION = "manage_user_authentication"
     SET_PASSWD = "set_passwd"
     SET_USER_PERMISSIONS = "set_user_permissions"
     SET_USER_AVATAR = "set_user_avatar"

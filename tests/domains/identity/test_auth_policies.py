@@ -2033,7 +2033,9 @@ def test_escalation_uses_its_own_policy_and_new_expiry(
 
 
 @pytest.mark.parametrize("policy", [None, []])
-def test_escalation_without_a_policy_is_denied(login_context, auth_sessions, policy):
+def test_escalation_without_a_policy_needs_no_further_proof(
+    login_context, auth_sessions, policy
+):
     user_id, _, codes, signing_key = login_context
     if policy is not None:
         with auth_sessions.begin() as session:
@@ -2048,7 +2050,28 @@ def test_escalation_without_a_policy_is_denied(login_context, auth_sessions, pol
         {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 6},
         Token.new(user_id, 60, signing_key),
     )
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 403
+    assert auth.RequestCompleteMFAHandler().handle(handler).code == 200
+    token = Token.from_raw(handler.response["data"]["token"], signing_key)
+    assert token.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
+    assert token.exp - token.iat == ESCALATION_TOKEN_EXPIRY_SECONDS
+    with auth_sessions() as session:
+        assert session.get(UserTotpCredential, user_id).verify(codes[0])
+
+
+@pytest.mark.parametrize("missing", ["method", "data", "both"])
+def test_login_mfa_still_requires_method_and_data(
+    login_context, auth_sessions, missing
+):
+    user_id, _, codes, signing_key = login_context
+    login = password_login()
+    assert auth.RequestLoginHandler().handle(login).code == 202
+    token = Token.from_raw(login.response["data"]["token"], signing_key)
+    data = {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 2}
+    for field in ("method", "data") if missing == "both" else (missing,):
+        data.pop(field)
+    handler = Handler(data, token)
+    assert auth.RequestCompleteMFAHandler().handle(handler).code == 400
+    assert "token" not in handler.response["data"]
     with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
 

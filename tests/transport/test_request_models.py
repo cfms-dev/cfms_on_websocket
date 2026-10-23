@@ -22,6 +22,10 @@ from include.domains.identity.handlers.auth import (
     RequestCompleteMFAHandler,
     RequestLoginHandler,
 )
+from include.domains.identity.handlers.auth_management import (
+    RequestRegisterUserAuthPublicKeyHandler,
+    RequestSetUserAuthPoliciesHandler,
+)
 from include.domains.identity.handlers.groups import (
     RequestChangeGroupPermissionsHandler,
     RequestCreateGroupHandler,
@@ -198,6 +202,77 @@ def test_complete_mfa_request_accepts_totp_token(target_purpose):
     assert request.method == "totp"
     assert request.data == {"token": "123456"}
     assert request.target_purpose == target_purpose
+
+
+def test_complete_mfa_allows_proofless_escalation_envelope():
+    request = RequestCompleteMFAHandler.request_model.model_validate(
+        {"target_purpose": 6}
+    )
+    assert request.method is REQUEST_UNSET
+    assert request.data is REQUEST_UNSET
+
+
+@pytest.mark.parametrize(
+    ("replacement", "location", "error_type"),
+    [
+        (
+            {"purpose": "invalid", "expected_revision": 0, "chains": []},
+            ("policies", 0, "purpose"),
+            "enum",
+        ),
+        (
+            {"purpose": "login", "expected_revision": -1, "chains": []},
+            ("policies", 0, "expected_revision"),
+            "greater_than_equal",
+        ),
+        (
+            {"purpose": "login", "expected_revision": True, "chains": []},
+            ("policies", 0, "expected_revision"),
+            "int_type",
+        ),
+        (
+            {"purpose": "login", "expected_revision": 0, "chains": [[]]},
+            ("policies", 0, "chains", 0),
+            "too_short",
+        ),
+        (
+            {
+                "purpose": "login",
+                "expected_revision": 0,
+                "chains": [[{"method": "password", "credential_ids": []}]],
+            },
+            ("policies", 0, "chains", 0, 0, "credential_ids"),
+            "too_short",
+        ),
+    ],
+)
+def test_auth_policy_request_rejects_invalid_structure(
+    replacement, location, error_type
+):
+    with pytest.raises(ValidationError) as exc:
+        RequestSetUserAuthPoliciesHandler.request_model.model_validate(
+            {"policies": [replacement]}
+        )
+    assert exc.value.errors()[0]["loc"] == location
+    assert exc.value.errors()[0]["type"] == error_type
+
+
+def test_auth_policy_request_rejects_duplicate_purposes():
+    replacement = {"purpose": "mfa", "expected_revision": 0, "chains": []}
+    with pytest.raises(ValidationError) as exc:
+        RequestSetUserAuthPoliciesHandler.request_model.model_validate(
+            {"policies": [replacement, replacement]}
+        )
+    assert exc.value.errors()[0]["type"] == "value_error"
+
+
+def test_public_key_request_label_is_bounded():
+    with pytest.raises(ValidationError) as exc:
+        RequestRegisterUserAuthPublicKeyHandler.request_model.model_validate(
+            {"public_key": "key", "label": "x" * 256}
+        )
+    assert exc.value.errors()[0]["loc"] == ("label",)
+    assert exc.value.errors()[0]["type"] == "string_too_long"
 
 
 @pytest.mark.parametrize("target_purpose", [0, 1, 3, 4, 8, True, False, "2", None, 2.5])

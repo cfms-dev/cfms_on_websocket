@@ -64,6 +64,13 @@ from include.domains.identity.handlers.auth import (
     RequestLoginHandler,
     RequestRefreshTokenHandler,
 )
+from include.domains.identity.handlers.auth_management import (
+    RequestDeleteUserAuthPublicKeyHandler,
+    RequestGetUserAuthenticationHandler,
+    RequestRegisterUserAuthPublicKeyHandler,
+    RequestSetUserAuthPoliciesHandler,
+    RequestUpdateUserAuthPublicKeyHandler,
+)
 from include.domains.identity.handlers.groups import (
     RequestChangeGroupPermissionsHandler,
     RequestCreateGroupHandler,
@@ -146,6 +153,11 @@ available_functions: dict[str, type[RequestHandler]] = {
     "login": RequestLoginHandler,
     "complete_mfa": RequestCompleteMFAHandler,
     "refresh_token": RequestRefreshTokenHandler,
+    "get_user_authentication": RequestGetUserAuthenticationHandler,
+    "set_user_auth_policies": RequestSetUserAuthPoliciesHandler,
+    "register_user_auth_public_key": RequestRegisterUserAuthPublicKeyHandler,
+    "update_user_auth_public_key": RequestUpdateUserAuthPublicKeyHandler,
+    "delete_user_auth_public_key": RequestDeleteUserAuthPublicKeyHandler,
     # Two-factor authentication
     "setup_2fa": RequestSetup2FAHandler,
     "cancel_2fa_setup": RequestCancel2FASetupHandler,  # especially for cancelling setup

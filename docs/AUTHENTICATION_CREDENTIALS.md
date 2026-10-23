@@ -45,8 +45,10 @@ inferring requirements from enabled TOTP credentials.
 
 `UserAuthPolicy` has composite key `(user_id, purpose)`, a positive `revision`,
 and JSON `chains`. Purposes are `login`, `mfa`, and `escalation`.
-An absent/empty login or escalation policy denies authentication. An absent/empty
-MFA policy requires no additional verification. A nonempty policy with missing
+An absent/empty login policy denies authentication. An absent/empty escalation
+policy permits a valid GENERAL token to be exchanged directly for an elevated
+token, without further proof. An absent/empty MFA policy requires no additional
+verification. A nonempty policy with missing
 or inactive credentials remains required and cannot be satisfied through them.
 
 Alternatives are OR; steps inside an alternative are ordered AND. Every chain
@@ -194,8 +196,14 @@ interactions as 400; invalid proofs as 401.
 
 Escalation has no preceding authentication step in the current Request. It can
 use password, public key, TOTP, or an extension method explicitly authorized by
-the independent `escalation` policy. Missing/empty escalation policy denies the
-request. Historical login evidence is never reused. Issuing the escalation flag
+the independent `escalation` policy. With a missing/empty escalation policy,
+submit `{"target_purpose":6}` to `complete_mfa` using a valid GENERAL token;
+`method` and `data` may be omitted and no provider is invoked. A configured
+nonempty policy requires both fields and fresh verification; missing fields
+return 400. Login MFA always requires both fields. Direct escalation rechecks
+the account status, token expiry and current signing key under the same user
+write lock used by authentication management. Historical login evidence is
+never reused. Issuing the escalation flag
 does not bypass any existing business permission checks and does not update
 `last_login`.
 
@@ -283,6 +291,91 @@ authentication in progress when the relevant policies or keys change. Rotation
 does not undo requests that already passed authentication, which is why services
 must be stopped. Restoring a database backup can restore old signing keys;
 repeat the rotation before serving requests after an incompatible restore.
+
+## User authentication management
+
+These authenticated protocol-30 WebSocket actions accept optional `user_id`
+(an account UUID), defaulting to the caller. Managing another account requires
+`manage_user_authentication`; neither `manage_2fa` nor escalation alone grants
+that permission. Authorization is checked before reporting target existence.
+The read action accepts GENERAL tokens; all four write actions require
+GENERAL|ESCALATION. Existing password and TOTP lifecycle endpoints retain their
+dedicated checks and behavior. OIDC binding/unbinding remains extension-owned.
+New installations grant this permission to the default `sysop` group. Existing
+installations must grant it to intended administrators through the existing
+user/group permission APIs; this change does not rewrite stored permissions.
+
+| Action | Request fields besides optional `user_id` | Response data |
+| --- | --- | --- |
+| `get_user_authentication` | None | `user_id`, `methods`, `credentials`, `policies` |
+| `set_user_auth_policies` | Nonempty `policies` array of `{purpose, expected_revision, chains}` | Updated `policies`, keyed by purpose, with `revision` and `chains` |
+| `register_user_auth_public_key` | `public_key` (OpenSSH text), optional `label` | `credential_id`, `fingerprint` (hex), `label` |
+| `update_user_auth_public_key` | `credential_id`, required `label` (text or null) | `credential_id`, `label` |
+| `delete_user_auth_public_key` | `credential_id` | `credential_id` |
+
+`methods` is keyed by each loaded provider's method ID, with `category`,
+`throttle_factor`, supported `purposes`, and credential JSON `schema`.
+`credentials` contains the existing public inventory fields: `method`,
+`credential_id`, `active`, `label`, and `key_identity` (hex fingerprint for public
+keys). It never contains passwords, hashes, signing keys, TOTP secrets or backup
+codes. Loaded extension providers participate in both inventory and policy
+configuration. `policies` always contains `login`, `mfa` and `escalation`; absent
+policies have `revision: 0` and `chains: []`.
+
+Public-key registration accepts Ed25519, RSA and ECDSA OpenSSH keys, normalizes
+storage to SubjectPublicKeyInfo DER and calculates SHA-256 over the canonical
+OpenSSH public-key text without its comment. The latter matches existing CFMS
+fingerprints; it is not the SSH wire-blob fingerprint used by `ssh-keygen`.
+Labels contain at most 255 characters; null clears a label. A registration is
+authorized by the elevated caller without an additional possession challenge.
+It grants no authentication purpose. Keys cannot be replaced in place: register
+a replacement, update policies and then remove the old key. Deletion retains
+policy references and does not shorten chains.
+
+For example, after registering a key, a caller can configure public-key login
+with password MFA and public-key escalation in one transaction:
+
+```json
+{"action":"set_user_auth_policies","data":{"policies":[
+  {"purpose":"login","expected_revision":1,"chains":[[{"method":"publickey","credential_ids":["key-id"]}]]},
+  {"purpose":"mfa","expected_revision":0,"chains":[[{"method":"password","credential_ids":["password-id"]}]]},
+  {"purpose":"escalation","expected_revision":0,"chains":[[{"method":"publickey","credential_ids":["key-id"]}]]}
+]}}
+```
+
+Each purpose may appear once. Updates use current revisions, increment each
+changed revision by one, and commit or roll back as a group. Write operations
+serialize on the target user's row before reading authentication state. Policy
+updates and key deletion must preserve at least one complete login path,
+including a different-method MFA alternative when MFA is required. They must
+also preserve a completable nonempty escalation policy. Inactive registrations
+do not count as available; repeated public-key steps require a distinct key
+assignment. Single-proof password, TOTP and OIDC flows cannot satisfy multi-step
+chains. A nonempty escalation policy cannot be cleared through this API. An
+empty MFA policy is allowed and disables login MFA. These availability checks
+apply to the new management writes, not trusted commands or existing TOTP
+lifecycle endpoints. Availability describes registered active credentials;
+it does not prove the user still possesses their secrets or that an external
+identity provider is currently reachable.
+
+Successful actions return 200; invalid fields, keys or policies return 400,
+invalid authentication returns 401, insufficient authority returns 403, and
+missing users or keys return 404. Conflicts return 409 with `data.reason`:
+
+| Reason | Meaning |
+| --- | --- |
+| `revision_conflict` | A supplied policy revision is stale |
+| `duplicate_public_key` | The target user already registered this key |
+| `login_unavailable` | No complete login/MFA path would remain |
+| `escalation_unavailable` | A nonempty escalation policy would become unusable |
+| `escalation_required` | An existing nonempty escalation policy cannot be cleared |
+
+Malformed or unsupported keys expose `invalid_public_key` or
+`unsupported_public_key`; invalid policy references or methods expose
+`invalid_policy`. Audit records identify the caller, target UUID, changed
+purposes and affected credential ID, without credential material. These actions
+are not added to the lockdown whitelist. Rate costs are 2 for inventory and
+label updates, 5 for policy updates and registration, and 3 for deletion.
 
 ## OIDC binding and rollout
 

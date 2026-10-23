@@ -1,10 +1,12 @@
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError
+from sqlalchemy import update
 from websockets.exceptions import ConnectionClosed
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
 from include.config.settings import global_config
+from include.database.models.auth import UserAuthPolicy
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.identity.auth.flows import (
@@ -21,7 +23,9 @@ from include.domains.identity.tokens import Token, TokenPurpose
 from include.domains.security.guards.login import LoginGuard
 from include.transport.client_address import get_client_ip
 from include.transport.request_handler import (
+    REQUEST_UNSET,
     EmptyRequestDataModel,
+    Omittable,
     RequestDataModel,
     RequestHandler,
     Result,
@@ -36,8 +40,8 @@ class _LoginRequest(RequestDataModel):
 
 
 class _CompleteMFARequest(RequestDataModel):
-    method: NonEmptyString
-    data: dict[str, Any] = Field(repr=False)
+    method: Omittable[NonEmptyString] = REQUEST_UNSET
+    data: Omittable[dict[str, Any]] = Field(default=REQUEST_UNSET, repr=False)
     target_purpose: Literal[
         2, 6
     ]  # TokenPurpose.GENERAL or TokenPurpose.GENERAL | TokenPurpose.ESCALATION
@@ -179,6 +183,57 @@ class RequestCompleteMFAHandler(RequestHandler[_CompleteMFARequest]):
         else:
             handler.conclude_request(403, {}, "Token exchange is not permitted")
             return Result(code=403, user_id=handler.user_id)
+        if purpose == AuthPurpose.ESCALATION:
+            try:
+                issued: tuple[str, Token] | None = None
+                with Session.begin() as session:
+                    session.execute(
+                        update(User)
+                        .where(User.id == source.sub)
+                        .values(id=User.id)
+                        .execution_options(synchronize_session=False)
+                    )
+                    user = session.get(User, source.sub)
+                    if user is None:
+                        raise AuthenticationFailure(401, "Invalid authentication token")
+                    if user.status != UserStatus.ACTIVE:
+                        raise AuthenticationFailure(4003, "User account is not active")
+                    if not user.is_token_valid(source):
+                        raise AuthenticationFailure(401, "Invalid authentication token")
+                    policy = session.get(
+                        UserAuthPolicy, (user.id, AuthPurpose.ESCALATION.value)
+                    )
+                    if policy is None or not policy.chains:
+                        issued = (
+                            user.username,
+                            Token.new(
+                                user.id,
+                                ESCALATION_TOKEN_EXPIRY_SECONDS,
+                                user.secret_key
+                                or global_config["server"]["secret_key"],
+                                TokenPurpose.GENERAL | TokenPurpose.ESCALATION,
+                            ),
+                        )
+                if issued is not None:
+                    username, token = issued
+                    handler.conclude_request(
+                        200,
+                        {
+                            "token": token.raw,
+                            "exp": token.exp,
+                            "purpose": int(token.purpose),
+                        },
+                        "Escalation successful",
+                    )
+                    return Result(code=200, target=username, user_id=source.sub)
+            except AuthenticationFailure as exc:
+                handler.conclude_request(exc.code, exc.data, exc.message)
+                return Result(code=exc.code, user_id=handler.user_id)
+        if request.method is REQUEST_UNSET or request.data is REQUEST_UNSET:
+            handler.conclude_request(
+                400, {}, "Authentication method and data are required"
+            )
+            return Result(code=400, user_id=handler.user_id)
         attempt = AuthenticationAttempt(
             request.method,
             purpose,

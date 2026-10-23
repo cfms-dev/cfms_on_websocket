@@ -10,6 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_CORE_ACTION_COSTS = {
     "login": 5,
     "complete_mfa": 2,
+    "get_user_authentication": 2,
+    "set_user_auth_policies": 5,
+    "register_user_auth_public_key": 5,
+    "update_user_auth_public_key": 2,
+    "delete_user_auth_public_key": 3,
     "refresh_token": 2,
     "setup_2fa": 20,
     "cancel_2fa_setup": 1,
@@ -164,7 +169,7 @@ def test_all_known_costs_fit_default_request_buckets():
         *EXPECTED_EXTRA_HANDLER_COSTS.values(),
     )
 
-    assert len(all_costs) == 87
+    assert len(all_costs) == 92
     assert set(all_costs) == {1, 2, 3, 5, 10, 20}
     assert all(0 < cost <= capacity for cost in all_costs)
 
