@@ -6,6 +6,10 @@ extension directory must contain both an `_extension.py` entrypoint and a
 manifest lets the server validate and describe extensions without importing their
 Python code.
 
+Authentication methods own their credential models, with single-direction
+references to users. See [Authentication credential ownership](AUTHENTICATION_CREDENTIALS.md)
+for provider interfaces, credential queries, and transaction requirements.
+
 ## Manifest format
 
 Manifest version 2 separates extension metadata from server compatibility:

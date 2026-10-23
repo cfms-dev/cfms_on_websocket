@@ -56,9 +56,7 @@ def test_download_task_records_issuer_without_binding_bearer(file_task_context) 
     from include.domains.documents.handlers.documents import create_file_task
 
     with file_task_context.session.begin() as session:
-        user = file_task_context.User(
-            username="alice", pass_hash="unused", created_time=1.0
-        )
+        user = file_task_context.User(username="alice", created_time=1.0)
         session.add(user)
         session.flush()
         user_id = user.id

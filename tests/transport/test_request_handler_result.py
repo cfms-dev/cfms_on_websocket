@@ -2,7 +2,10 @@ from types import SimpleNamespace
 
 import jwt
 import pytest
+from argon2 import PasswordHasher
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
+from include.database.models.auth import UserPasswordCredential
 
 pytestmark = pytest.mark.unit
 
@@ -649,78 +652,6 @@ def _throttled_decision():
     return ThrottleDecision(False, ThrottleScope.ACCOUNT, retry_after_seconds=45)
 
 
-def test_totp_setup_validation_does_not_use_authentication_throttle(monkeypatch):
-    from include.domains.security.handlers import two_factor
-    from include.domains.security.handlers.two_factor import RequestValidate2FAHandler
-
-    class FakeUser:
-        username = "alice"
-        totp_secret = "secret"
-        totp_enabled = False
-        valid_token = False
-
-        def verify_totp(self, _token):
-            return self.valid_token
-
-        def enable_totp(self):
-            self.totp_enabled = True
-
-    class FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def get(self, _model, _user_id):
-            return user
-
-    def unexpected_throttle_call(*_args, **_kwargs):
-        raise AssertionError(
-            "2FA setup validation must not use authentication throttle"
-        )
-
-    user = FakeUser()
-    responses = []
-    handler = SimpleNamespace(
-        user_id="alice",
-        data={"token": "000000"},
-        conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
-    )
-    monkeypatch.setattr(two_factor, "Session", FakeSession)
-    monkeypatch.setattr(two_factor, "get_client_ip", unexpected_throttle_call)
-    monkeypatch.setattr(two_factor.LoginGuard, "evaluate", unexpected_throttle_call)
-    monkeypatch.setattr(
-        two_factor.LoginGuard, "report_failure", unexpected_throttle_call
-    )
-    monkeypatch.setattr(
-        two_factor.LoginGuard, "report_success", unexpected_throttle_call
-    )
-
-    result = RequestValidate2FAHandler().handle(handler)
-
-    assert result.code == 401
-    assert responses == [((401, {}, "Invalid verification code"), {})]
-
-    user.valid_token = True
-    user.totp_enabled = False
-    responses.clear()
-
-    result = RequestValidate2FAHandler().handle(handler)
-
-    assert result.code == 0
-    assert responses == [
-        (
-            (),
-            {
-                "code": 200,
-                "message": "Two-factor authentication enabled successfully",
-                "data": {"method": "totp"},
-            },
-        )
-    ]
-
-
 def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
     from include.domains.security.handlers import two_factor
     from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
@@ -821,21 +752,15 @@ class _PasswordUser:
         status=None,
         token_valid=True,
     ):
-        self.password = password
+        self.credential = UserPasswordCredential(
+            pass_hash=PasswordHasher().hash(password)
+        )
         self.all_permissions = set(permissions)
         self.status = status
         self.token_valid = token_valid
-        self.password_update = None
 
     def is_token_valid(self, _token):
         return self.token_valid
-
-    def verify_password(self, password):
-        return password == self.password
-
-    def set_password(self, password, force_update_after_login=False):
-        self.password = password
-        self.password_update = (password, force_update_after_login)
 
 
 class _PasswordSession:
@@ -850,9 +775,14 @@ class _PasswordSession:
     def __exit__(self, *_args):
         return None
 
-    def get(self, _model, user_id):
+    def get(self, model, user_id):
         self.get_calls.append(user_id)
-        return self.users.get(user_id)
+        user = self.users.get(user_id)
+        return (
+            user.credential
+            if user is not None and model is UserPasswordCredential
+            else user
+        )
 
     def scalar(self, statement):
         username = next(iter(statement.compile().params.values()))
@@ -896,9 +826,9 @@ def test_password_change_wrong_credentials_do_not_disclose_user_existence(monkey
     _allow_password_authentication(monkeypatch, users)
     verified_users = []
 
-    def verify(user, password):
-        verified_users.append(user)
-        return user is not None and user.verify_password(password)
+    def verify(credential, password):
+        verified_users.append(credential)
+        return credential is not None and credential.verify(password)
 
     monkeypatch.setattr(users, "verify_password_or_dummy", verify)
     outcomes = []
@@ -928,7 +858,7 @@ def test_password_change_wrong_credentials_do_not_disclose_user_existence(monkey
         (expected_result, [expected_response], 0),
         (expected_result, [expected_response], 0),
     ]
-    assert verified_users == [existing, None]
+    assert verified_users == [existing.credential, None]
 
 
 @pytest.mark.parametrize(
@@ -1040,7 +970,8 @@ def test_self_password_change_commits_and_attributes_audit_to_target(monkeypatch
     assert responses == [
         {"code": 200, "data": {}, "message": "Password set successfully"}
     ]
-    assert user.password_update == ("NewPassword456!", False)
+    assert user.credential.verify("NewPassword456!")
+    assert user.credential.passwd_last_modified > 0
     assert session.commit_count == 1
 
 
@@ -1082,7 +1013,7 @@ def test_self_password_change_rejects_privileged_flags_after_authentication(
             ),
         }
     ]
-    assert user.password_update is None
+    assert user.credential.verify("OldPassword123!")
     assert session.commit_count == 0
 
 
@@ -1121,5 +1052,6 @@ def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkey
     assert responses == [
         {"code": 200, "data": {}, "message": "Password set successfully"}
     ]
-    assert target.password_update == ("short", True)
+    assert target.credential.verify("short")
+    assert target.credential.passwd_last_modified == 0
     assert session.commit_count == 1

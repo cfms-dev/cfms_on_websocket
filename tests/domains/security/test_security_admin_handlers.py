@@ -69,7 +69,6 @@ def security_admin_context(monkeypatch, tmp_path, sqlite_engine_factory):
         admin = User(
             id=uuid.uuid5(uuid.NAMESPACE_DNS, "admin"),
             username="admin",
-            pass_hash="hash",
             created_time=0.0,
         )
         admin.rights.extend(
@@ -91,7 +90,6 @@ def security_admin_context(monkeypatch, tmp_path, sqlite_engine_factory):
             User(
                 id=uuid.uuid5(uuid.NAMESPACE_DNS, "viewer"),
                 username="viewer",
-                pass_hash="hash",
                 created_time=0.0,
             )
         )

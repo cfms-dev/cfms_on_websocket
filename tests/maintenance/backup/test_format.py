@@ -416,3 +416,19 @@ def test_runtime_state_tables_are_excluded(backup_context):
     assert "schedule_executions" in excluded
     assert "scheduling_runtime_state" in excluded
     assert "system_states" in excluded
+
+
+@pytest.mark.parametrize("digest", ["not-hex", "00" * 32, 42])
+def test_backup_rejects_oidc_binding_digest_mismatch(backup_context, digest):
+    table = backup_context.Base.metadata.tables["user_oidc_credentials"]
+    with pytest.raises(backup_context.BackupFormatError, match="OIDC identity digest"):
+        backup_context.backup_core._decode_row(
+            {
+                "id": "binding",
+                "user_id": str(uuid.uuid4()),
+                "issuer": "https://issuer.example",
+                "subject": "subject",
+                "identity_digest": digest,
+            },
+            table,
+        )

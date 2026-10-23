@@ -99,17 +99,12 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
     now = time.time()
     user = models.User(
         username="alice",
-        pass_hash="hash",
-        passwd_last_modified=now,
         nickname="Alice",
         avatar_id=None,
         last_login=None,
         created_time=now,
         status=0,
         secret_key="alice-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     user.rights.append(

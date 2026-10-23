@@ -1,36 +1,45 @@
-from include.domains.identity.auth.base import (
+lazy from include.domains.identity.auth.base import (
     AuthFactorCategory,
     AuthVerificationResult,
     BaseAuthMethodProvider,
 )
-from include.domains.identity.auth.providers.password import (
+lazy from include.domains.identity.auth.providers.password import (
     PasswordAuthProvider,
     PasswordCredentialSchema,
 )
-from include.domains.identity.auth.providers.publickey import (
+lazy from include.domains.identity.auth.providers.publickey import (
     PublicKeyAuthProvider,
     PublicKeyCredentialSchema,
 )
-from include.domains.identity.auth.providers.totp import (
+lazy from include.domains.identity.auth.providers.totp import (
     TOTPAuthProvider,
     TOTPCredentialSchema,
 )
-from include.domains.identity.auth.registry import AuthRegistry, auth_registry
-
-# Register core built-in authentication method providers
-auth_registry.register(PasswordAuthProvider())
-auth_registry.register(PublicKeyAuthProvider())
-auth_registry.register(TOTPAuthProvider())
+lazy from include.domains.identity.auth.registry import AuthRegistry, auth_registry
+lazy from include.domains.identity.auth.types import (
+    AuthenticationContext,
+    AuthEvidence,
+    AuthPolicyDecision,
+    AuthPurpose,
+    AuthStep,
+    RegisteredCredential,
+)
 
 __all__ = [
+    "AuthEvidence",
     "AuthFactorCategory",
+    "AuthPolicyDecision",
+    "AuthPurpose",
     "AuthRegistry",
+    "AuthStep",
     "AuthVerificationResult",
+    "AuthenticationContext",
     "BaseAuthMethodProvider",
     "PasswordAuthProvider",
     "PasswordCredentialSchema",
     "PublicKeyAuthProvider",
     "PublicKeyCredentialSchema",
+    "RegisteredCredential",
     "TOTPAuthProvider",
     "TOTPCredentialSchema",
     "auth_registry",

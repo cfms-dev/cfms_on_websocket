@@ -7,7 +7,6 @@ from typing import Any
 lazy from collections.abc import Callable, Iterable
 
 import jwt
-from argon2 import PasswordHasher
 from sqlalchemy import (
     VARCHAR,
     Boolean,
@@ -30,18 +29,11 @@ from include.config.settings import global_config
 from include.database.session import Base, Session
 from include.domains.identity.tokens import Token, TokenPurpose
 lazy from include.database.models.access import UserBlockEntry
-lazy from include.database.models.auth import (
-    UserAuthPublicKey,
-    UserPasswordCredential,
-    UserTotpCredential,
-)
 lazy from include.database.models.comments import Comment
 lazy from include.database.models.files import File
 lazy from include.database.models.keyrings import UserKey
 lazy from include.database.models.operations import AuditEntry
 lazy from include.domains.access.permissions import Permissions
-
-_password_hasher = PasswordHasher()
 
 
 class UserStatus(IntEnum):
@@ -146,15 +138,6 @@ class User(Base):
     block_entries: Mapped[list["UserBlockEntry"]] = relationship(
         "UserBlockEntry", back_populates="user", cascade="all, delete-orphan"
     )
-    password_credential: Mapped["UserPasswordCredential | None"] = relationship(
-        "UserPasswordCredential", back_populates="user", cascade="all, delete-orphan"
-    )
-    totp_credential: Mapped["UserTotpCredential | None"] = relationship(
-        "UserTotpCredential", back_populates="user", cascade="all, delete-orphan"
-    )
-    auth_public_keys: Mapped[list["UserAuthPublicKey"]] = relationship(
-        "UserAuthPublicKey", back_populates="user", cascade="all, delete-orphan"
-    )
     audit_entries: Mapped[list["AuditEntry"]] = relationship(
         "AuditEntry", back_populates="user"
     )
@@ -194,118 +177,7 @@ class User(Base):
     def status_reason(self) -> str | None:
         return self.status_comment.comment_text if self.status_comment else None
 
-    @property
-    def pass_hash(self) -> str | None:
-        return self.password_credential.pass_hash if self.password_credential else None
-
-    @pass_hash.setter
-    def pass_hash(self, value: str | None) -> None:
-        if value is None:
-            self.password_credential = None
-            return
-        if not self.password_credential:
-            self.password_credential = UserPasswordCredential(
-                user_id=self.id,
-                pass_hash=value,
-                passwd_last_modified=time.time(),
-            )
-        else:
-            self.password_credential.pass_hash = value
-
-    @property
-    def passwd_last_modified(self) -> float:
-        return (
-            self.password_credential.passwd_last_modified
-            if self.password_credential
-            else 0.0
-        )
-
-    @passwd_last_modified.setter
-    def passwd_last_modified(self, value: float) -> None:
-        if self.password_credential:
-            self.password_credential.passwd_last_modified = value
-
-    @property
-    def totp_secret(self) -> str | None:
-        return self.totp_credential.secret if self.totp_credential else None
-
-    @totp_secret.setter
-    def totp_secret(self, value: str | None) -> None:
-        if value is not None:
-            if not self.totp_credential:
-                self.totp_credential = UserTotpCredential(
-                    user_id=self.id,
-                    secret=value,
-                    enabled=False,
-                    created_time=time.time(),
-                )
-            else:
-                self.totp_credential.secret = value
-        elif self.totp_credential:
-            self.totp_credential = None
-
-    @property
-    def totp_enabled(self) -> bool:
-        return self.totp_credential.enabled if self.totp_credential else False
-
-    @totp_enabled.setter
-    def totp_enabled(self, value: bool) -> None:
-        if not self.totp_credential:
-            self.totp_credential = UserTotpCredential(
-                user_id=self.id,
-                secret="",
-                enabled=value,
-                created_time=time.time(),
-            )
-        else:
-            self.totp_credential.enabled = value
-
-    @property
-    def totp_backup_codes(self) -> str | None:
-        return self.totp_credential.backup_codes if self.totp_credential else None
-
-    @totp_backup_codes.setter
-    def totp_backup_codes(self, value: str | None) -> None:
-        if not self.totp_credential:
-            self.totp_credential = UserTotpCredential(
-                user_id=self.id,
-                secret="",
-                enabled=False,
-                backup_codes=value,
-                created_time=time.time(),
-            )
-        else:
-            self.totp_credential.backup_codes = value
-
-    def verify_password(self, plain_password: str) -> bool:
-        if not self.password_credential:
-            return False
-        return self.password_credential.verify(plain_password)
-
-    def set_password(
-        self, plain_password: str, force_update_after_login: bool = False
-    ) -> None:
-        if not self.password_credential:
-            session = object_session(self)
-            cred = UserPasswordCredential(
-                user_id=self.id,
-                pass_hash="",
-                passwd_last_modified=0.0,
-            )
-            cred.set_password(plain_password, force_update_after_login)
-            self.password_credential = cred
-            if session is not None:
-                session.add(self.password_credential)
-        else:
-            self.password_credential.set_password(
-                plain_password, force_update_after_login
-            )
-
-        self.secret_key = secrets.token_hex(32)
-
-    def create_token_after_authentication(
-        self, plain_password: str | None = None
-    ) -> Token:
+    def create_token_after_authentication(self) -> Token:
         secret = (
             global_config["server"]["secret_key"]
             if not self.secret_key
@@ -316,15 +188,6 @@ class User(Base):
         session = object_session(self)
         if session is not None:
             self.last_login = time.time()
-            if (
-                plain_password
-                and self.password_credential
-                and self.password_credential.check_needs_rehash()
-            ):
-                self.password_credential.pass_hash = _password_hasher.hash(
-                    plain_password
-                )
-                session.add(self.password_credential)
             session.add(self)
             session.commit()
 
@@ -354,45 +217,6 @@ class User(Base):
         purpose = old.purpose if old is not None else TokenPurpose.GENERAL
 
         return Token.new(self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, secret, purpose)
-
-    def setup_totp(self) -> tuple[str, list[str]]:
-        credential, backup_codes = UserTotpCredential.create_pending(self.id)
-        session = object_session(self)
-        if self.totp_credential and session is not None:
-            session.delete(self.totp_credential)
-        self.totp_credential = credential
-        if session is not None:
-            session.add(credential)
-            session.commit()
-        return credential.secret, backup_codes
-
-    def enable_totp(self) -> None:
-        if not self.totp_credential or not self.totp_credential.secret:
-            raise ValueError("TOTP secret not set. Call setup_totp() first.")
-        self.totp_credential.enabled = True
-        session = object_session(self)
-        if session is not None:
-            session.add(self.totp_credential)
-            session.commit()
-
-    def disable_totp(self) -> None:
-        if self.totp_credential:
-            session = object_session(self)
-            if session is not None:
-                session.delete(self.totp_credential)
-                session.commit()
-            self.totp_credential = None
-
-    def verify_totp(self, token: str) -> bool:
-        if not self.totp_credential:
-            return False
-        return self.totp_credential.verify(token)
-
-    @property
-    def totp_provisioning_uri(self) -> str | None:
-        if not self.totp_credential or not self.totp_credential.secret:
-            return None
-        return self.totp_credential.provisioning_uri
 
     @property
     def all_groups(self):

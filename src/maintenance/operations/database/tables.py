@@ -5,6 +5,8 @@ APPLICATION_TABLE_NAMES = (
     "user_passwords",
     "user_totp_credentials",
     "user_auth_public_keys",
+    "user_oidc_credentials",
+    "user_auth_policies",
     "user_groups",
     "group_permissions",
     "user_memberships",

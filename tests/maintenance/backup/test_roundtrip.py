@@ -26,6 +26,33 @@ def test_backup_header_and_roundtrip_restore(
     source_storage.mkdir()
     target_storage.mkdir()
     _seed_source(base, source_engine, source_storage)
+    from include.database.models.auth import UserAuthPolicy
+    from include.database.models.identity import User
+    from include.domains.identity.commands.oidc import bind_oidc_identity
+
+    with source_session.begin() as session:
+        user = session.scalar(select(User).where(User.username == "alice"))
+        credential = bind_oidc_identity(
+            session, user, "https://issuer.example", "alice-subject"
+        )
+        session.add(
+            UserAuthPolicy(
+                user_id=user.id,
+                purpose="login",
+                revision=3,
+                chains=[
+                    [
+                        {
+                            "method": "oidc",
+                            "credential_ids": [credential.id],
+                        }
+                    ]
+                ],
+            )
+        )
+        session.add(
+            UserAuthPolicy(user_id=user.id, purpose="mfa", revision=2, chains=[])
+        )
 
     backup_path = tmp_path / "backup.conf"
     caplog.set_level(logging.DEBUG, logger="maintenance.backup")
@@ -159,17 +186,12 @@ def test_backup_header_and_roundtrip_restore(
     with target_session() as session:
         user = User(
             username="bob",
-            pass_hash="hash",
-            passwd_last_modified=0.0,
             nickname="Bob",
             avatar_id=None,
             last_login=None,
             created_time=0.0,
             status=0,
             secret_key="bob-secret",
-            totp_secret=None,
-            totp_enabled=False,
-            totp_backup_codes=None,
             preference_dek_id=None,
         )
         session.add(user)

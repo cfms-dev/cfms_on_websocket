@@ -45,7 +45,7 @@ def _seed_permission_entries(context) -> None:
     UserPermission = context["UserPermission"]
 
     with context["session"].begin() as session:
-        user = User(username="alice", pass_hash="hash", created_time=0.0)
+        user = User(username="alice", created_time=0.0)
         user.rights.extend(
             [
                 UserPermission(
@@ -191,7 +191,7 @@ def test_cleanup_rechecks_cutoff_when_deleting(permission_cleanup_context) -> No
     User = context["User"]
     UserPermission = context["UserPermission"]
     with context["session"].begin() as session:
-        user = User(username="alice", pass_hash="hash", created_time=0.0)
+        user = User(username="alice", created_time=0.0)
         entry = UserPermission(
             permission="rescheduled",
             granted=True,

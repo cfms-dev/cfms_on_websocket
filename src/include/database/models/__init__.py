@@ -9,7 +9,9 @@ from include.database.models.access import (
     UserBlockSubEntry,
 )
 from include.database.models.auth import (
+    UserAuthPolicy,
     UserAuthPublicKey,
+    UserOidcCredential,
     UserPasswordCredential,
     UserTotpCredential,
 )
@@ -93,6 +95,7 @@ __all__ = [
     "TrafficThrottle",
     "TransferMode",
     "User",
+    "UserAuthPolicy",
     "UserAuthPublicKey",
     "UserBlockEntry",
     "UserBlockSubEntry",
@@ -100,6 +103,7 @@ __all__ = [
     "UserGroupPermission",
     "UserKey",
     "UserMembership",
+    "UserOidcCredential",
     "UserPasswordCredential",
     "UserPermission",
     "UserStatus",

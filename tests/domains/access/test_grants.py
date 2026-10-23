@@ -9,17 +9,12 @@ def _make_user(models, session, *, username="alice", memberships=()):
     created_at = time.time()
     user = models.User(
         username=username,
-        pass_hash="hash",
-        passwd_last_modified=created_at,
         nickname=username,
         avatar_id=None,
         last_login=None,
         created_time=created_at,
         status=0,
         secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     for group_name, start_time, end_time in memberships:

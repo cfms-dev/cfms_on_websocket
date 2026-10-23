@@ -188,7 +188,6 @@ def _seed_pending_documents(models, session, count=2):
     user = models.User(
         username="alice",
         id=ALICE_ID,
-        pass_hash="unused",
         created_time=1.0,
     )
     root = models.Folder(id="/", name="/", inherit=False)
@@ -369,7 +368,6 @@ def test_concurrent_bypass_requests_do_not_cross_pending_limit(
                 models.User(
                     username="alice",
                     id=ALICE_ID,
-                    pass_hash="unused",
                     created_time=1.0,
                 ),
                 models.Folder(id="/", name="/", inherit=False),

@@ -1,0 +1,1 @@
+Separate registered credentials from explicit login, MFA and escalation policies; support ordered credential chains and stable OIDC bindings. Existing SSO accounts require explicit issuer/subject binding after migration.

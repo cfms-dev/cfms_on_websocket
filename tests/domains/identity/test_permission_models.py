@@ -51,7 +51,7 @@ def test_permission_entries_survive_reload_and_respect_time_windows(
                 ),
             ]
         )
-        user = User(username="alice", pass_hash="hash", created_time=now)
+        user = User(username="alice", created_time=now)
         user.rights.extend(
             [
                 UserPermission(

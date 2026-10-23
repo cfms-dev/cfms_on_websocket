@@ -13,9 +13,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 import include.database.models  # noqa: F401
+from include.database.models import identity as identity_models
+from include.database.models.auth import (
+    UserOidcCredential,
+    UserPasswordCredential,
+)
 from include.database.models.identity import User, UserGroup, UserStatus
 from include.database.session import Base
+from include.domains.identity.auth import auth_registry
+from include.domains.identity.auth.types import AuthPurpose
 from include.domains.identity.commands import users as user_commands
+from include.domains.identity.commands.auth_policies import replace_auth_policy
+from include.domains.identity.commands.oidc import bind_oidc_identity
 from include.extensions.oidc_sso import _extension as extension
 from include.providers.caching import memory
 
@@ -245,16 +254,41 @@ def oidc_callback_context(
     Base.metadata.create_all(database)
     sessions = sessionmaker(bind=database)
     monkeypatch.setattr(extension, "Session", sessions)
+    monkeypatch.setattr(identity_models, "time", extension.time)
+    monkeypatch.setattr(
+        auth_registry,
+        "_providers",
+        {**auth_registry._providers, "oidc": extension.OIDCAuthProvider()},
+    )
     monkeypatch.setattr(user_commands, "Session", sessions)
     with sessions.begin() as session:
         session.add(
             User(
                 username="alice",
-                pass_hash="unused",
                 secret_key="local-user-secret-with-at-least-32-bytes",
                 created_time=0.0,
                 last_login=10.0,
             )
+        )
+
+    with sessions.begin() as session:
+        user = session.scalar(select(User).where(User.username == "alice"))
+        credential = bind_oidc_identity(
+            session, user, "https://new.example", "provider-subject-alice"
+        )
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.LOGIN,
+            [
+                [
+                    {
+                        "method": "oidc",
+                        "credential_ids": [credential.id],
+                    }
+                ]
+            ],
+            expected_revision=0,
         )
 
     oidc_context.clock.now = datetime.datetime.now(datetime.UTC).timestamp()
@@ -551,6 +585,7 @@ def test_oidc_callback_rejects_unknown_user_when_provisioning_is_disabled(
 ):
     context = oidc_callback_context
     context.claims["preferred_username"] = "unknown-user"
+    context.claims["sub"] = "unknown-subject"
     connection = _Connection(context.request_data)
 
     result = extension.RequestOIDCCallbackHandler().handle(connection)
@@ -575,6 +610,8 @@ def test_oidc_callback_rejects_unknown_user_when_provisioning_is_disabled(
 @pytest.mark.parametrize("username", [None, "", 42])
 def test_oidc_callback_rejects_invalid_username_claim(oidc_callback_context, username):
     context = oidc_callback_context
+    context.config["extensions"]["oidc_sso"]["auto_provision"] = True
+    context.claims["sub"] = "unbound-subject"
     if username is None:
         del context.claims["preferred_username"]
     else:
@@ -599,7 +636,9 @@ def test_oidc_callback_provisions_user_with_configured_group_and_commits_login(
 ):
     context = oidc_callback_context
     context.config["extensions"]["oidc_sso"]["auto_provision"] = True
-    context.claims.update(preferred_username="new-user", name="New User")
+    context.claims.update(
+        preferred_username="new-user", sub="new-subject", name="New User"
+    )
     with context.sessions.begin() as session:
         session.add(UserGroup(group_name="user"))
     connection = _Connection(context.request_data)
@@ -617,6 +656,11 @@ def test_oidc_callback_provisions_user_with_configured_group_and_commits_login(
         assert user.last_login == context.clock.now
         assert user.all_groups == {"user"}
         assert user.is_token_valid(data["token"])
+        assert session.get(UserPasswordCredential, user.id) is None
+        binding = session.scalar(
+            select(UserOidcCredential).where(UserOidcCredential.user_id == user.id)
+        )
+        assert binding.subject == "new-subject"
 
 
 @pytest.mark.component
@@ -626,6 +670,7 @@ def test_oidc_callback_does_not_provision_user_when_default_group_is_missing(
     context = oidc_callback_context
     context.config["extensions"]["oidc_sso"]["auto_provision"] = True
     context.claims["preferred_username"] = "new-user"
+    context.claims["sub"] = "new-subject"
     connection = _Connection(context.request_data)
 
     result = extension.RequestOIDCCallbackHandler().handle(connection)
@@ -665,3 +710,116 @@ def test_oidc_callback_rejects_inactive_user_without_updating_login(
             session.scalar(select(User).where(User.username == "alice")).last_login
             == 10.0
         )
+
+
+@pytest.mark.component
+@pytest.mark.parametrize("auto_provision", [False, True])
+def test_oidc_unknown_subject_cannot_claim_existing_username(
+    oidc_callback_context, auto_provision
+):
+    context = oidc_callback_context
+    context.config["extensions"]["oidc_sso"]["auto_provision"] = auto_provision
+    context.claims["sub"] = "unbound-subject"
+    connection = _Connection(context.request_data)
+    assert extension.RequestOIDCCallbackHandler().handle(connection).code == 401
+    assert "token" not in connection.response["data"]
+    with context.sessions() as session:
+        assert len(session.scalars(select(UserOidcCredential)).all()) == 1
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
+
+
+@pytest.mark.component
+def test_bound_oidc_identity_survives_username_claim_change(oidc_callback_context):
+    context = oidc_callback_context
+    context.claims.pop("preferred_username")
+    with context.sessions.begin() as session:
+        session.scalar(
+            select(User).where(User.username == "alice")
+        ).username = "renamed"
+    connection = _Connection(context.request_data)
+    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    assert (result.code, result.target) == (200, "renamed")
+
+
+@pytest.mark.component
+def test_oidc_binding_does_not_bypass_login_policy(oidc_callback_context):
+    context = oidc_callback_context
+    with context.sessions.begin() as session:
+        user = session.scalar(select(User).where(User.username == "alice"))
+        replace_auth_policy(session, user, AuthPurpose.LOGIN, [], expected_revision=1)
+    connection = _Connection(context.request_data)
+    assert extension.RequestOIDCCallbackHandler().handle(connection).code == 401
+    assert "token" not in connection.response["data"]
+
+
+@pytest.mark.component
+def test_oidc_returns_auth_context_when_local_totp_is_required(
+    oidc_callback_context, monkeypatch
+):
+    import pyotp
+
+    from include.domains.identity.commands.credentials import (
+        enable_login_totp,
+        setup_totp,
+    )
+    from include.domains.identity.handlers import auth as auth_handlers
+    from include.domains.identity.tokens import Token, TokenPurpose
+
+    context = oidc_callback_context
+    with context.sessions.begin() as session:
+        user = session.scalar(select(User).where(User.username == "alice"))
+        credential, _ = setup_totp(session, user)
+        enable_login_totp(session, user, credential)
+        signing_key = user.secret_key
+        secret = credential.secret
+    connection = _Connection(context.request_data)
+    assert extension.RequestOIDCCallbackHandler().handle(connection).code == 202
+    token = Token.from_raw(connection.response["data"]["token"], signing_key)
+    assert token.purpose == TokenPurpose.AUTH
+    assert token.auth_context.evidence[0].method == "oidc"
+    assert connection.response["data"]["methods"] == ["totp"]
+    with context.sessions() as session:
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
+    monkeypatch.setattr(auth_handlers, "Session", context.sessions)
+    monkeypatch.setattr(auth_handlers, "get_client_ip", lambda ws: "127.0.0.1")
+    monkeypatch.setattr(
+        auth_handlers.LoginGuard, "evaluate", lambda *a: SimpleNamespace(allowed=True)
+    )
+    monkeypatch.setattr(
+        auth_handlers.LoginGuard, "report_success", lambda *a, **k: None
+    )
+    responses = []
+    complete = SimpleNamespace(
+        user_id=token.sub,
+        token=token,
+        data={"method": "totp", "data": {"token": pyotp.TOTP(secret).now()}},
+        stream=SimpleNamespace(connection=SimpleNamespace(_ws=None)),
+        conclude_request=lambda **response: responses.append(response),
+    )
+    assert auth_handlers.RequestCompleteMFAHandler().handle(complete).code == 200
+    assert (
+        Token.from_raw(responses[0]["data"]["token"], signing_key).purpose
+        == TokenPurpose.GENERAL
+    )
+
+
+@pytest.mark.component
+def test_oidc_provider_never_accepts_client_reported_identity(oidc_callback_context):
+    with oidc_callback_context.sessions() as session:
+        user = session.scalar(select(User).where(User.username == "alice"))
+        result = extension.OIDCAuthProvider().verify(
+            session,
+            user,
+            {
+                "issuer": "https://new.example",
+                "subject": "provider-subject-alice",
+            },
+            {},
+        )
+        assert not result.success

@@ -22,17 +22,12 @@ def _make_rule_user(models, session, *, permissions=(), groups=(), username="ali
     now = time.time()
     user = models.User(
         username=username,
-        pass_hash="hash",
-        passwd_last_modified=now,
         nickname=username,
         avatar_id=None,
         last_login=None,
         created_time=now,
         status=0,
         secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     for permission in permissions:
@@ -70,17 +65,12 @@ def _make_access_rule_user(models, session, username="alice"):
     now = time.time()
     user = models.User(
         username=username,
-        pass_hash="hash",
-        passwd_last_modified=now,
         nickname=username,
         avatar_id=None,
         last_login=None,
         created_time=now,
         status=0,
         secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     for permission in (

@@ -25,8 +25,6 @@ def test_deleting_user_preserves_schedule_and_clears_attribution(
     with Session(database) as session, session.begin():
         user = User(
             username="schedule-owner",
-            pass_hash="hash",
-            passwd_last_modified=100.0,
             created_time=100.0,
             secret_key="secret",
         )

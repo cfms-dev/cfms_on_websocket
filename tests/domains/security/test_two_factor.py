@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 import include.database.models  # noqa: F401
 from include.database.models import auth
+from include.database.models.auth import UserTotpCredential
 from include.database.models.identity import User
 from include.database.session import Base
 from tests.support.client import CFMSTestClient
@@ -266,13 +267,11 @@ def backup_code_sessions(monkeypatch, sqlite_engine_factory):
     hashes = [hasher.hash(code + pepper) for code in ("deadbeef", "cafebabe")]
     with sessions.begin() as session:
         session.add(
-            User(
-                username="alice",
-                pass_hash="unused",
-                created_time=0.0,
-                totp_secret=pyotp.random_base32(),
-                totp_enabled=True,
-                totp_backup_codes=orjson.dumps(hashes).decode("utf-8"),
+            UserTotpCredential(
+                user=User(username="alice", created_time=0.0),
+                secret=pyotp.random_base32(),
+                enabled=True,
+                backup_codes=orjson.dumps(hashes).decode("utf-8"),
             )
         )
     return sessions, hashes[1]
@@ -284,23 +283,18 @@ def test_backup_code_consumption_is_committed_and_reuse_preserves_remaining_code
 ):
     sessions, remaining_hash = backup_code_sessions
 
-    with sessions() as session:
-        assert (
-            session.scalar(select(User).where(User.username == "alice")).verify_totp(
-                "deadbeef"
-            )
-            is True
-        )
+    with sessions.begin() as session:
+        assert session.scalar(select(UserTotpCredential)).verify("deadbeef") is True
 
     with sessions() as session:
-        persisted = session.scalar(select(User).where(User.username == "alice"))
-        assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
-        assert persisted.verify_totp("deadbeef") is False
+        persisted = session.scalar(select(UserTotpCredential))
+        assert orjson.loads(persisted.backup_codes) == [remaining_hash]
+        assert persisted.verify("deadbeef") is False
 
     with sessions() as session:
-        persisted = session.scalar(select(User).where(User.username == "alice"))
-        assert orjson.loads(persisted.totp_backup_codes) == [remaining_hash]
-        assert persisted.totp_enabled is True
+        persisted = session.scalar(select(UserTotpCredential))
+        assert orjson.loads(persisted.backup_codes) == [remaining_hash]
+        assert persisted.enabled is True
 
 
 @pytest.mark.component
@@ -309,20 +303,15 @@ def test_consuming_last_backup_code_commits_empty_list_and_keeps_totp_enabled(
 ):
     sessions, remaining_hash = backup_code_sessions
     with sessions.begin() as session:
-        session.scalar(
-            select(User).where(User.username == "alice")
-        ).totp_backup_codes = orjson.dumps([remaining_hash]).decode("utf-8")
+        session.scalar(select(UserTotpCredential)).backup_codes = orjson.dumps(
+            [remaining_hash]
+        ).decode("utf-8")
+
+    with sessions.begin() as session:
+        assert session.scalar(select(UserTotpCredential)).verify("cafebabe") is True
 
     with sessions() as session:
-        assert (
-            session.scalar(select(User).where(User.username == "alice")).verify_totp(
-                "cafebabe"
-            )
-            is True
-        )
-
-    with sessions() as session:
-        persisted = session.scalar(select(User).where(User.username == "alice"))
-        assert orjson.loads(persisted.totp_backup_codes) == []
-        assert persisted.totp_enabled is True
-        assert persisted.verify_totp("cafebabe") is False
+        persisted = session.scalar(select(UserTotpCredential))
+        assert orjson.loads(persisted.backup_codes) == []
+        assert persisted.enabled is True
+        assert persisted.verify("cafebabe") is False

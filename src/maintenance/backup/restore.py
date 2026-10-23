@@ -38,6 +38,7 @@ from maintenance.backup.format import (
 )
 from maintenance.backup.legacy import (
     _restore_legacy_access_rules,
+    _restore_legacy_auth_policies,
     _restore_missing_compiled_rule_sets,
 )
 from maintenance.backup.models import (
@@ -509,6 +510,12 @@ def _restore_database(
             detail_task=True,
             details_only=False,
         )
+        if (
+            "users" in manifest["tables"]
+            and "user_auth_policies" not in manifest["tables"]
+        ):
+            _restore_legacy_auth_policies(session)
+            session.flush()
         if finalize is not None:
             finalize()
 

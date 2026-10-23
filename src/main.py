@@ -50,6 +50,7 @@ from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
 from include.domains.access.permissions import Permissions
 from include.domains.documents.file_task_signals import on_file_task_event
+from include.domains.identity.auth.registry import auth_registry
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.request_rate_control import (
@@ -343,6 +344,10 @@ def prepare_handlers():
     It also populates the `whitelisted_functions` list with actions that are
     allowed even during lockdown.
     """
+    for providers in pm.hook.ext_register_auth_methods():
+        for provider in providers:
+            auth_registry.register(provider)
+
     if global_config["debug"]:  # Debugging
         available_functions["throw_exception"] = RequestThrowExceptionHandler
 

@@ -93,7 +93,11 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     ) | legacy_access_rule_tables
     # Schedules were added without changing the backup format version, so full
     # backups created before that table existed remain compatible.
-    compatible_table_names = table_names | {"schedules"}
+    compatible_table_names = table_names | {
+        "schedules",
+        "user_oidc_credentials",
+        "user_auth_policies",
+    }
     unknown_tables = table_names - expected - legacy_access_rule_tables
     if unknown_tables:
         raise BackupFormatError(

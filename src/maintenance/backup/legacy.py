@@ -10,7 +10,13 @@ from sqlalchemy import Table, insert, select, update
 from include.database.models.access import (
     CompiledAccessRuleSet,
 )
+from include.database.models.auth import (
+    UserAuthPolicy,
+    UserPasswordCredential,
+    UserTotpCredential,
+)
 from include.database.models.documents import Node
+from include.database.models.identity import User
 from include.domains.access.authorization.compiled_rules import compile_access_rule
 from maintenance.backup.models import BackupFormatError
 from maintenance.backup.rows import _iter_raw_table_row_batches
@@ -19,6 +25,32 @@ from maintenance.backup.selection import LEGACY_ACCESS_RULE_TABLE_NAMES
 
 def _legacy_rule_set_id(node_id: str) -> str:
     return hashlib.sha256(f"cfms-legacy-rule-set:{node_id}".encode()).hexdigest()[:32]
+
+
+def _restore_legacy_auth_policies(session) -> None:
+    """Preserve pre-policy local authentication only for archives without policies."""
+    for user in session.scalars(select(User)):
+        password = session.get(UserPasswordCredential, user.id)
+        totp = session.get(UserTotpCredential, user.id)
+        defaults = {
+            "login": [
+                [{"method": "password", "credential_ids": [password.credential_id]}]
+            ]
+            if password
+            else [],
+            "mfa": [[{"method": "totp", "credential_ids": [totp.credential_id]}]]
+            if totp and totp.enabled
+            else [],
+            "escalation": [],
+        }
+        session.add_all(
+            [
+                UserAuthPolicy(
+                    user_id=user.id, purpose=purpose, revision=1, chains=chains
+                )
+                for purpose, chains in defaults.items()
+            ]
+        )
 
 
 def _restore_missing_compiled_rule_sets(

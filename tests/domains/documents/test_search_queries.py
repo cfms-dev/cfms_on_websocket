@@ -52,17 +52,12 @@ def search_query_context(sqlite_engine_factory):
 def _make_user(context, *, permissions=(), username="alice"):
     user = context.models.User(
         username=username,
-        pass_hash="hash",
-        passwd_last_modified=_NOW,
         nickname=username,
         avatar_id=None,
         last_login=None,
         created_time=_NOW,
         status=0,
         secret_key=f"{username}-secret",
-        totp_secret=None,
-        totp_enabled=False,
-        totp_backup_codes=None,
         preference_dek_id=None,
     )
     for permission in permissions:

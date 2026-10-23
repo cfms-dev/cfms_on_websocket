@@ -379,6 +379,12 @@ def _serialize_table_value(table_name: str, column_name: str, value: Any) -> Any
         return digest.hex()
     if (
         value is not None
+        and table_name == "user_oidc_credentials"
+        and column_name == "identity_digest"
+    ):
+        return bytes(value).hex()
+    if (
+        value is not None
         and table_name == "user_auth_public_keys"
         and column_name in {"public_key_der", "fingerprint"}
     ):

@@ -13,9 +13,17 @@ import orjson
 from pydantic import model_validator
 from sqlalchemy import select
 
+from include.database.models.auth import UserPasswordCredential, UserTotpCredential
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
+from include.domains.identity.auth.registry import auth_registry
+from include.domains.identity.commands.credentials import (
+    enable_login_totp,
+    remove_totp,
+    setup_totp,
+)
+from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.security.guards.login import (
     AuthFactor,
     LoginGuard,
@@ -100,7 +108,8 @@ class RequestSetup2FAHandler(RequestHandler):
             user = User.get_existing(session, handler.user_id)
 
             # Check if user already has 2FA enabled
-            if user.totp_enabled:
+            credential = session.get(UserTotpCredential, user.id)
+            if credential is not None and credential.enabled:
                 handler.conclude_request(
                     code=400,
                     message="Two-factor authentication is already enabled. Please cancel it first.",
@@ -111,14 +120,15 @@ class RequestSetup2FAHandler(RequestHandler):
                 return
 
             # Setup TOTP
-            secret, backup_codes = user.setup_totp()
+            credential, backup_codes = setup_totp(session, user)
+            session.commit()
 
             handler.conclude_request(
                 code=200,
                 message="Two-factor authentication setup initiated. Please verify with your authenticator app.",
                 data={
-                    "secret": secret,
-                    "provisioning_uri": user.totp_provisioning_uri,
+                    "secret": credential.secret,
+                    "provisioning_uri": credential.provisioning_uri,
                     "backup_codes": backup_codes,
                 },
             )
@@ -156,7 +166,8 @@ class RequestValidate2FAHandler(RequestHandler):
                 return
 
             # Check if TOTP secret exists but not enabled yet
-            if not user.totp_secret:
+            credential = session.get(UserTotpCredential, user.id)
+            if credential is None or not credential.secret:
                 handler.conclude_request(
                     code=400,
                     message="Two-factor authentication has not been set up. Please set it up first.",
@@ -164,7 +175,7 @@ class RequestValidate2FAHandler(RequestHandler):
                 )
                 return
 
-            if user.totp_enabled:
+            if credential.enabled:
                 handler.conclude_request(
                     code=400,
                     message="Two-factor authentication is already enabled.",
@@ -175,8 +186,9 @@ class RequestValidate2FAHandler(RequestHandler):
             username = user.username
 
             # Verify the provided TOTP token
-            if user.verify_totp(token):
-                user.enable_totp()
+            if credential.verify(token):
+                enable_login_totp(session, user, credential)
+                session.commit()
                 success = True
 
         if success:
@@ -246,14 +258,16 @@ class RequestDisable2FAHandler(RequestHandler):
                     )
 
             user = session.scalar(select(User).where(User.username == target_username))
-            if not user or not user.totp_enabled:
+            credential = session.get(UserTotpCredential, user.id) if user else None
+            if credential is None or not credential.enabled:
                 handler.conclude_request(400, {}, "2FA not enabled or user not found")
                 return Result(
                     code=400, target=target_username, user_id=requester_user_id
                 )
 
             if password:
-                if not user.verify_password(password):
+                password_credential = session.get(UserPasswordCredential, user.id)
+                if not verify_password_or_dummy(password_credential, password):
                     LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                     handler.conclude_request(401, {}, "Invalid password")
                     return Result(
@@ -273,7 +287,8 @@ class RequestDisable2FAHandler(RequestHandler):
                         code=4003, target=target_username, user_id=requester_user_id
                     )
 
-            user.disable_totp()
+            remove_totp(session, user, credential)
+            session.commit()
 
         handler.conclude_request(200, {}, "2FA disabled successfully")
         return Result(code=0, target=target_username, user_id=requester_user_id)
@@ -297,7 +312,8 @@ class RequestCancel2FASetupHandler(RequestHandler):
             user = User.get_existing(session, handler.user_id)
 
             # Check if TOTP setup exists but not enabled yet
-            if not user.totp_secret or user.totp_enabled:
+            credential = session.get(UserTotpCredential, user.id)
+            if credential is None or not credential.secret or credential.enabled:
                 handler.conclude_request(
                     code=400,
                     message="No pending two-factor authentication setup to cancel.",
@@ -306,10 +322,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
                 return
 
             # Cancel TOTP setup
-            user.totp_secret = None
-            user.totp_backup_codes = None
-
-            session.add(user)
+            remove_totp(session, user, credential)
             session.commit()
 
             handler.conclude_request(
@@ -359,15 +372,19 @@ class RequestGet2FAStatusHandler(RequestHandler):
                 )
                 return
 
+            credential = session.get(UserTotpCredential, target.id)
+            enabled = auth_registry.user_requires_mfa(session, target)
+            methods = auth_registry.get_user_mfa_methods(session, target)
             handler.conclude_request(
                 code=200,
                 message="Two-factor authentication status",
                 data={
-                    "enabled": target.totp_enabled,
-                    "method": "totp" if target.totp_enabled else None,
+                    "enabled": enabled,
+                    "method": methods[0] if len(methods) == 1 else None,
+                    "methods": methods,
                     "backup_codes_count": (
-                        len(orjson.loads(target.totp_backup_codes))
-                        if target.totp_backup_codes
+                        len(orjson.loads(credential.backup_codes))
+                        if credential is not None and credential.backup_codes
                         else 0
                     ),
                 },

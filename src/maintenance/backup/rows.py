@@ -1,4 +1,5 @@
 import datetime as dt
+import hashlib
 import logging
 import uuid
 from typing import Any
@@ -8,6 +9,7 @@ lazy from pathlib import Path
 import orjson
 from sqlalchemy import DateTime, Table, Uuid
 
+from include.domains.identity.auth.types import AuthPurpose, auth_chains_adapter
 from maintenance.backup.archive import _safe_payload_path
 from maintenance.backup.constants import MAX_JSONL_ROW_BYTES
 from maintenance.backup.models import BackupFormatError
@@ -83,6 +85,21 @@ def _iter_table_row_batches(
 ) -> Iterator[list[dict[str, Any]]]:
     batch = []
     for row in _iter_raw_table_rows(extract_dir, manifest, table.name):
+        if (
+            table.name in {"user_passwords", "user_totp_credentials"}
+            and "user_auth_policies" in manifest["tables"]
+        ):
+            credential_id = row.get("credential_id")
+            if not isinstance(credential_id, str) or len(credential_id) != 32:
+                raise BackupFormatError(
+                    "Missing or invalid credential identity in backup"
+                )
+        if (
+            table.name in {"user_passwords", "user_totp_credentials"}
+            and "credential_id" not in row
+            and "user_auth_policies" not in manifest["tables"]
+        ):
+            row = {**row, "credential_id": uuid.uuid4().hex}
         batch.append(_decode_row(row, table))
         if len(batch) == _RESTORE_BATCH_SIZE:
             yield batch
@@ -93,6 +110,14 @@ def _iter_table_row_batches(
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
+    if table.name == "user_auth_policies":
+        try:
+            AuthPurpose(row["purpose"])
+            auth_chains_adapter.validate_python(row["chains"])
+            if type(row["revision"]) is not int or row["revision"] <= 0:
+                raise ValueError("Invalid revision")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BackupFormatError("Invalid authentication policy in backup") from exc
     stored_columns = {
         column.name for column in table.columns if column.computed is None
     }
@@ -178,5 +203,26 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
                 raise BackupFormatError("Invalid public key bytes in backup") from exc
             if column.name == "fingerprint" and len(value) != 32:
                 raise BackupFormatError("Invalid public key fingerprint in backup")
+        if (
+            value is not None
+            and table.name == "user_oidc_credentials"
+            and column.name == "identity_digest"
+        ):
+            try:
+                value = bytes.fromhex(value)
+            except (TypeError, ValueError) as exc:
+                raise BackupFormatError(
+                    "Invalid OIDC identity digest in backup"
+                ) from exc
+            if (
+                len(value) != 32
+                or value
+                != hashlib.sha256(
+                    orjson.dumps([row.get("issuer"), row.get("subject")])
+                ).digest()
+            ):
+                raise BackupFormatError(
+                    "OIDC identity digest does not match the binding"
+                )
         decoded[column.name] = value
     return decoded

@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from include.database.models.auth import UserAuthPublicKey
@@ -19,6 +20,7 @@ from include.domains.identity.auth.base import (
     AuthVerificationResult,
     BaseAuthMethodProvider,
 )
+from include.domains.identity.auth.types import RegisteredCredential
 from include.providers.manager import ProviderManager
 lazy from include.types import NonEmptyString
 
@@ -36,8 +38,23 @@ class PublicKeyAuthProvider(BaseAuthMethodProvider):
     throttle_factor = "publickey"
     credential_schema = PublicKeyCredentialSchema
 
-    def is_configured(self, session: Session, user: User) -> bool:
-        return bool(user.auth_public_keys)
+    def list_credentials(
+        self, session: Session, user: User
+    ) -> list[RegisteredCredential]:
+        return [
+            RegisteredCredential(
+                method=self.method_id,
+                credential_id=key.id,
+                active=True,
+                label=key.label,
+                key_identity=key.fingerprint.hex(),
+            )
+            for key in session.scalars(
+                select(UserAuthPublicKey)
+                .where(UserAuthPublicKey.user_id == user.id)
+                .order_by(UserAuthPublicKey.id)
+            )
+        ]
 
     def create_challenge(self, session: Session, user: User) -> dict[str, Any] | None:
         nonce = secrets.token_urlsafe(32)
@@ -150,4 +167,4 @@ class PublicKeyAuthProvider(BaseAuthMethodProvider):
 
         key_entry.last_used_time = time.time()
         session.add(key_entry)
-        return AuthVerificationResult(success=True)
+        return AuthVerificationResult(success=True, credential_id=key_entry.id)

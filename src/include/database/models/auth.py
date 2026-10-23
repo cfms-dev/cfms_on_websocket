@@ -7,18 +7,20 @@ import pyotp
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from sqlalchemy import (
+    JSON,
     VARCHAR,
     Boolean,
+    CheckConstraint,
     Double,
     ForeignKey,
     Index,
+    Integer,
     LargeBinary,
     Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import BINARY as MySQLBinary
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.orm.session import object_session
 
 from include.config.settings import global_config
 from include.database.session import Base
@@ -34,6 +36,9 @@ class UserPasswordCredential(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
+    credential_id: Mapped[str] = mapped_column(
+        VARCHAR(32), default=lambda: secrets.token_hex(16), unique=True, nullable=False
+    )
     pass_hash: Mapped[str] = mapped_column(
         Text,
         nullable=False,
@@ -44,10 +49,7 @@ class UserPasswordCredential(Base):
         nullable=False,
     )
 
-    user: Mapped["User"] = relationship(
-        "User",
-        back_populates="password_credential",
-    )
+    user: Mapped["User"] = relationship("User")
 
     def verify(self, plain_password: str) -> bool:
         try:
@@ -57,6 +59,10 @@ class UserPasswordCredential(Base):
 
     def check_needs_rehash(self) -> bool:
         return _password_hasher.check_needs_rehash(self.pass_hash)
+
+    def rehash_if_needed(self, plain_password: str) -> None:
+        if self.check_needs_rehash():
+            self.pass_hash = _password_hasher.hash(plain_password)
 
     def set_password(
         self, plain_password: str, force_update_after_login: bool = False
@@ -71,6 +77,9 @@ class UserTotpCredential(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
+    )
+    credential_id: Mapped[str] = mapped_column(
+        VARCHAR(32), default=lambda: secrets.token_hex(16), unique=True, nullable=False
     )
     secret: Mapped[str] = mapped_column(
         VARCHAR(32),
@@ -92,10 +101,7 @@ class UserTotpCredential(Base):
         nullable=False,
     )
 
-    user: Mapped["User"] = relationship(
-        "User",
-        back_populates="totp_credential",
-    )
+    user: Mapped["User"] = relationship("User")
 
     def verify(self, token: str) -> bool:
         if not self.secret:
@@ -117,10 +123,6 @@ class UserTotpCredential(Base):
                             self.backup_codes = orjson.dumps(hashed_codes).decode(
                                 "utf-8"
                             )
-                            session = object_session(self)
-                            if session is not None:
-                                session.add(self)
-                                session.commit()
                             return True
                     except VerifyMismatchError:
                         continue
@@ -134,22 +136,10 @@ class UserTotpCredential(Base):
         totp = pyotp.TOTP(self.secret)
         return totp.provisioning_uri(name=self.user.username, issuer_name="CFMS")
 
-    @classmethod
-    def create_pending(
-        cls, user_id: uuid.UUID
-    ) -> tuple["UserTotpCredential", list[str]]:
-        secret = pyotp.random_base32()
-        backup_codes = [secrets.token_hex(4) for _ in range(10)]
-        pepper = global_config["security"]["pepper"]
-        hashed_codes = [_password_hasher.hash(code + pepper) for code in backup_codes]
-        credential = cls(
-            user_id=user_id,
-            secret=secret,
-            enabled=False,
-            backup_codes=orjson.dumps(hashed_codes).decode("utf-8"),
-            created_time=time.time(),
-        )
-        return credential, backup_codes
+    def enable(self) -> None:
+        if not self.secret:
+            raise ValueError("TOTP secret not set. Set up TOTP first.")
+        self.enabled = True
 
 
 class UserAuthPublicKey(Base):
@@ -206,7 +196,43 @@ class UserAuthPublicKey(Base):
         nullable=True,
     )
 
-    user: Mapped["User"] = relationship(
-        "User",
-        back_populates="auth_public_keys",
+    user: Mapped["User"] = relationship("User")
+
+
+class UserAuthPolicy(Base):
+    __tablename__ = "user_auth_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('login', 'mfa', 'escalation')", name="ck_auth_policy_purpose"
+        ),
+        CheckConstraint("revision > 0", name="ck_auth_policy_revision"),
     )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    purpose: Mapped[str] = mapped_column(VARCHAR(16), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    chains: Mapped[list[list[dict[str, str | list[str]]]]] = mapped_column(
+        JSON, nullable=False
+    )
+    user: Mapped["User"] = relationship("User")
+
+
+class UserOidcCredential(Base):
+    __tablename__ = "user_oidc_credentials"
+
+    id: Mapped[str] = mapped_column(
+        VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    issuer: Mapped[str] = mapped_column(Text, nullable=False)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    identity_digest: Mapped[bytes] = mapped_column(
+        LargeBinary(32).with_variant(MySQLBinary(32), "mysql"),
+        unique=True,
+        nullable=False,
+    )
+    user: Mapped["User"] = relationship("User")

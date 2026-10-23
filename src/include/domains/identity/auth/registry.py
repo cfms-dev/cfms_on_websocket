@@ -2,9 +2,21 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from include.database.models.auth import UserAuthPolicy
 from include.domains.identity.auth.base import (
     AuthFactorCategory,
     BaseAuthMethodProvider,
+)
+from include.domains.identity.auth.policies import evaluate_auth_policy
+from include.domains.identity.auth.providers.password import PasswordAuthProvider
+from include.domains.identity.auth.providers.publickey import PublicKeyAuthProvider
+from include.domains.identity.auth.providers.totp import TOTPAuthProvider
+from include.domains.identity.auth.types import (
+    AuthEvidence,
+    AuthPolicyDecision,
+    AuthPurpose,
+    RegisteredCredential,
+    auth_chains_adapter,
 )
 lazy from include.database.models.identity import User
 
@@ -42,7 +54,7 @@ class AuthRegistry:
         primary = []
         secondary = []
         for mid, p in self._providers.items():
-            if p.is_configured(session, user):
+            if any(c.active for c in p.list_credentials(session, user)):
                 if p.category == AuthFactorCategory.PRIMARY:
                     primary.append(mid)
                 elif p.category == AuthFactorCategory.SECONDARY:
@@ -50,19 +62,55 @@ class AuthRegistry:
         return {"primary": primary, "secondary": secondary}
 
     def user_requires_mfa(self, session: Session, user: User) -> bool:
-        return any(
-            p.category == AuthFactorCategory.SECONDARY
-            and p.is_configured(session, user)
-            for p in self._providers.values()
-        )
+        policy = session.get(UserAuthPolicy, (user.id, AuthPurpose.MFA.value))
+        return policy is not None and bool(policy.chains)
 
     def get_user_mfa_methods(self, session: Session, user: User) -> list[str]:
+        policy = session.get(UserAuthPolicy, (user.id, AuthPurpose.MFA.value))
+        if policy is None:
+            return []
+        return sorted(
+            {
+                step.method
+                for chain in auth_chains_adapter.validate_python(policy.chains)
+                for step in chain
+            }
+        )
+
+    def list_user_credentials(
+        self, session: Session, user: User
+    ) -> list[RegisteredCredential]:
         return [
-            mid
-            for mid, p in self._providers.items()
-            if p.category == AuthFactorCategory.SECONDARY
-            and p.is_configured(session, user)
+            credential
+            for provider in self._providers.values()
+            for credential in provider.list_credentials(session, user)
         ]
+
+    def evaluate_user_policy(
+        self,
+        session: Session,
+        user: User,
+        purpose: AuthPurpose,
+        evidence: list[AuthEvidence],
+        *,
+        attempt_id: str,
+    ) -> AuthPolicyDecision:
+        policy = session.get(UserAuthPolicy, (user.id, purpose.value))
+        chains = (
+            [] if policy is None else auth_chains_adapter.validate_python(policy.chains)
+        )
+        return evaluate_auth_policy(
+            purpose,
+            chains,
+            self.list_user_credentials(session, user),
+            evidence,
+            user_id=user.id,
+            attempt_id=attempt_id,
+        )
 
 
 auth_registry = AuthRegistry()
+
+auth_registry.register(PasswordAuthProvider())
+auth_registry.register(PublicKeyAuthProvider())
+auth_registry.register(TOTPAuthProvider())

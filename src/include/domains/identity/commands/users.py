@@ -1,14 +1,11 @@
 import time
 
-from argon2 import PasswordHasher
-
 from include.database.models.auth import UserPasswordCredential
 from include.database.models.identity import User, UserMembership, UserPermission
 from include.database.session import Session
-
-# Module-level PasswordHasher instance — reused across all calls to avoid
-# repeated construction overhead.
-_password_hasher = PasswordHasher()
+from include.domains.identity.auth.types import AuthPurpose
+from include.domains.identity.commands.auth_policies import replace_auth_policy
+from include.domains.identity.commands.credentials import set_password
 
 
 def create_user(**kwargs) -> None:
@@ -52,12 +49,25 @@ def create_user(**kwargs) -> None:
             last_login=0,
             created_time=time.time(),
         )
+        session.add(user)
         if raw_password:
-            pass_hash = _password_hasher.hash(raw_password)
-            user.password_credential = UserPasswordCredential(
-                user=user,
-                pass_hash=pass_hash,
-                passwd_last_modified=time.time(),
+            session.flush()
+            set_password(session, user, raw_password)
+            session.flush()
+            credential = session.get(UserPasswordCredential, user.id)
+            replace_auth_policy(
+                session,
+                user,
+                AuthPurpose.LOGIN,
+                [
+                    [
+                        {
+                            "method": "password",
+                            "credential_ids": [credential.credential_id],
+                        }
+                    ]
+                ],
+                expected_revision=0,
             )
 
         for i in kwargs.get("permissions", []):
@@ -68,7 +78,7 @@ def create_user(**kwargs) -> None:
                 start_time=i.get("start_time", time.time()),
                 end_time=i.get("end_time"),
             )
-            user.rights.append(permission)
+            session.add(permission)
 
         for k in kwargs.get("groups", []):
             membership = UserMembership(
@@ -77,7 +87,6 @@ def create_user(**kwargs) -> None:
                 start_time=k.get("start_time", time.time()),
                 end_time=k.get("end_time", None),
             )
-            user.groups.append(membership)
+            session.add(membership)
 
-        session.add(user)
         session.commit()

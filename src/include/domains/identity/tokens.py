@@ -8,6 +8,8 @@ import jwt
 from pydantic import Field, TypeAdapter, ValidationError
 from pydantic.dataclasses import dataclass
 
+from include.domains.identity.auth.types import AuthenticationContext
+
 
 class TokenPurpose(IntFlag):
     """Enumeration of token purposes.
@@ -45,6 +47,7 @@ class Token:
     nbf: float
     iat: float
     _secret: str = Field(exclude=True, repr=False)
+    auth_context: AuthenticationContext | None = None
 
     @classmethod
     def from_raw(cls, raw_token: str, secret: str) -> Token:
@@ -67,6 +70,8 @@ class Token:
         duration: float,
         secret: str,
         purpose=TokenPurpose.GENERAL,
+        *,
+        auth_context: AuthenticationContext | None = None,
     ) -> Token:
         nbf = iat = time.time()
         exp = nbf + duration
@@ -77,12 +82,13 @@ class Token:
             nbf=nbf,
             iat=iat,
             _secret=secret,
+            auth_context=auth_context,
         )
 
     @property
     def raw(self) -> str:
         return jwt.encode(
-            TypeAdapter(Token).dump_python(self, mode="json"),
+            TypeAdapter(Token).dump_python(self, mode="json", exclude_none=True),
             self._secret,
             algorithm="HS256",
         )

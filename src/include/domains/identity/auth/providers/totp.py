@@ -3,12 +3,14 @@ from typing import Any
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from include.database.models.auth import UserTotpCredential
 from include.database.models.identity import User
 from include.domains.identity.auth.base import (
     AuthFactorCategory,
     AuthVerificationResult,
     BaseAuthMethodProvider,
 )
+from include.domains.identity.auth.types import RegisteredCredential
 lazy from include.types import NonEmptyString
 
 
@@ -22,8 +24,21 @@ class TOTPAuthProvider(BaseAuthMethodProvider):
     throttle_factor = "totp"
     credential_schema = TOTPCredentialSchema
 
-    def is_configured(self, session: Session, user: User) -> bool:
-        return user.totp_credential is not None and user.totp_credential.enabled
+    def list_credentials(
+        self, session: Session, user: User
+    ) -> list[RegisteredCredential]:
+        credential = session.get(UserTotpCredential, user.id)
+        return (
+            []
+            if credential is None
+            else [
+                RegisteredCredential(
+                    method=self.method_id,
+                    credential_id=credential.credential_id,
+                    active=credential.enabled,
+                )
+            ]
+        )
 
     def verify(
         self,
@@ -32,7 +47,8 @@ class TOTPAuthProvider(BaseAuthMethodProvider):
         payload: dict[str, Any],
         context: dict[str, Any],
     ) -> AuthVerificationResult:
-        if not user.totp_credential or not user.totp_credential.enabled:
+        credential = session.get(UserTotpCredential, user.id)
+        if credential is None or not credential.enabled:
             return AuthVerificationResult(
                 success=False,
                 error_code=400,
@@ -40,11 +56,13 @@ class TOTPAuthProvider(BaseAuthMethodProvider):
             )
 
         token: str = payload.get("token", "")
-        if not user.totp_credential.verify(token):
+        if not credential.verify(token):
             return AuthVerificationResult(
                 success=False,
                 error_code=401,
                 error_message="Invalid two-factor authentication token",
             )
 
-        return AuthVerificationResult(success=True)
+        return AuthVerificationResult(
+            success=True, credential_id=credential.credential_id
+        )

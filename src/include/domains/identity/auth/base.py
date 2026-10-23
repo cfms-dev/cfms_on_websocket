@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
 from enum import StrEnum
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
+from include.domains.identity.auth.types import RegisteredCredential
 lazy from include.database.models.identity import User
 
 
@@ -16,11 +17,15 @@ class AuthFactorCategory(StrEnum):
 
 class AuthVerificationResult(BaseModel):
     success: bool
+    credential_id: str | None = None
     error_message: str | None = None
     error_code: int = 401
-    requires_mfa: bool = False
-    mfa_methods: list[str] = []
-    context_data: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def require_verified_credential(self) -> Self:
+        if self.success and not self.credential_id:
+            raise ValueError("Successful verification must identify its credential")
+        return self
 
 
 class BaseAuthMethodProvider(ABC):
@@ -32,8 +37,10 @@ class BaseAuthMethodProvider(ABC):
     credential_schema: type[BaseModel]
 
     @abstractmethod
-    def is_configured(self, session: Session, user: User) -> bool:
-        """Check whether this authentication method is configured and active for the user."""
+    def list_credentials(
+        self, session: Session, user: User
+    ) -> list[RegisteredCredential]:
+        """Enumerate this user's credentials without exposing credential secrets."""
 
     @abstractmethod
     def verify(

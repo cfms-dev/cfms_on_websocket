@@ -5,13 +5,19 @@ from typing import Any, Literal, Self, TypedDict
 from pydantic import model_validator, with_config
 from sqlalchemy import select
 
-from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
 from include.config.settings import global_config
+from include.database.models.auth import UserPasswordCredential, UserTotpCredential
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
+from include.domains.identity.auth.flows import (
+    InvalidAuthenticationAttempt,
+    get_login_progress,
+    start_login_attempt,
+)
+from include.domains.identity.auth.types import AuthEvidence
 from include.domains.identity.password_auth import verify_password_or_dummy
-from include.domains.identity.sessions import build_login_success_data
-from include.domains.identity.tokens import Token, TokenPurpose
+from include.domains.identity.sessions import finish_login_attempt
+from include.domains.identity.tokens import TokenPurpose
 from include.domains.identity.types import RequestUsername
 from include.domains.identity.validators.passwords import check_passwd_requirements
 from include.domains.security.guards.login import (
@@ -115,11 +121,23 @@ class RequestLoginHandler(RequestHandler):
         cfg = global_config["security"]
         with Session() as session:
             user = session.scalar(select(User).where(User.username == username))
-            if not verify_password_or_dummy(user, password):
+            password_credential = (
+                session.get(UserPasswordCredential, user.id)
+                if user is not None
+                else None
+            )
+            if not verify_password_or_dummy(password_credential, password):
                 LoginGuard.report_failure(ip, username, AuthFactor.PASSWORD)
                 return respond(401, "Invalid credentials")
 
             assert user is not None
+            assert password_credential is not None
+            context = start_login_attempt(
+                session, user, "password", password_credential.credential_id
+            )
+            if context is None:
+                LoginGuard.report_failure(ip, username, AuthFactor.PASSWORD)
+                return respond(401, "Invalid credentials")
             authenticated_user_id = user.id
             LoginGuard.report_success(ip, username, AuthFactor.PASSWORD)
 
@@ -144,66 +162,31 @@ class RequestLoginHandler(RequestHandler):
 
             if cfg["enable_passwd_force_expiration"]:
                 expiration_seconds = 3600 * 24 * cfg["passwd_expire_after_days"]
-                if time.time() - user.passwd_last_modified > expiration_seconds:
+                if (
+                    time.time() - password_credential.passwd_last_modified
+                    > expiration_seconds
+                ):
                     return respond(
                         4002, "Password should be changed because it's expired"
                     )
 
-            if user.totp_enabled:
-                # FIXME: Abstract token generation logic
-                secret: str = user.secret_key or global_config["server"]["secret_key"]
-                token = Token.new(
-                    user.id,
-                    DEFAULT_TOKEN_EXPIRY_SECONDS
-                    / 2,  # FIXME: Specify expiration time for AUTH purposes
-                    secret,
-                    purpose=TokenPurpose.AUTH,
-                )
-
-                return respond(
-                    202,
-                    "Two-factor authentication required",
-                    {
-                        "token": token.raw,
-                        "exp": token.exp,
-                        "methods": [
-                            "totp",
-                            # TODO: Add other 2FA methods in the future
-                        ],
-                    },
-                )
-            else:
+            password_credential.rehash_if_needed(password)
+            code, message, data = finish_login_attempt(session, user, context)
+            if code == 200:
                 LoginGuard.report_success(
                     ip,
                     username,
                     AuthFactor.PASSWORD,
                     completed_authentication=True,
                 )
-
-            token = user.create_token_after_authentication(password)
-
-            return respond(
-                200, "Login successful", build_login_success_data(session, user, token)
-            )
+            return respond(code, message, data)
 
     def _handle_publickey_login(self, handler: ConnectionHandler):
         credential: PublicKeyCredential = handler.data["credential"]
 
         username: str = credential["username"]
-        publickey: str = credential["publickey"]
-
-        with Session() as session:
-            user = session.scalar(select(User).where(User.username == username))
-            if not user:
-                handler.conclude_request(401, message="Invalid credentials")
-                return Result(code=401, target=username)
-
-            raise NotImplementedError(
-                "Public key authentication is not yet implemented"
-            )
-
-            if publickey:
-                pass  # TODO
+        handler.conclude_request(403, {}, "Public key login is not yet supported")
+        return Result(code=403, target=username)
 
 
 class RequestCompleteMFAHandler(RequestHandler):
@@ -249,23 +232,56 @@ class RequestCompleteMFAHandler(RequestHandler):
 
             if not totp_access.allowed:
                 return throttled(totp_access)
-            if not user.verify_totp(totp_token):
+            context = handler.token.auth_context
+            if context is None:
+                return respond(401, "Authentication context missing; restart login")
+            try:
+                progress = get_login_progress(session, user, context)
+            except InvalidAuthenticationAttempt as exc:
+                return respond(401, str(exc))
+            totp_credential = session.get(UserTotpCredential, user.id)
+            if (
+                totp_credential is None
+                or not totp_credential.enabled
+                or not any(
+                    step.method == "totp"
+                    and totp_credential.credential_id in step.credential_ids
+                    for step in progress.next_steps
+                )
+            ):
+                return respond(
+                    403, "Authentication policy cannot be completed by this endpoint"
+                )
+            if not totp_credential.verify(totp_token):
                 LoginGuard.report_failure(ip, username, AuthFactor.TOTP)
                 return respond(401, "Invalid two-factor authentication token")
-            LoginGuard.report_success(
-                ip,
-                username,
-                AuthFactor.TOTP,
-                completed_authentication=True,
+            context = context.model_copy(
+                update={
+                    "evidence": [
+                        *context.evidence,
+                        AuthEvidence(
+                            user_id=user.id,
+                            attempt_id=context.attempt_id,
+                            method="totp",
+                            credential_id=totp_credential.credential_id,
+                        ),
+                    ]
+                }
             )
-
-            return respond(
-                200,
-                "Login successful",
-                build_login_success_data(
-                    session, user, user.create_token_after_authentication()
-                ),
+            code, message, data = finish_login_attempt(
+                session,
+                user,
+                context,
+                expires_at=handler.token.exp,
             )
+            if code == 200:
+                LoginGuard.report_success(
+                    ip,
+                    username,
+                    AuthFactor.TOTP,
+                    completed_authentication=True,
+                )
+            return respond(code, message, data)
 
 
 class RequestRefreshTokenHandler(RequestHandler):

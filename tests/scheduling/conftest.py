@@ -21,8 +21,6 @@ def schedule_database(sqlite_engine_factory, tmp_path):
             User(
                 username="admin",
                 id=ADMIN_ID,
-                pass_hash="hash",
-                passwd_last_modified=100.0,
                 created_time=100.0,
                 secret_key="secret",
             )

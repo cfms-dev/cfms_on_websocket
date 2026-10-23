@@ -5,12 +5,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from include.config.settings import global_config
+from include.database.models.auth import UserPasswordCredential
 from include.database.models.identity import User
 from include.domains.identity.auth.base import (
     AuthFactorCategory,
     AuthVerificationResult,
     BaseAuthMethodProvider,
 )
+from include.domains.identity.auth.types import RegisteredCredential
 from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.identity.validators.passwords import check_passwd_requirements
 lazy from include.types import NonEmptyString
@@ -27,8 +29,21 @@ class PasswordAuthProvider(BaseAuthMethodProvider):
     throttle_factor = "password"
     credential_schema = PasswordCredentialSchema
 
-    def is_configured(self, session: Session, user: User) -> bool:
-        return user.password_credential is not None
+    def list_credentials(
+        self, session: Session, user: User
+    ) -> list[RegisteredCredential]:
+        credential = session.get(UserPasswordCredential, user.id)
+        return (
+            []
+            if credential is None
+            else [
+                RegisteredCredential(
+                    method=self.method_id,
+                    credential_id=credential.credential_id,
+                    active=True,
+                )
+            ]
+        )
 
     def verify(
         self,
@@ -38,15 +53,13 @@ class PasswordAuthProvider(BaseAuthMethodProvider):
         context: dict[str, Any],
     ) -> AuthVerificationResult:
         password: str = payload.get("password", "")
-        if not verify_password_or_dummy(user, password):
+        credential = session.get(UserPasswordCredential, user.id)
+        if not verify_password_or_dummy(credential, password):
             return AuthVerificationResult(
                 success=False, error_code=401, error_message="Invalid credentials"
             )
 
-        if not user.password_credential:
-            return AuthVerificationResult(
-                success=False, error_code=401, error_message="Invalid credentials"
-            )
+        assert credential is not None
 
         cfg = global_config["security"]
         try:
@@ -66,18 +79,15 @@ class PasswordAuthProvider(BaseAuthMethodProvider):
 
         if cfg["enable_passwd_force_expiration"]:
             expiration_seconds = 3600 * 24 * cfg["passwd_expire_after_days"]
-            if (
-                time.time() - user.password_credential.passwd_last_modified
-                > expiration_seconds
-            ):
+            if time.time() - credential.passwd_last_modified > expiration_seconds:
                 return AuthVerificationResult(
                     success=False,
                     error_code=4002,
                     error_message="Password should be changed because it's expired",
                 )
 
-        if user.password_credential.check_needs_rehash():
-            user.password_credential.set_password(password)
-            session.add(user.password_credential)
+        credential.rehash_if_needed(password)
 
-        return AuthVerificationResult(success=True)
+        return AuthVerificationResult(
+            success=True, credential_id=credential.credential_id
+        )

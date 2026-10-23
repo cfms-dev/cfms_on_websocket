@@ -31,6 +31,7 @@ from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
 )
+from include.database.models.auth import UserPasswordCredential
 from include.database.models.documents import Document
 from include.database.models.files import TransferMode
 from include.database.models.identity import (
@@ -42,6 +43,7 @@ from include.database.session import Session
 from include.domains.access.authorization.evaluation import check_access_requirements
 from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import create_file_task
+from include.domains.identity.commands.credentials import set_password
 from include.domains.identity.commands.users import create_user
 from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.identity.permission_entries import serialize_permission_entries
@@ -740,6 +742,7 @@ class RequestGetUserInfoHandler(RequestHandler):
                 )
                 return
 
+            password_credential = session.get(UserPasswordCredential, user_to_get.id)
             user_info = {
                 "nickname": user_to_get.nickname,
                 "user_id": str(user_to_get.id),
@@ -754,7 +757,11 @@ class RequestGetUserInfoHandler(RequestHandler):
                 "groups": list(user_to_get.all_groups),
                 "last_login": user_to_get.last_login,
                 "created_time": user_to_get.created_time,
-                "passwd_last_modified": user_to_get.passwd_last_modified,
+                "passwd_last_modified": (
+                    password_credential.passwd_last_modified
+                    if password_credential
+                    else 0.0
+                ),
             }
 
             handler.conclude_request(code=200, message="OK", data=user_info)
@@ -1053,7 +1060,12 @@ class RequestSetPasswdHandler(RequestHandler):
                 user = session.scalar(
                     select(User).where(User.username == target_username)
                 )
-                if not verify_password_or_dummy(user, old_passwd):
+                password_credential = (
+                    session.get(UserPasswordCredential, user.id)
+                    if user is not None
+                    else None
+                )
+                if not verify_password_or_dummy(password_credential, old_passwd):
                     assert ip is not None
                     LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
                     return respond(401, "Invalid credentials")
@@ -1141,15 +1153,21 @@ class RequestSetPasswdHandler(RequestHandler):
                     user_id=actor_user_id,
                 )
 
-            if user.verify_password(new_passwd):
+            password_credential = session.get(UserPasswordCredential, user.id)
+            if password_credential is not None and password_credential.verify(
+                new_passwd
+            ):
                 return respond(
                     400,
                     "New password should not be the same",
                     user_id=actor_user_id,
                 )
 
-            user.set_password(
-                new_passwd, force_update_after_login=force_update_after_login
+            set_password(
+                session,
+                user,
+                new_passwd,
+                force_update_after_login=force_update_after_login,
             )
             session.commit()
 

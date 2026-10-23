@@ -160,8 +160,6 @@ def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
             session.add_all(
                 User(
                     username=username,
-                    pass_hash="unused",
-                    passwd_last_modified=0.0,
                     created_time=0.0,
                 )
                 for username in ("alice", "bob")

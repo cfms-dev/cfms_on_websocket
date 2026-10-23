@@ -270,7 +270,6 @@ def test_sqlite_issue_and_transfer_claim_share_one_lock_order(
             models.User(
                 username="alice",
                 id=ALICE_ID,
-                pass_hash="unused",
                 created_time=0.0,
             )
         )
