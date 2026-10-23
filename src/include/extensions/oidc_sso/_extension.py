@@ -490,10 +490,14 @@ class RequestOIDCStartHandler(RequestHandler[_OIDCStartRequest]):
     request_model = _OIDCStartRequest
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler) -> Result | None:
+    def handle(self, handler, request) -> Result | None:
         try:
             cfg = _get_validated_oidc_config()
-            requested_redirect_uri = handler.data.get("redirect_uri")
+            requested_redirect_uri = (
+                request.redirect_uri
+                if request.redirect_uri is not REQUEST_UNSET
+                else None
+            )
             if requested_redirect_uri and requested_redirect_uri != cfg["redirect_uri"]:
                 raise OIDCConfigurationError(
                     "OIDC redirect_uri must match the configured redirect URI"
@@ -535,14 +539,16 @@ class RequestOIDCCallbackHandler(RequestHandler[_OIDCCallbackRequest]):
     request_model = _OIDCCallbackRequest
     rate_limit_cost = 10
 
-    def handle(self, handler: ConnectionHandler) -> Result:
+    def handle(self, handler, request) -> Result:
         attempt = AuthenticationAttempt(
             "oidc",
             AuthPurpose.LOGIN,
             get_client_ip(handler.stream.connection._ws),
             self.rate_limit_cost,
         )
-        return authenticate_request(handler, attempt, handler.data)
+        return authenticate_request(
+            handler, attempt, request.model_dump(mode="json", exclude_unset=True)
+        )
 
 
 @hookimpl

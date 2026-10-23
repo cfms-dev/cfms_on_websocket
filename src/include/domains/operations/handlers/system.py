@@ -25,7 +25,6 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-lazy from include.transport.connection import ConnectionHandler
 
 
 class _LockdownRequest(RequestDataModel):
@@ -51,8 +50,8 @@ class RequestLockdownHandler(RequestHandler[_LockdownRequest]):
     requires_auth = True
     rate_limit_cost = 10
 
-    def handle(self, handler: ConnectionHandler):
-        status_to_change: bool = handler.data["status"]
+    def handle(self, handler, request):
+        status_to_change: bool = request.status
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
 
@@ -61,8 +60,8 @@ class RequestLockdownHandler(RequestHandler[_LockdownRequest]):
                 return Result(code=403, target=None, user_id=handler.user_id)
 
         transition = (
-            apply_lockdown(status_to_change, handler.data["reason"])
-            if "reason" in handler.data
+            apply_lockdown(status_to_change, request.reason)
+            if request.reason is not REQUEST_UNSET
             else apply_lockdown(status_to_change)
         )
 
@@ -87,10 +86,12 @@ class RequestViewAuditLogsHandler(RequestHandler[_ViewAuditLogsRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        page_size = get_page_size(handler.data)
-        cursor = handler.data.get("cursor")
-        filtered_actions: list[str] = handler.data.get("filters", [])
+    def handle(self, handler, request):
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        cursor = request.cursor
+        filtered_actions: list[str] = (
+            request.filters if request.filters is not REQUEST_UNSET else []
+        )
         filters = {"filters": sorted(filtered_actions)}
         sort = "logged_time_id:desc"
         try:

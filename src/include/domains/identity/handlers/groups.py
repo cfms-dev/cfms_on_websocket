@@ -26,7 +26,6 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString
 
 
@@ -56,8 +55,10 @@ class RequestListGroupsHandler(RequestHandler[OffsetPaginationRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        offset, count = get_offset_pagination(handler.data)
+    def handle(self, handler, request):
+        offset, count = get_offset_pagination(
+            request.model_dump(mode="json", exclude_unset=True)
+        )
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)  # Requesting user.
@@ -110,8 +111,8 @@ class RequestCreateGroupHandler(RequestHandler[_CreateGroupRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        data = handler.data
+    def handle(self, handler, request):
+        data = request.model_dump(mode="json", exclude_unset=True)
         new_group_name = data["group_name"]
         new_display_name = data.get("display_name")
         new_group_permissions = data.get("permissions", [])
@@ -149,7 +150,7 @@ class RequestDeleteGroupHandler(RequestHandler[_GroupNameRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -162,11 +163,11 @@ class RequestDeleteGroupHandler(RequestHandler[_GroupNameRequest]):
                 )
                 return Result(
                     code=403,
-                    target=handler.data["group_name"],
+                    target=request.group_name,
                     user_id=handler.user_id,
                 )
 
-            group_to_delete_name: str = handler.data["group_name"]
+            group_to_delete_name: str = request.group_name
             group_to_delete = session.get(UserGroup, group_to_delete_name)
 
             if not group_to_delete:
@@ -205,9 +206,7 @@ class RequestDeleteGroupHandler(RequestHandler[_GroupNameRequest]):
         }
 
         handler.conclude_request(**response)
-        return Result(
-            code=0, target=handler.data["group_name"], user_id=handler.user_id
-        )
+        return Result(code=0, target=request.group_name, user_id=handler.user_id)
 
 
 class RequestRenameGroupHandler(RequestHandler[_RenameGroupRequest]):
@@ -216,9 +215,9 @@ class RequestRenameGroupHandler(RequestHandler[_RenameGroupRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        target_group_name: str = handler.data["group_name"]
+        target_group_name: str = request.group_name
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -233,7 +232,7 @@ class RequestRenameGroupHandler(RequestHandler[_RenameGroupRequest]):
                     code=403, target=target_group_name, user_id=handler.user_id
                 )
 
-            new_display_name: str | None = handler.data.get("display_name", None)
+            new_display_name: str | None = request.display_name
             if type(new_display_name) not in (str, None):
                 handler.conclude_request(
                     code=400, message="display_name must be null or a string", data={}
@@ -266,12 +265,12 @@ class RequestGetGroupInfoHandler(RequestHandler[_GroupNameRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)  # Requesting user.
 
-            if not handler.data["group_name"]:
+            if not request.group_name:
                 handler.conclude_request(
                     code=400, message="Group name is required", data={}
                 )
@@ -285,18 +284,18 @@ class RequestGetGroupInfoHandler(RequestHandler[_GroupNameRequest]):
                 )
                 return Result(
                     code=403,
-                    target=handler.data["group_name"],
+                    target=request.group_name,
                     user_id=handler.user_id,
                 )
 
-            group = session.get(UserGroup, handler.data["group_name"])
+            group = session.get(UserGroup, request.group_name)
             if not group:
                 handler.conclude_request(
                     code=404, message="Group does not exist", data={}
                 )
                 return Result(
                     code=404,
-                    target=handler.data["group_name"],
+                    target=request.group_name,
                     user_id=handler.user_id,
                 )
 
@@ -313,9 +312,7 @@ class RequestGetGroupInfoHandler(RequestHandler[_GroupNameRequest]):
             }
 
             handler.conclude_request(**response)
-            return Result(
-                code=0, target=handler.data["group_name"], user_id=handler.user_id
-            )
+            return Result(code=0, target=request.group_name, user_id=handler.user_id)
 
 
 class RequestChangeGroupPermissionsHandler(
@@ -326,12 +323,12 @@ class RequestChangeGroupPermissionsHandler(
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
 
-            if not handler.data["group_name"]:
+            if not request.group_name:
                 handler.conclude_request(
                     code=400, message="Group name is required", data={}
                 )
@@ -345,22 +342,22 @@ class RequestChangeGroupPermissionsHandler(
                 )
                 return Result(
                     code=403,
-                    target=handler.data["group_name"],
+                    target=request.group_name,
                     user_id=handler.user_id,
                 )
 
-            group = session.get(UserGroup, handler.data["group_name"])
+            group = session.get(UserGroup, request.group_name)
             if not group:
                 handler.conclude_request(
                     code=404, message="Group does not exist", data={}
                 )
                 return Result(
                     code=404,
-                    target=handler.data["group_name"],
+                    target=request.group_name,
                     user_id=handler.user_id,
                 )
 
-            new_permissions = handler.data.get("permissions", [])
+            new_permissions = [entry.model_dump() for entry in request.permissions]
             group.all_permissions = new_permissions
             session.commit()
 
@@ -371,6 +368,4 @@ class RequestChangeGroupPermissionsHandler(
         }
 
         handler.conclude_request(**response)
-        return Result(
-            code=0, target=handler.data["group_name"], user_id=handler.user_id
-        )
+        return Result(code=0, target=request.group_name, user_id=handler.user_id)

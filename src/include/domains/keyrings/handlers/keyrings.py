@@ -22,7 +22,6 @@ __all__ = [
 ]
 
 import time
-import uuid
 from typing import Annotated
 
 from pydantic import StringConstraints
@@ -45,7 +44,6 @@ from include.transport.request_handler import (
     Result,
 )
 lazy from include.domains.identity.types import RequestUserID
-lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString
 
 _KeyContent = Annotated[str, StringConstraints(min_length=1, max_length=512)]
@@ -91,12 +89,14 @@ class RequestUploadUserKeyHandler(RequestHandler[_UploadUserKeyRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
-        key_content: str = handler.data["content"]
-        label: str | None = handler.data.get("label")
+    def handle(self, handler, request):
+        key_content: str = request.content
+        label: str | None = (
+            request.label if request.label is not REQUEST_UNSET else None
+        )
         target_user_id = (
-            uuid.UUID(handler.data["user_id"])
-            if "user_id" in handler.data
+            request.user_id
+            if "user_id" in request.model_fields_set
             else handler.user_id
         )
 
@@ -163,8 +163,8 @@ class RequestGetUserKeyHandler(RequestHandler[_KeyIDRequest]):
     requires_auth = True
     rate_limit_cost = 1
 
-    def handle(self, handler: ConnectionHandler):
-        key_id: str = handler.data["id"]
+    def handle(self, handler, request):
+        key_id: str = request.id
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -221,8 +221,8 @@ class RequestDeleteUserKeyHandler(RequestHandler[_KeyIDRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
-        key_id: str = handler.data["id"]
+    def handle(self, handler, request):
+        key_id: str = request.id
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -278,8 +278,8 @@ class RequestSetPreferenceDEKHandler(RequestHandler[_KeyIDRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
-        key_id: str = handler.data["id"]
+    def handle(self, handler, request):
+        key_id: str = request.id
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -329,13 +329,15 @@ class RequestListUserKeysHandler(RequestHandler[_ListUserKeysRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         target_user_id = (
-            uuid.UUID(handler.data["user_id"])
-            if "user_id" in handler.data
+            request.user_id
+            if "user_id" in request.model_fields_set
             else handler.user_id
         )
-        offset, count = get_offset_pagination(handler.data)
+        offset, count = get_offset_pagination(
+            request.model_dump(mode="json", exclude_unset=True)
+        )
 
         with Session() as session:
             operator = User.get_existing(session, handler.user_id)

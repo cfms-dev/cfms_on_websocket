@@ -5,7 +5,6 @@ from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.messages import Messages as smsg
 from include.transport.request_handler import RequestDataModel, RequestHandler, Result
-lazy from include.transport.connection import ConnectionHandler
 
 
 class _DebugRequest(RequestDataModel):
@@ -19,7 +18,7 @@ class RequestThrowExceptionHandler(RequestHandler[_DebugRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Handle the request by throwing an exception."""
 
         with Session() as session:

@@ -101,7 +101,9 @@ def management(sqlite_engine_factory, tmp_path, monkeypatch):
 
     def call(action, data=None, *, source=token):
         handler = Handler(data or {}, source)
-        result = HANDLERS[action]().handle(handler)
+        result = HANDLERS[action]().handle(
+            handler, HANDLERS[action].request_model.model_validate(handler.data)
+        )
         assert result.code == handler.response["code"]
         handler.result = result
         return handler
@@ -551,7 +553,15 @@ def test_no_policy_escalation_issues_short_lived_token_without_proof(
         )
     source = Token.new(management.user_id, 60, management.signing_key)
     handler = Handler({"target_purpose": 6}, source)
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 200
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 200
+    )
     issued = Token.from_raw(handler.response["data"]["token"], management.signing_key)
     assert issued.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
     assert issued.exp - issued.iat == ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -561,7 +571,10 @@ def test_no_policy_escalation_issues_short_lived_token_without_proof(
         assert user.last_login == 10
         assert user.all_permissions == set()
     refreshed = Handler({}, issued)
-    auth.RequestRefreshTokenHandler().handle(refreshed)
+    auth.RequestRefreshTokenHandler().handle(
+        refreshed,
+        auth.RequestRefreshTokenHandler.request_model.model_validate(refreshed.data),
+    )
     assert refreshed.response["data"]["purpose"] == TokenPurpose.GENERAL
 
 
@@ -582,7 +595,15 @@ def test_direct_escalation_rechecks_token_and_account(management, change, expect
         elif change == "deleted":
             session.delete(user)
     handler = Handler({"target_purpose": 6}, source)
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == expected
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == expected
+    )
     assert "token" not in handler.response["data"]
 
 
@@ -599,7 +620,15 @@ def test_direct_escalation_rejects_restricted_or_already_elevated_sources(
 ):
     source = Token.new(management.user_id, 60, management.signing_key, purpose)
     handler = Handler({"target_purpose": 6}, source)
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 403
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 403
+    )
 
 
 @pytest.mark.parametrize("missing", ["method", "data", "both"])
@@ -623,4 +652,12 @@ def test_configured_escalation_requires_method_and_data(management, missing):
     for field in ("method", "data") if missing == "both" else (missing,):
         data.pop(field)
     handler = Handler(data, Token.new(management.user_id, 60, management.signing_key))
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 400
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 400
+    )

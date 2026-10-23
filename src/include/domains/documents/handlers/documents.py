@@ -90,7 +90,6 @@ from include.transport.request_handler import (
 )
 from include.types import JsonInteger, NonEmptyString
 lazy from include.domains.documents.types import RevisionID
-lazy from include.transport.connection import ConnectionHandler
 
 _Sha256 = Annotated[str, StringConstraints(pattern="^[0-9A-Fa-f]{64}$")]
 _Tag = Annotated[str, StringConstraints(min_length=1, max_length=255)]
@@ -253,9 +252,9 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        document_id = handler.data.get("document_id")
+        document_id = request.document_id
 
         if not document_id:
             handler.conclude_request(400, {}, smsg.DOCUMENT_ID_REQUIRED)
@@ -319,9 +318,9 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler[_DocumentIDRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        document_id: str = handler.data["document_id"]
+        document_id: str = request.document_id
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
@@ -363,8 +362,8 @@ class RequestGetDocumentHandler(RequestHandler[_DocumentIDRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        document_id: str = handler.data["document_id"]
+    def handle(self, handler, request):
+        document_id: str = request.document_id
 
         with Session() as session, risk_control_transaction(session):
             user = User.get_existing(session, handler.user_id)
@@ -572,11 +571,17 @@ class RequestCreateDocumentHandler(RequestHandler[_CreateDocumentRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        folder_id = handler.data.get("folder_id") or ROOT_DIRECTORY_ID
-        title = (handler.data.get("title") or "").strip()
-        access_rules = handler.data.get("access_rules") or {}
-        inherit_parent = handler.data.get("inherit_parent", True)
+    def handle(self, handler, request):
+        folder_id = request.folder_id or ROOT_DIRECTORY_ID
+        title = (request.title or "").strip()
+        access_rules = (
+            request.access_rules if request.access_rules is not REQUEST_UNSET else None
+        ) or {}
+        inherit_parent = (
+            request.inherit_parent
+            if request.inherit_parent is not REQUEST_UNSET
+            else True
+        )
 
         if not title:
             handler.conclude_request(400, {}, smsg.DOCUMENT_TITLE_REQUIRED)
@@ -641,8 +646,8 @@ class RequestUploadDocumentHandler(RequestHandler[_UploadDocumentRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        document_id = handler.data["document_id"]
+    def handle(self, handler, request):
+        document_id = request.document_id
 
         try_reclaim_abandoned_uploads(document_id=document_id)
 
@@ -719,8 +724,8 @@ class RequestUploadDocumentHandler(RequestHandler[_UploadDocumentRequest]):
                     path=f"content/files/{today.year}/{today.month}/{real_filename}",
                 )
 
-                if "parent_revision_id" in handler.data:
-                    parent_revision_id = handler.data["parent_revision_id"]
+                if "parent_revision_id" in request.model_fields_set:
+                    parent_revision_id = request.parent_revision_id
 
                     # Validate the provided parent_revision_id if it's not null
                     if parent_revision_id and parent_revision_id not in [
@@ -775,8 +780,8 @@ class RequestDeleteDocumentHandler(RequestHandler[_DocumentIDRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        document_id = handler.data["document_id"]
+    def handle(self, handler, request):
+        document_id = request.document_id
         cancelled_task_ids: list[str] = []
 
         with Session() as session:
@@ -823,11 +828,11 @@ class RequestRenameDocumentHandler(RequestHandler[_RenameDocumentRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         # Parse the directory renaming request
-        document_id: str = handler.data["document_id"]
-        new_title: str = handler.data["new_title"]
+        document_id: str = request.document_id
+        new_title: str = request.new_title
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -883,10 +888,10 @@ class RequestDownloadFileHandler(RequestHandler[_DownloadFileRequest]):
     request_model = _DownloadFileRequest
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        task_id: str = handler.data["task_id"]
-        offset: int = handler.data.get("offset", 0)
-        max_chunk_size: int = handler.data["max_chunk_size"]
+    def handle(self, handler, request):
+        task_id: str = request.task_id
+        offset: int = request.offset if request.offset is not REQUEST_UNSET else 0
+        max_chunk_size: int = request.max_chunk_size
 
         # The server still needs to send one more response.
         handler.send_file(task_id, offset, max_chunk_size)
@@ -898,12 +903,12 @@ class RequestUploadFileHandler(RequestHandler[_UploadFileRequest]):
     request_model = _UploadFileRequest
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        task_id = handler.data["task_id"]
-        file_size = handler.data["file_size"]
-        sha256 = handler.data["sha256"]
-        max_chunk_size = handler.data["max_chunk_size"]
-        restart = handler.data.get("restart", False)
+    def handle(self, handler, request):
+        task_id = request.task_id
+        file_size = request.file_size
+        sha256 = request.sha256
+        max_chunk_size = request.max_chunk_size
+        restart = request.restart if request.restart is not REQUEST_UNSET else False
 
         # The server needs to send one response.
         handler.receive_file(
@@ -923,11 +928,15 @@ class RequestSetDocumentRulesHandler(RequestHandler[_SetDocumentRulesRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Handles the document access rules setting request from the client."""
-        document_id: str = handler.data["document_id"]
-        access_rules_to_apply: dict = handler.data["access_rules"]
-        inherit_parent: bool = handler.data.get("inherit_parent", True)
+        document_id: str = request.document_id
+        access_rules_to_apply: dict = request.access_rules
+        inherit_parent: bool = (
+            request.inherit_parent
+            if request.inherit_parent is not REQUEST_UNSET
+            else True
+        )
 
         if not handler.user_id:
             handler.conclude_request(401, {}, smsg.AUTHENTICATION_REQUIRED)
@@ -978,10 +987,10 @@ class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        document_id: str = handler.data["document_id"]
-        target_folder_id: str | None = handler.data.get("target_folder_id")
+        document_id: str = request.document_id
+        target_folder_id: str | None = request.target_folder_id
 
         if not target_folder_id:
             target_folder_id = ROOT_DIRECTORY_ID
@@ -1096,8 +1105,8 @@ class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
     requires_auth = True
     rate_limit_cost = 10
 
-    def handle(self, handler: ConnectionHandler):
-        doc_id = handler.data["document_id"]
+    def handle(self, handler, request):
+        doc_id = request.document_id
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
 
@@ -1142,12 +1151,14 @@ class RequestRestoreDocumentHandler(RequestHandler[_RestoreDocumentRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        doc_id = handler.data["document_id"]
+    def handle(self, handler, request):
+        doc_id = request.document_id
 
-        target_folder_provided = "target_folder_id" in handler.data
-        target_folder_id: str | None = handler.data.get("target_folder_id")
-        new_title = handler.data.get("new_title")
+        target_folder_provided = "target_folder_id" in request.model_fields_set
+        target_folder_id: str | None = request.target_folder_id
+        new_title = (
+            request.new_title if request.new_title is not REQUEST_UNSET else None
+        )
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
@@ -1231,12 +1242,12 @@ class RequestSetDocumentTagsHandler(RequestHandler[_SetDocumentTagsRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        document_id: str = handler.data["document_id"]
+    def handle(self, handler, request):
+        document_id: str = request.document_id
 
         normalized_tags = []
         seen_tags = set()
-        for raw_tag in handler.data["tags"]:
+        for raw_tag in request.tags:
             tag = raw_tag.strip()
             if not tag:
                 handler.conclude_request(400, {}, "Tags cannot be blank")

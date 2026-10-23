@@ -109,7 +109,9 @@ def security_admin_context(monkeypatch, tmp_path, sqlite_engine_factory):
 
 def _call(handler_class, data, username="admin"):
     connection = FakeHandler(data, username=username)
-    result = handler_class().handle(connection)
+    result = handler_class().handle(
+        connection, handler_class.request_model.model_validate(connection.data)
+    )
     assert connection.responses
     return result, connection.responses[-1]
 

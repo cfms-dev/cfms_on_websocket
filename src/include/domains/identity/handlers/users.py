@@ -85,7 +85,6 @@ from include.transport.request_handler import (
     Result,
 )
 lazy from include.domains.identity.types import RequestUserID, RequestUsername
-lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString, NonNegativeFloat
 
 
@@ -213,8 +212,10 @@ class RequestListUsersHandler(RequestHandler[OffsetPaginationRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        offset, count = get_offset_pagination(handler.data)
+    def handle(self, handler, request):
+        offset, count = get_offset_pagination(
+            request.model_dump(mode="json", exclude_unset=True)
+        )
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -277,8 +278,8 @@ class RequestCreateUserHandler(RequestHandler[_CreateUserRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        data = handler.data
+    def handle(self, handler, request):
+        data = request.model_dump(mode="json", exclude_unset=True)
         new_username = data["username"]
         new_password = data["password"]
         new_nickname = data.get("nickname")
@@ -350,8 +351,8 @@ class RequestDeleteUserHandler(RequestHandler[_UserIDRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        target_user_id = uuid.UUID(handler.data["user_id"])
+    def handle(self, handler, request):
+        target_user_id = request.user_id
 
         audit_data = {}
         with Session() as session:
@@ -443,9 +444,9 @@ class RequestRenameUserHandler(RequestHandler[_RenameUserRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        target_user_id = uuid.UUID(handler.data["user_id"])
+        target_user_id = request.user_id
 
         audit_data = {}
         with Session() as session:
@@ -475,7 +476,7 @@ class RequestRenameUserHandler(RequestHandler[_RenameUserRequest]):
                     user_id=handler.user_id,
                 )
 
-            new_nickname = handler.data.get("nickname", None)
+            new_nickname = request.nickname
 
             user_to_rename = session.get(User, target_user_id)
             if not user_to_rename:
@@ -523,17 +524,23 @@ class RequestBlockUserHandler(RequestHandler[_BlockUserRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        target_user_id = uuid.UUID(handler.data["user_id"])
-        block_types: list[str] = handler.data["block_types"]
+        target_user_id = request.user_id
+        block_types: list[str] = request.block_types
 
-        not_before: int | float = handler.data.get("not_before", 0)
-        not_after: int | float = handler.data.get("not_after", -1)
-        reason: str | None = handler.data.get("reason")
+        not_before: int | float = (
+            request.not_before if request.not_before is not REQUEST_UNSET else 0
+        )
+        not_after: int | float = (
+            request.not_after if request.not_after is not REQUEST_UNSET else -1
+        )
+        reason: str | None = request.reason
 
-        target_type: str = handler.data["target"]["type"]
-        target_id: str | None = handler.data["target"].get("id")
+        target_type: str = request.target.type
+        target_id: str | None = (
+            request.target.id if request.target.id is not REQUEST_UNSET else None
+        )
 
         if not set(block_types).issubset(AVAILABLE_BLOCK_TYPES):
             handler.conclude_request(400, {}, "Unsupported block type(s)")
@@ -622,9 +629,9 @@ class RequestUnblockUserHandler(RequestHandler[_BlockIDRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        block_id: str = handler.data["block_id"]
+        block_id: str = request.block_id
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -665,9 +672,9 @@ class RequestUpdateUserBlockHandler(RequestHandler[_UpdateUserBlockRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        block_id: str = handler.data["block_id"]
-        reason: str | None = handler.data["reason"]
+    def handle(self, handler, request):
+        block_id: str = request.block_id
+        reason: str | None = request.reason
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -721,11 +728,11 @@ class RequestListUserBlocksHandler(RequestHandler[_ListUserBlocksRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        target_user_id = uuid.UUID(handler.data["user_id"])
-        page_size = get_page_size(handler.data)
-        cursor = handler.data.get("cursor")
+        target_user_id = request.user_id
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        cursor = request.cursor
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -820,10 +827,10 @@ class RequestGetUserInfoHandler(RequestHandler[_GetUserInfoRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
-        username = handler.data.get("username")
+    def handle(self, handler, request):
+        username = request.username if request.username is not REQUEST_UNSET else None
         target_user_id = (
-            uuid.UUID(handler.data["user_id"]) if "user_id" in handler.data else None
+            request.user_id if "user_id" in request.model_fields_set else None
         )
 
         with Session() as session:
@@ -904,8 +911,8 @@ class RequestGetUserAvatarHandler(RequestHandler[_UserIDRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        target_user_id = uuid.UUID(handler.data["user_id"])
+    def handle(self, handler, request):
+        target_user_id = request.user_id
 
         audit_data = {}
         with Session() as session:
@@ -984,9 +991,9 @@ class RequestSetUserAvatarHandler(RequestHandler[_SetUserAvatarRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        target_user_id = uuid.UUID(handler.data["user_id"])
-        document_id: str | None = handler.data["document_id"]
+    def handle(self, handler, request):
+        target_user_id = request.user_id
+        document_id: str | None = request.document_id
 
         audit_data = {}
         with Session() as session:
@@ -1081,8 +1088,8 @@ class RequestChangeUserGroupsHandler(RequestHandler[_ChangeUserGroupsRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        target_user_id = uuid.UUID(handler.data["user_id"])
+    def handle(self, handler, request):
+        target_user_id = request.user_id
 
         audit_data = {}
         with Session() as session:
@@ -1115,7 +1122,9 @@ class RequestChangeUserGroupsHandler(RequestHandler[_ChangeUserGroupsRequest]):
 
             audit_data["target_username"] = user_to_change.username
 
-            new_user_groups: list[str] = handler.data.get("groups", [])
+            new_user_groups: list[str] = (
+                request.groups if request.groups is not REQUEST_UNSET else []
+            )
 
             if set(new_user_groups) != user_to_change.all_groups:
                 user_to_change.all_groups = new_user_groups
@@ -1145,8 +1154,8 @@ class RequestChangeUserPermissionsHandler(
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        target_user_id = uuid.UUID(handler.data["user_id"])
+    def handle(self, handler, request):
+        target_user_id = request.user_id
         audit_data = {}
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -1178,7 +1187,7 @@ class RequestChangeUserPermissionsHandler(
 
             audit_data["target_username"] = user_to_change.username
 
-            new_permissions = handler.data.get("permissions", [])
+            new_permissions = [entry.model_dump() for entry in request.permissions]
             user_to_change.own_permissions = new_permissions
             session.commit()
 
@@ -1203,20 +1212,26 @@ class RequestSetPasswdHandler(RequestHandler[_SetPasswordRequest]):
     requires_auth = True
     required_token_purpose = TokenPurpose.GENERAL | TokenPurpose.POST_AUTH
 
-    def handle(self, handler: ConnectionHandler):
-        target_username: str | None = handler.data.get("username")
-        old_passwd: str | None = handler.data.get("old_passwd")
+    def handle(self, handler, request):
+        target_username: str | None = (
+            request.username if request.username is not REQUEST_UNSET else None
+        )
+        old_passwd: str | None = request.old_passwd
         target_user_id = (
-            uuid.UUID(handler.data["user_id"]) if "user_id" in handler.data else None
+            request.user_id if "user_id" in request.model_fields_set else None
         )
         audit_data = {}
-        new_passwd: str = handler.data["new_passwd"]
+        new_passwd: str = request.new_passwd
         operator_user_id = handler.user_id
-        bypass_passwd_requirements: bool = handler.data.get(
-            "bypass_passwd_requirements", False
+        bypass_passwd_requirements: bool = (
+            request.bypass_passwd_requirements
+            if request.bypass_passwd_requirements is not REQUEST_UNSET
+            else False
         )
-        force_update_after_login: bool = handler.data.get(
-            "force_update_after_login", False
+        force_update_after_login: bool = (
+            request.force_update_after_login
+            if request.force_update_after_login is not REQUEST_UNSET
+            else False
         )
         ip: str | None = None
         post_auth = (
@@ -1245,7 +1260,7 @@ class RequestSetPasswdHandler(RequestHandler[_SetPasswordRequest]):
             return respond(401, "Authentication required")
         if not post_auth and not handler.token.has_purpose(TokenPurpose.GENERAL):
             return respond(403, "A GENERAL or POST_AUTH token is required")
-        if post_auth and set(handler.data) != {"new_passwd"}:
+        if post_auth and request.model_fields_set != {"new_passwd"}:
             return respond(400, "POST_AUTH accepts only new_passwd")
 
         if old_passwd is not None:
@@ -1412,11 +1427,13 @@ class RequestManageUserStatusHandler(RequestHandler[_ManageUserStatusRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        new_status: str = handler.data["status"]
-        target_user_id = uuid.UUID(handler.data["user_id"])
-        reason: str | None = handler.data.get("reason")
-        reason_provided = "reason" in handler.data
+    def handle(self, handler, request):
+        new_status: str = request.status
+        target_user_id = request.user_id
+        reason: str | None = (
+            request.reason if request.reason is not REQUEST_UNSET else None
+        )
+        reason_provided = "reason" in request.model_fields_set
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)

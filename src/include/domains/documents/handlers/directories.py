@@ -64,7 +64,6 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString
 
 _AccessRules = dict[str, list[Any]]
@@ -193,12 +192,12 @@ class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         # Parse the directory listing request
-        folder_id: str | None = handler.data.get("folder_id")
-        page_size = get_page_size(handler.data)
-        cursor = handler.data.get("cursor")
+        folder_id: str | None = request.folder_id
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        cursor = request.cursor
 
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
@@ -286,9 +285,9 @@ class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        directory_id: str = handler.data["directory_id"]
+        directory_id: str = request.directory_id
 
         if not directory_id:
             handler.conclude_request(400, {}, smsg.DIRECTORY_ID_REQUIRED)
@@ -351,9 +350,9 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler[_DirectoryIDRequest])
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        directory_id: str = handler.data["directory_id"]
+        directory_id: str = request.directory_id
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
@@ -408,8 +407,8 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        data = handler.data
+    def handle(self, handler, request):
+        data = request.model_dump(mode="json", exclude_unset=True)
         parent_id = data.get("parent_id")
         name = data["name"]
         access_rules = data.get("access_rules", {})
@@ -515,10 +514,10 @@ class RequestDeleteDirectoryHandler(RequestHandler[_FolderIDRequest]):
     requires_auth = True
     rate_limit_cost = 10
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         # Parse the directory deletion request
-        folder_id = handler.data["folder_id"]  # Get the folder ID from the request data
+        folder_id = request.folder_id  # Get the folder ID from the request data
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
@@ -618,11 +617,11 @@ class RequestRenameDirectoryHandler(RequestHandler[_RenameDirectoryRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         # Parse the directory renaming request
-        folder_id = handler.data["folder_id"]
-        new_name = handler.data["new_name"]
+        folder_id = request.folder_id
+        new_name = request.new_name
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
@@ -680,10 +679,10 @@ class RequestMoveDirectoryHandler(RequestHandler[_MoveDirectoryRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        folder_id: str = handler.data["folder_id"]
-        target_folder_id: str | None = handler.data.get("target_folder_id")
+        folder_id: str = request.folder_id
+        target_folder_id: str | None = request.target_folder_id
 
         if not target_folder_id:
             target_folder_id = ROOT_DIRECTORY_ID
@@ -766,11 +765,15 @@ class RequestSetDirectoryRulesHandler(RequestHandler[_SetDirectoryRulesRequest])
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Handles the directory access rules setting request from the client."""
-        directory_id: str = handler.data["directory_id"]
-        access_rules_to_apply: dict = handler.data["access_rules"]
-        inherit_parent: bool = handler.data.get("inherit_parent", True)
+        directory_id: str = request.directory_id
+        access_rules_to_apply: dict = request.access_rules
+        inherit_parent: bool = (
+            request.inherit_parent
+            if request.inherit_parent is not REQUEST_UNSET
+            else True
+        )
 
         if not handler.user_id:
             handler.conclude_request(401, {}, smsg.AUTHENTICATION_REQUIRED)
@@ -825,8 +828,8 @@ class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
     requires_auth = True
     rate_limit_cost = 20
 
-    def handle(self, handler: ConnectionHandler):
-        folder_id = handler.data["folder_id"]
+    def handle(self, handler, request):
+        folder_id = request.folder_id
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(403, {}, smsg.CANNOT_PURGE_ROOT_DIRECTORY)
@@ -919,11 +922,15 @@ class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
     requires_auth = True
     rate_limit_cost = 10
 
-    def handle(self, handler: ConnectionHandler):
-        folder_id = handler.data["folder_id"]
-        target_parent_provided = "target_parent_id" in handler.data
-        target_parent_id = handler.data.get("target_parent_id")
-        new_name = handler.data.get("new_name")
+    def handle(self, handler, request):
+        folder_id = request.folder_id
+        target_parent_provided = "target_parent_id" in request.model_fields_set
+        target_parent_id = (
+            request.target_parent_id
+            if request.target_parent_id is not REQUEST_UNSET
+            else None
+        )
+        new_name = request.new_name if request.new_name is not REQUEST_UNSET else None
 
         if folder_id == ROOT_DIRECTORY_ID:
             handler.conclude_request(400, {}, smsg.CANNOT_RESTORE_ROOT_DIRECTORY)
@@ -1022,10 +1029,10 @@ class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        parent_id = handler.data["folder_id"]
-        page_size = get_page_size(handler.data)
-        cursor = handler.data.get("cursor")
+    def handle(self, handler, request):
+        parent_id = request.folder_id
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        cursor = request.cursor
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)

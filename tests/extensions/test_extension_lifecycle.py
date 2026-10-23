@@ -330,7 +330,9 @@ def test_builtin_shutdown_handler_stops_active_server(monkeypatch, builtin_exten
 
     builtin_extension.ext_on_startup(server)
     try:
-        builtin_extension.RequestShutdownHandler().handle(handler)
+        builtin_extension.RequestShutdownHandler().handle(
+            handler, builtin_extension.RequestShutdownHandler.request_model()
+        )
     finally:
         builtin_extension.ext_on_shutdown()
 

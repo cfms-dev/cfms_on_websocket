@@ -527,14 +527,14 @@ class EmptyRequest(RequestDataModel):
 class ValidHandler(RequestHandler[EmptyRequest]):
     request_model = EmptyRequest
 
-    def handle(self, _handler):
+    def handle(self, _handler, request):
         return None
 
 
 class LegacyHandler(RequestHandler):
     schema: ClassVar[dict[str, str]] = {"type": "object"}
 
-    def handle(self, _handler):
+    def handle(self, _handler, request):
         return None
 
 

@@ -36,7 +36,6 @@ from include.transport.request_handler import (
     Result,
 )
 lazy from include.domains.documents.types import RevisionID
-lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString
 
 
@@ -61,10 +60,10 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
     requires_auth = True  # when True, handler.user_id is guaranteed to be not None
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
-        document_id = handler.data["document_id"]
-        page_size = get_page_size(handler.data)
-        cursor = handler.data.get("cursor")
+    def handle(self, handler, request):
+        document_id = request.document_id
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        cursor = request.cursor
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
@@ -147,8 +146,8 @@ class RequestGetRevisionHandler(RequestHandler[_RevisionIDRequest]):
     requires_auth = True  # when True, handler.user_id is guaranteed to be not None
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        revision_id = handler.data["id"]
+    def handle(self, handler, request):
+        revision_id = request.id
 
         with Session() as session, risk_control_transaction(session):
             user = User.get_existing(session, handler.user_id)
@@ -211,9 +210,9 @@ class RequestSetDocumentRevisionHandler(RequestHandler[_SetDocumentRevisionReque
     requires_auth = True  # when True, handler.user_id is guaranteed to be not None
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        document_id = handler.data["document_id"]
-        revision_id = handler.data["revision_id"]
+    def handle(self, handler, request):
+        document_id = request.document_id
+        revision_id = request.revision_id
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
@@ -249,10 +248,10 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         # Be careful: this function changes the revision tree structure.
 
-        revision_id = handler.data["id"]
+        revision_id = request.id
 
         cancelled_task_ids: list[str] = []
         with Session() as session:

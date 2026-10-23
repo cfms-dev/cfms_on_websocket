@@ -483,13 +483,15 @@ def test_download_request_passes_offset_and_chunk_size_to_transfer() -> None:
 
     transfers = []
     handler = SimpleNamespace(
-        data={"task_id": "task", "offset": 64, "max_chunk_size": 32 * 1024},
         send_file=lambda task_id, offset, max_chunk_size: transfers.append(
             (task_id, offset, max_chunk_size)
         ),
     )
+    request = RequestDownloadFileHandler.request_model.model_validate(
+        {"task_id": "task", "offset": 64, "max_chunk_size": 32 * 1024}
+    )
 
-    RequestDownloadFileHandler().handle(handler)
+    RequestDownloadFileHandler().handle(handler, request)
 
     assert transfers == [("task", 64, 32 * 1024)]
 
@@ -500,17 +502,19 @@ def test_upload_request_normalizes_digest_and_passes_transfer_metadata() -> None
 
     transfers = []
     handler = SimpleNamespace(
-        data={
+        receive_file=lambda *args: transfers.append(args),
+    )
+    request = RequestUploadFileHandler.request_model.model_validate(
+        {
             "task_id": "task",
             "file_size": 1,
             "sha256": "A" * 64,
             "max_chunk_size": 32 * 1024,
             "restart": True,
-        },
-        receive_file=lambda *args: transfers.append(args),
+        }
     )
 
-    RequestUploadFileHandler().handle(handler)
+    RequestUploadFileHandler().handle(handler, request)
 
     assert transfers == [("task", 1, "a" * 64, 32 * 1024, True)]
 

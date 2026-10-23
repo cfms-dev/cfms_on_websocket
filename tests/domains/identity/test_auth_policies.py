@@ -13,6 +13,7 @@ import pytest
 from argon2 import PasswordHasher
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from pydantic import ValidationError
 from sqlalchemy import delete, select
 from sqlalchemy.orm import sessionmaker
 
@@ -457,7 +458,12 @@ def test_missing_account_rejects_authentication_without_unbound_throttle_records
         )
         request_handler = auth.RequestExchangeTokenHandler()
 
-    assert request_handler.handle(handler).code == 401
+    assert (
+        request_handler.handle(
+            handler, request_handler.request_model.model_validate(handler.data)
+        ).code
+        == 401
+    )
     assert handler.response["code"] == 401
     assert "token" not in handler.response["data"]
     with auth_sessions() as session:
@@ -490,13 +496,30 @@ def test_login_context_mfa_consumes_backup_code_and_normal_token_has_no_context(
             "credential": {"username": "login", "password": "Password123!"},
         }
     )
-    assert auth.RequestLoginHandler().handle(handler).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 202
+    )
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     assert token.auth_context is not None
     assert "version" not in token.auth_context.model_dump()
     assert codes[0] not in token.raw
     complete = Handler({"method": "totp", "data": {"token": codes[0]}}, token)
-    assert auth.RequestExchangeTokenHandler().handle(complete).code == 200
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            complete,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(
+                complete.data
+            ),
+        )
+        .code
+        == 200
+    )
     payload = jwt.decode(
         complete.response["data"]["token"], signing_key, algorithms=["HS256"]
     )
@@ -524,7 +547,14 @@ def test_correct_password_can_be_disallowed_and_totp_can_be_escalation_only(
             "credential": {"username": "login", "password": "Password123!"},
         }
     )
-    assert auth.RequestLoginHandler().handle(handler).code == 200
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 200
+    )
     with auth_sessions.begin() as session:
         replace_auth_policy(
             session,
@@ -533,7 +563,14 @@ def test_correct_password_can_be_disallowed_and_totp_can_be_escalation_only(
             [],
             expected_revision=1,
         )
-    assert auth.RequestLoginHandler().handle(handler).code == 401
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 401
+    )
     assert "token" not in handler.response["data"]
 
 
@@ -548,7 +585,9 @@ def test_auth_continuation_rejects_changed_or_legacy_context(
             "credential": {"username": "login", "password": "Password123!"},
         }
     )
-    auth.RequestLoginHandler().handle(handler)
+    auth.RequestLoginHandler().handle(
+        handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+    )
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     with auth_sessions.begin() as session:
         if change == "policy":
@@ -569,7 +608,10 @@ def test_auth_continuation_rejects_changed_or_legacy_context(
     complete = Handler(
         {"method": "totp", "data": {"token": pyotp.TOTP(secret).now()}}, token
     )
-    assert auth.RequestExchangeTokenHandler().handle(complete).code in {401, 403}
+    assert auth.RequestExchangeTokenHandler().handle(
+        complete,
+        auth.RequestExchangeTokenHandler.request_model.model_validate(complete.data),
+    ).code in {401, 403}
     assert "token" not in complete.response["data"]
 
 
@@ -602,7 +644,14 @@ def test_login_evidence_cannot_satisfy_mfa(login_context, auth_sessions):
         assert progress.purpose == AuthPurpose.MFA
         assert progress.next_steps == []
     handler = password_login()
-    assert auth.RequestLoginHandler().handle(handler).code == 403
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 403
+    )
     assert "token" not in handler.response["data"]
 
 
@@ -639,11 +688,27 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
     monkeypatch.setattr(two_factor, "get_client_ip", unexpected_throttle_call)
     for name in ("evaluate", "report_failure", "report_success"):
         monkeypatch.setattr(two_factor.LoginGuard, name, unexpected_throttle_call)
-    assert RequestValidate2FAHandler().handle(handler).code == 401
+    assert (
+        RequestValidate2FAHandler()
+        .handle(
+            handler,
+            RequestValidate2FAHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 401
+    )
     assert [(args[:2], kwargs) for args, kwargs in responses] == [((401, {}), {})]
     handler.data["token"] = pyotp.TOTP(secret).now()
     responses.clear()
-    assert RequestValidate2FAHandler().handle(handler).code == 0
+    assert (
+        RequestValidate2FAHandler()
+        .handle(
+            handler,
+            RequestValidate2FAHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 0
+    )
     assert responses[0][1]["code"] == 200
     with sessions() as session:
         credential = session.get(UserTotpCredential, user_id)
@@ -676,7 +741,14 @@ def test_password_does_not_collect_more_credentials(login_context, auth_sessions
             "Password login must not request another credential"
         )
     )
-    assert auth.RequestLoginHandler().handle(handler).code == 403
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 403
+    )
     assert handler.stream.messages == []
     assert "token" not in handler.response["data"]
 
@@ -730,7 +802,10 @@ def password_login():
 def complete_with_backup(handler, signing_key, backup_code):
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     complete = Handler({"method": "totp", "data": {"token": backup_code}}, token)
-    auth.RequestExchangeTokenHandler().handle(complete)
+    auth.RequestExchangeTokenHandler().handle(
+        complete,
+        auth.RequestExchangeTokenHandler.request_model.model_validate(complete.data),
+    )
     return complete
 
 
@@ -753,7 +828,14 @@ def test_password_change_is_offered_only_after_mfa(
     if requirement == "rules":
         monkeypatch.setitem(cfg, "passwd_min_length", 30)
     handler = password_login()
-    assert auth.RequestLoginHandler().handle(handler).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 202
+    )
     raw = handler.response["data"]["token"]
     payload = jwt.decode(raw, signing_key, algorithms=["HS256"])
     assert payload["auth_context"]["login_method"] == "password"
@@ -792,7 +874,14 @@ def test_mfa_rejects_lost_or_changed_password_state(
 
     user_id, _, codes, signing_key = login_context
     handler = password_login()
-    assert auth.RequestLoginHandler().handle(handler).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 202
+    )
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     if change == "cache":
         sessions.ProviderManager().caching.delete(
@@ -819,16 +908,42 @@ def test_post_auth_password_change_rotates_secret_and_requires_new_login(
     with auth_sessions.begin() as session:
         session.get(UserPasswordCredential, user_id).passwd_last_modified = 0
     handler = password_login()
-    auth.RequestLoginHandler().handle(handler)
+    auth.RequestLoginHandler().handle(
+        handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+    )
     complete = complete_with_backup(handler, signing_key, codes[0])
     token = Token.from_raw(complete.response["data"]["token"], signing_key)
     rejected = Handler({"new_passwd": "short"}, token)
-    assert users.RequestSetPasswdHandler().handle(rejected).code == 400
+    assert (
+        users.RequestSetPasswdHandler()
+        .handle(
+            rejected,
+            users.RequestSetPasswdHandler.request_model.model_validate(rejected.data),
+        )
+        .code
+        == 400
+    )
     assert "token" not in rejected.response["data"]
     changed = Handler({"new_passwd": "UpdatedPassword456!"}, token)
-    assert users.RequestSetPasswdHandler().handle(changed).code == 200
+    assert (
+        users.RequestSetPasswdHandler()
+        .handle(
+            changed,
+            users.RequestSetPasswdHandler.request_model.model_validate(changed.data),
+        )
+        .code
+        == 200
+    )
     assert changed.response["data"] == {}
-    assert users.RequestSetPasswdHandler().handle(changed).code == 401
+    assert (
+        users.RequestSetPasswdHandler()
+        .handle(
+            changed,
+            users.RequestSetPasswdHandler.request_model.model_validate(changed.data),
+        )
+        .code
+        == 401
+    )
     with auth_sessions() as session:
         user = session.get(User, user_id)
         credential = session.get(UserPasswordCredential, user_id)
@@ -837,7 +952,14 @@ def test_post_auth_password_change_rotates_secret_and_requires_new_login(
         assert user.secret_key != signing_key
         assert not user.is_token_valid(token, purpose=TokenPurpose.POST_AUTH)
     handler.data["credential"]["password"] = "UpdatedPassword456!"
-    assert auth.RequestLoginHandler().handle(handler).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 202
+    )
 
 
 def test_concurrent_post_auth_password_change_has_one_winner(
@@ -850,7 +972,9 @@ def test_concurrent_post_auth_password_change_has_one_winner(
     with auth_sessions.begin() as session:
         session.get(UserPasswordCredential, user_id).passwd_last_modified = 0
     handler = password_login()
-    auth.RequestLoginHandler().handle(handler)
+    auth.RequestLoginHandler().handle(
+        handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+    )
     complete = complete_with_backup(handler, signing_key, codes[0])
     token = Token.from_raw(complete.response["data"]["token"], signing_key)
     barrier = threading.Barrier(2)
@@ -864,7 +988,12 @@ def test_concurrent_post_auth_password_change_has_one_winner(
     def worker(password):
         try:
             request = Handler({"new_passwd": password}, token)
-            result = users.RequestSetPasswdHandler().handle(request)
+            result = users.RequestSetPasswdHandler().handle(
+                request,
+                users.RequestSetPasswdHandler.request_model.model_validate(
+                    request.data
+                ),
+            )
             results.append((result.code, password))
         except Exception as exc:  # noqa: BLE001 -- propagate worker failures to the test thread
             errors.append(exc)
@@ -1059,7 +1188,14 @@ def test_public_key_login_and_mfa_use_separate_streams(login_context, auth_sessi
         }
     )
     handler.stream = DialogStream(sign)
-    assert auth.RequestLoginHandler().handle(handler).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 202
+    )
     assert [m["action"] for m in handler.stream.messages] == ["auth_challenge"]
     complete = complete_with_backup(handler, signing_key, codes[0])
     assert complete.response["code"] == 200
@@ -1141,7 +1277,14 @@ def test_same_method_mfa_is_excluded_even_with_another_key(
             },
         }
     )
-    assert auth.RequestLoginHandler().handle(login).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+        )
+        .code
+        == 202
+    )
     assert login.response["data"]["methods"] == ["totp"]
     token = Token.from_raw(login.response["data"]["token"], signing_key)
     rejected = Handler(
@@ -1152,7 +1295,17 @@ def test_same_method_mfa_is_excluded_even_with_another_key(
             "Same-method MFA must be rejected before challenging"
         )
     )
-    assert auth.RequestExchangeTokenHandler().handle(rejected).code == 403
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            rejected,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(
+                rejected.data
+            ),
+        )
+        .code
+        == 403
+    )
     assert rejected.stream.messages == []
     assert complete_with_backup(login, signing_key, codes[0]).response["code"] == 200
 
@@ -1238,7 +1391,14 @@ def test_public_key_dialog_rejects_invalid_or_stale_proofs(
         request_handler = auth.RequestLoginHandler()
     else:
         login = password_login()
-        assert auth.RequestLoginHandler().handle(login).code == 202
+        assert (
+            auth.RequestLoginHandler()
+            .handle(
+                login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+            )
+            .code
+            == 202
+        )
         token = Token.from_raw(login.response["data"]["token"], signing_key)
         handler = Handler(
             {"method": "publickey", "data": {"fingerprint": fingerprint}}, token
@@ -1270,7 +1430,9 @@ def test_public_key_dialog_rejects_invalid_or_stale_proofs(
         monkeypatch.setattr(
             flows, "check_request_rate", request_rate_control.check_request_rate
         )
-    result = request_handler.handle(handler)
+    result = request_handler.handle(
+        handler, request_handler.request_model.model_validate(handler.data)
+    )
     expected = {
         "interaction": 400,
         "method": 400,
@@ -1332,7 +1494,14 @@ def test_public_key_dialog_has_no_fixed_round_limit_and_waits_outside_transactio
         request_handler = auth.RequestLoginHandler()
     else:
         login = password_login()
-        assert auth.RequestLoginHandler().handle(login).code == 202
+        assert (
+            auth.RequestLoginHandler()
+            .handle(
+                login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+            )
+            .code
+            == 202
+        )
         handler = Handler(
             {"method": "publickey", "data": {"fingerprint": keys[0][1]}},
             Token.from_raw(login.response["data"]["token"], signing_key),
@@ -1374,7 +1543,12 @@ def test_public_key_dialog_has_no_fixed_round_limit_and_waits_outside_transactio
         }
 
     handler.stream = DialogStream(reply)
-    assert request_handler.handle(handler).code == 200
+    assert (
+        request_handler.handle(
+            handler, request_handler.request_model.model_validate(handler.data)
+        ).code
+        == 200
+    )
     assert len(handler.stream.messages) == 23
     assert handler.stream.timeouts == [None] * 23
     with auth_sessions() as session:
@@ -1436,7 +1610,14 @@ def test_dialog_can_advance_interleaved_policy_alternatives(
         request_handler = auth.RequestLoginHandler()
     else:
         login = password_login()
-        assert auth.RequestLoginHandler().handle(login).code == 202
+        assert (
+            auth.RequestLoginHandler()
+            .handle(
+                login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+            )
+            .code
+            == 202
+        )
         token = Token.from_raw(login.response["data"]["token"], signing_key)
         handler = Handler(
             {"method": "publickey", "data": {"fingerprint": fingerprint}}, token
@@ -1444,7 +1625,9 @@ def test_dialog_can_advance_interleaved_policy_alternatives(
         request_handler = auth.RequestExchangeTokenHandler()
     handler.stream = DialogStream(reply)
 
-    result = request_handler.handle(handler)
+    result = request_handler.handle(
+        handler, request_handler.request_model.model_validate(handler.data)
+    )
 
     assert result.code == 200
     assert result.user_id == user_id
@@ -1484,11 +1667,23 @@ def test_post_auth_cannot_select_other_accounts_or_options(
     with auth_sessions.begin() as session:
         session.get(UserPasswordCredential, user_id).passwd_last_modified = 0
     login = password_login()
-    auth.RequestLoginHandler().handle(login)
+    auth.RequestLoginHandler().handle(
+        login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+    )
     complete = complete_with_backup(login, signing_key, codes[0])
     token = Token.from_raw(complete.response["data"]["token"], signing_key)
     handler = Handler({"new_passwd": "UpdatedPassword456!", **extra}, token)
-    assert users.RequestSetPasswdHandler().handle(handler).code == 400
+    if "username" in extra or "old_passwd" in extra:
+        with pytest.raises(ValidationError) as error:
+            users.RequestSetPasswdHandler.request_model.model_validate(handler.data)
+        assert [(item["type"], item["loc"]) for item in error.value.errors()] == [
+            ("value_error", ())
+        ]
+    else:
+        request = users.RequestSetPasswdHandler.request_model.model_validate(
+            handler.data
+        )
+        assert users.RequestSetPasswdHandler().handle(handler, request).code == 400
     with auth_sessions() as session:
         assert session.get(UserPasswordCredential, user_id).verify("Password123!")
 
@@ -1501,7 +1696,9 @@ def test_continuation_tokens_reject_missing_context_and_cross_purpose_claims(
 ):
     _, _, _, signing_key = login_context
     login = password_login()
-    auth.RequestLoginHandler().handle(login)
+    auth.RequestLoginHandler().handle(
+        login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+    )
     payload = jwt.decode(
         login.response["data"]["token"], signing_key, algorithms=["HS256"]
     )
@@ -1536,7 +1733,9 @@ def test_post_auth_router_rejects_every_other_action(
     with auth_sessions.begin() as session:
         session.get(UserPasswordCredential, user_id).passwd_last_modified = 0
     login = password_login()
-    auth.RequestLoginHandler().handle(login)
+    auth.RequestLoginHandler().handle(
+        login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+    )
     complete = complete_with_backup(login, signing_key, codes[0])
     request = orjson.dumps(
         {"action": action, "data": {}, "token": complete.response["data"]["token"]}
@@ -1634,9 +1833,9 @@ def test_legacy_login_totp_chain_is_unavailable_without_shortening(
             "method": "totp",
             "credential": {"username": "login", "token": codes[0]},
         }
-    assert auth.RequestLoginHandler().handle(handler).code == (
-        202 if alternative else (403 if position == 0 else 401)
-    )
+    assert auth.RequestLoginHandler().handle(
+        handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+    ).code == (202 if alternative else (403 if position == 0 else 401))
     if not alternative:
         assert handler.response["data"] == {}
     with auth_sessions() as session:
@@ -1699,7 +1898,14 @@ def test_rehash_preserves_forced_marker_and_commits_before_post_auth(
         credential.pass_hash = PasswordHasher(time_cost=1).hash("Password123!")
         credential.passwd_last_modified = 0
     login = password_login()
-    assert auth.RequestLoginHandler().handle(login).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+        )
+        .code
+        == 202
+    )
     with auth_sessions() as session:
         credential = session.get(UserPasswordCredential, user_id)
         assert not credential.check_needs_rehash()
@@ -1718,7 +1924,14 @@ def test_accepted_backup_code_is_consumed_when_policy_cannot_finish(
             session, user, AuthPurpose.MFA, [mfa.chains[0] * 2], expected_revision=1
         )
     login = password_login()
-    assert auth.RequestLoginHandler().handle(login).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+        )
+        .code
+        == 202
+    )
     complete = complete_with_backup(login, signing_key, codes[0])
     assert complete.response["code"] == 403
     assert "token" not in complete.response["data"]
@@ -1740,7 +1953,9 @@ def test_http_rejects_authentication_tokens(
     with auth_sessions.begin() as session:
         session.get(UserPasswordCredential, user_id).passwd_last_modified = 0
     login = password_login()
-    auth.RequestLoginHandler().handle(login)
+    auth.RequestLoginHandler().handle(
+        login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+    )
     response = (
         login
         if purpose == TokenPurpose.AUTH
@@ -1756,7 +1971,9 @@ def test_concurrent_backup_code_verification_has_one_winner(
 ):
     _, _, codes, signing_key = login_context
     login = password_login()
-    auth.RequestLoginHandler().handle(login)
+    auth.RequestLoginHandler().handle(
+        login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+    )
     original = UserTotpCredential.verify
     barrier = threading.Barrier(2)
     results, errors = [], []
@@ -1819,7 +2036,15 @@ def test_public_key_proof_cannot_be_replayed_on_another_stream(
         )
         handler.stream = DialogStream(sign_once)
         handler.stream.frame_id = stream_id
-        assert auth.RequestLoginHandler().handle(handler).code == expected
+        assert (
+            auth.RequestLoginHandler()
+            .handle(
+                handler,
+                auth.RequestLoginHandler.request_model.model_validate(handler.data),
+            )
+            .code
+            == expected
+        )
 
 
 @pytest.mark.parametrize("stage", [AuthPurpose.LOGIN, AuthPurpose.MFA])
@@ -1849,7 +2074,14 @@ def test_authentication_wait_has_no_idle_or_total_deadline(
         request_handler = auth.RequestLoginHandler()
     else:
         login = password_login()
-        assert auth.RequestLoginHandler().handle(login).code == 202
+        assert (
+            auth.RequestLoginHandler()
+            .handle(
+                login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+            )
+            .code
+            == 202
+        )
         handler = Handler(
             {"method": "publickey", "data": {"fingerprint": fingerprint}},
             Token.from_raw(login.response["data"]["token"], signing_key),
@@ -1871,7 +2103,12 @@ def test_authentication_wait_has_no_idle_or_total_deadline(
         }
 
     handler.stream = DialogStream(reply)
-    assert request_handler.handle(handler).code == 200
+    assert (
+        request_handler.handle(
+            handler, request_handler.request_model.model_validate(handler.data)
+        ).code
+        == 200
+    )
     assert handler.stream.timeouts == [None]
 
 
@@ -1891,7 +2128,14 @@ def test_mfa_rechecks_auth_expiry_after_wait_before_verifying(
             expected_revision=1,
         )
     login = password_login()
-    assert auth.RequestLoginHandler().handle(login).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+        )
+        .code
+        == 202
+    )
     token = Token.from_raw(login.response["data"]["token"], signing_key)
     now = [time.time()]
     token.exp = now[0] + 12
@@ -1917,7 +2161,10 @@ def test_mfa_rechecks_auth_expiry_after_wait_before_verifying(
         {"method": "publickey", "data": {"fingerprint": keys[0][1]}}, token
     )
     handler.stream = DialogStream(reply)
-    result = auth.RequestExchangeTokenHandler().handle(handler)
+    result = auth.RequestExchangeTokenHandler().handle(
+        handler,
+        auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+    )
     assert result.code == 401
     assert result.user_id == user_id
     assert "token" not in handler.response["data"]
@@ -1934,12 +2181,22 @@ def test_mfa_rejects_expired_auth_token_without_consuming_backup_code(
 ):
     user_id, _, codes, signing_key = login_context
     login = password_login()
-    assert auth.RequestLoginHandler().handle(login).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+        )
+        .code
+        == 202
+    )
     token = Token.from_raw(login.response["data"]["token"], signing_key)
     token.exp = time.time() - 1
     handler = Handler({"method": "totp", "data": {"token": codes[0]}}, token)
 
-    result = auth.RequestExchangeTokenHandler().handle(handler)
+    result = auth.RequestExchangeTokenHandler().handle(
+        handler,
+        auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+    )
 
     assert result.code == 401
     assert result.target == "login"
@@ -1948,22 +2205,6 @@ def test_mfa_rejects_expired_auth_token_without_consuming_backup_code(
     assert handler.response["data"] == {}
     with auth_sessions() as session:
         assert session.get(User, user_id).last_login is None
-        assert session.get(UserTotpCredential, user_id).verify(codes[0])
-
-
-@pytest.mark.parametrize("target", [None, 1, 3, 4, 8, True, 2.5, "2"])
-def test_mfa_requires_an_explicit_valid_target(login_context, auth_sessions, target):
-    user_id, _, codes, signing_key = login_context
-    login = password_login()
-    assert auth.RequestLoginHandler().handle(login).code == 202
-    token = Token.from_raw(login.response["data"]["token"], signing_key)
-    handler = Handler(
-        {"method": "totp", "data": {"token": codes[0]}, "target_purpose": target}, token
-    )
-    if target is None:
-        del handler.data["target_purpose"]
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 400
-    with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
 
 
@@ -1984,7 +2225,15 @@ def test_mfa_rejects_cross_purpose_exchanges(
     handler = Handler(
         {"method": "totp", "data": {"token": codes[0]}, "target_purpose": target}, token
     )
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 403
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 403
+    )
     with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
 
@@ -2029,7 +2278,15 @@ def test_escalation_uses_its_own_policy_and_new_expiry(
             }
 
         handler.stream = DialogStream(reply)
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 200
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 200
+    )
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     assert token.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
     assert handler.response["data"]["purpose"] == 6
@@ -2041,7 +2298,17 @@ def test_escalation_uses_its_own_policy_and_new_expiry(
         assert user.last_login == 10
         assert user.all_permissions == set()
     refreshed = Handler({}, token)
-    assert auth.RequestRefreshTokenHandler().handle(refreshed).code == 0
+    assert (
+        auth.RequestRefreshTokenHandler()
+        .handle(
+            refreshed,
+            auth.RequestRefreshTokenHandler.request_model.model_validate(
+                refreshed.data
+            ),
+        )
+        .code
+        == 0
+    )
     assert (
         Token.from_raw(refreshed.response["data"]["token"], signing_key).purpose
         == TokenPurpose.GENERAL
@@ -2067,7 +2334,15 @@ def test_escalation_without_a_policy_needs_no_further_proof(
         {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 6},
         Token.new(user_id, 60, signing_key),
     )
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 200
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 200
+    )
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     assert token.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
     assert token.exp - token.iat == ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -2081,13 +2356,28 @@ def test_login_mfa_still_requires_method_and_data(
 ):
     user_id, _, codes, signing_key = login_context
     login = password_login()
-    assert auth.RequestLoginHandler().handle(login).code == 202
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            login, auth.RequestLoginHandler.request_model.model_validate(login.data)
+        )
+        .code
+        == 202
+    )
     token = Token.from_raw(login.response["data"]["token"], signing_key)
     data = {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 2}
     for field in ("method", "data") if missing == "both" else (missing,):
         data.pop(field)
     handler = Handler(data, token)
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == 400
+    assert (
+        auth.RequestExchangeTokenHandler()
+        .handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        .code
+        == 400
+    )
     assert "token" not in handler.response["data"]
     with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
@@ -2142,11 +2432,21 @@ def test_registered_extension_method_uses_the_same_entrypoints(
                 "credential": {"username": "login", "password": "Password123!"},
             }
         )
-        result = auth.RequestLoginHandler().handle(handler)
+        result = auth.RequestLoginHandler().handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
     else:
         if purpose == AuthPurpose.MFA:
             login = password_login()
-            assert auth.RequestLoginHandler().handle(login).code == 202
+            assert (
+                auth.RequestLoginHandler()
+                .handle(
+                    login,
+                    auth.RequestLoginHandler.request_model.model_validate(login.data),
+                )
+                .code
+                == 202
+            )
             token = Token.from_raw(login.response["data"]["token"], signing_key)
         else:
             token = Token.new(user_id, 60, signing_key)
@@ -2158,7 +2458,10 @@ def test_registered_extension_method_uses_the_same_entrypoints(
             },
             token,
         )
-        result = auth.RequestExchangeTokenHandler().handle(handler)
+        result = auth.RequestExchangeTokenHandler().handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
     assert result.code == 200
     assert "extension-factor" in factors
     assert handler.response["data"]["purpose"] == (
@@ -2180,7 +2483,9 @@ def test_password_login_never_enumerates_unrelated_extensions(
         "_providers",
         {**auth_registry._providers, "unused": UnrelatedMethod()},
     )
-    assert auth.RequestLoginHandler().handle(password_login()).code == 202
+    handler = password_login()
+    request = auth.RequestLoginHandler.request_model.model_validate(handler.data)
+    assert auth.RequestLoginHandler().handle(handler, request).code == 202
 
 
 def test_login_rejects_totp_before_verification(login_context, auth_sessions):
@@ -2188,7 +2493,14 @@ def test_login_rejects_totp_before_verification(login_context, auth_sessions):
     handler = Handler(
         {"method": "totp", "credential": {"username": "login", "token": codes[0]}}
     )
-    assert auth.RequestLoginHandler().handle(handler).code == 403
+    assert (
+        auth.RequestLoginHandler()
+        .handle(
+            handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+        )
+        .code
+        == 403
+    )
     with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
 
@@ -2248,9 +2560,10 @@ def test_escalation_rechecks_source_and_account_after_wait(
         source,
     )
     handler.stream = DialogStream(reply)
-    assert auth.RequestExchangeTokenHandler().handle(handler).code == (
-        4003 if change == "inactive" else 401
-    )
+    assert auth.RequestExchangeTokenHandler().handle(
+        handler,
+        auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+    ).code == (4003 if change == "inactive" else 401)
     assert "token" not in handler.response["data"]
     with auth_sessions() as session:
         if change != "revoked":

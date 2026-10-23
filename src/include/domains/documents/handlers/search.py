@@ -68,7 +68,7 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler: ConnectionHandler, request):
         """
         Handle the search request.
 
@@ -78,19 +78,31 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
         Returns:
             Result containing the query and authenticated user ID for audit logging.
         """
-        query: str = handler.data["query"].strip()
+        query: str = request.query.strip()
         if not query:
             handler.conclude_request(
                 400, {}, "Query must not be empty or whitespace only"
             )
             return Result(code=400, target=query, user_id=handler.user_id)
 
-        page_size = get_page_size(handler.data)
-        cursor = handler.data.get("cursor")
-        sort_by: str = handler.data.get("sort_by", "name")
-        sort_order: str = handler.data.get("sort_order", "asc")
-        search_documents: bool = handler.data.get("search_documents", True)
-        search_directories: bool = handler.data.get("search_directories", True)
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        cursor = request.cursor
+        sort_by: str = (
+            request.sort_by if request.sort_by is not REQUEST_UNSET else "name"
+        )
+        sort_order: str = (
+            request.sort_order if request.sort_order is not REQUEST_UNSET else "asc"
+        )
+        search_documents: bool = (
+            request.search_documents
+            if request.search_documents is not REQUEST_UNSET
+            else True
+        )
+        search_directories: bool = (
+            request.search_directories
+            if request.search_directories is not REQUEST_UNSET
+            else True
+        )
         filters = {
             "query": query,
             "sort_by": sort_by,

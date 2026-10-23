@@ -60,7 +60,9 @@ class RequestHandler[RequestT: RequestDataModel](ABC):
         request_model: The Pydantic model defining valid request data.
     Methods:
         handle():
-            Abstract method to process a request. Must be implemented by subclasses.
+            Process the validated request model supplied by the router, using
+            the connection handler for transport and authenticated context.
+            Must be implemented by subclasses.
             Returns:
                 1. -> None
                     The result is ignored. Use this for flows that should not
@@ -80,7 +82,7 @@ class RequestHandler[RequestT: RequestDataModel](ABC):
     rate_limit_cost: ClassVar[int] = 1
 
     @abstractmethod
-    def handle(self, handler: ConnectionHandler) -> Result | None:
+    def handle(self, handler: ConnectionHandler, request: RequestT) -> Result | None:
         pass
 
 

@@ -1,0 +1,1 @@
+Request handlers now receive the validated request model as the second argument to `handle(handler, request)`. Core and bundled extension handlers use the supplied model instead of reading raw connection data. Custom extensions and direct callers must adopt the new signature; request validation and structured error responses remain owned by the router.

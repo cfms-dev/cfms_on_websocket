@@ -35,7 +35,6 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
-lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import JsonInteger, NonEmptyString, NonNegativeFloat
 
 TARGET_TYPE_MAPPING = {"document": Document, "directory": Folder}
@@ -81,21 +80,26 @@ class RequestGrantAccessHandler(RequestHandler[_GrantAccessRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
-        entity_type: str = handler.data["entity_type"]
-        entity_identifier: str = handler.data["entity_identifier"]
+        entity_type: str = request.entity_type
+        entity_identifier: str = request.entity_identifier
         if entity_type == "user":
             entity_identifier = str(uuid.UUID(entity_identifier))
 
-        audit_data = {**handler.data, "entity_identifier": entity_identifier}
+        audit_data = {
+            **request.model_dump(mode="json", exclude_unset=True),
+            "entity_identifier": entity_identifier,
+        }
 
-        target_type: str = handler.data["target_type"]
-        target_identifier: str = handler.data["target_identifier"]
+        target_type: str = request.target_type
+        target_identifier: str = request.target_identifier
 
-        access_types: list[str] = handler.data["access_types"]
-        start_time: float = handler.data["start_time"]
-        end_time: float | None = handler.data.get("end_time")
+        access_types: list[str] = request.access_types
+        start_time: float = request.start_time
+        end_time: float | None = (
+            request.end_time if request.end_time is not REQUEST_UNSET else None
+        )
 
         with Session() as session:
             if end_time and not start_time <= end_time:
@@ -167,14 +171,14 @@ class RequestViewAccessEntriesHandler(RequestHandler[_ViewAccessEntriesRequest])
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
-        object_type: str = handler.data["object_type"]
-        object_identifier: str = handler.data["object_identifier"]
+    def handle(self, handler, request):
+        object_type: str = request.object_type
+        object_identifier: str = request.object_identifier
         if object_type == "user":
             object_identifier = str(uuid.UUID(object_identifier))
         audit_target = object_identifier if object_type == "user" else None
-        page_size = get_page_size(handler.data)
-        cursor = handler.data.get("cursor")
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        cursor = request.cursor
 
         with Session() as session:
             operator = User.get_existing(session, handler.user_id)
@@ -270,8 +274,8 @@ class RequestRevokeAccessHandler(RequestHandler[_RevokeAccessRequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
-        entry_id: int = handler.data["entry_id"]
+    def handle(self, handler, request):
+        entry_id: int = request.entry_id
 
         with Session() as session:
             operator = User.get_existing(session, handler.user_id)
@@ -285,7 +289,10 @@ class RequestRevokeAccessHandler(RequestHandler[_RevokeAccessRequest]):
             if not entry:
                 handler.conclude_request(404, {}, smsg.ACCESS_ENTRY_NOT_FOUND)
                 return Result(
-                    code=404, target=None, data=handler.data, user_id=handler.user_id
+                    code=404,
+                    target=None,
+                    data=request.model_dump(mode="json", exclude_unset=True),
+                    user_id=handler.user_id,
                 )
 
             # Delete the entry
@@ -293,4 +300,9 @@ class RequestRevokeAccessHandler(RequestHandler[_RevokeAccessRequest]):
             session.commit()
 
         handler.conclude_request(200, {}, smsg.SUCCESS)
-        return Result(code=200, target=None, data=handler.data, user_id=handler.user_id)
+        return Result(
+            code=200,
+            target=None,
+            data=request.model_dump(mode="json", exclude_unset=True),
+            user_id=handler.user_id,
+        )

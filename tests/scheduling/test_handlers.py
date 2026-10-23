@@ -112,7 +112,9 @@ def test_read_actions_require_view_schedules(
     scheduling_context(set())
     connection = _Connection(data)
 
-    result = handler_type().handle(connection)
+    result = handler_type().handle(
+        connection, handler_type.request_model.model_validate(connection.data)
+    )
 
     assert result.code == 403
     assert connection.response[:2] == (403, {})
@@ -142,7 +144,12 @@ def test_create_schedule_requires_management_and_task_permissions(
         }
     )
 
-    result = handlers.RequestCreateScheduleHandler().handle(connection)
+    result = handlers.RequestCreateScheduleHandler().handle(
+        connection,
+        handlers.RequestCreateScheduleHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 403
     assert connection.response[0] == 403
@@ -165,37 +172,52 @@ def test_create_schedule_rejects_system_task_types(monkeypatch, scheduling_conte
         }
     )
 
-    result = handlers.RequestCreateScheduleHandler().handle(connection)
+    result = handlers.RequestCreateScheduleHandler().handle(
+        connection,
+        handlers.RequestCreateScheduleHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 403
     assert connection.response[:2] == (403, {})
 
 
 @pytest.mark.component
+@pytest.mark.parametrize("padded_input", [False, True])
 def test_create_schedule_persists_and_notifies_provider(
-    monkeypatch, scheduling_context
+    monkeypatch, scheduling_context, padded_input
 ):
     notifications = scheduling_context(
         {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     connection = _Connection(
         {
-            "task_name": "test.record",
+            "task_name": " test.record " if padded_input else "test.record",
             "payload": {"value": 1},
             "trigger": {
                 "type": "date",
                 "data": {"run_at": "2026-01-01T00:00:00+00:00"},
-                "timezone": "UTC",
+                "timezone": " UTC " if padded_input else "UTC",
             },
         }
     )
 
-    result = handlers.RequestCreateScheduleHandler().handle(connection)
+    result = handlers.RequestCreateScheduleHandler().handle(
+        connection,
+        handlers.RequestCreateScheduleHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 0
     assert connection.response[0] == 200
     assert connection.response[1]["task_name"] == "test.record"
     assert notifications == [True]
+    with handlers.Session() as session:
+        schedule = session.get(Schedule, connection.response[1]["id"])
+        assert schedule.task_name == "test.record"
+        assert schedule.timezone == "UTC"
 
 
 @pytest.mark.component
@@ -220,7 +242,12 @@ def test_create_schedule_rejects_unrepresentable_interval(
         }
     )
 
-    result = handlers.RequestCreateScheduleHandler().handle(connection)
+    result = handlers.RequestCreateScheduleHandler().handle(
+        connection,
+        handlers.RequestCreateScheduleHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 400
     assert connection.response[:2] == (400, {})
@@ -279,7 +306,12 @@ def test_update_schedule_uses_locked_revision_for_task_authorization(
         {"id": "schedule-1", "revision": 2, "payload": {"value": 2}}
     )
 
-    result = handlers.RequestUpdateScheduleHandler().handle(connection)
+    result = handlers.RequestUpdateScheduleHandler().handle(
+        connection,
+        handlers.RequestUpdateScheduleHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 409
     assert connection.response[:2] == (409, {})
@@ -317,7 +349,12 @@ def test_update_schedule_checks_permission_for_locked_current_task(
         {"id": "schedule-1", "revision": 1, "payload": {"value": 2}}
     )
 
-    result = handlers.RequestUpdateScheduleHandler().handle(connection)
+    result = handlers.RequestUpdateScheduleHandler().handle(
+        connection,
+        handlers.RequestUpdateScheduleHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 403
     assert connection.response[:2] == (403, {})
@@ -354,7 +391,12 @@ def test_update_schedule_persists_and_notifies_provider(
         {"id": "schedule-1", "revision": 1, "payload": {"value": 2}}
     )
 
-    result = handlers.RequestUpdateScheduleHandler().handle(connection)
+    result = handlers.RequestUpdateScheduleHandler().handle(
+        connection,
+        handlers.RequestUpdateScheduleHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 0
     assert connection.response[0] == 200
@@ -364,9 +406,30 @@ def test_update_schedule_persists_and_notifies_provider(
 
 
 @pytest.mark.component
-@pytest.mark.parametrize("handler_type", _CORE_HANDLERS.values())
+@pytest.mark.parametrize(
+    ("handler_type", "data"),
+    [
+        (handlers.RequestListScheduledTaskTypesHandler, {}),
+        (
+            handlers.RequestCreateScheduleHandler,
+            {
+                "task_name": "test.record",
+                "payload": {},
+                "trigger": {
+                    "type": "date",
+                    "data": {"run_at": "2026-12-01T00:00:00+00:00"},
+                    "timezone": "UTC",
+                },
+            },
+        ),
+        (handlers.RequestGetScheduleHandler, {"id": "schedule-1"}),
+        (handlers.RequestListSchedulesHandler, {}),
+        (handlers.RequestUpdateScheduleHandler, {"id": "schedule-1", "revision": 1}),
+        (handlers.RequestDeleteScheduleHandler, {"id": "schedule-1", "revision": 1}),
+    ],
+)
 def test_scheduling_api_returns_503_when_provider_is_degraded(
-    monkeypatch, handler_type
+    monkeypatch, handler_type, data
 ):
     provider = SimpleNamespace(
         status=lambda: SchedulingProviderStatus(False, "redis", "unreachable")
@@ -374,9 +437,11 @@ def test_scheduling_api_returns_503_when_provider_is_degraded(
     monkeypatch.setattr(
         handlers, "ProviderManager", lambda: SimpleNamespace(scheduling=provider)
     )
-    connection = _Connection({})
+    connection = _Connection(data)
 
-    result = handler_type().handle(connection)
+    result = handler_type().handle(
+        connection, handler_type.request_model.model_validate(connection.data)
+    )
 
     assert result.code == 503
     assert connection.response[:2] == (503, {"provider": "redis", "status": "degraded"})
@@ -390,7 +455,12 @@ def test_system_tasks_and_schedules_are_hidden_from_management_api(
         {Permissions.VIEW_SCHEDULES, Permissions.MANAGE_SYSTEM},
     )
     task_types = _Connection({})
-    result = handlers.RequestListScheduledTaskTypesHandler().handle(task_types)
+    result = handlers.RequestListScheduledTaskTypesHandler().handle(
+        task_types,
+        handlers.RequestListScheduledTaskTypesHandler.request_model.model_validate(
+            task_types.data
+        ),
+    )
 
     assert result.code == 0
     assert [item["name"] for item in task_types.response[1]["items"]] == ["test.record"]
@@ -416,7 +486,12 @@ def test_system_tasks_and_schedules_are_hidden_from_management_api(
         )
 
     schedules = _Connection({})
-    result = handlers.RequestListSchedulesHandler().handle(schedules)
+    result = handlers.RequestListSchedulesHandler().handle(
+        schedules,
+        handlers.RequestListSchedulesHandler.request_model.model_validate(
+            schedules.data
+        ),
+    )
 
     assert result.code == 0
     assert schedules.response[1]["items"] == []
@@ -468,7 +543,9 @@ def test_system_schedules_cannot_be_managed(
         )
     connection = _Connection(data)
 
-    result = handler_type().handle(connection)
+    result = handler_type().handle(
+        connection, handler_type.request_model.model_validate(connection.data)
+    )
 
     assert result.code == 404
     assert connection.response[:2] == (404, {})

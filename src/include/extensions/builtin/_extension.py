@@ -78,7 +78,7 @@ class RequestServerInfoHandler(RequestHandler[EmptyRequestDataModel]):
     request_model = EmptyRequestDataModel
     rate_limit_cost = 1
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         lockdown_state = lockdown_state_manager.get_state()
 
         server_info = {
@@ -98,7 +98,7 @@ class RequestDiagnosticsHandler(RequestHandler[EmptyRequestDataModel]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
             if Permissions.DIAGNOSTICS not in user.all_permissions:
@@ -173,7 +173,7 @@ class RequestShutdownHandler(RequestHandler[EmptyRequestDataModel]):
     requires_auth = True
     rate_limit_cost = 1
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)

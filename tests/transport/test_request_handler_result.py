@@ -296,7 +296,7 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
         requires_auth = False
         rate_limit_cost = 1
 
-        def handle(self, _handler):
+        def handle(self, _handler, request):
             raise AssertionError("Invalid requests must not reach the handler")
 
     class FakeConnectionHandler:
@@ -366,23 +366,72 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
     ]
 
 
-def test_router_keeps_validated_request_data_as_the_original_dict(monkeypatch):
+@pytest.mark.parametrize("target", [None, 1, 3, 4, 8, True, 2.5, "2"])
+def test_router_rejects_exchange_without_valid_target(monkeypatch, target):
+    from include.transport import router
+
+    data = {"method": "totp", "data": {"token": "unused"}}
+    if target is not None:
+        data["target_purpose"] = target
+    responses = []
+
+    class FakeConnectionHandler:
+        def __init__(self, stream):
+            self.stream = stream
+            self.request = {}
+            self.action = "exchange_token"
+            self.data = data
+            self.user_id = None
+            self.token = None
+
+        def conclude_request(self, code, data, message):
+            responses.append((code, data))
+
+    _allow_routed_request(monkeypatch, router)
+    monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
+
+    router.handle_request(SimpleNamespace(connection=SimpleNamespace(_ws=object())))
+
+    assert len(responses) == 1
+    code, response_data = responses[0]
+    assert code == 400
+    assert [(item["type"], item["loc"]) for item in response_data["errors"]] == [
+        ("missing" if target is None else "literal_error", ("target_purpose",))
+    ]
+    assert all("input" not in item for item in response_data["errors"])
+
+
+@pytest.mark.parametrize("mutate_in_hook", [False, True])
+def test_router_passes_validated_model_and_keeps_original_dict(
+    monkeypatch, mutate_in_hook
+):
+    from pydantic import model_validator
+
     from include.transport import router
     from include.transport.request_handler import RequestDataModel
 
     request_data = {"value": 1}
     handled_data = []
+    validated_requests = []
+    handled_requests = []
 
     class ValidRequest(RequestDataModel):
         value: int
+        label: str = "default"
+
+        @model_validator(mode="after")
+        def record_validation(self):
+            validated_requests.append(self)
+            return self
 
     class PydanticHandler:
         request_model = ValidRequest
         requires_auth = False
         rate_limit_cost = 1
 
-        def handle(self, handler):
+        def handle(self, handler, request):
             handled_data.append(handler.data)
+            handled_requests.append(request)
 
     class FakeConnectionHandler:
         def __init__(self, stream):
@@ -394,8 +443,12 @@ def test_router_keeps_validated_request_data_as_the_original_dict(monkeypatch):
             self.token = ""
             self.remote_address = "192.0.2.10"
 
+    def before_request(*, request_handler, connection_handler):
+        if mutate_in_hook:
+            connection_handler.data["value"] = 2
+
     hook = SimpleNamespace(
-        ext_before_request=lambda **_kwargs: None,
+        ext_before_request=before_request,
         ext_post_request=lambda **_kwargs: None,
     )
     monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
@@ -423,6 +476,12 @@ def test_router_keeps_validated_request_data_as_the_original_dict(monkeypatch):
 
     assert handled_data == [request_data]
     assert handled_data[0] is request_data
+    assert len(validated_requests) == len(handled_requests) == 1
+    assert handled_requests[0] is validated_requests[0]
+    assert isinstance(handled_requests[0], ValidRequest)
+    assert handled_requests[0].value == 1
+    assert handled_requests[0].label == "default"
+    assert request_data == {"value": 2 if mutate_in_hook else 1}
 
 
 def test_request_admission_is_released_when_handler_raises(monkeypatch):
@@ -511,7 +570,7 @@ def test_handler_pool_timeout_bypasses_generic_500_and_returns_503(monkeypatch):
         requires_auth = False
         rate_limit_cost = 1
 
-        def handle(self, _handler):
+        def handle(self, _handler, request):
             raise SQLAlchemyTimeoutError("database pool exhausted")
 
     monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
@@ -557,7 +616,7 @@ def test_non_pool_handler_failure_keeps_generic_500_response(monkeypatch):
         requires_auth = False
         rate_limit_cost = 1
 
-        def handle(self, _handler):
+        def handle(self, _handler, request):
             raise RuntimeError("handler failed")
 
     monkeypatch.setattr(router, "ConnectionHandler", FakeConnectionHandler)
@@ -603,7 +662,9 @@ def test_login_throttled_response_returns_result(monkeypatch):
         ),
     )
 
-    result = RequestLoginHandler().handle(handler)
+    result = RequestLoginHandler().handle(
+        handler, RequestLoginHandler.request_model.model_validate(handler.data)
+    )
 
     assert result == Result(code=429, target="alice")
     assert [(response["code"], response["data"]) for response in responses] == [
@@ -642,7 +703,9 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
         lambda: _PasswordSession({"alice": SimpleNamespace(username="alice")}),
     )
 
-    result = RequestDisable2FAHandler().handle(handler)
+    result = RequestDisable2FAHandler().handle(
+        handler, RequestDisable2FAHandler.request_model.model_validate(handler.data)
+    )
 
     assert result.code == 429
     assert responses[0][0][0] == 429
@@ -695,7 +758,9 @@ def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
         users.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
     )
 
-    result = RequestSetPasswdHandler().handle(handler)
+    result = RequestSetPasswdHandler().handle(
+        handler, RequestSetPasswdHandler.request_model.model_validate(handler.data)
+    )
 
     assert result == Result(code=429, target="alice")
     assert [(args, kwargs["code"], kwargs["data"]) for args, kwargs in responses] == [
@@ -818,7 +883,9 @@ def test_password_change_wrong_credentials_do_not_disclose_user_existence(monkey
             token=None,
         )
 
-        result = RequestSetPasswdHandler().handle(handler)
+        result = RequestSetPasswdHandler().handle(
+            handler, RequestSetPasswdHandler.request_model.model_validate(handler.data)
+        )
         outcomes.append(
             (
                 result,
@@ -873,7 +940,9 @@ def test_password_reset_rejects_unauthorized_operator_before_target_lookup(
         token=token,
     )
 
-    result = RequestSetPasswdHandler().handle(handler)
+    result = RequestSetPasswdHandler().handle(
+        handler, RequestSetPasswdHandler.request_model.model_validate(handler.data)
+    )
 
     assert result.code == expected_code
     assert result.target == str(TARGET_USER_ID)
@@ -903,7 +972,9 @@ def test_password_reset_reports_missing_target_after_operator_authorization(
         token="token",
     )
 
-    result = RequestSetPasswdHandler().handle(handler)
+    result = RequestSetPasswdHandler().handle(
+        handler, RequestSetPasswdHandler.request_model.model_validate(handler.data)
+    )
 
     assert result == Result(code=404, target=str(TARGET_USER_ID), user_id="operator")
     assert result.data is None
@@ -937,7 +1008,9 @@ def test_self_password_change_commits_and_attributes_audit_to_target(monkeypatch
         }
     )
 
-    result = RequestSetPasswdHandler().handle(handler)
+    result = RequestSetPasswdHandler().handle(
+        handler, RequestSetPasswdHandler.request_model.model_validate(handler.data)
+    )
 
     assert result == Result(code=200, target="alice", user_id="alice")
     assert result.data is None
@@ -970,7 +1043,9 @@ def test_self_password_change_rejects_privileged_flags_after_authentication(
         }
     )
 
-    result = RequestSetPasswdHandler().handle(handler)
+    result = RequestSetPasswdHandler().handle(
+        handler, RequestSetPasswdHandler.request_model.model_validate(handler.data)
+    )
 
     assert result == Result(code=400, target="alice", user_id="alice")
     assert result.data is None
@@ -1010,7 +1085,9 @@ def test_privileged_password_reset_can_bypass_policy_and_force_expiration(monkey
         token="token",
     )
 
-    result = RequestSetPasswdHandler().handle(handler)
+    result = RequestSetPasswdHandler().handle(
+        handler, RequestSetPasswdHandler.request_model.model_validate(handler.data)
+    )
 
     assert result == Result(
         code=200,

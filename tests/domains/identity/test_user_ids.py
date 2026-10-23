@@ -96,7 +96,10 @@ def test_management_id_survives_database_username_change(identity_session, monke
         conclude_request=lambda **response: responses.append(response),
     )
 
-    result = users.RequestRenameUserHandler().handle(handler)
+    result = users.RequestRenameUserHandler().handle(
+        handler,
+        users.RequestRenameUserHandler.request_model.model_validate(handler.data),
+    )
 
     assert responses[0]["code"] == 200
     identity_session.refresh(target)
@@ -147,7 +150,9 @@ def test_refresh_audits_username_target_and_uuid_actor(identity_session, monkeyp
         conclude_request=lambda **response: responses.append(response),
     )
 
-    result = auth.RequestRefreshTokenHandler().handle(handler)
+    result = auth.RequestRefreshTokenHandler().handle(
+        handler, auth.RequestRefreshTokenHandler.request_model()
+    )
 
     assert result.target == "alice"
     assert result.user_id == user.id

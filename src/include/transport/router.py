@@ -591,7 +591,7 @@ def handle_request(stream: Stream):
         _request_handler: RequestHandler = handler_type()
 
         try:
-            _request_handler.request_model.model_validate(this_handler.data)
+            request = _request_handler.request_model.model_validate(this_handler.data)
         except ValidationError as error:
             this_handler.conclude_request(
                 400,
@@ -646,7 +646,7 @@ def handle_request(stream: Stream):
                 return
             t1 = time.perf_counter()
 
-            callback: Result | None = _request_handler.handle(this_handler)
+            callback: Result | None = _request_handler.handle(this_handler, request)
 
             t2 = time.perf_counter()
             if callback is not None:

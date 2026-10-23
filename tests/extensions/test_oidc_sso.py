@@ -116,7 +116,9 @@ def test_oidc_start_uses_extension_namespace_and_persists_pkce_state(
         handler_type.request_model.model_validate(data).model_dump(exclude_unset=True)
     )
 
-    result = handler_type().handle(connection)
+    result = handler_type().handle(
+        connection, handler_type.request_model.model_validate(connection.data)
+    )
 
     assert result is not None
     assert result.code == 200
@@ -171,7 +173,10 @@ def test_oidc_start_rejects_missing_configuration_before_http(oidc_context, miss
     del oidc_context.config["extensions"]["oidc_sso"][missing]
     connection = _Connection({})
 
-    result = extension.RequestOIDCStartHandler().handle(connection)
+    result = extension.RequestOIDCStartHandler().handle(
+        connection,
+        extension.RequestOIDCStartHandler.request_model.model_validate(connection.data),
+    )
 
     assert result is not None
     assert result.code == 400
@@ -185,7 +190,10 @@ def test_oidc_start_does_not_read_legacy_configuration(oidc_context):
     del oidc_context.config["extensions"]["oidc_sso"]
     connection = _Connection({})
 
-    result = extension.RequestOIDCStartHandler().handle(connection)
+    result = extension.RequestOIDCStartHandler().handle(
+        connection,
+        extension.RequestOIDCStartHandler.request_model.model_validate(connection.data),
+    )
 
     assert result is not None
     assert result.code == 400
@@ -200,7 +208,10 @@ def test_oidc_start_rejects_nonpositive_state_ttl(oidc_context, ttl):
     oidc_context.config["extensions"]["oidc_sso"]["state_ttl_seconds"] = ttl
     connection = _Connection({})
 
-    result = extension.RequestOIDCStartHandler().handle(connection)
+    result = extension.RequestOIDCStartHandler().handle(
+        connection,
+        extension.RequestOIDCStartHandler.request_model.model_validate(connection.data),
+    )
 
     assert result is not None
     assert result.code == 400
@@ -213,7 +224,10 @@ def test_oidc_start_rejects_nonpositive_state_ttl(oidc_context, ttl):
 def test_oidc_start_rejects_redirect_uri_override(oidc_context):
     connection = _Connection({"redirect_uri": "https://other.example/callback"})
 
-    result = extension.RequestOIDCStartHandler().handle(connection)
+    result = extension.RequestOIDCStartHandler().handle(
+        connection,
+        extension.RequestOIDCStartHandler.request_model.model_validate(connection.data),
+    )
 
     assert result is not None
     assert result.code == 400
@@ -227,7 +241,10 @@ def test_oidc_start_rejects_discovery_issuer_mismatch(oidc_context):
     oidc_context.metadata["issuer"] = "https://other.example"
     connection = _Connection({})
 
-    result = extension.RequestOIDCStartHandler().handle(connection)
+    result = extension.RequestOIDCStartHandler().handle(
+        connection,
+        extension.RequestOIDCStartHandler.request_model.model_validate(connection.data),
+    )
 
     assert result is not None
     assert result.code == 400
@@ -298,7 +315,15 @@ def oidc_callback_context(
 
     oidc_context.clock.now = datetime.datetime.now(datetime.UTC).timestamp()
     start = _Connection({})
-    assert extension.RequestOIDCStartHandler().handle(start).code == 200
+    assert (
+        extension.RequestOIDCStartHandler()
+        .handle(
+            start,
+            extension.RequestOIDCStartHandler.request_model.model_validate(start.data),
+        )
+        .code
+        == 200
+    )
     state = start.response["data"]["state"]
     cached_state = orjson.loads(
         oidc_context.caching.get(extension.STATE_CACHE_PREFIX + state)
@@ -376,10 +401,18 @@ def test_oidc_callback_issues_local_token_and_commits_login(
     connection = _Connection(request_data)
 
     if entrypoint == "callback":
-        result = extension.RequestOIDCCallbackHandler().handle(connection)
+        result = extension.RequestOIDCCallbackHandler().handle(
+            connection,
+            extension.RequestOIDCCallbackHandler.request_model.model_validate(
+                connection.data
+            ),
+        )
     else:
         connection.data = {"method": "oidc", "credential": request_data}
-        result = RequestLoginHandler().handle(connection)
+        result = RequestLoginHandler().handle(
+            connection,
+            RequestLoginHandler.request_model.model_validate(connection.data),
+        )
 
     assert (result.code, result.target) == (200, "alice")
     assert connection.response["code"] == 200
@@ -418,7 +451,12 @@ def test_oidc_callback_rejects_unavailable_state_before_token_exchange(
         context.clock.now += 91
     connection = _Connection(data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 401
     assert connection.response["code"] == 401
@@ -441,7 +479,12 @@ def test_oidc_callback_consumes_state_before_rejecting_redirect_mismatch(
         {**context.request_data, "redirect_uri": "https://other.example/callback"}
     )
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 401
     assert connection.response["code"] == 401
@@ -459,12 +502,25 @@ def test_oidc_callback_consumes_state_before_rejecting_redirect_mismatch(
 def test_oidc_callback_rejects_state_reuse_after_success(oidc_callback_context):
     context = oidc_callback_context
     first = _Connection(context.request_data)
-    assert extension.RequestOIDCCallbackHandler().handle(first).code == 200
+    assert (
+        extension.RequestOIDCCallbackHandler()
+        .handle(
+            first,
+            extension.RequestOIDCCallbackHandler.request_model.model_validate(
+                first.data
+            ),
+        )
+        .code
+        == 200
+    )
     last_login = context.clock.now
     context.clock.now += 1
     replay = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(replay)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        replay,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(replay.data),
+    )
 
     assert result.code == 401
     assert replay.response["code"] == 401
@@ -486,7 +542,12 @@ def test_oidc_callback_rejects_id_token_missing_required_claim(
     del context.claims[claim]
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 401
     assert connection.response["code"] == 401
@@ -539,7 +600,12 @@ def test_oidc_callback_rejects_invalid_id_token_without_issuing_local_token(
         context.algorithm = "none"
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 401
     assert connection.response["code"] == 401
@@ -566,7 +632,12 @@ def test_oidc_callback_requires_matching_authorized_party_for_multiple_audiences
         context.claims["azp"] = authorized_party
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == expected_code
     assert connection.response["code"] == expected_code
@@ -589,7 +660,12 @@ def test_oidc_callback_rejects_unknown_user_when_provisioning_is_disabled(
     context.claims["sub"] = "unknown-subject"
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 401
     assert connection.response["code"] == 401
@@ -616,7 +692,12 @@ def test_oidc_callback_rejects_invalid_username_claim(oidc_callback_context, use
         context.claims["preferred_username"] = username
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 401
     assert connection.response["code"] == 401
@@ -641,7 +722,12 @@ def test_oidc_callback_provisions_user_with_configured_group_and_commits_login(
         session.add(UserGroup(group_name="user"))
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert (result.code, result.target) == (200, "new-user")
     data = connection.response["data"]
@@ -671,7 +757,12 @@ def test_oidc_callback_does_not_provision_user_when_default_group_is_missing(
     context.claims["sub"] = "new-subject"
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 401
     assert connection.response["code"] == 401
@@ -695,7 +786,12 @@ def test_oidc_callback_rejects_inactive_user_without_updating_login(
         ).status = UserStatus.DISABLED
     connection = _Connection(context.request_data)
 
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
 
     assert result.code == 4003
     assert connection.response["code"] == 4003
@@ -716,7 +812,17 @@ def test_oidc_unknown_subject_cannot_claim_existing_username(
     context.config["extensions"]["oidc_sso"]["auto_provision"] = auto_provision
     context.claims["sub"] = "unbound-subject"
     connection = _Connection(context.request_data)
-    assert extension.RequestOIDCCallbackHandler().handle(connection).code == 401
+    assert (
+        extension.RequestOIDCCallbackHandler()
+        .handle(
+            connection,
+            extension.RequestOIDCCallbackHandler.request_model.model_validate(
+                connection.data
+            ),
+        )
+        .code
+        == 401
+    )
     assert "token" not in connection.response["data"]
     with context.sessions() as session:
         assert len(session.scalars(select(UserOidcCredential)).all()) == 1
@@ -735,7 +841,12 @@ def test_bound_oidc_identity_survives_username_claim_change(oidc_callback_contex
             select(User).where(User.username == "alice")
         ).username = "renamed"
     connection = _Connection(context.request_data)
-    result = extension.RequestOIDCCallbackHandler().handle(connection)
+    result = extension.RequestOIDCCallbackHandler().handle(
+        connection,
+        extension.RequestOIDCCallbackHandler.request_model.model_validate(
+            connection.data
+        ),
+    )
     assert (result.code, result.target) == (200, "renamed")
 
 
@@ -746,7 +857,17 @@ def test_oidc_binding_does_not_bypass_login_policy(oidc_callback_context):
         user = session.scalar(select(User).where(User.username == "alice"))
         replace_auth_policy(session, user, AuthPurpose.LOGIN, [], expected_revision=1)
     connection = _Connection(context.request_data)
-    assert extension.RequestOIDCCallbackHandler().handle(connection).code == 401
+    assert (
+        extension.RequestOIDCCallbackHandler()
+        .handle(
+            connection,
+            extension.RequestOIDCCallbackHandler.request_model.model_validate(
+                connection.data
+            ),
+        )
+        .code
+        == 401
+    )
     assert "token" not in connection.response["data"]
 
 
@@ -771,7 +892,17 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
         signing_key = user.secret_key
         secret = credential.secret
     connection = _Connection(context.request_data)
-    assert extension.RequestOIDCCallbackHandler().handle(connection).code == 202
+    assert (
+        extension.RequestOIDCCallbackHandler()
+        .handle(
+            connection,
+            extension.RequestOIDCCallbackHandler.request_model.model_validate(
+                connection.data
+            ),
+        )
+        .code
+        == 202
+    )
     token = Token.from_raw(connection.response["data"]["token"], signing_key)
     assert token.purpose == TokenPurpose.AUTH
     assert token.auth_context.evidence[0].method == "oidc"
@@ -802,7 +933,17 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=None)),
         conclude_request=lambda **response: responses.append(response),
     )
-    assert auth_handlers.RequestExchangeTokenHandler().handle(complete).code == 200
+    assert (
+        auth_handlers.RequestExchangeTokenHandler()
+        .handle(
+            complete,
+            auth_handlers.RequestExchangeTokenHandler.request_model.model_validate(
+                complete.data
+            ),
+        )
+        .code
+        == 200
+    )
     assert (
         Token.from_raw(responses[0]["data"]["token"], signing_key).purpose
         == TokenPurpose.GENERAL

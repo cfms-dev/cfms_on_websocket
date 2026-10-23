@@ -140,14 +140,14 @@ class RequestLoginHandler(RequestHandler[_LoginRequest]):
     request_model = _LoginRequest
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler) -> Result:
+    def handle(self, handler, request) -> Result:
         attempt = AuthenticationAttempt(
-            handler.data["method"],
+            request.method,
             AuthPurpose.LOGIN,
             get_client_ip(handler.stream.connection._ws),
             self.rate_limit_cost,
         )
-        return authenticate_request(handler, attempt, handler.data["credential"])
+        return authenticate_request(handler, attempt, request.credential)
 
 
 class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
@@ -156,12 +156,7 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
     requires_auth = True
     required_token_purpose = TokenPurpose.AUTH | TokenPurpose.GENERAL
 
-    def handle(self, handler: ConnectionHandler) -> Result:
-        try:
-            request = self.request_model.model_validate(handler.data)
-        except ValidationError:
-            handler.conclude_request(400, {}, "Invalid token exchange request")
-            return Result(code=400, user_id=handler.user_id)
+    def handle(self, handler, request) -> Result:
         source = handler.token
         if (
             source is not None
@@ -183,6 +178,7 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
         else:
             handler.conclude_request(403, {}, "Token exchange is not permitted")
             return Result(code=403, user_id=handler.user_id)
+
         if purpose == AuthPurpose.ESCALATION:
             try:
                 issued: tuple[str, Token] | None = None
@@ -251,7 +247,7 @@ class RequestRefreshTokenHandler(RequestHandler[EmptyRequestDataModel]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
             username = user.username

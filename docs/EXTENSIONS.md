@@ -227,7 +227,12 @@ is no JSON Schema fallback for handler request data.
 
 Use `RequestHandler[YourRequestModel]` to bind the handler's model type for static
 analysis. The type argument must match `request_model`; it does not replace the
-runtime declaration or validation.
+runtime declaration or validation. Pyright infers the overridden `handle()` method's
+`request` parameter from this generic binding, so its annotation may be omitted.
+Keep the parameter annotated on `RequestHandler.handle()` and generic intermediate
+base classes. If another class overrides an already unannotated concrete handler,
+annotate that override explicitly; Pyright does not propagate this inference through
+successive unannotated overrides.
 
 Extension handler mappings are applied after the core mapping and may replace an
 action with the same name. `ext_unregister_handlers()` is applied afterward and
@@ -255,8 +260,8 @@ class EchoRequest(RequestDataModel):
 class EchoHandler(RequestHandler[EchoRequest]):
     request_model = EchoRequest
 
-    def handle(self, handler):
-        handler.conclude_request(200, {"message": handler.data["message"]}, "OK")
+    def handle(self, handler, request):
+        handler.conclude_request(200, {"message": request.message}, "OK")
         return Result(code=200)
 
 
@@ -268,8 +273,18 @@ def ext_register_handlers() -> dict[str, type[RequestHandler]]:
 `RequestDataModel` uses strict Pydantic validation and rejects unknown fields by
 default. Use `Omittable[T]` with `REQUEST_UNSET` when a field may be absent but
 must reject an explicit JSON `null`; use `T | None` when `null` is valid. After
-validation, `ConnectionHandler.data` remains the original JSON dictionary, so
-existing handler and hook code may continue to use dictionary operations.
+validation, the router passes the validated model to `handle(handler, request)`.
+Use the model's attributes for request fields and `model_fields_set` to distinguish
+omitted fields from explicitly supplied values. Validation runs once in the router,
+before handler dispatch and request hooks; handlers receive a validated model
+and must not validate the original data again. `ConnectionHandler.data` remains the
+original JSON dictionary for transport and hook code. Handlers consume the validated
+model; raw-field changes made by hooks are not revalidated or synchronized into it.
+
+Extension handlers must accept the new `request` argument. Direct callers must
+validate data with the handler's `request_model` and pass the resulting model to
+`handle`; invalid external input should be exercised through the router, which
+returns the structured validation error response.
 
 Extensions that own trusted scheduled task types register them through
 `ext_register_scheduled_tasks()`. The scheduling runtime and authenticated

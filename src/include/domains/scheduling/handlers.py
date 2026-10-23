@@ -153,7 +153,7 @@ class RequestListScheduledTaskTypesHandler(RequestHandler[EmptyRequestDataModel]
     request_model = EmptyRequestDataModel
     requires_auth = True
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Filter task registrations by view and task-specific permissions."""
 
         assert handler.user_id is not None
@@ -186,7 +186,7 @@ class RequestCreateScheduleHandler(RequestHandler[_CreateScheduleRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Create a schedule transactionally, then wake the active Provider."""
 
         assert handler.user_id is not None
@@ -194,13 +194,13 @@ class RequestCreateScheduleHandler(RequestHandler[_CreateScheduleRequest]):
             return error
         permissions = _permissions(handler.user_id)
         registry = collect_scheduled_tasks()
-        task_name = handler.data["task_name"]
+        task_name = request.task_name
         if (
             Permissions.MANAGE_SCHEDULES not in permissions
             or not _task_permission_allowed(permissions, task_name, registry)
         ):
             return _deny(handler, handler.user_id)
-        trigger = handler.data["trigger"]
+        trigger = request.trigger
         try:
             with Session() as session, session.begin():
                 schedule = create_schedule(
@@ -208,11 +208,11 @@ class RequestCreateScheduleHandler(RequestHandler[_CreateScheduleRequest]):
                     registry,
                     user_id=handler.user_id,
                     task_name=task_name,
-                    payload=handler.data["payload"],
-                    trigger_type=trigger["type"],
-                    trigger_data=trigger["data"],
-                    timezone=trigger["timezone"],
-                    enabled=handler.data.get("enabled", True),
+                    payload=request.payload,
+                    trigger_type=trigger.type,
+                    trigger_data=trigger.data,
+                    timezone=trigger.timezone,
+                    enabled=request.enabled,
                 )
                 response = schedule_response(schedule, registry)
         except (LookupError, TriggerValidationError, ValueError) as exc:
@@ -234,7 +234,7 @@ class RequestGetScheduleHandler(RequestHandler[_ScheduleIdRequest]):
     request_model = _ScheduleIdRequest
     requires_auth = True
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Hide deleted and system-managed rows from direct lookup."""
 
         assert handler.user_id is not None
@@ -244,7 +244,7 @@ class RequestGetScheduleHandler(RequestHandler[_ScheduleIdRequest]):
             return _deny(handler, handler.user_id)
         registry = collect_scheduled_tasks()
         with Session() as session:
-            schedule = session.get(Schedule, handler.data["id"])
+            schedule = session.get(Schedule, request.id)
             if (
                 schedule is None
                 or schedule.status == "deleted"
@@ -263,7 +263,7 @@ class RequestListSchedulesHandler(RequestHandler[_ListSchedulesRequest]):
     request_model = _ListSchedulesRequest
     requires_auth = True
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Return one descending page without exposing system-managed rows."""
 
         assert handler.user_id is not None
@@ -271,13 +271,13 @@ class RequestListSchedulesHandler(RequestHandler[_ListSchedulesRequest]):
             return error
         if Permissions.VIEW_SCHEDULES not in _permissions(handler.user_id):
             return _deny(handler, handler.user_id)
-        page_size = get_page_size(handler.data)
-        include_deleted = handler.data.get("include_deleted", False)
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        include_deleted = request.include_deleted
         filters = {"include_deleted": include_deleted}
         sort = "created_at_id:desc"
         try:
             cursor = PaginationCursor.decode(
-                handler.data.get("cursor"),
+                request.cursor,
                 action="list_schedules",
                 sort=sort,
                 filters=filters,
@@ -329,28 +329,26 @@ class RequestUpdateScheduleHandler(RequestHandler[_UpdateScheduleRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Authorize against locked current state and apply supplied fields."""
 
         assert handler.user_id is not None
         if error := _provider_error(handler, handler.user_id):
             return error
         registry = collect_scheduled_tasks()
-        changes = {
-            key: handler.data[key]
-            for key in ("task_name", "payload", "enabled")
-            if key in handler.data
-        }
-        if "trigger" in handler.data:
-            trigger = handler.data["trigger"]
+        changes = request.model_dump(
+            include={"task_name", "payload", "enabled"}, exclude_unset=True
+        )
+        if request.trigger is not REQUEST_UNSET:
+            trigger = request.trigger
             changes.update(
-                trigger_type=trigger["type"],
-                trigger_data=trigger["data"],
-                timezone=trigger["timezone"],
+                trigger_type=trigger.type,
+                trigger_data=trigger.data,
+                timezone=trigger.timezone,
             )
         try:
             with Session() as session, session.begin():
-                current = lock_schedule(session, handler.data["id"])
+                current = lock_schedule(session, request.id)
                 if (
                     current is None
                     or current.status == "deleted"
@@ -358,7 +356,7 @@ class RequestUpdateScheduleHandler(RequestHandler[_UpdateScheduleRequest]):
                 ):
                     handler.conclude_request(404, {}, "Schedule not found")
                     return Result(code=404, user_id=handler.user_id)
-                if current.revision != handler.data["revision"]:
+                if current.revision != request.revision:
                     raise ScheduleConflictError("Schedule revision is stale")
                 task_name = changes.get("task_name", current.task_name)
                 permissions = _permissions(handler.user_id, session)
@@ -375,8 +373,8 @@ class RequestUpdateScheduleHandler(RequestHandler[_UpdateScheduleRequest]):
                 schedule = update_schedule(
                     session,
                     registry,
-                    handler.data["id"],
-                    handler.data["revision"],
+                    request.id,
+                    request.revision,
                     changes,
                     user_id=handler.user_id,
                 )
@@ -402,7 +400,7 @@ class RequestDeleteScheduleHandler(RequestHandler[_DeleteScheduleRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         """Retire a user schedule at the expected revision and wake the Provider."""
 
         assert handler.user_id is not None
@@ -411,7 +409,7 @@ class RequestDeleteScheduleHandler(RequestHandler[_DeleteScheduleRequest]):
         if Permissions.MANAGE_SCHEDULES not in _permissions(handler.user_id):
             return _deny(handler, handler.user_id)
         with Session() as session:
-            schedule = session.get(Schedule, handler.data["id"])
+            schedule = session.get(Schedule, request.id)
             if schedule is not None and schedule.system_managed:
                 handler.conclude_request(404, {}, "Schedule not found")
                 return Result(code=404, user_id=handler.user_id)
@@ -419,8 +417,8 @@ class RequestDeleteScheduleHandler(RequestHandler[_DeleteScheduleRequest]):
             with Session() as session, session.begin():
                 delete_schedule(
                     session,
-                    handler.data["id"],
-                    handler.data["revision"],
+                    request.id,
+                    request.revision,
                     user_id=handler.user_id,
                 )
         except ScheduleNotFoundError:
@@ -433,6 +431,6 @@ class RequestDeleteScheduleHandler(RequestHandler[_DeleteScheduleRequest]):
         handler.conclude_request(200, {}, "Schedule deleted")
         return Result(
             code=0,
-            target=handler.data["id"],
+            target=request.id,
             user_id=handler.user_id,
         )

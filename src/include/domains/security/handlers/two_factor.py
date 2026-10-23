@@ -102,7 +102,7 @@ class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
     requires_auth = True
     rate_limit_cost = 20
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
 
@@ -152,8 +152,8 @@ class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
-        token = handler.data["token"]
+    def handle(self, handler, request):
+        token = request.token
         user_id = handler.user_id
 
         success = False
@@ -222,14 +222,14 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
-        password = handler.data.get("password")
+    def handle(self, handler, request):
+        password = request.password if request.password is not REQUEST_UNSET else None
         with Session() as session:
             requester = User.get_existing(session, handler.user_id)
             requester_username = requester.username
         target_user_id = (
-            uuid.UUID(handler.data["user_id"])
-            if "user_id" in handler.data
+            request.user_id
+            if "user_id" in request.model_fields_set
             else handler.user_id
         )
         audit_target = str(target_user_id)
@@ -330,7 +330,7 @@ class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
     requires_auth = True
     rate_limit_cost = 1
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
 
@@ -367,14 +367,12 @@ class RequestGet2FAStatusHandler(RequestHandler[_Get2FAStatusRequest]):
     requires_auth = True
     rate_limit_cost = 1
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
             target_user_id = (
-                uuid.UUID(handler.data["user_id"])
-                if "user_id" in handler.data
-                else user.id
+                request.user_id if "user_id" in request.model_fields_set else user.id
             )
 
             if (

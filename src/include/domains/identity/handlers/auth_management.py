@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
     load_ssh_public_key,
 )
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, model_validator
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DatabaseSession
@@ -82,28 +82,16 @@ class _UserAuthenticationHandler[RequestT: _UserRequest](RequestHandler[RequestT
     write = True
     required_token_purpose = TokenPurpose.ESCALATION
 
-    def handle(self, handler: ConnectionHandler) -> Result:
-        try:
-            request = self.request_model.model_validate(handler.data)
-        except ValidationError as exc:
-            handler.conclude_request(
-                400,
-                {
-                    "errors": exc.errors(
-                        include_url=False, include_context=False, include_input=False
-                    )
-                },
-                "Invalid request data",
-            )
-            return Result(code=400, user_id=handler.user_id)
+    def handle(self, handler: ConnectionHandler, request: RequestT) -> Result:
         target_id = (
             request.user_id if request.user_id is not REQUEST_UNSET else handler.user_id
         )
         audit_data: dict[str, Any] = {}
-        if "policies" in handler.data:
-            audit_data["purposes"] = [p["purpose"] for p in handler.data["policies"]]
-        if "credential_id" in handler.data:
-            audit_data["credential_id"] = handler.data["credential_id"]
+        request_data = request.model_dump(mode="json", exclude_unset=True)
+        if "policies" in request_data:
+            audit_data["purposes"] = [p["purpose"] for p in request_data["policies"]]
+        if "credential_id" in request_data:
+            audit_data["credential_id"] = request_data["credential_id"]
         try:
             if handler.user_id is None or handler.token is None:
                 raise AuthenticationFailure(401, "Authentication required")

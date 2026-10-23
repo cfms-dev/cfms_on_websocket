@@ -218,7 +218,12 @@ def test_document_info_reads_revision_and_file_consistently_during_deduplication
     )
     responses = []
 
-    directory_models.document_handlers.RequestGetDocumentInfoHandler().handle(handler)
+    directory_models.document_handlers.RequestGetDocumentInfoHandler().handle(
+        handler,
+        directory_models.document_handlers.RequestGetDocumentInfoHandler.request_model.model_validate(
+            handler.data
+        ),
+    )
 
     assert remapped is True
     assert responses[0]["code"] == 200

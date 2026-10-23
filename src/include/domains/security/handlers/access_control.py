@@ -187,14 +187,14 @@ class RequestListBannedSubnetsHandler(RequestHandler[_ListBannedSubnetsRequest])
     requires_auth = True
     rate_limit_cost = 2
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         denial = _require_permission(handler, Permissions.LIST_BANNED_SUBNETS)
         if denial:
             return denial
 
-        page_size = get_page_size(handler.data)
-        status = handler.data.get("status")
-        cursor = handler.data.get("cursor")
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        status = request.status if request.status is not REQUEST_UNSET else None
+        cursor = request.cursor
         filters = {"status": status}
         sort = "created_at:desc,subnet:asc"
         try:
@@ -268,22 +268,22 @@ class RequestCreateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         denial = _require_permission(handler, Permissions.MANAGE_BANNED_SUBNETS)
         if denial:
             return denial
 
         try:
-            network = ipaddress.ip_network(handler.data["subnet"], strict=False)
+            network = ipaddress.ip_network(request.subnet, strict=False)
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
-            return Result(
-                code=400, target=handler.data["subnet"], user_id=handler.user_id
-            )
+            return Result(code=400, target=request.subnet, user_id=handler.user_id)
 
         now = time.time()
-        starts_at = float(handler.data.get("starts_at", now))
-        expires_at = handler.data.get("expires_at")
+        starts_at = float(
+            request.starts_at if request.starts_at is not REQUEST_UNSET else now
+        )
+        expires_at = request.expires_at
         if expires_at is not None:
             expires_at = float(expires_at)
         if not _validate_interval(starts_at, expires_at):
@@ -291,8 +291,10 @@ class RequestCreateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
                 400, {}, "`expires_at` must be later than `starts_at`"
             )
             return Result(code=400, target=str(network), user_id=handler.user_id)
-        if _contains_requester(handler, network, expires_at) and not handler.data.get(
-            "confirm_self_block", False
+        if _contains_requester(handler, network, expires_at) and not (
+            request.confirm_self_block
+            if request.confirm_self_block is not REQUEST_UNSET
+            else False
         ):
             handler.conclude_request(
                 409,
@@ -303,7 +305,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
 
         try:
             with Session.begin() as session:
-                reason = handler.data.get("reason")
+                reason = request.reason
                 row = BannedSubnet(
                     subnet=str(network),
                     reason_comment_id=(
@@ -341,23 +343,19 @@ class RequestUpdateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         denial = _require_permission(handler, Permissions.MANAGE_BANNED_SUBNETS)
         if denial:
             return denial
-        if not {"reason", "starts_at", "expires_at"} & handler.data.keys():
+        if not {"reason", "starts_at", "expires_at"} & request.model_fields_set:
             handler.conclude_request(400, {}, "No subnet rule changes specified")
-            return Result(
-                code=400, target=handler.data["subnet"], user_id=handler.user_id
-            )
+            return Result(code=400, target=request.subnet, user_id=handler.user_id)
 
         try:
-            network = ipaddress.ip_network(handler.data["subnet"], strict=False)
+            network = ipaddress.ip_network(request.subnet, strict=False)
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
-            return Result(
-                code=400, target=handler.data["subnet"], user_id=handler.user_id
-            )
+            return Result(code=400, target=request.subnet, user_id=handler.user_id)
 
         with Session.begin() as session:
             row = session.get(BannedSubnet, str(network))
@@ -365,8 +363,16 @@ class RequestUpdateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
                 handler.conclude_request(404, {}, "Subnet rule not found")
                 return Result(code=404, target=str(network), user_id=handler.user_id)
 
-            starts_at = float(handler.data.get("starts_at", row.starts_at))
-            expires_at = handler.data.get("expires_at", row.expires_at)
+            starts_at = float(
+                request.starts_at
+                if request.starts_at is not REQUEST_UNSET
+                else row.starts_at
+            )
+            expires_at = (
+                request.expires_at
+                if "expires_at" in request.model_fields_set
+                else row.expires_at
+            )
             if expires_at is not None:
                 expires_at = float(expires_at)
             if not _validate_interval(starts_at, expires_at):
@@ -374,9 +380,11 @@ class RequestUpdateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
                     400, {}, "`expires_at` must be later than `starts_at`"
                 )
                 return Result(code=400, target=str(network), user_id=handler.user_id)
-            if _contains_requester(
-                handler, network, expires_at
-            ) and not handler.data.get("confirm_self_block", False):
+            if _contains_requester(handler, network, expires_at) and not (
+                request.confirm_self_block
+                if request.confirm_self_block is not REQUEST_UNSET
+                else False
+            ):
                 handler.conclude_request(
                     409,
                     {},
@@ -386,8 +394,8 @@ class RequestUpdateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
 
             previous_reason = row.reason
             current_reason = previous_reason
-            if "reason" in handler.data:
-                reason = handler.data["reason"]
+            if "reason" in request.model_fields_set:
+                reason = request.reason
                 current_reason = reason
                 row.reason_comment_id = (
                     CommentStore.get_or_create_id(session, reason)
@@ -402,7 +410,10 @@ class RequestUpdateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationReque
                 "reason": current_reason,
             }
 
-        if "starts_at" in handler.data or "expires_at" in handler.data:
+        if (
+            "starts_at" in request.model_fields_set
+            or "expires_at" in request.model_fields_set
+        ):
             _publish_guard_event({"type": "reload_subnets"})
         handler.conclude_request(200, response, "Banned subnet updated")
         return Result(
@@ -422,17 +433,15 @@ class RequestDeleteBannedSubnetHandler(RequestHandler[_DeleteBannedSubnetRequest
     requires_auth = True
     rate_limit_cost = 5
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         denial = _require_permission(handler, Permissions.MANAGE_BANNED_SUBNETS)
         if denial:
             return denial
         try:
-            subnet = str(ipaddress.ip_network(handler.data["subnet"], strict=False))
+            subnet = str(ipaddress.ip_network(request.subnet, strict=False))
         except ValueError:
             handler.conclude_request(400, {}, "Invalid CIDR subnet")
-            return Result(
-                code=400, target=handler.data["subnet"], user_id=handler.user_id
-            )
+            return Result(code=400, target=request.subnet, user_id=handler.user_id)
 
         with Session.begin() as session:
             row = session.get(BannedSubnet, subnet)
@@ -504,20 +513,21 @@ class RequestListAuthLockoutsHandler(RequestHandler[_ListAuthLockoutsRequest]):
     requires_auth = True
     rate_limit_cost = 3
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         denial = _require_permission(handler, Permissions.LIST_AUTH_LOCKOUTS)
         if denial:
             return denial
 
-        page_size = get_page_size(handler.data)
+        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
+        request_data = request.model_dump(exclude_unset=True)
         filters = {
-            key: handler.data.get(key)
+            key: request_data.get(key)
             for key in ("scope", "username", "ip_address", "factor")
         }
         sort = "locked_until:desc,scope:asc,username:asc,factor:asc,ip_address:asc"
         try:
             decoded_cursor = PaginationCursor.decode(
-                handler.data.get("cursor"),
+                request.cursor,
                 action="list_auth_lockouts",
                 sort=sort,
                 filters=filters,
@@ -608,12 +618,12 @@ class RequestUnlockAuthLockoutsHandler(RequestHandler[_UnlockAuthLockoutsRequest
     requires_auth = True
     rate_limit_cost = 10
 
-    def handle(self, handler: ConnectionHandler):
+    def handle(self, handler, request):
         denial = _require_permission(handler, Permissions.UNLOCK_AUTH_LOCKOUTS)
         if denial:
             return denial
 
-        selectors = handler.data["locks"]
+        selectors = [selector.model_dump() for selector in request.locks]
         cleared = []
         not_found = []
         cache_keys: list[tuple[str, ...]] = []
@@ -638,7 +648,7 @@ class RequestUnlockAuthLockoutsHandler(RequestHandler[_UnlockAuthLockoutsRequest
             code=200,
             target="auth_lockouts",
             data={
-                "reason": handler.data["reason"],
+                "reason": request.reason,
                 "requested": selectors,
                 "cleared_count": len(cleared),
             },
