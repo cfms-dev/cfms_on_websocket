@@ -1,3 +1,4 @@
+import logging
 import subprocess
 import sys
 from io import StringIO
@@ -20,6 +21,16 @@ from include.database.session import Base
 pytestmark = pytest.mark.component
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
+
+
+def test_migrations_preserve_existing_application_loggers(sqlite_engine_factory):
+    logger = logging.getLogger("maintenance.backup.archive")
+    assert not logger.disabled
+    config = Config(_SOURCE_ROOT / "alembic.ini")
+    with sqlite_engine_factory().begin() as connection:
+        config.attributes["connection"] = connection
+        command.stamp(config, "head")
+    assert not logger.disabled
 
 
 @pytest.mark.parametrize("absolute_path", [False, True])

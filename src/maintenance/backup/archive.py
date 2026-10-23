@@ -93,11 +93,13 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
     legacy_expected = (
         expected - compiled_access_rule_tables
     ) | legacy_access_rule_tables
-    # Schedules were added without changing the backup format version, so full
-    # backups created before that table existed remain compatible.
+    # Full archives predating scheduling or separate credentials keep their format.
     compatible_table_names = (table_names - extension_tables) | {
         "schedules",
         "user_auth_policies",
+        "user_passwords",
+        "user_totp_credentials",
+        "user_auth_public_keys",
     }
     unknown_tables = table_names - registered_tables - legacy_access_rule_tables
     if unknown_tables:

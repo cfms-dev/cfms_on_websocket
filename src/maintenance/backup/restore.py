@@ -45,6 +45,7 @@ from maintenance.backup.legacy import (
     _restore_legacy_access_rules,
     _restore_legacy_auth_policies,
     _restore_missing_compiled_rule_sets,
+    _upgrade_legacy_identity_payload,
 )
 from maintenance.backup.models import (
     BackupFormatError,
@@ -364,6 +365,7 @@ def _restore_database(
     progress_reporter: _BackupProgressReporter | None = None,
     finalize: Callable[[], None] | None = None,
 ) -> None:
+    manifest = _upgrade_legacy_identity_payload(extract_dir, manifest)
     tables = _backup_tables()
     table_names = _manifest_table_names(manifest)
     total_row_count = sum(

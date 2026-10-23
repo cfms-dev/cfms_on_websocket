@@ -11,6 +11,7 @@ from sqlalchemy.schema import CreateTable
 from alembic import command
 from include.database.models.auth import (
     UserAuthPolicy,
+    UserAuthPublicKey,
     UserPasswordCredential,
     UserTotpCredential,
 )
@@ -20,6 +21,14 @@ from include.extensions.oidc_sso.credentials import bind_oidc_identity
 from include.extensions.oidc_sso.models import OIDCBase, UserOidcCredential
 
 pytestmark = pytest.mark.component
+
+
+@pytest.mark.parametrize("dialect", [mysql.dialect(), postgresql.dialect()])
+def test_public_key_fingerprint_uses_an_indexable_fixed_length_type(dialect):
+    column = UserAuthPublicKey.__table__.c.fingerprint
+    assert str(column.type.compile(dialect=dialect)) == (
+        "BINARY(32)" if dialect.name == "mysql" else "BYTEA"
+    )
 
 
 @pytest.fixture

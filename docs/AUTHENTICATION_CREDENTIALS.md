@@ -342,7 +342,12 @@ Downgrade refuses OIDC bindings or policies that cannot preserve legacy behavior
 Account backups and database transfers include policies, credential IDs and OIDC
 bindings while the extension is installed, including when it is disabled. If the
 extension is missing, maintenance refuses its tables rather than dropping data.
-Existing binding rows and credential IDs are adopted unchanged. Legacy archives without a policy table receive IDs and legacy local
+Existing binding rows and credential IDs are adopted unchanged. Pre-UUID archives
+are converted in the temporary extraction directory: account usernames receive
+UUIDs, account references are translated, and inline password/TOTP fields become
+credential rows. Missing nullable account references become null; orphaned
+required references are rejected and grants to deleted accounts are removed.
+Legacy archives without a policy table receive IDs and legacy local
 policies during restore. An included but empty policy table is authoritative and
 never gains reconstructed authorization. New archives must retain credential IDs.
 The existing archive format and encryption remain unchanged.

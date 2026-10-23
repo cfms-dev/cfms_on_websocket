@@ -1,0 +1,1 @@
+Restore the credential migration before account UUID conversion, preserve related SQLite data during upgrades and downgrades, use an indexable MySQL public-key fingerprint, and restore pre-UUID backups with their password and MFA policies intact.

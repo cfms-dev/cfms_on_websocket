@@ -8,7 +8,7 @@ import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from include.config.constants import CORE_VERSION
+from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
 from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings
 from tests.support.utils import assert_error, assert_success, permission_entry
@@ -86,7 +86,7 @@ class TestSystemManagement:
         assert diagnostics["server"] == {
             "server_name": "CFMS WebSocket Server",
             "core_version": CORE_VERSION.original,
-            "protocol_version": 28,
+            "protocol_version": PROTOCOL_VERSION,
             "debug_configured": True,
         }
         assert set(diagnostics["runtime"]) == {

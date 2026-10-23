@@ -1,5 +1,6 @@
 import pytest
 
+from include.config.constants import PROTOCOL_VERSION
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
@@ -22,7 +23,7 @@ class TestServerBasics:
         for field in required_fields:
             assert field in data
         assert "version" not in data
-        assert data["protocol_version"] == 28
+        assert data["protocol_version"] == PROTOCOL_VERSION
         assert isinstance(data["extension_flags"], list)
         assert "scheduling" not in data["extension_flags"]
         assert data["lockdown"] is False

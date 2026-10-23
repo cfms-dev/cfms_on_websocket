@@ -19,7 +19,7 @@ def test_account_identity_migration_preserves_references(sqlite_engine_factory):
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "head")
-        command.downgrade(config, "0460356a5ba6")
+        command.downgrade(config, "5ad5aca75635")
         metadata = MetaData()
         metadata.reflect(connection)
         tables = metadata.tables
@@ -127,7 +127,7 @@ def test_account_identity_migration_preserves_references(sqlite_engine_factory):
                 for fk in inspect(connection).get_foreign_keys(table.name)
                 if fk["referred_table"] == "users"
             )
-        command.downgrade(config, "0460356a5ba6")
+        command.downgrade(config, "5ad5aca75635")
         old_passwords = Table("user_passwords", MetaData(), autoload_with=connection)
         assert connection.scalar(select(old_passwords.c.username)) == "alice"
         assert connection.scalar(select(old_passwords.c.pass_hash)) == "preserved"

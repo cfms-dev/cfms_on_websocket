@@ -1,6 +1,5 @@
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 from sqlalchemy import Column, Integer, MetaData, Table, inspect
@@ -121,10 +120,15 @@ def test_schema_preparation_accepts_foreign_keys_without_optional_options(
 
 
 def test_oidc_data_import_does_not_require_network_dependencies(protected_test_config):
-    source = Path(__file__).resolve().parents[2] / "src"
+    source = protected_test_config.src_dir
     script = """
 import sys
 import importlib.abc
+from pathlib import Path
+
+from include.config import paths
+
+assert paths.EXECUTABLE_ABSPATH == Path.cwd()
 
 class BlockNetworkImports(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
