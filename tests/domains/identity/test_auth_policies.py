@@ -17,6 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
+from include.config.validation import RequestRateControlPolicy
 from include.database.models.auth import (
     UserAuthPolicy,
     UserAuthPublicKey,
@@ -60,6 +61,8 @@ from include.domains.identity.commands.credentials import (
 from include.domains.identity.handlers import auth
 from include.domains.identity.tokens import Token, TokenPurpose
 from include.domains.security.guards import login as login_guard
+from include.domains.security.guards import request_rate_control
+from include.providers.base import RateLimitDecision
 from include.transport.multiplexing import Frame, FrameType
 
 pytestmark = pytest.mark.component
@@ -452,7 +455,7 @@ def test_missing_account_rejects_authentication_without_unbound_throttle_records
             },
             token,
         )
-        request_handler = auth.RequestCompleteMFAHandler()
+        request_handler = auth.RequestExchangeTokenHandler()
 
     assert request_handler.handle(handler).code == 401
     assert handler.response["code"] == 401
@@ -493,7 +496,7 @@ def test_login_context_mfa_consumes_backup_code_and_normal_token_has_no_context(
     assert "version" not in token.auth_context.model_dump()
     assert codes[0] not in token.raw
     complete = Handler({"method": "totp", "data": {"token": codes[0]}}, token)
-    assert auth.RequestCompleteMFAHandler().handle(complete).code == 200
+    assert auth.RequestExchangeTokenHandler().handle(complete).code == 200
     payload = jwt.decode(
         complete.response["data"]["token"], signing_key, algorithms=["HS256"]
     )
@@ -566,7 +569,7 @@ def test_auth_continuation_rejects_changed_or_legacy_context(
     complete = Handler(
         {"method": "totp", "data": {"token": pyotp.TOTP(secret).now()}}, token
     )
-    assert auth.RequestCompleteMFAHandler().handle(complete).code in {401, 403}
+    assert auth.RequestExchangeTokenHandler().handle(complete).code in {401, 403}
     assert "token" not in complete.response["data"]
 
 
@@ -727,7 +730,7 @@ def password_login():
 def complete_with_backup(handler, signing_key, backup_code):
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     complete = Handler({"method": "totp", "data": {"token": backup_code}}, token)
-    auth.RequestCompleteMFAHandler().handle(complete)
+    auth.RequestExchangeTokenHandler().handle(complete)
     return complete
 
 
@@ -1149,7 +1152,7 @@ def test_same_method_mfa_is_excluded_even_with_another_key(
             "Same-method MFA must be rejected before challenging"
         )
     )
-    assert auth.RequestCompleteMFAHandler().handle(rejected).code == 403
+    assert auth.RequestExchangeTokenHandler().handle(rejected).code == 403
     assert rejected.stream.messages == []
     assert complete_with_backup(login, signing_key, codes[0]).response["code"] == 200
 
@@ -1240,18 +1243,33 @@ def test_public_key_dialog_rejects_invalid_or_stale_proofs(
         handler = Handler(
             {"method": "publickey", "data": {"fingerprint": fingerprint}}, token
         )
-        request_handler = auth.RequestCompleteMFAHandler()
+        request_handler = auth.RequestExchangeTokenHandler()
     handler.stream = DialogStream(reply)
     if failure == "frame":
         handler.stream.response_frame_type = FrameType.CONCLUSION
     elif failure == "rate":
         charges = []
 
-        def deny(action, cost, ip, *, user_id, bypass):
-            charges.append((action, cost, ip, user_id, bypass))
-            return SimpleNamespace(allowed=False, retry_after_seconds=17)
+        def deny(pending, **kwargs):
+            charges.extend(pending)
+            return RateLimitDecision(False, retry_after_seconds=17)
 
-        monkeypatch.setattr(flows, "check_request_rate", deny)
+        policy = RequestRateControlPolicy(
+            mode="enforce", action_costs=(("login", 9), ("exchange_token", 7))
+        )
+        monkeypatch.setattr(
+            request_rate_control.RequestRateControlPolicy,
+            "from_config",
+            classmethod(lambda cls: policy),
+        )
+        monkeypatch.setattr(
+            request_rate_control,
+            "ProviderManager",
+            lambda: SimpleNamespace(rate_limit=SimpleNamespace(consume=deny)),
+        )
+        monkeypatch.setattr(
+            flows, "check_request_rate", request_rate_control.check_request_rate
+        )
     result = request_handler.handle(handler)
     expected = {
         "interaction": 400,
@@ -1277,10 +1295,8 @@ def test_public_key_dialog_rejects_invalid_or_stale_proofs(
             {"retry_after_seconds": 17} if failure == "rate" else {}
         )
     if failure == "rate":
-        action, cost = (
-            ("login", 5) if stage == AuthPurpose.LOGIN else ("complete_mfa", 2)
-        )
-        assert charges == [(action, cost, "127.0.0.1", None, False)]
+        cost = 9 if stage == AuthPurpose.LOGIN else 7
+        assert [(charge.scope, charge.cost) for charge in charges] == [("ip", cost)]
     with auth_sessions() as session:
         assert session.get(User, user_id).last_login is None
         if failure != "revoked":
@@ -1321,7 +1337,7 @@ def test_public_key_dialog_has_no_fixed_round_limit_and_waits_outside_transactio
             {"method": "publickey", "data": {"fingerprint": keys[0][1]}},
             Token.from_raw(login.response["data"]["token"], signing_key),
         )
-        request_handler = auth.RequestCompleteMFAHandler()
+        request_handler = auth.RequestExchangeTokenHandler()
     opened = []
 
     class TrackingSession(ORMSession):
@@ -1425,7 +1441,7 @@ def test_dialog_can_advance_interleaved_policy_alternatives(
         handler = Handler(
             {"method": "publickey", "data": {"fingerprint": fingerprint}}, token
         )
-        request_handler = auth.RequestCompleteMFAHandler()
+        request_handler = auth.RequestExchangeTokenHandler()
     handler.stream = DialogStream(reply)
 
     result = request_handler.handle(handler)
@@ -1502,7 +1518,8 @@ def test_continuation_tokens_reject_missing_context_and_cross_purpose_claims(
 
 
 @pytest.mark.parametrize(
-    "action", ["server_info", "login", "refresh_token", "complete_mfa", "get_user_info"]
+    "action",
+    ["server_info", "login", "refresh_token", "exchange_token", "get_user_info"],
 )
 def test_post_auth_router_rejects_every_other_action(
     login_context, auth_sessions, monkeypatch, action
@@ -1837,7 +1854,7 @@ def test_authentication_wait_has_no_idle_or_total_deadline(
             {"method": "publickey", "data": {"fingerprint": fingerprint}},
             Token.from_raw(login.response["data"]["token"], signing_key),
         )
-        request_handler = auth.RequestCompleteMFAHandler()
+        request_handler = auth.RequestExchangeTokenHandler()
     now = [time.time()]
     monkeypatch.setattr(flows, "time", SimpleNamespace(time=lambda: now[0]))
 
@@ -1900,7 +1917,7 @@ def test_mfa_rechecks_auth_expiry_after_wait_before_verifying(
         {"method": "publickey", "data": {"fingerprint": keys[0][1]}}, token
     )
     handler.stream = DialogStream(reply)
-    result = auth.RequestCompleteMFAHandler().handle(handler)
+    result = auth.RequestExchangeTokenHandler().handle(handler)
     assert result.code == 401
     assert result.user_id == user_id
     assert "token" not in handler.response["data"]
@@ -1922,7 +1939,7 @@ def test_mfa_rejects_expired_auth_token_without_consuming_backup_code(
     token.exp = time.time() - 1
     handler = Handler({"method": "totp", "data": {"token": codes[0]}}, token)
 
-    result = auth.RequestCompleteMFAHandler().handle(handler)
+    result = auth.RequestExchangeTokenHandler().handle(handler)
 
     assert result.code == 401
     assert result.target == "login"
@@ -1945,7 +1962,7 @@ def test_mfa_requires_an_explicit_valid_target(login_context, auth_sessions, tar
     )
     if target is None:
         del handler.data["target_purpose"]
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 400
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 400
     with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
 
@@ -1967,7 +1984,7 @@ def test_mfa_rejects_cross_purpose_exchanges(
     handler = Handler(
         {"method": "totp", "data": {"token": codes[0]}, "target_purpose": target}, token
     )
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 403
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 403
     with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
 
@@ -2012,7 +2029,7 @@ def test_escalation_uses_its_own_policy_and_new_expiry(
             }
 
         handler.stream = DialogStream(reply)
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 200
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 200
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     assert token.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
     assert handler.response["data"]["purpose"] == 6
@@ -2050,7 +2067,7 @@ def test_escalation_without_a_policy_needs_no_further_proof(
         {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 6},
         Token.new(user_id, 60, signing_key),
     )
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 200
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 200
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     assert token.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
     assert token.exp - token.iat == ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -2070,7 +2087,7 @@ def test_login_mfa_still_requires_method_and_data(
     for field in ("method", "data") if missing == "both" else (missing,):
         data.pop(field)
     handler = Handler(data, token)
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 400
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 400
     assert "token" not in handler.response["data"]
     with auth_sessions() as session:
         assert session.get(UserTotpCredential, user_id).verify(codes[0])
@@ -2141,7 +2158,7 @@ def test_registered_extension_method_uses_the_same_entrypoints(
             },
             token,
         )
-        result = auth.RequestCompleteMFAHandler().handle(handler)
+        result = auth.RequestExchangeTokenHandler().handle(handler)
     assert result.code == 200
     assert "extension-factor" in factors
     assert handler.response["data"]["purpose"] == (
@@ -2231,7 +2248,7 @@ def test_escalation_rechecks_source_and_account_after_wait(
         source,
     )
     handler.stream = DialogStream(reply)
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == (
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == (
         4003 if change == "inactive" else 401
     )
     assert "token" not in handler.response["data"]

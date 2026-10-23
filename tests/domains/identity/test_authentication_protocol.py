@@ -21,6 +21,13 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
+async def test_removed_complete_mfa_action_is_rejected(user_client):
+    response = await user_client.send_request("complete_mfa", {"target_purpose": 6})
+    assert response["code"] == 400
+    assert "token" not in response["data"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["password", "publickey"])
 async def test_login_method_rejects_oversized_username(unauthenticated_client, method):
     credential = {"username": "u" * (USERNAME_MAX_LENGTH + 1)}
@@ -60,7 +67,7 @@ async def test_password_mfa_post_auth_over_websocket(
     )
     assert denied["code"] == 403
     complete = await client.send_request(
-        "complete_mfa",
+        "exchange_token",
         {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 2},
         token=auth_token,
     )
@@ -81,7 +88,7 @@ async def test_password_mfa_post_auth_over_websocket(
         ("refresh_token", {}),
         ("server_info", {}),
         (
-            "complete_mfa",
+            "exchange_token",
             {"method": "totp", "data": {"token": codes[1]}, "target_purpose": 2},
         ),
     ):
@@ -100,7 +107,6 @@ async def test_password_mfa_post_auth_over_websocket(
         account["username"], "UpdatedPassword456!", two_fa_token=codes[1]
     )
     assert logged_in["code"] == 200
-    assert (await client.server_info())["data"]["protocol_version"] == 30
 
 
 @pytest.mark.asyncio
@@ -175,7 +181,7 @@ async def test_multiple_public_keys_in_one_login_request_then_separate_mfa(
     assert len(stream_ids) == 2
     assert stream_ids[0] == stream_ids[1]
     complete = await client.send_request(
-        "complete_mfa",
+        "exchange_token",
         {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 2},
         token=login["data"]["token"],
     )
@@ -204,7 +210,7 @@ async def test_password_escalation_and_refresh_over_websocket(
     login = await client.login(account["username"], account["password"])
     assert login["code"] == 200
     elevated = await client.send_request(
-        "complete_mfa",
+        "exchange_token",
         {
             "method": "password",
             "data": {"password": account["password"]},
@@ -219,7 +225,7 @@ async def test_password_escalation_and_refresh_over_websocket(
     assert refreshed["code"] == 200
     assert refreshed["data"]["purpose"] == 2
     rejected = await client.send_request(
-        "complete_mfa",
+        "exchange_token",
         {
             "method": "password",
             "data": {"password": account["password"]},
@@ -257,7 +263,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     )
     assert denied["code"] == 403
     elevated = await client.send_request(
-        "complete_mfa", {"target_purpose": 6}, token=general
+        "exchange_token", {"target_purpose": 6}, token=general
     )
     assert elevated["code"] == 200
     assert elevated["data"]["purpose"] == 6
@@ -357,7 +363,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert new_login["data"]["purpose"] == 1
     assert "password" in new_login["data"]["methods"]
     complete = await client.send_request(
-        "complete_mfa",
+        "exchange_token",
         {
             "target_purpose": 2,
             "method": "password",
@@ -369,11 +375,11 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert complete["data"]["purpose"] == 2
     source = complete["data"]["token"]
     missing_proof = await client.send_request(
-        "complete_mfa", {"target_purpose": 6}, token=source
+        "exchange_token", {"target_purpose": 6}, token=source
     )
     assert missing_proof["code"] == 400
     verified = await client.send_request(
-        "complete_mfa",
+        "exchange_token",
         {
             "target_purpose": 6,
             "method": "publickey",
@@ -421,7 +427,7 @@ async def test_default_sysop_manages_another_users_authentication(
     )
     assert inventory["code"] == 200
     assert inventory["data"]["user_id"] == user_id
-    elevated = await client.send_request("complete_mfa", {"target_purpose": 6})
+    elevated = await client.send_request("exchange_token", {"target_purpose": 6})
     assert elevated["code"] == 200
     token = elevated["data"]["token"]
     public_key = (

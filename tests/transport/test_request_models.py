@@ -19,7 +19,7 @@ from include.domains.documents.handlers.documents import (
 )
 from include.domains.documents.handlers.search import RequestSearchHandler
 from include.domains.identity.handlers.auth import (
-    RequestCompleteMFAHandler,
+    RequestExchangeTokenHandler,
     RequestLoginHandler,
 )
 from include.domains.identity.handlers.auth_management import (
@@ -191,8 +191,8 @@ def test_login_envelope_accepts_extension_method():
 
 
 @pytest.mark.parametrize("target_purpose", [2, 6])
-def test_complete_mfa_request_accepts_totp_token(target_purpose):
-    request = RequestCompleteMFAHandler.request_model.model_validate(
+def test_exchange_token_request_accepts_totp_token(target_purpose):
+    request = RequestExchangeTokenHandler.request_model.model_validate(
         {
             "method": "totp",
             "data": {"token": "123456"},
@@ -204,8 +204,8 @@ def test_complete_mfa_request_accepts_totp_token(target_purpose):
     assert request.target_purpose == target_purpose
 
 
-def test_complete_mfa_allows_proofless_escalation_envelope():
-    request = RequestCompleteMFAHandler.request_model.model_validate(
+def test_exchange_token_allows_proofless_escalation_envelope():
+    request = RequestExchangeTokenHandler.request_model.model_validate(
         {"target_purpose": 6}
     )
     assert request.method is REQUEST_UNSET
@@ -276,9 +276,9 @@ def test_public_key_request_label_is_bounded():
 
 
 @pytest.mark.parametrize("target_purpose", [0, 1, 3, 4, 8, True, False, "2", None, 2.5])
-def test_complete_mfa_request_rejects_invalid_target_purpose(target_purpose):
+def test_exchange_token_request_rejects_invalid_target_purpose(target_purpose):
     with pytest.raises(ValidationError) as exc_info:
-        RequestCompleteMFAHandler.request_model.model_validate(
+        RequestExchangeTokenHandler.request_model.model_validate(
             {
                 "method": "totp",
                 "data": {"token": "123456"},

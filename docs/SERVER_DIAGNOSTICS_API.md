@@ -29,7 +29,7 @@ response is returned before the diagnostics permission check.
   "server": {
     "server_name": "CFMS WebSocket Server",
     "core_version": "0.5.0.260812_alpha",
-    "protocol_version": 30,
+    "protocol_version": 31,
     "debug_configured": false
   },
   "runtime": {

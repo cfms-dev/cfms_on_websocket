@@ -39,7 +39,7 @@ class _LoginRequest(RequestDataModel):
     credential: dict[str, Any] = Field(repr=False)
 
 
-class _CompleteMFARequest(RequestDataModel):
+class _ExchangeTokenRequest(RequestDataModel):
     method: Omittable[NonEmptyString] = REQUEST_UNSET
     data: Omittable[dict[str, Any]] = Field(default=REQUEST_UNSET, repr=False)
     target_purpose: Literal[
@@ -150,8 +150,8 @@ class RequestLoginHandler(RequestHandler[_LoginRequest]):
         return authenticate_request(handler, attempt, handler.data["credential"])
 
 
-class RequestCompleteMFAHandler(RequestHandler[_CompleteMFARequest]):
-    request_model = _CompleteMFARequest
+class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
+    request_model = _ExchangeTokenRequest
     rate_limit_cost = 2
     requires_auth = True
     required_token_purpose = TokenPurpose.AUTH | TokenPurpose.GENERAL

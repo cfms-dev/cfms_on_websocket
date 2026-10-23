@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_CORE_ACTION_COSTS = {
     "login": 5,
-    "complete_mfa": 2,
+    "exchange_token": 2,
     "get_user_authentication": 2,
     "set_user_auth_policies": 5,
     "register_user_auth_public_key": 5,

@@ -551,7 +551,7 @@ def test_no_policy_escalation_issues_short_lived_token_without_proof(
         )
     source = Token.new(management.user_id, 60, management.signing_key)
     handler = Handler({"target_purpose": 6}, source)
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 200
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 200
     issued = Token.from_raw(handler.response["data"]["token"], management.signing_key)
     assert issued.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
     assert issued.exp - issued.iat == ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -582,7 +582,7 @@ def test_direct_escalation_rechecks_token_and_account(management, change, expect
         elif change == "deleted":
             session.delete(user)
     handler = Handler({"target_purpose": 6}, source)
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == expected
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == expected
     assert "token" not in handler.response["data"]
 
 
@@ -599,7 +599,7 @@ def test_direct_escalation_rejects_restricted_or_already_elevated_sources(
 ):
     source = Token.new(management.user_id, 60, management.signing_key, purpose)
     handler = Handler({"target_purpose": 6}, source)
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 403
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 403
 
 
 @pytest.mark.parametrize("missing", ["method", "data", "both"])
@@ -623,4 +623,4 @@ def test_configured_escalation_requires_method_and_data(management, missing):
     for field in ("method", "data") if missing == "both" else (missing,):
         data.pop(field)
     handler = Handler(data, Token.new(management.user_id, 60, management.signing_key))
-    assert auth.RequestCompleteMFAHandler().handle(handler).code == 400
+    assert auth.RequestExchangeTokenHandler().handle(handler).code == 400

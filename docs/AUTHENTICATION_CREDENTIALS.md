@@ -71,6 +71,11 @@ selected password. Repeated public-key steps cannot reuse the same key material,
 even through separate evidence events or different registration IDs. The ordered
 chain model follows [OpenSSH AuthenticationMethods](https://man.openbsd.org/sshd_config#AuthenticationMethods).
 
+Policy chains define which credential proofs are required and their order. Each
+provider owns the dialog that collects those proofs. The public-key provider
+supports multiple steps in one request, using a fresh challenge for each distinct
+key; password, TOTP and OIDC providers each verify one credential per request.
+
 Use `replace_auth_policy(session, user, purpose, chains,
 expected_revision=...)` from trusted domain code. Revision zero creates a missing
 policy; existing policies require their current revision. Concurrent changes raise
@@ -110,9 +115,15 @@ removal never silently shortens a chain or turns required MFA off.
 The password-change and self-service 2FA-disable endpoints retain their dedicated
 password checks; escalation issuance does not replace those checks.
 
-## Authentication attempts and token exchange (protocol 30)
+## Authentication attempts and token exchange (protocol 31)
 
-Each login or `complete_mfa` Request uses exactly one method for its entire
+Protocol 31 renames `complete_mfa` to `exchange_token` and removes the old action.
+Clients must use the new action for both login MFA and escalation. Deployments
+with an `action_costs.complete_mfa` override must rename it to
+`action_costs.exchange_token`. Policy storage and token formats are unchanged;
+this rename does not require signing-key rotation.
+
+Each login or `exchange_token` Request uses exactly one method for its entire
 lifetime. Method changes in PROCESS responses are rejected with 400. Password
 login verifies the initial Request and sends no PROCESS messages. Repeated
 password steps that one proof cannot satisfy fail with 403. TOTP likewise
@@ -147,7 +158,7 @@ base64). Extensions own their `credential` payload shape and identity resolution
 TOTP cannot initiate a login. MFA/escalation always fixes the account to the
 verified source token's subject; method payloads cannot select another account.
 
-`complete_mfa` requires `target_purpose` as an integer, either 2 or 6:
+`exchange_token` requires `target_purpose` as an integer, either 2 or 6:
 
 ```json
 {"method":"totp","data":{"token":"123456"},"target_purpose":2}
@@ -197,7 +208,7 @@ interactions as 400; invalid proofs as 401.
 Escalation has no preceding authentication step in the current Request. It can
 use password, public key, TOTP, or an extension method explicitly authorized by
 the independent `escalation` policy. With a missing/empty escalation policy,
-submit `{"target_purpose":6}` to `complete_mfa` using a valid GENERAL token;
+submit `{"target_purpose":6}` to `exchange_token` using a valid GENERAL token;
 `method` and `data` may be omitted and no provider is invoked. A configured
 nonempty policy requires both fields and fresh verification; missing fields
 return 400. Login MFA always requires both fields. Direct escalation rechecks
@@ -247,7 +258,7 @@ rotation commit atomically, so concurrent uses have one winner. Success returns
 Ordinary authenticated self-service and administrator changes keep their existing
 checks. `last_login` changes only when a completed login issues GENERAL.
 
-Protocol 30 requires clients to submit `target_purpose` and handle the actual
+Protocol 31 requires clients to submit `target_purpose` and handle the actual
 issued purpose. No database or archive migration is needed.
 `get_2fa_status.enabled` still reflects whether the
 MFA policy is nonempty; activation of a TOTP credential alone does not enable MFA.
@@ -294,7 +305,7 @@ repeat the rotation before serving requests after an incompatible restore.
 
 ## User authentication management
 
-These authenticated protocol-30 WebSocket actions accept optional `user_id`
+These authenticated protocol-31 WebSocket actions accept optional `user_id`
 (an account UUID), defaulting to the caller. Managing another account requires
 `manage_user_authentication`; neither `manage_2fa` nor escalation alone grants
 that permission. Authorization is checked before reporting target existence.

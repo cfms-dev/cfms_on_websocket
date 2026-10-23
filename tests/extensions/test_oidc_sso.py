@@ -802,7 +802,7 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=None)),
         conclude_request=lambda **response: responses.append(response),
     )
-    assert auth_handlers.RequestCompleteMFAHandler().handle(complete).code == 200
+    assert auth_handlers.RequestExchangeTokenHandler().handle(complete).code == 200
     assert (
         Token.from_raw(responses[0]["data"]["token"], signing_key).purpose
         == TokenPurpose.GENERAL

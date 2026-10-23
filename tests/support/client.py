@@ -396,7 +396,7 @@ class CFMSTestClient:
 
         while frame.frame_type == FrameType.PROCESS:
             if (
-                action not in {"login", "complete_mfa"}
+                action not in {"login", "exchange_token"}
                 or not isinstance(payload, dict)
                 or payload.get("action") not in {"auth_continue", "auth_challenge"}
                 or auth_responder is None
@@ -498,7 +498,7 @@ class CFMSTestClient:
 
         if response.get("code") == 202 and two_fa_token:
             response = await self.send_request(
-                "complete_mfa",
+                "exchange_token",
                 {
                     "method": "totp",
                     "data": {"token": two_fa_token},

@@ -283,7 +283,7 @@ class AuthenticationAttempt:
                 400, "Invalid authentication interaction or method"
             )
         rate = check_request_rate(
-            "login" if self.purpose == AuthPurpose.LOGIN else "complete_mfa",
+            "login" if self.purpose == AuthPurpose.LOGIN else "exchange_token",
             self.rate_limit_cost,
             self.ip,
             user_id=None,

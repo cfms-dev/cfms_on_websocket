@@ -60,7 +60,7 @@ from include.domains.documents.handlers.revisions import (
 )
 from include.domains.documents.handlers.search import RequestSearchHandler
 from include.domains.identity.handlers.auth import (
-    RequestCompleteMFAHandler,
+    RequestExchangeTokenHandler,
     RequestLoginHandler,
     RequestRefreshTokenHandler,
 )
@@ -151,7 +151,7 @@ logger = log.bind(name="connection_handler")
 available_functions: dict[str, type[RequestHandler]] = {
     # Authentication
     "login": RequestLoginHandler,
-    "complete_mfa": RequestCompleteMFAHandler,
+    "exchange_token": RequestExchangeTokenHandler,
     "refresh_token": RequestRefreshTokenHandler,
     "get_user_authentication": RequestGetUserAuthenticationHandler,
     "set_user_auth_policies": RequestSetUserAuthPoliciesHandler,
@@ -255,7 +255,7 @@ available_functions: dict[str, type[RequestHandler]] = {
 whitelisted_functions = [
     "server_info",
     "login",
-    "complete_mfa",
+    "exchange_token",
     "refresh_token",
     "validate_2fa",
     "upload_file",

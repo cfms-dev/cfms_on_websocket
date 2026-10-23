@@ -590,7 +590,7 @@ Configurations from older releases can be migrated from `[sso.oidc]` to
 `[extensions.oidc_sso]` with `maintain config sync-template`. If both tables are
 present, values already stored under `[extensions.oidc_sso]` take precedence.
 
-## Authentication methods (protocol 30)
+## Authentication methods (protocol 28)
 
 `ext_register_auth_methods() -> list["BaseAuthMethodProvider"]` registers stateless
 provider instances before request serving. Each declares `method_id`, `category`,

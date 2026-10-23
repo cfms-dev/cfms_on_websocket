@@ -24,9 +24,10 @@ information include `user_id` as a UUID string.
 A password login submits `data.method = "password"` and
 `data.credential = {"username": "alice", "password": "..."}`. If the response
 is `202`, its `data.token` is an `AUTH` token and `data.methods` lists the
-available second factors. Submit that token to `complete_mfa` with
-`data = {"method": "totp", "data": {"token": "123456"}}`, a fresh nonce and
-timestamp. A successful response supplies the general session token.
+available second factors. Submit that token to `exchange_token` with
+`data = {"method": "totp", "data": {"token": "123456"}, "target_purpose": 2}`,
+a fresh nonce and timestamp. A successful response supplies the general session
+token.
 
 Credentials, permissions, group memberships, keyring ownership, blocks, document
 metadata, download task attribution and scheduling attribution reference UUIDs.
