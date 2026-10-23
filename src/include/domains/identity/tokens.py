@@ -33,6 +33,8 @@ class TokenPurpose(IntFlag):
     GENERAL = 4  # Used for general purposes (e.g., API access, etc.)
     ESCALATION = 8  # Token with superuser privileges
 
+    GENERAL_WITH_ESCALATION = GENERAL | ESCALATION
+
 
 @dataclass
 class Token:

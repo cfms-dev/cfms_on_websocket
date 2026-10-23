@@ -574,6 +574,31 @@ def test_correct_password_can_be_disallowed_and_totp_can_be_escalation_only(
     assert "token" not in handler.response["data"]
 
 
+def test_unauthorized_totp_fails_without_consuming_backup_code(
+    login_context, auth_sessions
+):
+    user_id, _, codes, _ = login_context
+    with auth_sessions.begin() as session:
+        password = session.get(UserPasswordCredential, user_id)
+        replace_auth_policy(
+            session,
+            session.get(User, user_id),
+            AuthPurpose.ESCALATION,
+            [[{"method": "password", "credential_ids": [password.credential_id]}]],
+            expected_revision=0,
+        )
+    handler = Handler({})
+    attempt = flows.AuthenticationAttempt(
+        "totp", AuthPurpose.ESCALATION, "127.0.0.1", 2, user_id=user_id
+    )
+    result = auth.authenticate_request(handler, attempt, {"token": codes[0]})
+    assert result.code == 401
+    assert handler.response["code"] == 401
+    assert handler.response["data"] == {}
+    with auth_sessions() as session:
+        assert session.get(UserTotpCredential, user_id).verify(codes[0])
+
+
 @pytest.mark.parametrize("change", ["policy", "delete", "pending", "legacy"])
 def test_auth_continuation_rejects_changed_or_legacy_context(
     login_context, auth_sessions, change
@@ -1060,6 +1085,125 @@ def register_key(session, user_id):
     session.add(key)
     session.flush()
     return key.id, key.fingerprint.hex(), private
+
+
+@pytest.mark.parametrize("method", ["password", "publickey"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing_user",
+        "missing_credential",
+        "empty_policy",
+        "other_method",
+        "invalid_proof",
+    ],
+)
+def test_login_failures_do_not_disclose_account_or_method_availability(
+    auth_sessions, monkeypatch, method, case
+):
+    monkeypatch.setattr(auth, "Session", auth_sessions)
+    for module in (password_provider, publickey):
+        monkeypatch.setattr(module, "DatabaseSession", auth_sessions)
+    monkeypatch.setattr(login_guard, "Session", auth_sessions)
+    monkeypatch.setattr(
+        login_guard.AuthThrottlePolicy,
+        "from_config",
+        classmethod(lambda cls: login_guard.AuthThrottlePolicy()),
+    )
+    monkeypatch.setattr(
+        login_guard.LoginGuard,
+        "evaluate",
+        lambda *args: login_guard.ThrottleDecision(True),
+    )
+    monkeypatch.setattr(auth, "get_client_ip", lambda ws: "127.0.0.1")
+    monkeypatch.setattr(
+        flows,
+        "check_request_rate",
+        lambda *args, **kwargs: SimpleNamespace(allowed=True),
+    )
+    fingerprint = "ab" * 32
+    user_id = None
+    with auth_sessions.begin() as session:
+        if case != "missing_user":
+            user = User(username="login")
+            session.add(user)
+            session.flush()
+            user_id = user.id
+            if case != "missing_credential":
+                set_password(session, user, "Password123!")
+                session.flush()
+                password_id = session.get(UserPasswordCredential, user.id).credential_id
+                key_id, fingerprint, _ = register_key(session, user.id)
+                if case != "empty_policy":
+                    policy_method = (
+                        ("publickey" if method == "password" else "password")
+                        if case == "other_method"
+                        else method
+                    )
+                    replace_auth_policy(
+                        session,
+                        user,
+                        AuthPurpose.LOGIN,
+                        [
+                            [
+                                {
+                                    "method": policy_method,
+                                    "credential_ids": [
+                                        password_id
+                                        if policy_method == "password"
+                                        else key_id
+                                    ],
+                                }
+                            ]
+                        ],
+                        expected_revision=0,
+                    )
+    credential = (
+        {"password": "wrong-password" if case == "invalid_proof" else "Password123!"}
+        if method == "password"
+        else {"fingerprint": fingerprint}
+    )
+    handler = Handler(
+        {"method": method, "credential": {"username": "login", **credential}}
+    )
+    handler.stream = DialogStream(
+        lambda message: {
+            "method": "publickey",
+            "data": {
+                "fingerprint": fingerprint,
+                "signature": base64.b64encode(b"invalid").decode(),
+            },
+        }
+    )
+    result = auth.RequestLoginHandler().handle(
+        handler, auth.RequestLoginHandler.request_model.model_validate(handler.data)
+    )
+    assert result.code == 401
+    assert result.user_id is None
+    assert handler.response["code"] == 401
+    assert handler.response["data"] == {}
+    assert len(handler.stream.messages) == int(
+        method == "publickey" and case == "invalid_proof"
+    )
+    with auth_sessions() as session:
+        accounts = session.scalars(select(AccountThrottle)).all()
+        pairs = session.scalars(select(LoginThrottle)).all()
+        traffic = session.scalars(select(TrafficThrottle)).all()
+        assert [
+            (row.username, row.factor, row.failed_attempts) for row in accounts
+        ] == [("login", method, 1)]
+        assert [
+            (row.username, row.ip_address, row.failed_attempts) for row in pairs
+        ] == [("login", "127.0.0.1", 1)]
+        assert [(row.ip_address, row.failed_attempts) for row in traffic] == [
+            ("127.0.0.1", 1)
+        ]
+        if user_id is not None:
+            assert session.get(User, user_id).last_login is None
+            assert all(
+                key.last_used_time is None
+                for key in session.scalars(select(UserAuthPublicKey))
+            )
 
 
 @pytest.mark.parametrize("stage", ["login", "mfa"])

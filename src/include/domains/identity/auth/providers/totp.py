@@ -46,8 +46,11 @@ class TOTPAuthProvider(BaseAuthMethodProvider):
                 raise AuthenticationFailure(401, "Invalid credentials")
             attempt.bind(session, user)
             attempt.check_throttle(self)
-            attempt.permitted_credentials(session, user)
-            verified = self.verify(session, user, {"token": credential.token}, {})
+            verified = (
+                self.verify(session, user, {"token": credential.token}, {})
+                if attempt.permitted_credentials(session, user)
+                else AuthVerificationResult(success=False)
+            )
             progress = attempt.accept(session, user, self, verified)
             if not progress.satisfied and (
                 progress.purpose is None or progress.purpose == attempt.purpose

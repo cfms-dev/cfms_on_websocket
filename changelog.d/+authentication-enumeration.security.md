@@ -1,0 +1,1 @@
+Unify authentication failures for missing accounts, unauthorized methods and invalid credentials, including failure throttling and dummy password verification, to prevent account enumeration through method permission errors.

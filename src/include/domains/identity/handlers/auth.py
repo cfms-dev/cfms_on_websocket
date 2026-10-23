@@ -42,9 +42,7 @@ class _LoginRequest(RequestDataModel):
 class _ExchangeTokenRequest(RequestDataModel):
     method: Omittable[NonEmptyString] = REQUEST_UNSET
     data: Omittable[dict[str, Any]] = Field(default=REQUEST_UNSET, repr=False)
-    target_purpose: Literal[
-        2, 6
-    ]  # TokenPurpose.GENERAL or TokenPurpose.GENERAL | TokenPurpose.ESCALATION
+    target_purpose: Literal[TokenPurpose.GENERAL, TokenPurpose.GENERAL_WITH_ESCALATION]
 
 
 def authenticate_request(

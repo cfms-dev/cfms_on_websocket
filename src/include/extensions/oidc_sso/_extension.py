@@ -362,19 +362,22 @@ class OIDCAuthProvider(BaseAuthMethodProvider):
             with Session() as session:
                 user = _resolve_or_create_user(session, cfg, claims)
                 if user is None:
-                    raise AuthenticationFailure(401, "SSO user is not allowed")
+                    raise AuthenticationFailure(401, "Invalid credentials")
                 attempt.bind(session, user)
                 attempt.check_throttle(self)
-                attempt.permitted_credentials(session, user)
-                verified = self.verify(
-                    session,
-                    user,
-                    {},
-                    {
-                        "verified_identity": VerifiedOidcIdentity(
-                            claims["iss"], claims["sub"]
-                        )
-                    },
+                verified = (
+                    self.verify(
+                        session,
+                        user,
+                        {},
+                        {
+                            "verified_identity": VerifiedOidcIdentity(
+                                claims["iss"], claims["sub"]
+                            )
+                        },
+                    )
+                    if attempt.permitted_credentials(session, user)
+                    else AuthVerificationResult(success=False)
                 )
                 progress = attempt.accept(session, user, self, verified)
                 if not progress.satisfied and progress.purpose == AuthPurpose.LOGIN:
@@ -387,7 +390,7 @@ class OIDCAuthProvider(BaseAuthMethodProvider):
             jwt.PyJWTError,
             IntegrityError,
         ) as exc:
-            raise AuthenticationFailure(401, "OIDC authentication failed") from exc
+            raise AuthenticationFailure(401, "Invalid credentials") from exc
 
     def list_credentials(self, session, user: User) -> list[RegisteredCredential]:
         issuer = _get_oidc_config()["issuer"]

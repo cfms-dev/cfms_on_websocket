@@ -439,6 +439,38 @@ def test_oidc_callback_issues_local_token_and_commits_login(
 
 
 @pytest.mark.component
+@pytest.mark.parametrize("case", ["unlinked", "unauthorized", "invalid_proof"])
+def test_oidc_login_failures_do_not_disclose_method_availability(
+    oidc_callback_context, case
+):
+    context = oidc_callback_context
+    if case == "unlinked":
+        context.claims["sub"] = "unlinked-subject"
+    elif case == "unauthorized":
+        with context.sessions.begin() as session:
+            user = session.scalar(select(User).where(User.username == "alice"))
+            replace_auth_policy(
+                session, user, AuthPurpose.LOGIN, [], expected_revision=1
+            )
+    else:
+        context.signing_key = context.wrong_signing_key
+    connection = _Connection({"method": "oidc", "credential": context.request_data})
+    result = RequestLoginHandler().handle(
+        connection, RequestLoginHandler.request_model.model_validate(connection.data)
+    )
+    assert result.code == 401
+    assert result.user_id is None
+    assert connection.response["code"] == 401
+    assert connection.response["data"] == {}
+    with context.sessions() as session:
+        assert (
+            session.scalar(select(User).where(User.username == "alice")).last_login
+            == 10.0
+        )
+        assert len(session.scalars(select(User)).all()) == 1
+
+
+@pytest.mark.component
 @pytest.mark.parametrize("state_kind", ["missing", "expired"])
 def test_oidc_callback_rejects_unavailable_state_before_token_exchange(
     oidc_callback_context, state_kind

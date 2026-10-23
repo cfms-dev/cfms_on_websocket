@@ -212,20 +212,12 @@ class AuthenticationAttempt:
             progress.purpose is not None and progress.purpose != self.purpose
         ):
             raise AuthenticationFailure(403, "Authentication stage is not pending")
-        permitted = {
+        return {
             cid
             for step in progress.next_steps
             if step.method == self.method
             for cid in step.credential_ids
         }
-        if not permitted:
-            raise AuthenticationFailure(
-                401
-                if self.purpose == AuthPurpose.LOGIN and not self.context.evidence
-                else 403,
-                "Authentication method is not permitted",
-            )
-        return permitted
 
     def accept(
         self,
@@ -235,11 +227,10 @@ class AuthenticationAttempt:
         verified: AuthVerificationResult,
     ) -> AuthPolicyDecision:
         username = user.username
-        if not verified.success:
-            LoginGuard.report_failure(self.ip, username, provider.throttle_factor)
-            raise AuthenticationFailure(401, "Invalid credentials")
-        permitted = self.permitted_credentials(session, user)
-        if verified.credential_id not in permitted:
+        if (
+            not verified.success
+            or verified.credential_id not in self.permitted_credentials(session, user)
+        ):
             LoginGuard.report_failure(self.ip, username, provider.throttle_factor)
             raise AuthenticationFailure(401, "Invalid credentials")
         if user.status != UserStatus.ACTIVE:

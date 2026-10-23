@@ -78,8 +78,13 @@ class PasswordAuthProvider(BaseAuthMethodProvider):
             attempt.bind(session, user)
             if attempt.purpose != AuthPurpose.LOGIN:
                 attempt.check_throttle(self)
-            attempt.permitted_credentials(session, user)
-            verified = self.verify(session, user, {"password": credential.password}, {})
+            if attempt.permitted_credentials(session, user):
+                verified = self.verify(
+                    session, user, {"password": credential.password}, {}
+                )
+            else:
+                verify_password_or_dummy(None, credential.password)
+                verified = AuthVerificationResult(success=False)
             progress = attempt.accept(session, user, self, verified)
             if not progress.satisfied and (
                 progress.purpose is None or progress.purpose == attempt.purpose

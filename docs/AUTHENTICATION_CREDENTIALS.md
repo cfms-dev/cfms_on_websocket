@@ -30,6 +30,14 @@ verification effects. A provider returns only after completing its selected
 method's policy. Shared finalization then issues the appropriate token.
 Provider instances are shared and must never retain request-local state.
 
+`permitted_credentials` returns an empty set when the selected method has no
+authorized credentials. Providers reject this with the same 401 `Invalid
+credentials` response and empty data as a missing account or invalid proof,
+and record an authentication failure. They must not expose method availability
+through a separate permission error. Password login performs dummy password
+verification for missing accounts or unauthorized methods. Public-key login
+sends no challenge without an authorized matching key.
+
 Credential inventory exposes IDs, method, activity and display information,
 never credential secrets. Verification success names the actual credential.
 Challenge state belongs only to the current request and is never trusted from
