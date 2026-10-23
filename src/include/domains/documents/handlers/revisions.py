@@ -55,7 +55,7 @@ class _SetDocumentRevisionRequest(RequestDataModel):
     revision_id: RevisionID
 
 
-class RequestListRevisionsHandler(RequestHandler):
+class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
     request_model = _ListRevisionsRequest
 
     requires_auth = True  # when True, handler.user_id is guaranteed to be not None
@@ -141,7 +141,7 @@ class RequestListRevisionsHandler(RequestHandler):
         return Result(code=200, target=document_id, user_id=handler.user_id)
 
 
-class RequestGetRevisionHandler(RequestHandler):
+class RequestGetRevisionHandler(RequestHandler[_RevisionIDRequest]):
     request_model = _RevisionIDRequest
 
     requires_auth = True  # when True, handler.user_id is guaranteed to be not None
@@ -205,7 +205,7 @@ class RequestGetRevisionHandler(RequestHandler):
         )
 
 
-class RequestSetDocumentRevisionHandler(RequestHandler):
+class RequestSetDocumentRevisionHandler(RequestHandler[_SetDocumentRevisionRequest]):
     request_model = _SetDocumentRevisionRequest
 
     requires_auth = True  # when True, handler.user_id is guaranteed to be not None
@@ -243,7 +243,7 @@ class RequestSetDocumentRevisionHandler(RequestHandler):
         return Result(code=200, target=document_id, user_id=handler.user_id)
 
 
-class RequestDeleteRevisionHandler(RequestHandler):
+class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
     request_model = _RevisionIDRequest
 
     requires_auth = True

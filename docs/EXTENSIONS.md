@@ -225,6 +225,10 @@ registered class must inherit `RequestHandler` and define `request_model` as a
 fails fast when an extension still exposes a legacy `schema` dictionary; there
 is no JSON Schema fallback for handler request data.
 
+Use `RequestHandler[YourRequestModel]` to bind the handler's model type for static
+analysis. The type argument must match `request_model`; it does not replace the
+runtime declaration or validation.
+
 Extension handler mappings are applied after the core mapping and may replace an
 action with the same name. `ext_unregister_handlers()` is applied afterward and
 may remove either a core or extension action. Registration conflicts between
@@ -248,7 +252,7 @@ class EchoRequest(RequestDataModel):
     label: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
-class EchoHandler(RequestHandler):
+class EchoHandler(RequestHandler[EchoRequest]):
     request_model = EchoRequest
 
     def handle(self, handler):

@@ -83,7 +83,7 @@ def _conclude_throttled(
     return Result(code=429, target=target, user_id=user_id)
 
 
-class RequestSetup2FAHandler(RequestHandler):
+class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
     """
     Handler for setting up two-factor authentication.
 
@@ -139,7 +139,7 @@ class RequestSetup2FAHandler(RequestHandler):
             )
 
 
-class RequestValidate2FAHandler(RequestHandler):
+class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
     """
     Handler for validating and enabling two-factor authentication.
 
@@ -209,7 +209,7 @@ class RequestValidate2FAHandler(RequestHandler):
         )
 
 
-class RequestDisable2FAHandler(RequestHandler):
+class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
     """
     Handler for canceling two-factor authentication.
 
@@ -317,7 +317,7 @@ class RequestDisable2FAHandler(RequestHandler):
         )
 
 
-class RequestCancel2FASetupHandler(RequestHandler):
+class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
     """
     Handler for canceling two-factor authentication setup.
 
@@ -355,7 +355,7 @@ class RequestCancel2FASetupHandler(RequestHandler):
             )
 
 
-class RequestGet2FAStatusHandler(RequestHandler):
+class RequestGet2FAStatusHandler(RequestHandler[_Get2FAStatusRequest]):
     """
     Handler for getting two-factor authentication status.
 

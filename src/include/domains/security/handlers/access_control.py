@@ -182,7 +182,7 @@ def _publish_guard_event(payload: dict[str, Any]) -> None:
         )
 
 
-class RequestListBannedSubnetsHandler(RequestHandler):
+class RequestListBannedSubnetsHandler(RequestHandler[_ListBannedSubnetsRequest]):
     request_model = _ListBannedSubnetsRequest
     requires_auth = True
     rate_limit_cost = 2
@@ -263,7 +263,7 @@ class RequestListBannedSubnetsHandler(RequestHandler):
         )
 
 
-class RequestCreateBannedSubnetHandler(RequestHandler):
+class RequestCreateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationRequest]):
     request_model = _BannedSubnetMutationRequest
     requires_auth = True
     rate_limit_cost = 5
@@ -336,7 +336,7 @@ class RequestCreateBannedSubnetHandler(RequestHandler):
         )
 
 
-class RequestUpdateBannedSubnetHandler(RequestHandler):
+class RequestUpdateBannedSubnetHandler(RequestHandler[_BannedSubnetMutationRequest]):
     request_model = _BannedSubnetMutationRequest
     requires_auth = True
     rate_limit_cost = 5
@@ -417,7 +417,7 @@ class RequestUpdateBannedSubnetHandler(RequestHandler):
         )
 
 
-class RequestDeleteBannedSubnetHandler(RequestHandler):
+class RequestDeleteBannedSubnetHandler(RequestHandler[_DeleteBannedSubnetRequest]):
     request_model = _DeleteBannedSubnetRequest
     requires_auth = True
     rate_limit_cost = 5
@@ -499,7 +499,7 @@ def _after_lockout_cursor(columns, last: list[Any]):
     )
 
 
-class RequestListAuthLockoutsHandler(RequestHandler):
+class RequestListAuthLockoutsHandler(RequestHandler[_ListAuthLockoutsRequest]):
     request_model = _ListAuthLockoutsRequest
     requires_auth = True
     rate_limit_cost = 3
@@ -603,7 +603,7 @@ def _selector_record_and_key(selector: dict[str, str]):
     return LoginThrottle, identity, LoginThrottle.make_cache_key(*identity)
 
 
-class RequestUnlockAuthLockoutsHandler(RequestHandler):
+class RequestUnlockAuthLockoutsHandler(RequestHandler[_UnlockAuthLockoutsRequest]):
     request_model = _UnlockAuthLockoutsRequest
     requires_auth = True
     rate_limit_cost = 10

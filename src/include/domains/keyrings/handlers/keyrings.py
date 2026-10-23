@@ -67,7 +67,7 @@ class _ListUserKeysRequest(RequestDataModel):
     count: Omittable[PaginationPageSize] = REQUEST_UNSET
 
 
-class RequestUploadUserKeyHandler(RequestHandler):
+class RequestUploadUserKeyHandler(RequestHandler[_UploadUserKeyRequest]):
     """
     Upload a new key into the user's keyring.
 
@@ -142,7 +142,7 @@ class RequestUploadUserKeyHandler(RequestHandler):
             )
 
 
-class RequestGetUserKeyHandler(RequestHandler):
+class RequestGetUserKeyHandler(RequestHandler[_KeyIDRequest]):
     """
     Retrieve a single key from the keyring by its ``key_id``.
 
@@ -200,7 +200,7 @@ class RequestGetUserKeyHandler(RequestHandler):
             )
 
 
-class RequestDeleteUserKeyHandler(RequestHandler):
+class RequestDeleteUserKeyHandler(RequestHandler[_KeyIDRequest]):
     """
     Delete a key from the keyring by its ``key_id``.
 
@@ -256,7 +256,7 @@ class RequestDeleteUserKeyHandler(RequestHandler):
             )
 
 
-class RequestSetPreferenceDEKHandler(RequestHandler):
+class RequestSetPreferenceDEKHandler(RequestHandler[_KeyIDRequest]):
     """
     Designate a key as the preference data encryption key for the user.
 
@@ -308,7 +308,7 @@ class RequestSetPreferenceDEKHandler(RequestHandler):
             )
 
 
-class RequestListUserKeysHandler(RequestHandler):
+class RequestListUserKeysHandler(RequestHandler[_ListUserKeysRequest]):
     """
     List all keys in the authenticated user's keyring (metadata only, no key_content).
 

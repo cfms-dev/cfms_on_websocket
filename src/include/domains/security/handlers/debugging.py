@@ -12,7 +12,7 @@ class _DebugRequest(RequestDataModel):
     model_config = ConfigDict(extra="allow")
 
 
-class RequestThrowExceptionHandler(RequestHandler):
+class RequestThrowExceptionHandler(RequestHandler[_DebugRequest]):
     """A request handler that always throws an exception for testing purposes."""
 
     request_model = _DebugRequest

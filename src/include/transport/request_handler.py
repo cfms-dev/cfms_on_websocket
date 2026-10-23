@@ -53,7 +53,7 @@ class EmptyRequestDataModel(RequestDataModel):
     pass
 
 
-class RequestHandler(ABC):
+class RequestHandler[RequestT: RequestDataModel](ABC):
     """
     Abstract base class for handling requests.
     Attributes:
@@ -69,7 +69,7 @@ class RequestHandler(ABC):
                     The result is submitted as audit information.
     """
 
-    request_model: ClassVar[type[RequestDataModel]]
+    request_model: type[RequestT]
 
     # Indicates whether the request handler requires authentication.
     # If True, the router will enforce that a valid token is present in the request.

@@ -207,7 +207,7 @@ def _serialize_user_block(entry: UserBlockEntry) -> dict:
     }
 
 
-class RequestListUsersHandler(RequestHandler):
+class RequestListUsersHandler(RequestHandler[OffsetPaginationRequest]):
     request_model = OffsetPaginationRequest
 
     requires_auth = True
@@ -271,7 +271,7 @@ class RequestListUsersHandler(RequestHandler):
             )
 
 
-class RequestCreateUserHandler(RequestHandler):
+class RequestCreateUserHandler(RequestHandler[_CreateUserRequest]):
     request_model = _CreateUserRequest
 
     requires_auth = True
@@ -344,7 +344,7 @@ class RequestCreateUserHandler(RequestHandler):
         )
 
 
-class RequestDeleteUserHandler(RequestHandler):
+class RequestDeleteUserHandler(RequestHandler[_UserIDRequest]):
     request_model = _UserIDRequest
 
     requires_auth = True
@@ -438,7 +438,7 @@ class RequestDeleteUserHandler(RequestHandler):
         )
 
 
-class RequestRenameUserHandler(RequestHandler):
+class RequestRenameUserHandler(RequestHandler[_RenameUserRequest]):
     request_model = _RenameUserRequest
     requires_auth = True
     rate_limit_cost = 5
@@ -510,7 +510,7 @@ class RequestRenameUserHandler(RequestHandler):
         )
 
 
-class RequestBlockUserHandler(RequestHandler):
+class RequestBlockUserHandler(RequestHandler[_BlockUserRequest]):
     """
     Handler for action `block_user`.
 
@@ -612,7 +612,7 @@ class RequestBlockUserHandler(RequestHandler):
         )
 
 
-class RequestUnblockUserHandler(RequestHandler):
+class RequestUnblockUserHandler(RequestHandler[_BlockIDRequest]):
     """
     Handler for action `unblock_user`.
     """
@@ -660,7 +660,7 @@ class RequestUnblockUserHandler(RequestHandler):
         )
 
 
-class RequestUpdateUserBlockHandler(RequestHandler):
+class RequestUpdateUserBlockHandler(RequestHandler[_UpdateUserBlockRequest]):
     request_model = _UpdateUserBlockRequest
     requires_auth = True
     rate_limit_cost = 3
@@ -715,7 +715,7 @@ class RequestUpdateUserBlockHandler(RequestHandler):
         )
 
 
-class RequestListUserBlocksHandler(RequestHandler):
+class RequestListUserBlocksHandler(RequestHandler[_ListUserBlocksRequest]):
     request_model = _ListUserBlocksRequest
 
     requires_auth = True
@@ -814,7 +814,7 @@ class RequestListUserBlocksHandler(RequestHandler):
         )
 
 
-class RequestGetUserInfoHandler(RequestHandler):
+class RequestGetUserInfoHandler(RequestHandler[_GetUserInfoRequest]):
     request_model = _GetUserInfoRequest
 
     requires_auth = True
@@ -890,7 +890,7 @@ class RequestGetUserInfoHandler(RequestHandler):
             )
 
 
-class RequestGetUserAvatarHandler(RequestHandler):
+class RequestGetUserAvatarHandler(RequestHandler[_UserIDRequest]):
     """
     Handler for action `get_user_avatar`.
 
@@ -968,7 +968,7 @@ class RequestGetUserAvatarHandler(RequestHandler):
                 )
 
 
-class RequestSetUserAvatarHandler(RequestHandler):
+class RequestSetUserAvatarHandler(RequestHandler[_SetUserAvatarRequest]):
     """
     Handler for action `set_user_avatar`.
 
@@ -1075,7 +1075,7 @@ class RequestSetUserAvatarHandler(RequestHandler):
         )
 
 
-class RequestChangeUserGroupsHandler(RequestHandler):
+class RequestChangeUserGroupsHandler(RequestHandler[_ChangeUserGroupsRequest]):
     request_model = _ChangeUserGroupsRequest
 
     requires_auth = True
@@ -1137,7 +1137,9 @@ class RequestChangeUserGroupsHandler(RequestHandler):
         )
 
 
-class RequestChangeUserPermissionsHandler(RequestHandler):
+class RequestChangeUserPermissionsHandler(
+    RequestHandler[_ChangeUserPermissionsRequest]
+):
     request_model = _ChangeUserPermissionsRequest
 
     requires_auth = True
@@ -1195,7 +1197,7 @@ class RequestChangeUserPermissionsHandler(RequestHandler):
         )
 
 
-class RequestSetPasswdHandler(RequestHandler):
+class RequestSetPasswdHandler(RequestHandler[_SetPasswordRequest]):
     request_model = _SetPasswordRequest
     rate_limit_cost = 10
     requires_auth = True
@@ -1404,7 +1406,7 @@ class RequestSetPasswdHandler(RequestHandler):
         return respond(200, "Password set successfully", user_id=actor_user_id)
 
 
-class RequestManageUserStatusHandler(RequestHandler):
+class RequestManageUserStatusHandler(RequestHandler[_ManageUserStatusRequest]):
     request_model = _ManageUserStatusRequest
 
     requires_auth = True

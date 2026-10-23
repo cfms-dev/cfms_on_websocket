@@ -45,7 +45,7 @@ class _ViewAuditLogsRequest(RequestDataModel):
     filters: Omittable[list[str]] = REQUEST_UNSET
 
 
-class RequestLockdownHandler(RequestHandler):
+class RequestLockdownHandler(RequestHandler[_LockdownRequest]):
     request_model = _LockdownRequest
 
     requires_auth = True
@@ -82,7 +82,7 @@ class RequestLockdownHandler(RequestHandler):
         )
 
 
-class RequestViewAuditLogsHandler(RequestHandler):
+class RequestViewAuditLogsHandler(RequestHandler[_ViewAuditLogsRequest]):
     request_model = _ViewAuditLogsRequest
     requires_auth = True
     rate_limit_cost = 3

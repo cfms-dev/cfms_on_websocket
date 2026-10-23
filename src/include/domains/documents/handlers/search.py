@@ -51,7 +51,7 @@ class _SearchRequest(RequestDataModel):
     search_directories: Omittable[bool] = REQUEST_UNSET
 
 
-class RequestSearchHandler(RequestHandler):
+class RequestSearchHandler(RequestHandler[_SearchRequest]):
     """
     Handles the "search" action for finding documents and directories by name.
 

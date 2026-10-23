@@ -147,7 +147,7 @@ def _task_permission_allowed(
     )
 
 
-class RequestListScheduledTaskTypesHandler(RequestHandler):
+class RequestListScheduledTaskTypesHandler(RequestHandler[EmptyRequestDataModel]):
     """List task contracts the authenticated principal is allowed to schedule."""
 
     request_model = EmptyRequestDataModel
@@ -179,7 +179,7 @@ class RequestListScheduledTaskTypesHandler(RequestHandler):
         return Result(code=0, data={"count": len(items)}, user_id=handler.user_id)
 
 
-class RequestCreateScheduleHandler(RequestHandler):
+class RequestCreateScheduleHandler(RequestHandler[_CreateScheduleRequest]):
     """Validate, authorize, and persist a new user-managed schedule."""
 
     request_model = _CreateScheduleRequest
@@ -228,7 +228,7 @@ class RequestCreateScheduleHandler(RequestHandler):
         )
 
 
-class RequestGetScheduleHandler(RequestHandler):
+class RequestGetScheduleHandler(RequestHandler[_ScheduleIdRequest]):
     """Return one non-deleted, non-system schedule by ID."""
 
     request_model = _ScheduleIdRequest
@@ -257,7 +257,7 @@ class RequestGetScheduleHandler(RequestHandler):
         return Result(code=0, target=response["id"], user_id=handler.user_id)
 
 
-class RequestListSchedulesHandler(RequestHandler):
+class RequestListSchedulesHandler(RequestHandler[_ListSchedulesRequest]):
     """List user-managed schedules with signed cursor pagination."""
 
     request_model = _ListSchedulesRequest
@@ -322,7 +322,7 @@ class RequestListSchedulesHandler(RequestHandler):
         return Result(code=0, data={"page_size": page_size}, user_id=handler.user_id)
 
 
-class RequestUpdateScheduleHandler(RequestHandler):
+class RequestUpdateScheduleHandler(RequestHandler[_UpdateScheduleRequest]):
     """Apply an authorized optimistic update to an idle user schedule."""
 
     request_model = _UpdateScheduleRequest
@@ -395,7 +395,7 @@ class RequestUpdateScheduleHandler(RequestHandler):
         return Result(code=0, target=response["id"], user_id=handler.user_id)
 
 
-class RequestDeleteScheduleHandler(RequestHandler):
+class RequestDeleteScheduleHandler(RequestHandler[_DeleteScheduleRequest]):
     """Logically delete a user schedule without interrupting running work."""
 
     request_model = _DeleteScheduleRequest

@@ -486,7 +486,7 @@ class _OIDCStartRequest(RequestDataModel):
     redirect_uri: Omittable[NonEmptyString] = REQUEST_UNSET
 
 
-class RequestOIDCStartHandler(RequestHandler):
+class RequestOIDCStartHandler(RequestHandler[_OIDCStartRequest]):
     request_model = _OIDCStartRequest
     rate_limit_cost = 3
 
@@ -531,7 +531,7 @@ class _OIDCCallbackRequest(RequestDataModel):
     error_description: Omittable[str] = REQUEST_UNSET
 
 
-class RequestOIDCCallbackHandler(RequestHandler):
+class RequestOIDCCallbackHandler(RequestHandler[_OIDCCallbackRequest]):
     request_model = _OIDCCallbackRequest
     rate_limit_cost = 10
 

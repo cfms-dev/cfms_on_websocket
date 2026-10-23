@@ -449,7 +449,7 @@ class EmptyRequest(RequestDataModel):
     pass
 
 
-class ValidHandler(RequestHandler):
+class ValidHandler(RequestHandler[EmptyRequest]):
     request_model = EmptyRequest
 
     def handle(self, _handler):

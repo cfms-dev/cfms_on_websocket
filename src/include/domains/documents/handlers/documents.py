@@ -245,7 +245,7 @@ def serialize_document_metadata(document: Document) -> dict:
     }
 
 
-class RequestGetDocumentInfoHandler(RequestHandler):
+class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
     """Handles the "get_document_info" action."""
 
     request_model = _DocumentInfoRequest
@@ -314,7 +314,7 @@ class RequestGetDocumentInfoHandler(RequestHandler):
             return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
-class RequestGetDocumentAccessRulesHandler(RequestHandler):
+class RequestGetDocumentAccessRulesHandler(RequestHandler[_DocumentIDRequest]):
     request_model = _DocumentIDRequest
     requires_auth = True
     rate_limit_cost = 2
@@ -355,7 +355,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler):
             return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
-class RequestGetDocumentHandler(RequestHandler):
+class RequestGetDocumentHandler(RequestHandler[_DocumentIDRequest]):
     """Handles the "get_document" action."""
 
     request_model = _DocumentIDRequest
@@ -564,7 +564,7 @@ def _create_document_in_transaction(
             )
 
 
-class RequestCreateDocumentHandler(RequestHandler):
+class RequestCreateDocumentHandler(RequestHandler[_CreateDocumentRequest]):
     """Handles the "create_document" action."""
 
     request_model = _CreateDocumentRequest
@@ -633,7 +633,7 @@ class RequestCreateDocumentHandler(RequestHandler):
         return result
 
 
-class RequestUploadDocumentHandler(RequestHandler):
+class RequestUploadDocumentHandler(RequestHandler[_UploadDocumentRequest]):
     """Handles the "upload_document" action."""
 
     request_model = _UploadDocumentRequest
@@ -767,7 +767,7 @@ class RequestUploadDocumentHandler(RequestHandler):
         )
 
 
-class RequestDeleteDocumentHandler(RequestHandler):
+class RequestDeleteDocumentHandler(RequestHandler[_DocumentIDRequest]):
     """Handles the "delete_document" action."""
 
     request_model = _DocumentIDRequest
@@ -815,7 +815,7 @@ class RequestDeleteDocumentHandler(RequestHandler):
         return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
-class RequestRenameDocumentHandler(RequestHandler):
+class RequestRenameDocumentHandler(RequestHandler[_RenameDocumentRequest]):
     """Handles the "rename_document" action."""
 
     request_model = _RenameDocumentRequest
@@ -877,7 +877,7 @@ class RequestRenameDocumentHandler(RequestHandler):
             return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
-class RequestDownloadFileHandler(RequestHandler):
+class RequestDownloadFileHandler(RequestHandler[_DownloadFileRequest]):
     """Handles the "download_file" action."""
 
     request_model = _DownloadFileRequest
@@ -892,7 +892,7 @@ class RequestDownloadFileHandler(RequestHandler):
         handler.send_file(task_id, offset, max_chunk_size)
 
 
-class RequestUploadFileHandler(RequestHandler):
+class RequestUploadFileHandler(RequestHandler[_UploadFileRequest]):
     """Handles the "upload_file" action."""
 
     request_model = _UploadFileRequest
@@ -915,7 +915,7 @@ class RequestUploadFileHandler(RequestHandler):
         )
 
 
-class RequestSetDocumentRulesHandler(RequestHandler):
+class RequestSetDocumentRulesHandler(RequestHandler[_SetDocumentRulesRequest]):
     """Handles the "set_document_rules" action."""
 
     request_model = _SetDocumentRulesRequest
@@ -970,7 +970,7 @@ class RequestSetDocumentRulesHandler(RequestHandler):
                 return Result(code=400, target=document_id, user_id=handler.user_id)
 
 
-class RequestMoveDocumentHandler(RequestHandler):
+class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
     """Handles the "move_document" action."""
 
     request_model = _MoveDocumentRequest
@@ -1085,7 +1085,7 @@ class RequestMoveDocumentHandler(RequestHandler):
         )
 
 
-class RequestPurgeDocumentHandler(RequestHandler):
+class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
     """Handles the "purge_document" action, which permanently deletes a document and all its revisions.
 
     This action is irreversible and should only be allowed for users with special permissions.
@@ -1131,7 +1131,7 @@ class RequestPurgeDocumentHandler(RequestHandler):
         return Result(code=0, target=doc_id, user_id=handler.user_id)
 
 
-class RequestRestoreDocumentHandler(RequestHandler):
+class RequestRestoreDocumentHandler(RequestHandler[_RestoreDocumentRequest]):
     """Handles the "restore_document" action.
     Restores a marked-as-deleted document. Supports renaming and moving to a
     new folder during restoration. Maps virtual ROOT_DIRECTORY_ID to database None.
@@ -1225,7 +1225,7 @@ class RequestRestoreDocumentHandler(RequestHandler):
             return Result(code=0, target=doc_id, user_id=handler.user_id)
 
 
-class RequestSetDocumentTagsHandler(RequestHandler):
+class RequestSetDocumentTagsHandler(RequestHandler[_SetDocumentTagsRequest]):
     request_model = _SetDocumentTagsRequest
 
     requires_auth = True

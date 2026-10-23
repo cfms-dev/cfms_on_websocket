@@ -132,7 +132,7 @@ def authenticate_request(
     )
 
 
-class RequestLoginHandler(RequestHandler):
+class RequestLoginHandler(RequestHandler[_LoginRequest]):
     request_model = _LoginRequest
     rate_limit_cost = 5
 
@@ -146,7 +146,7 @@ class RequestLoginHandler(RequestHandler):
         return authenticate_request(handler, attempt, handler.data["credential"])
 
 
-class RequestCompleteMFAHandler(RequestHandler):
+class RequestCompleteMFAHandler(RequestHandler[_CompleteMFARequest]):
     request_model = _CompleteMFARequest
     rate_limit_cost = 2
     requires_auth = True
@@ -191,7 +191,7 @@ class RequestCompleteMFAHandler(RequestHandler):
         return authenticate_request(handler, attempt, request.data)
 
 
-class RequestRefreshTokenHandler(RequestHandler):
+class RequestRefreshTokenHandler(RequestHandler[EmptyRequestDataModel]):
     request_model = EmptyRequestDataModel
     requires_auth = True
     rate_limit_cost = 2

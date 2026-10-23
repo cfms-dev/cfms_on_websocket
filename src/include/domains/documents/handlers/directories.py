@@ -172,7 +172,7 @@ def _evaluate_directory_read_access(
     return True, visible_parent_id, context
 
 
-class RequestListDirectoryHandler(RequestHandler):
+class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
     """Handles directory listing requests.
     This util processes a directory listing request by generating a list of files and directories in the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -265,7 +265,7 @@ class RequestListDirectoryHandler(RequestHandler):
         return Result(code=200, target=folder_id, user_id=handler.user_id)
 
 
-class RequestGetDirectoryInfoHandler(RequestHandler):
+class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
     """Handles directory information requests.
     This util processes a directory information request by retrieving information about the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -346,7 +346,7 @@ class RequestGetDirectoryInfoHandler(RequestHandler):
             return Result(code=0, target=directory_id, user_id=handler.user_id)
 
 
-class RequestGetDirectoryAccessRulesHandler(RequestHandler):
+class RequestGetDirectoryAccessRulesHandler(RequestHandler[_DirectoryIDRequest]):
     request_model = _DirectoryIDRequest
     requires_auth = True
     rate_limit_cost = 2
@@ -387,7 +387,7 @@ class RequestGetDirectoryAccessRulesHandler(RequestHandler):
             return Result(code=0, target=directory_id, user_id=handler.user_id)
 
 
-class RequestCreateDirectoryHandler(RequestHandler):
+class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
     """Handles directory creation requests.
     This util processes a directory creation request by creating a new directory in the specified parent directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -494,7 +494,7 @@ class RequestCreateDirectoryHandler(RequestHandler):
             return Result(code=0, target=parent_id, user_id=handler.user_id)
 
 
-class RequestDeleteDirectoryHandler(RequestHandler):
+class RequestDeleteDirectoryHandler(RequestHandler[_FolderIDRequest]):
     """Handles directory deletion requests.
     This util processes a directory deletion request by deleting the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -597,7 +597,7 @@ class RequestDeleteDirectoryHandler(RequestHandler):
                 return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestRenameDirectoryHandler(RequestHandler):
+class RequestRenameDirectoryHandler(RequestHandler[_RenameDirectoryRequest]):
     """Handles directory renaming requests.
     This util processes a directory renaming request by updating the name of the specified directory.
     It sends an appropriate response back to the client, indicating success or failure.
@@ -674,7 +674,7 @@ class RequestRenameDirectoryHandler(RequestHandler):
             return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestMoveDirectoryHandler(RequestHandler):
+class RequestMoveDirectoryHandler(RequestHandler[_MoveDirectoryRequest]):
     request_model = _MoveDirectoryRequest
 
     requires_auth = True
@@ -758,7 +758,7 @@ class RequestMoveDirectoryHandler(RequestHandler):
         return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestSetDirectoryRulesHandler(RequestHandler):
+class RequestSetDirectoryRulesHandler(RequestHandler[_SetDirectoryRulesRequest]):
     """Handles the "set_directory_rules" action."""
 
     request_model = _SetDirectoryRulesRequest
@@ -814,7 +814,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler):
                 return Result(code=400, target=directory_id, user_id=handler.user_id)
 
 
-class RequestPurgeDirectoryHandler(RequestHandler):
+class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
     """Handles the "purge_directory" action.
     Permanently removes a directory, all its subdirectories, and all documents within.
     This action is irreversible.
@@ -909,7 +909,7 @@ class RequestPurgeDirectoryHandler(RequestHandler):
                 session.autoflush = True
 
 
-class RequestRestoreDirectoryHandler(RequestHandler):
+class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
     """Handles the "restore_directory" action.
     Supports virtual ROOT_DIRECTORY_ID translation to database None.
     """
@@ -1011,7 +1011,7 @@ class RequestRestoreDirectoryHandler(RequestHandler):
             return Result(code=0, target=folder_id, user_id=handler.user_id)
 
 
-class RequestListDeletedItemsHandler(RequestHandler):
+class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
     """Handles the "list_deleted_items" action.
     Lists folders and documents that have been marked as deleted within
      a specific parent directory.

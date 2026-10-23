@@ -75,7 +75,7 @@ class _RevokeAccessRequest(RequestDataModel):
     entry_id: Annotated[JsonInteger, Field(ge=1)]
 
 
-class RequestGrantAccessHandler(RequestHandler):
+class RequestGrantAccessHandler(RequestHandler[_GrantAccessRequest]):
     request_model = _GrantAccessRequest
 
     requires_auth = True
@@ -161,7 +161,7 @@ class RequestGrantAccessHandler(RequestHandler):
         return Result(code=200, target=None, data=audit_data, user_id=handler.user_id)
 
 
-class RequestViewAccessEntriesHandler(RequestHandler):
+class RequestViewAccessEntriesHandler(RequestHandler[_ViewAccessEntriesRequest]):
     request_model = _ViewAccessEntriesRequest
 
     requires_auth = True
@@ -264,7 +264,7 @@ class RequestViewAccessEntriesHandler(RequestHandler):
         )
 
 
-class RequestRevokeAccessHandler(RequestHandler):
+class RequestRevokeAccessHandler(RequestHandler[_RevokeAccessRequest]):
     request_model = _RevokeAccessRequest
 
     requires_auth = True

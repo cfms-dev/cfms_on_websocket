@@ -106,7 +106,9 @@ def _declared_handler_costs(path: Path) -> dict[str, int]:
     costs = {}
     for node in module.body:
         if not isinstance(node, ast.ClassDef) or not any(
-            isinstance(base, ast.Name) and base.id == "RequestHandler"
+            isinstance(base, ast.Subscript)
+            and isinstance(base.value, ast.Name)
+            and base.value.id == "RequestHandler"
             for base in node.bases
         ):
             continue

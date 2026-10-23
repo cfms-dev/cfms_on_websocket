@@ -50,7 +50,7 @@ class _ChangeGroupPermissionsRequest(RequestDataModel):
     permissions: list[PermissionEntry]
 
 
-class RequestListGroupsHandler(RequestHandler):
+class RequestListGroupsHandler(RequestHandler[OffsetPaginationRequest]):
     request_model = OffsetPaginationRequest
 
     requires_auth = True
@@ -104,7 +104,7 @@ class RequestListGroupsHandler(RequestHandler):
             handler.conclude_request(**response)
 
 
-class RequestCreateGroupHandler(RequestHandler):
+class RequestCreateGroupHandler(RequestHandler[_CreateGroupRequest]):
     request_model = _CreateGroupRequest
 
     requires_auth = True
@@ -143,7 +143,7 @@ class RequestCreateGroupHandler(RequestHandler):
         return Result(code=0, target=new_group_name, user_id=handler.user_id)
 
 
-class RequestDeleteGroupHandler(RequestHandler):
+class RequestDeleteGroupHandler(RequestHandler[_GroupNameRequest]):
     request_model = _GroupNameRequest
 
     requires_auth = True
@@ -210,7 +210,7 @@ class RequestDeleteGroupHandler(RequestHandler):
         )
 
 
-class RequestRenameGroupHandler(RequestHandler):
+class RequestRenameGroupHandler(RequestHandler[_RenameGroupRequest]):
     request_model = _RenameGroupRequest
 
     requires_auth = True
@@ -260,7 +260,7 @@ class RequestRenameGroupHandler(RequestHandler):
         return Result(code=0, target=target_group_name, user_id=handler.user_id)
 
 
-class RequestGetGroupInfoHandler(RequestHandler):
+class RequestGetGroupInfoHandler(RequestHandler[_GroupNameRequest]):
     request_model = _GroupNameRequest
 
     requires_auth = True
@@ -318,7 +318,9 @@ class RequestGetGroupInfoHandler(RequestHandler):
             )
 
 
-class RequestChangeGroupPermissionsHandler(RequestHandler):
+class RequestChangeGroupPermissionsHandler(
+    RequestHandler[_ChangeGroupPermissionsRequest]
+):
     request_model = _ChangeGroupPermissionsRequest
 
     requires_auth = True

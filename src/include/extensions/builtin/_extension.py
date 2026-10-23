@@ -67,7 +67,7 @@ def _component_versions() -> dict[str, str]:
     }
 
 
-class RequestServerInfoHandler(RequestHandler):
+class RequestServerInfoHandler(RequestHandler[EmptyRequestDataModel]):
     """
     Handle the 'server_info' action to return server information.
 
@@ -93,7 +93,7 @@ class RequestServerInfoHandler(RequestHandler):
         )
 
 
-class RequestDiagnosticsHandler(RequestHandler):
+class RequestDiagnosticsHandler(RequestHandler[EmptyRequestDataModel]):
     request_model = EmptyRequestDataModel
     requires_auth = True
     rate_limit_cost = 3
@@ -161,7 +161,7 @@ class RequestDiagnosticsHandler(RequestHandler):
         return Result(code=0, target=None, user_id=handler.user_id)
 
 
-class RequestShutdownHandler(RequestHandler):
+class RequestShutdownHandler(RequestHandler[EmptyRequestDataModel]):
     """
     Handle the 'shutdown' action to gracefully shut down the server.
 
