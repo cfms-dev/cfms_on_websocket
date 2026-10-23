@@ -40,7 +40,7 @@ from maintenance.backup.models import (
     BackupHeader,
     BackupIntegrityError,
 )
-from maintenance.backup.selection import BACKUP_TABLE_NAMES
+from maintenance.backup.selection import _backup_tables
 lazy from maintenance.backup.progress import _BackupProgressReporter
 
 LOGGER = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ def _write_compressed_payload(
             staged_tables / f"{table_name}.jsonl",
             f"tables/{table_name}.jsonl",
         )
-        for table_name in BACKUP_TABLE_NAMES
+        for table_name in _backup_tables()
         if (staged_tables / f"{table_name}.jsonl").is_file()
     )
     file_count = sum(1 for path in files_dir.iterdir() if path.is_file())
@@ -377,12 +377,6 @@ def _serialize_table_value(table_name: str, column_name: str, value: Any) -> Any
         if len(digest) != 32:
             raise BackupIntegrityError("Invalid binary comment digest in database")
         return digest.hex()
-    if (
-        value is not None
-        and table_name == "user_oidc_credentials"
-        and column_name == "identity_digest"
-    ):
-        return bytes(value).hex()
     if (
         value is not None
         and table_name == "user_auth_public_keys"

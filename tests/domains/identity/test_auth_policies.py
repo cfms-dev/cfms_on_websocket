@@ -5,13 +5,11 @@ import jwt
 import pyotp
 import pytest
 from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from include.database.models.auth import (
     UserAuthPolicy,
     UserAuthPublicKey,
-    UserOidcCredential,
     UserPasswordCredential,
     UserTotpCredential,
 )
@@ -39,7 +37,6 @@ from include.domains.identity.commands.credentials import (
     set_password,
     setup_totp,
 )
-from include.domains.identity.commands.oidc import bind_oidc_identity
 from include.domains.identity.handlers import auth
 from include.domains.identity.tokens import Token, TokenPurpose
 
@@ -608,25 +605,3 @@ def test_policy_alternatives_and_unavailable_credentials_are_independent():
             ).satisfied
             is expected
         )
-
-
-def test_oidc_binding_is_unique_and_follows_account_lifetime(auth_sessions):
-    with auth_sessions.begin() as session:
-        owner, other = User(username="owner"), User(username="other")
-        session.add_all([owner, other])
-        session.flush()
-        owner_id, other_id = owner.id, other.id
-        binding = bind_oidc_identity(
-            session, owner, "https://issuer.example", "subject"
-        )
-        binding_id = binding.id
-        assert session.get(UserAuthPolicy, (owner_id, "login")) is None
-    with pytest.raises(IntegrityError), auth_sessions.begin() as session:
-        bind_oidc_identity(
-            session, session.get(User, other_id), "https://issuer.example", "subject"
-        )
-    with auth_sessions.begin() as session:
-        session.execute(delete(User).where(User.id == owner_id))
-    with auth_sessions() as session:
-        assert session.get(UserOidcCredential, binding_id) is None
-        assert session.get(User, other_id) is not None

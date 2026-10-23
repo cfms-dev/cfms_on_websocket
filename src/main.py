@@ -57,8 +57,14 @@ from include.domains.security.guards.request_rate_control import (
     validate_handler_rate_limit_costs,
 )
 from include.domains.security.handlers.debugging import RequestThrowExceptionHandler
+from include.extensions.data import (
+    extension_metadata,
+    load_extension_data,
+    prepare_extension_tables,
+)
 from include.extensions.manager import (
     collect_scheduled_tasks,
+    get_loaded_extension_metadata,
     load_extensions_from_directory,
     pm,
 )
@@ -481,6 +487,19 @@ def _run_server():
         get_enabled_extensions(global_config),
         config=global_config,
     )
+
+    declarations = load_extension_data(Base.metadata)
+    enabled_owners = {entry.identifier for entry in get_loaded_extension_metadata()}
+    with engine.begin() as connection:
+        prepare_extension_tables(
+            connection,
+            extension_metadata(Base.metadata, declarations),
+            {
+                name
+                for name, entry in declarations.items()
+                if entry.owner in enabled_owners
+            },
+        )
 
     # Initialize available request handlers
     prepare_handlers()

@@ -1,6 +1,7 @@
 __all__ = [
     "DiscoveredExtension",
     "ExtensionCompatibility",
+    "ExtensionDataEntrypoint",
     "ExtensionDependencies",
     "ExtensionDiscoveryError",
     "ExtensionLoadError",
@@ -139,6 +140,19 @@ class ExtensionDependencies(BaseModel):
         return value
 
 
+class ExtensionDataEntrypoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    module: str
+
+    @field_validator("module")
+    @classmethod
+    def validate_module(cls, value: str) -> str:
+        if not value or not all(part.isidentifier() for part in value.split(".")):
+            raise ValueError("data.module must be an importable dotted module name")
+        return value
+
+
 class ExtensionManifest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -147,6 +161,7 @@ class ExtensionManifest(BaseModel):
     )
 
     manifest_version: Literal[2, 3]
+    data: ExtensionDataEntrypoint | None = None
     extension: ExtensionMetadata
     compatibility: ExtensionCompatibility = Field(
         default_factory=ExtensionCompatibility

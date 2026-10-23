@@ -17,6 +17,10 @@ from sqlalchemy import (
 from sqlalchemy.dialects import mysql
 
 from include.database.engine import create_database_engine
+from include.database.models.identity import User
+from include.extensions.data import extension_metadata, load_extension_data
+from include.extensions.oidc_sso.credentials import bind_oidc_identity
+from include.extensions.oidc_sso.models import OIDCBase, UserOidcCredential
 from maintenance.operations.database.commands import (
     _activate_target_database,
     _load_target_database_config,
@@ -32,6 +36,9 @@ from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
 from maintenance.operations.exceptions import MaintenanceOperationError
 from tests.maintenance.backup.roundtrip_support import _seed_source
 from tests.maintenance.database.support import _script_directory, _seed_runtime_tables
+from tests.support.extension_data import example_data
+
+__all__ = ["example_data"]
 
 pytestmark = pytest.mark.component
 
@@ -150,6 +157,75 @@ def test_transfer_cleans_target_when_verification_fails(
         )
 
     assert inspect(target_engine).get_table_names() == []
+
+
+def test_transfer_includes_installed_extension_data(
+    backup_context,
+    database_factory,
+    sqlite_engine_factory,
+    example_data,
+    tmp_path,
+) -> None:
+
+    base = backup_context.Base
+    source, _sessions = database_factory(base, tmp_path / "source.db")
+    target = sqlite_engine_factory(tmp_path / "target.db")
+    metadata = extension_metadata(base.metadata, load_extension_data(base.metadata))
+    metadata.create_all(source)
+    with source.begin() as connection:
+        connection.execute(metadata.tables["example_parent"].insert(), {"id": 1})
+        connection.execute(
+            metadata.tables["example_child"].insert(),
+            {
+                "id": 2,
+                "parent_id": 1,
+                "value": b"extension bytes",
+            },
+        )
+    scripts = _script_directory()
+    results = transfer_database_contents(
+        source, target, base.metadata, scripts, scripts.get_current_head()
+    )
+    assert {result.name: result.rows for result in results}["example_child"] == 1
+    with target.connect() as connection:
+        assert connection.execute(select(metadata.tables["example_child"])).all() == [
+            (2, 1, b"extension bytes")
+        ]
+    assert "example_child" not in base.metadata.tables
+
+
+def test_transfer_preserves_oidc_bindings_without_activation(
+    backup_context,
+    database_factory,
+    sqlite_engine_factory,
+    tmp_path,
+) -> None:
+
+    base = backup_context.Base
+    source, sessions = database_factory(base, tmp_path / "source.db")
+    target = sqlite_engine_factory(tmp_path / "target.db")
+    OIDCBase.metadata.create_all(source)
+    with sessions.begin() as session:
+        user = User(username="bound")
+        session.add(user)
+        session.flush()
+        credential = bind_oidc_identity(
+            session, user, "https://issuer.example", "subject"
+        )
+        credential_id = credential.id
+    scripts = _script_directory()
+    results = transfer_database_contents(
+        source, target, base.metadata, scripts, scripts.get_current_head()
+    )
+    assert {result.name: result.rows for result in results}[
+        "user_oidc_credentials"
+    ] == 1
+    with source.connect() as original, target.connect() as copied:
+        statement = select(UserOidcCredential.__table__)
+        assert copied.execute(statement).all() == original.execute(statement).all()
+        assert (
+            copied.execute(select(UserOidcCredential.id)).scalar_one() == credential_id
+        )
 
 
 def test_public_migration_rejects_same_database_engine(sqlite_engine_factory) -> None:

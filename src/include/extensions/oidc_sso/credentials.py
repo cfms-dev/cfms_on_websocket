@@ -4,8 +4,9 @@ import orjson
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from include.database.models.auth import UserOidcCredential
 from include.database.models.identity import User
+
+from .models import UserOidcCredential
 
 
 def find_oidc_credential(

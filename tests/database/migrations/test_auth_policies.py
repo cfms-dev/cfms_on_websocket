@@ -11,13 +11,13 @@ from sqlalchemy.schema import CreateTable
 from alembic import command
 from include.database.models.auth import (
     UserAuthPolicy,
-    UserOidcCredential,
     UserPasswordCredential,
     UserTotpCredential,
 )
 from include.database.models.identity import User
 from include.database.session import Base
-from include.domains.identity.commands.oidc import bind_oidc_identity
+from include.extensions.oidc_sso.credentials import bind_oidc_identity
+from include.extensions.oidc_sso.models import OIDCBase, UserOidcCredential
 
 pytestmark = pytest.mark.component
 
@@ -26,6 +26,7 @@ pytestmark = pytest.mark.component
 def auth_migration(sqlite_engine_factory):
     engine = sqlite_engine_factory()
     Base.metadata.create_all(engine)
+    OIDCBase.metadata.create_all(engine)
     config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
     with engine.connect() as connection:
         config.attributes["connection"] = connection
@@ -125,3 +126,29 @@ def test_oidc_identity_unique_index_uses_supported_fixed_length_digest(dialect):
     ddl = str(CreateTable(UserOidcCredential.__table__).compile(dialect=dialect))
     assert "UNIQUE (identity_digest)" in ddl
     assert "BINARY(32)" in ddl if dialect.name == "mysql" else "BYTEA" in ddl
+
+
+def test_historical_downgrade_accepts_core_only_schema(sqlite_engine_factory):
+    engine = sqlite_engine_factory()
+    Base.metadata.create_all(engine)
+    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    with engine.connect() as connection:
+        config.attributes["connection"] = connection
+        command.stamp(config, "head")
+        command.downgrade(config, "d252e662fc05")
+        assert "user_auth_policies" not in sa.inspect(connection).get_table_names()
+
+
+@pytest.mark.parametrize("extension_table_present", [False, True])
+def test_autogeneration_excludes_extension_tables(
+    sqlite_engine_factory, extension_table_present
+):
+    engine = sqlite_engine_factory()
+    Base.metadata.create_all(engine)
+    if extension_table_present:
+        OIDCBase.metadata.create_all(engine)
+    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    with engine.connect() as connection:
+        config.attributes["connection"] = connection
+        command.stamp(config, "head")
+        command.check(config)

@@ -217,22 +217,3 @@ class UserAuthPolicy(Base):
         JSON, nullable=False
     )
     user: Mapped["User"] = relationship("User")
-
-
-class UserOidcCredential(Base):
-    __tablename__ = "user_oidc_credentials"
-
-    id: Mapped[str] = mapped_column(
-        VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    issuer: Mapped[str] = mapped_column(Text, nullable=False)
-    subject: Mapped[str] = mapped_column(Text, nullable=False)
-    identity_digest: Mapped[bytes] = mapped_column(
-        LargeBinary(32).with_variant(MySQLBinary(32), "mysql"),
-        unique=True,
-        nullable=False,
-    )
-    user: Mapped["User"] = relationship("User")

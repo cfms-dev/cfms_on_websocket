@@ -1,5 +1,4 @@
 import datetime as dt
-import hashlib
 import logging
 import uuid
 from typing import Any
@@ -110,6 +109,13 @@ def _iter_table_row_batches(
 
 
 def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
+    declaration = table.info.get("extension_data")
+    if declaration is not None:
+        try:
+            if declaration.decode_row is not None:
+                row = declaration.decode_row(row)
+        except ValueError as exc:
+            raise BackupFormatError(str(exc)) from exc
     if table.name == "user_auth_policies":
         try:
             AuthPurpose(row["purpose"])
@@ -203,26 +209,10 @@ def _decode_row(row: dict[str, Any], table: Table) -> dict[str, Any]:
                 raise BackupFormatError("Invalid public key bytes in backup") from exc
             if column.name == "fingerprint" and len(value) != 32:
                 raise BackupFormatError("Invalid public key fingerprint in backup")
-        if (
-            value is not None
-            and table.name == "user_oidc_credentials"
-            and column.name == "identity_digest"
-        ):
-            try:
-                value = bytes.fromhex(value)
-            except (TypeError, ValueError) as exc:
-                raise BackupFormatError(
-                    "Invalid OIDC identity digest in backup"
-                ) from exc
-            if (
-                len(value) != 32
-                or value
-                != hashlib.sha256(
-                    orjson.dumps([row.get("issuer"), row.get("subject")])
-                ).digest()
-            ):
-                raise BackupFormatError(
-                    "OIDC identity digest does not match the binding"
-                )
         decoded[column.name] = value
+    if declaration is not None and declaration.validate_row is not None:
+        try:
+            declaration.validate_row(decoded)
+        except ValueError as exc:
+            raise BackupFormatError(str(exc)) from exc
     return decoded

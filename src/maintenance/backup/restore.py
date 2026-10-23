@@ -7,7 +7,7 @@ from typing import Any
 lazy from collections.abc import Callable
 
 import tomlkit
-from sqlalchemy import bindparam, func, insert, select
+from sqlalchemy import bindparam, func, insert, inspect, select
 from sqlalchemy.exc import IntegrityError
 lazy from rich.progress import Progress
 lazy from sqlalchemy.engine import Engine
@@ -17,6 +17,11 @@ from include.config.paths import EXECUTABLE_ABSPATH
 from include.database.session import Base, Session, engine
 from include.domains.documents.commands.name_conflicts import is_node_name_conflict
 from include.domains.operations.comments import CommentStore
+from include.extensions.data import (
+    extension_metadata,
+    load_extension_data,
+    prepare_extension_tables,
+)
 from include.providers.manager import ProviderManager
 from maintenance.backup.archive import (
     _cleanup_restored_files,
@@ -153,6 +158,13 @@ def import_backup(
         manifest = _load_manifest(extract_dir / "manifest.json")
         _validate_manifest(manifest)
         _validate_payload_tree(extract_dir, manifest)
+        declarations = load_extension_data(Base.metadata)
+        with db_engine.begin() as connection:
+            prepare_extension_tables(
+                connection,
+                extension_metadata(Base.metadata, declarations),
+                set(declarations) & set(manifest["tables"]),
+            )
 
         config_file = Path(config_path)
         init_file = Path(init_path)
@@ -683,7 +695,19 @@ def _write_file_atomically(path: Path, contents: bytes) -> None:
 
 def _ensure_target_is_empty(db_engine: Engine) -> None:
     with db_engine.connect() as connection:
+        existing = set(inspect(connection).get_table_names())
+        declarations = load_extension_data(Base.metadata)
+        unknown = (
+            existing
+            - set(Base.metadata.tables)
+            - set(declarations)
+            - {"alembic_version"}
+        )
+        if unknown:
+            raise BackupRestoreError(f"Unregistered target tables: {sorted(unknown)}")
         for table_name, table in _backup_tables().items():
+            if table_name not in existing:
+                continue
             count = connection.execute(
                 select(func.count()).select_from(table)
             ).scalar_one()

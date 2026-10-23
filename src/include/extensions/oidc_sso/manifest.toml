@@ -9,5 +9,8 @@ license = "Apache-2.0"
 description = "OpenID Connect single sign-on support for CFMS."
 homepage = "https://github.com/cfms-dev/cfms_on_websocket"
 
+[data]
+module = "include.extensions.oidc_sso.data"
+
 [compatibility]
 minimum_server_version = "0.5.1"

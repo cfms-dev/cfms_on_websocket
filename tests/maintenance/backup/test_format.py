@@ -6,6 +6,8 @@ import uuid
 
 import pytest
 
+from maintenance.backup.selection import _backup_tables
+
 pytestmark = pytest.mark.component
 
 
@@ -420,7 +422,7 @@ def test_runtime_state_tables_are_excluded(backup_context):
 
 @pytest.mark.parametrize("digest", ["not-hex", "00" * 32, 42])
 def test_backup_rejects_oidc_binding_digest_mismatch(backup_context, digest):
-    table = backup_context.Base.metadata.tables["user_oidc_credentials"]
+    table = _backup_tables()["user_oidc_credentials"]
     with pytest.raises(backup_context.BackupFormatError, match="OIDC identity digest"):
         backup_context.backup_core._decode_row(
             {

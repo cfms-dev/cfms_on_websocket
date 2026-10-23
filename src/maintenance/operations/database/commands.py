@@ -14,6 +14,7 @@ lazy from rich.progress import Progress
 from include.config import paths
 from include.config.validation import ConfigValidationError, parse_config_document
 from include.database.engine import create_database_engine, database_url
+from include.extensions.data import ExtensionDataError
 from maintenance.operations.config import read_config_text, write_config_atomically
 from maintenance.operations.database.migration import (
     DatabaseMigrationError,
@@ -80,7 +81,13 @@ def migrate_database(
             script_directory,
             progress=progress,
         )
-    except (DatabaseMigrationError, ImportError, OSError, SQLAlchemyError) as exc:
+    except (
+        DatabaseMigrationError,
+        ExtensionDataError,
+        ImportError,
+        OSError,
+        SQLAlchemyError,
+    ) as exc:
         raise MaintenanceOperationError(f"Database migration failed: {exc}") from exc
     finally:
         if target_engine is not None:

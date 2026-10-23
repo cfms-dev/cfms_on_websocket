@@ -15,7 +15,6 @@ from sqlalchemy.orm import sessionmaker
 import include.database.models  # noqa: F401
 from include.database.models import identity as identity_models
 from include.database.models.auth import (
-    UserOidcCredential,
     UserPasswordCredential,
 )
 from include.database.models.identity import User, UserGroup, UserStatus
@@ -24,8 +23,9 @@ from include.domains.identity.auth import auth_registry
 from include.domains.identity.auth.types import AuthPurpose
 from include.domains.identity.commands import users as user_commands
 from include.domains.identity.commands.auth_policies import replace_auth_policy
-from include.domains.identity.commands.oidc import bind_oidc_identity
 from include.extensions.oidc_sso import _extension as extension
+from include.extensions.oidc_sso.credentials import bind_oidc_identity
+from include.extensions.oidc_sso.models import OIDCBase, UserOidcCredential
 from include.providers.caching import memory
 
 
@@ -252,6 +252,7 @@ def oidc_callback_context(
 ):
     database = sqlite_engine_factory()
     Base.metadata.create_all(database)
+    OIDCBase.metadata.create_all(database)
     sessions = sessionmaker(bind=database)
     monkeypatch.setattr(extension, "Session", sessions)
     monkeypatch.setattr(identity_models, "time", extension.time)

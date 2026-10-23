@@ -246,6 +246,7 @@ def test_extension_handler_overrides_and_unregistration_keep_existing_order(
     core_list_handler = server_main.available_functions["list_schedules"]
     replacement_handler = server_main.available_functions["get_schedule"]
     hook = SimpleNamespace(
+        ext_register_auth_methods=list,
         ext_register_handlers=lambda: [
             {
                 "list_schedules": replacement_handler,

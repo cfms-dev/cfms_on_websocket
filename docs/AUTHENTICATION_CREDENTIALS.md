@@ -112,6 +112,10 @@ TOTP activation alone does not set this flag.
 ## OIDC binding and rollout
 
 OIDC credentials persist the local user ID and exact `(issuer, subject)` identity.
+The model, binding commands and archive codecs belong to `oidc_sso`; its
+independent data entrypoint is usable even while OIDC login is disabled and
+without installing its optional HTTP/OAuth dependencies. Core imports do not
+register or create this model. See [Extension-owned data](EXTENSIONS.md#extension-owned-data).
 A SHA-256 digest of the JSON pair provides a fixed-length unique database key;
 lookup also compares the original strings. These are the stable identity claims
 specified by [OIDC Core 5.7](https://openid.net/specs/openid-connect-core-1_0.html#ClaimStability).
@@ -123,7 +127,7 @@ loading the enabled OIDC provider, trusted code can bind and grant independently
 ```python
 from include.domains.identity.auth.types import AuthPurpose
 from include.domains.identity.commands.auth_policies import replace_auth_policy
-from include.domains.identity.commands.oidc import bind_oidc_identity
+from include.extensions.oidc_sso.credentials import bind_oidc_identity
 
 with sessions.begin() as session:
     user = session.get(User, user_id)
@@ -159,7 +163,9 @@ must be bound explicitly. No production database is upgraded by editing source.
 Downgrade refuses OIDC bindings or policies that cannot preserve legacy behavior.
 
 Account backups and database transfers include policies, credential IDs and OIDC
-bindings. Legacy archives without a policy table receive IDs and legacy local
+bindings while the extension is installed, including when it is disabled. If the
+extension is missing, maintenance refuses its tables rather than dropping data.
+Existing binding rows and credential IDs are adopted unchanged. Legacy archives without a policy table receive IDs and legacy local
 policies during restore. An included but empty policy table is authoritative and
 never gains reconstructed authorization. New archives must retain credential IDs.
 The existing archive format and encryption remain unchanged.

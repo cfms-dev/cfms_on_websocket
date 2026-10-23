@@ -23,7 +23,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from include.config.settings import global_config
-from include.database.models.auth import UserOidcCredential
 from include.database.models.identity import User, UserGroup, UserMembership, UserStatus
 from include.database.session import Session
 from include.domains.identity.auth.base import (
@@ -34,15 +33,16 @@ from include.domains.identity.auth.base import (
 from include.domains.identity.auth.flows import start_login_attempt
 from include.domains.identity.auth.types import AuthPurpose, RegisteredCredential
 from include.domains.identity.commands.auth_policies import replace_auth_policy
-from include.domains.identity.commands.oidc import (
-    bind_oidc_identity,
-    find_oidc_credential,
-)
 from include.domains.identity.sessions import (
     finish_login_attempt,
 )
 from include.exceptions.misc import UserNotActiveError
 from include.extensions.manager import hookimpl
+from include.extensions.oidc_sso.credentials import (
+    bind_oidc_identity,
+    find_oidc_credential,
+)
+from include.extensions.oidc_sso.models import UserOidcCredential
 from include.providers.manager import ProviderManager
 from include.transport.request_handler import (
     REQUEST_UNSET,

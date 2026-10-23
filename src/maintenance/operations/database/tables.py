@@ -5,7 +5,6 @@ APPLICATION_TABLE_NAMES = (
     "user_passwords",
     "user_totp_credentials",
     "user_auth_public_keys",
-    "user_oidc_credentials",
     "user_auth_policies",
     "user_groups",
     "group_permissions",
@@ -54,3 +53,10 @@ DEFERRED_UPDATE_ORDER = (
     ("documents", "id", ("current_revision_id",)),
     ("nodes", "id", ("access_rule_set_id",)),
 )
+
+
+def application_table_names(metadata) -> tuple[str, ...]:
+    return (
+        *APPLICATION_TABLE_NAMES,
+        *(name for name in metadata.tables if name not in APPLICATION_TABLE_NAMES),
+    )

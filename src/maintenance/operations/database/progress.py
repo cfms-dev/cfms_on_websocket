@@ -1,14 +1,12 @@
 lazy from rich.progress import Progress, TaskID
 
-from maintenance.operations.database.tables import APPLICATION_TABLE_NAMES
 
-
-def add_progress_task(progress: Progress | None) -> TaskID | None:
+def add_progress_task(progress: Progress | None, table_count: int) -> TaskID | None:
     if progress is None:
         return None
     return progress.add_task(
         "Migrating database tables",
-        total=len(APPLICATION_TABLE_NAMES) * 2,
+        total=table_count * 2,
     )
 
 

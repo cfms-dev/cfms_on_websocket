@@ -10,6 +10,63 @@ Authentication methods own their credential models, with single-direction
 references to users. See [Authentication credential ownership](AUTHENTICATION_CREDENTIALS.md)
 for provider interfaces, credential queries, and transaction requirements.
 
+## Extension-owned data
+
+Extension-specific models and their commands belong in the extension package,
+not in `include.database.models` or core domains. Use an independent SQLAlchemy
+declarative registry and `MetaData`; reference a core foreign key using its
+column, for example `ForeignKey(User.id, ondelete="CASCADE")`. Core models must
+not import extension models or define reverse relationships to them.
+
+Manifests may declare an optional data entrypoint independently of the runtime
+entrypoint, in either supported manifest version:
+
+```toml
+[data]
+module = "include.extensions.example.data"
+```
+
+The dotted module must be importable from the installed release. It exposes
+`register_data() -> tuple[ExtensionDataTable, ...]`, using
+`include.extensions.data.ExtensionDataTable`. Each declaration supplies the
+manifest identifier as `owner`, a SQLAlchemy `table`, and an optional
+`backup_component`: `accounts`, `documents`, `audit`, or `banned_subnets`.
+Use `None` for reconstructible tables excluded from logical backups; those
+tables still participate in database transfers. Table names and ownership must
+be unique, including against core tables. Extension table dependencies are
+ordered by foreign keys; cycles between extension tables are rejected.
+
+Optional `encode_row` and `decode_row` callbacks convert dictionaries between
+database values and the JSON archive representation. A `validate_row` callback
+checks native database values after decoding and before export or transfer;
+raise `ValueError` with an actionable message for invalid data. The maintenance
+workflow owns transactions; callbacks must not commit, close sessions, or write
+external state. Keep all extension-specific codecs and invariants in this module.
+
+Data entrypoints must remain usable without optional runtime dependencies and
+must not load `_extension.py`, register request handlers, start services, or
+perform schema writes at import time. Runtime code must import the same model
+module rather than redefine its mappings. Maintenance discovers declarations
+from all installed extensions, including disabled extensions. Startup prepares
+tables only for loaded extensions, before authentication providers and handlers
+are registered. Existing compatible tables are adopted without changing rows;
+incompatible columns or required constraints/indexes cause an error instead of
+an implicit schema rewrite. Future schema changes remain the extension's
+responsibility and require an explicit migration workflow.
+
+Exports include declared backup tables that already exist; they never create
+missing source tables. Imports create the declared tables present in the archive,
+and database transfers create the declared tables present in the source.
+Older archives may omit extension tables. Unknown tables or an archive whose
+owning extension is absent are rejected, so install the corresponding extension
+before restoring or transferring its data. Disabling an extension is sufficient
+to stop its runtime behavior while keeping its persisted data maintainable.
+The archive format, encryption, and existing table payload paths are unchanged.
+
+Core Alembic autogeneration excludes installed extensions' declared tables.
+Historical core revisions may still contain compatibility code for tables that
+were previously owned by core; new core migrations must not add extension models.
+
 ## Manifest format
 
 Manifest version 2 separates extension metadata from server compatibility:

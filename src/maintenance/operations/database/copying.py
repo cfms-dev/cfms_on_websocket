@@ -5,9 +5,9 @@ lazy from sqlalchemy.engine import Connection
 from maintenance.operations.database.models import DatabaseMigrationError
 from maintenance.operations.database.progress import advance_progress, update_progress
 from maintenance.operations.database.tables import (
-    APPLICATION_TABLE_NAMES,
     DEFERRED_COLUMNS,
     DEFERRED_UPDATE_ORDER,
+    application_table_names,
 )
 
 _BATCH_SIZE = 1000
@@ -20,7 +20,7 @@ def copy_tables(
     progress: Progress | None,
     task_id: TaskID | None,
 ) -> None:
-    for table_name in APPLICATION_TABLE_NAMES:
+    for table_name in application_table_names(metadata):
         if table_name in {"folders", "documents"}:
             continue
         if table_name == "nodes":
@@ -46,6 +46,12 @@ def copy_tables(
             insert_rows = []
             for row in partition:
                 values = {column.name: row[column.name] for column in columns}
+                declaration = table.info.get("extension_data")
+                if declaration is not None and declaration.validate_row is not None:
+                    try:
+                        declaration.validate_row(values)
+                    except ValueError as exc:
+                        raise DatabaseMigrationError(str(exc)) from exc
                 for column_name in DEFERRED_COLUMNS.get(table_name, ()):
                     values[column_name] = None
                 insert_rows.append(values)

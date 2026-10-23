@@ -1,0 +1,1 @@
+Move OIDC credential models, identity binding and archive validation into the OIDC extension. Installed extensions can declare independent data entrypoints so disabled extensions retain backup, restore and database transfer support without loading optional runtime dependencies.

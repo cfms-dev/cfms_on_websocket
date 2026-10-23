@@ -11,7 +11,6 @@ from include.database.models.access import (
 from include.database.models.auth import (
     UserAuthPolicy,
     UserAuthPublicKey,
-    UserOidcCredential,
     UserPasswordCredential,
     UserTotpCredential,
 )
@@ -103,7 +102,6 @@ __all__ = [
     "UserGroupPermission",
     "UserKey",
     "UserMembership",
-    "UserOidcCredential",
     "UserPasswordCredential",
     "UserPermission",
     "UserStatus",
