@@ -304,18 +304,16 @@ def test_batch_policy_updates_are_atomic_and_revision_checked(management):
     ).response
     assert response["code"] == 200
     assert response["data"]["policies"]["escalation"]["revision"] == 1
-    assert (
-        management.call("set", {"policies": [policy("escalation", [], 1)]}).response[
-            "data"
-        ]["reason"]
-        == "escalation_required"
-    )
-    assert (
-        management.call("set", {"policies": [policy("mfa", [])]}).response["data"][
-            "reason"
-        ]
-        == "revision_conflict"
-    )
+    response = management.call(
+        "set",
+        {"policies": [policy("escalation", [], 1), policy("mfa", [])]},
+    ).response
+    assert response["code"] == 409
+    assert response["data"]["reason"] == "revision_conflict"
+    with management.sessions() as session:
+        escalation = session.get(UserAuthPolicy, (management.user_id, "escalation"))
+        assert escalation.revision == 1
+        assert escalation.chains == [password]
 
 
 @pytest.mark.parametrize(
@@ -542,18 +540,39 @@ def test_extension_credentials_participate_in_inventory_and_policies(
     )
 
 
-@pytest.mark.parametrize("empty_policy", [False, True])
+@pytest.mark.parametrize("policy_state", ["absent", "empty", "cleared"])
 def test_no_policy_escalation_issues_short_lived_token_without_proof(
-    management, empty_policy
+    management, policy_state
 ):
-    if empty_policy:
-        assert (
-            management.call("set", {"policies": [policy("escalation", [])]}).response[
-                "code"
-            ]
-            == 200
-        )
     source = Token.new(management.user_id, 60, management.signing_key)
+    if policy_state == "cleared":
+        configured = management.call(
+            "set",
+            {
+                "policies": [
+                    policy("escalation", [chain("password", management.password_id)])
+                ]
+            },
+        ).response
+        assert configured["code"] == 200
+        denied = management.call(
+            "set", {"policies": [policy("escalation", [], 1)]}, source=source
+        ).response
+        assert denied["code"] == 403
+    if policy_state != "absent":
+        revision = 1 if policy_state == "cleared" else 0
+        cleared = management.call(
+            "set", {"policies": [policy("escalation", [], revision)]}
+        ).response
+        assert cleared["code"] == 200
+        assert cleared["data"]["policies"]["escalation"] == {
+            "revision": revision + 1,
+            "chains": [],
+        }
+        with management.sessions() as session:
+            escalation = session.get(UserAuthPolicy, (management.user_id, "escalation"))
+            assert escalation.revision == revision + 1
+            assert escalation.chains == []
     handler = Handler({"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}, source)
     assert (
         auth.RequestExchangeTokenHandler()

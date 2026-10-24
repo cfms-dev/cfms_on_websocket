@@ -412,6 +412,25 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert verified["code"] == 200
     assert verified["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
 
+    cleared = await client.send_request(
+        "set_user_auth_policies",
+        {"policies": [{"purpose": "escalation", "expected_revision": 1, "chains": []}]},
+        token=verified["data"]["token"],
+    )
+    assert cleared["code"] == 200
+    assert cleared["data"]["policies"]["escalation"] == {
+        "revision": 2,
+        "chains": [],
+    }
+    direct = await client.send_request(
+        "exchange_token",
+        {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
+        token=source,
+    )
+    assert direct["code"] == 200
+    assert direct["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
+    assert "token" in direct["data"]
+
 
 @pytest.mark.asyncio
 async def test_authentication_management_schema_rejects_invalid_fields(

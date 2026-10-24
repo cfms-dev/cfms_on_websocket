@@ -398,9 +398,12 @@ including a different-method MFA alternative when MFA is required. They must
 also preserve a completable nonempty escalation policy. Inactive registrations
 do not count as available; repeated public-key steps require a distinct key
 assignment. Single-proof password, TOTP and OIDC flows cannot satisfy multi-step
-chains. A nonempty escalation policy cannot be cleared through this API. An
-empty MFA policy is allowed and disables login MFA. These availability checks
-apply to the new management writes, not trusted commands or existing TOTP
+chains. An escalation policy can be cleared by setting `chains: []` with its
+current revision using a GENERAL|ESCALATION token. This disables the additional
+verification for subsequent escalation: a valid GENERAL token can then be
+exchanged directly for a short-lived GENERAL|ESCALATION token without method
+or proof data. An empty MFA policy is allowed and disables login MFA. These
+availability checks apply to the new management writes, not trusted commands or existing TOTP
 lifecycle endpoints. Availability describes registered active credentials;
 it does not prove the user still possesses their secrets or that an external
 identity provider is currently reachable.
@@ -415,7 +418,6 @@ missing users or keys return 404. Conflicts return 409 with `data.reason`:
 | `duplicate_public_key` | The target user already registered this key |
 | `login_unavailable` | No complete login/MFA path would remain |
 | `escalation_unavailable` | A nonempty escalation policy would become unusable |
-| `escalation_required` | An existing nonempty escalation policy cannot be cleared |
 
 Malformed or unsupported keys expose `invalid_public_key` or
 `unsupported_public_key`; invalid policy references or methods expose

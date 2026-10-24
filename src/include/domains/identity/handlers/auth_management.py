@@ -189,13 +189,6 @@ class RequestSetUserAuthPoliciesHandler(
             previous = session.get(UserAuthPolicy, (user.id, replacement.purpose.value))
             if (previous.revision if previous else 0) != replacement.expected_revision:
                 raise AuthPolicyConflict("Authentication policy changed")
-            if (
-                replacement.purpose == AuthPurpose.ESCALATION
-                and previous is not None
-                and previous.chains
-                and not replacement.chains
-            ):
-                raise AuthPolicyUnavailable("escalation_required")
             try:
                 replace_auth_policy(
                     session,
