@@ -136,14 +136,29 @@ def test_deployment_update_cli_reports_noop_and_honors_confirmation(
     assert calls == 1
 
 
+@pytest.mark.parametrize(
+    "extension_manifest_suffix",
+    [
+        "",
+        '\n[data]\nmodule = "include.extensions.builtin.data"\n',
+        '\n[future_runtime]\nmodule = "include.extensions.builtin.future"\n',
+    ],
+    ids=["original", "data-entrypoint", "future-runtime-fields"],
+)
 def test_upgrade_and_downgrade_preserve_flat_persistent_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    extension_manifest_suffix: str,
 ) -> None:
     root = tmp_path / "deployment"
     source = _prepare_deployment(root)
     target_tree = tmp_path / "target"
-    staged_target = _write_release(target_tree, "1.1.0", "new")
+    staged_target = _write_release(
+        target_tree,
+        "1.1.0",
+        "new",
+        extension_manifest_suffix=extension_manifest_suffix,
+    )
     stage = root / "src" / ".maintenance" / "staging" / "stage"
     stage.mkdir(parents=True)
     package = tmp_path / "release.zip"
@@ -352,13 +367,24 @@ def test_upgrade_uses_stored_source_scripts_after_activating_target(
     )
 
 
+@pytest.mark.parametrize(
+    "extension_manifest_suffix",
+    ["", '\n[future_runtime]\nmodule = "include.extensions.builtin.future"\n'],
+    ids=["original", "future-runtime-fields"],
+)
 def test_failed_migration_resume_reconciles_to_restored_database_revision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    extension_manifest_suffix: str,
 ) -> None:
     root = tmp_path / "deployment"
     source = _prepare_deployment(root)
-    staged_target = _write_release(tmp_path / "target", "1.1.0", "new")
+    staged_target = _write_release(
+        tmp_path / "target",
+        "1.1.0",
+        "new",
+        extension_manifest_suffix=extension_manifest_suffix,
+    )
     stage = root / "src" / ".maintenance" / "staging" / "stage"
     stage.mkdir(parents=True)
     monkeypatch.setattr(
@@ -627,6 +653,79 @@ def test_state_extension_restore_enforces_root_entry_limit(
 
     with pytest.raises(MaintenanceOperationError, match="more than 2 entries"):
         deployment_repository._copy_state_extensions(root, release)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "[extension",
+        "manifest_version = 2\n",
+        "extension = 1\n",
+        '[extension]\nname = "missing identifier"\n',
+        '[extension]\nidentifier = "../outside"\n',
+        '[extension]\nidentifier = "core"\n',
+        "[extension]\nidentifier = 1\n",
+    ],
+)
+def test_deployment_discovery_rejects_invalid_extension_identity(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _write_extension(tmp_path, "custom-dir", "custom", "raise AssertionError\n")
+    extension_root = tmp_path / "src" / "include" / "extensions"
+    manifest = extension_root / "custom-dir" / "manifest.toml"
+    manifest.write_text(source, encoding="utf-8")
+
+    with pytest.raises(MaintenanceOperationError) as error:
+        deployment_repository._discover_extension_directories(extension_root)
+
+    assert error.value.__cause__ is not None
+    assert manifest.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize("missing", ["manifest.toml", "_extension.py"])
+def test_deployment_discovery_rejects_incomplete_extension(
+    tmp_path: Path,
+    missing: str,
+) -> None:
+    _write_extension(tmp_path, "custom-dir", "custom", "raise AssertionError\n")
+    extension_root = tmp_path / "src" / "include" / "extensions"
+    (extension_root / "custom-dir" / missing).unlink()
+
+    with pytest.raises(MaintenanceOperationError):
+        deployment_repository._discover_extension_directories(extension_root)
+
+
+def test_deployment_discovery_rejects_duplicate_identifiers(tmp_path: Path) -> None:
+    _write_extension(tmp_path, "first", "custom", "raise AssertionError\n")
+    _write_extension(tmp_path, "second", "custom", "raise AssertionError\n")
+
+    with pytest.raises(MaintenanceOperationError):
+        deployment_repository._discover_extension_directories(
+            tmp_path / "src" / "include" / "extensions"
+        )
+
+
+def test_state_extension_restore_rejects_target_identifier_conflict(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "deployment"
+    source = _prepare_deployment(root)
+    deployment_repository._snapshot_release(root, source)
+    deployment_repository._snapshot_state(root, source)
+    target = _write_release(tmp_path / "target", "1.1.0", "new")
+    deployment_repository._remove_active_release(root, source)
+    deployment_repository._copy_release_to_active(root, target)
+    _write_extension(root, "target-custom", "custom", "# target custom\n")
+
+    with pytest.raises(MaintenanceOperationError):
+        deployment_repository._copy_state_extensions(root, source)
+
+    extension_root = root / "src" / "include" / "extensions"
+    assert not (extension_root / "custom-dir").exists()
+    assert (extension_root / "target-custom" / "_extension.py").read_text(
+        encoding="utf-8"
+    ) == "# target custom\n"
 
 
 def test_restore_active_rejects_linked_state_config_before_writes(

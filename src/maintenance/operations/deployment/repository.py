@@ -3,13 +3,15 @@ import json
 import os
 import secrets
 import shutil
+import tomllib
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from pydantic import ValidationError
 
-from include.extensions.manager import ExtensionDiscoveryError, discover_extensions
+from include.extensions.identifiers import validate_extension_identifier
 from maintenance.operations.deployment.constants import (
     _COPY_CHUNK_BYTES,
     _EXTENSION_IDENTIFIER_PATTERN,
@@ -547,12 +549,45 @@ def _snapshot_release(project_root: Path, release: _Release) -> Path:
     return snapshot
 
 
-def _discover(root: Path) -> dict[str, Any]:
+def _discover_extension_directories(extension_root: Path) -> dict[str, Path]:
+    """Read file ownership without imposing this process's runtime manifest schema."""
     try:
-        extension_root = root / "src" / "include" / "extensions"
         _validate_extension_root_size(extension_root)
-        return discover_extensions(extension_root)
-    except (OSError, ExtensionDiscoveryError) as exc:
+        catalog: dict[str, Path] = {}
+        for directory in sorted(extension_root.iterdir(), key=lambda path: path.name):
+            if directory.name.startswith(("_", ".")) or not directory.is_dir():
+                continue
+            manifest_path = directory / "manifest.toml"
+            entrypoint = directory / "_extension.py"
+            if not manifest_path.is_file() and not entrypoint.is_file():
+                continue
+            if not manifest_path.is_file() or not entrypoint.is_file():
+                raise MaintenanceOperationError(
+                    f"Extension candidate {directory} requires manifest.toml and _extension.py"
+                )
+            try:
+                with manifest_path.open("rb") as manifest_file:
+                    manifest = tomllib.load(manifest_file)
+                identifier = validate_extension_identifier(
+                    manifest["extension"]["identifier"]
+                )
+            except (
+                KeyError,
+                TypeError,
+                tomllib.TOMLDecodeError,
+                ValidationError,
+            ) as exc:
+                raise MaintenanceOperationError(
+                    f"Invalid extension identity in {manifest_path}: {exc}"
+                ) from exc
+            if identifier in catalog:
+                raise MaintenanceOperationError(
+                    f"Duplicate extension identifier {identifier!r} in "
+                    f"{catalog[identifier]} and {directory}"
+                )
+            catalog[identifier] = directory
+        return catalog
+    except OSError as exc:
         raise MaintenanceOperationError(str(exc)) from exc
 
 
@@ -565,15 +600,17 @@ def _snapshot_state(project_root: Path, release: _Release) -> None:
     try:
         config_path = project_root / "src" / "config.toml"
         shutil.copy2(config_path, temporary / "config.toml")
-        for identifier, extension in _discover(project_root).items():
+        for identifier, directory in _discover_extension_directories(
+            project_root / "src" / "include" / "extensions"
+        ).items():
             if identifier not in release.managed_extensions:
-                _validate_extension_tree(extension.directory)
+                _validate_extension_tree(directory)
                 shutil.copytree(
-                    extension.directory,
-                    extensions / extension.directory.name,
+                    directory,
+                    extensions / directory.name,
                     symlinks=True,
                 )
-                _validate_extension_tree(extensions / extension.directory.name)
+                _validate_extension_tree(extensions / directory.name)
         old = version_root / f".state-old-{secrets.token_hex(8)}"
         moved_old_state = False
         try:
@@ -592,10 +629,12 @@ def _snapshot_state(project_root: Path, release: _Release) -> None:
 
 
 def _remove_active_release(project_root: Path, release: _Release) -> None:
-    catalog = _discover(project_root)
-    for identifier, extension in catalog.items():
+    catalog = _discover_extension_directories(
+        project_root / "src" / "include" / "extensions"
+    )
+    for identifier, directory in catalog.items():
         if identifier not in release.managed_extensions:
-            shutil.rmtree(extension.directory)
+            shutil.rmtree(directory)
     for relative_path in release.manifest["files"]:
         path = project_root / Path(relative_path)
         if path.is_file():
@@ -645,24 +684,20 @@ def _copy_state_extensions(project_root: Path, release: _Release) -> None:
     target_root.mkdir(parents=True, exist_ok=True)
     if not state_root.is_dir():
         return
-    try:
-        _validate_extension_root_size(state_root)
-        source_catalog = discover_extensions(state_root)
-    except (OSError, ExtensionDiscoveryError) as exc:
-        raise MaintenanceOperationError(str(exc)) from exc
-    target_catalog = _discover(project_root)
-    for identifier, extension in source_catalog.items():
+    source_catalog = _discover_extension_directories(state_root)
+    target_catalog = _discover_extension_directories(target_root)
+    for identifier, directory in source_catalog.items():
         if identifier in release.managed_extensions or identifier in target_catalog:
             raise MaintenanceOperationError(
                 f"Third-party extension {identifier!r} conflicts with target release"
             )
-        target = target_root / extension.directory.name
+        target = target_root / directory.name
         if target.exists():
             raise MaintenanceOperationError(
                 f"Third-party extension directory conflicts with target: {target}"
             )
-        _atomic_copytree(extension.directory, target)
-    _discover(project_root)
+        _atomic_copytree(directory, target)
+    _discover_extension_directories(target_root)
 
 
 def _archive_active(project_root: Path, release: _Release) -> None:

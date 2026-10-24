@@ -36,7 +36,7 @@ from maintenance.operations.deployment.repository import (
     _atomic_write,
     _copy_release_to_active,
     _copy_state_extensions,
-    _discover,
+    _discover_extension_directories,
     _hash_file,
     _load_settings,
     _maintenance_root,
@@ -249,7 +249,7 @@ def upgrade_deployment(
         database_started = True
         _upgrade_database(project_root, source, target)
         _release_from_tree(project_root, exact=False)
-        _discover(project_root)
+        _discover_extension_directories(project_root / "src" / "include" / "extensions")
         transaction_path.unlink()
         shutil.rmtree(stage, ignore_errors=True)
         return DeploymentResult(
@@ -321,7 +321,7 @@ def downgrade_deployment(
         _copy_state_extensions(project_root, target)
         _sync_environment(project_root, _load_settings(project_root))
         _release_from_tree(project_root, exact=False)
-        _discover(project_root)
+        _discover_extension_directories(project_root / "src" / "include" / "extensions")
         _transaction_path(project_root).unlink()
         return DeploymentResult(
             "downgrade", project_root, target.version, target.release_id

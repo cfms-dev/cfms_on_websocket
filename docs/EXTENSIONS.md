@@ -6,6 +6,12 @@ extension directory must contain both an `_extension.py` entrypoint and a
 manifest lets the server validate and describe extensions without importing their
 Python code.
 
+Release deployment commands read extension identifiers to preserve file ownership
+when switching versions. They check identifier uniqueness, required manifest and
+entrypoint files, and filesystem safety without applying the maintenance
+process's runtime manifest schema to another release. Server startup and extension
+installation still validate the complete manifest.
+
 Authentication methods own their credential models, with single-direction
 references to users. See [Authentication credential ownership](AUTHENTICATION_CREDENTIALS.md)
 for provider interfaces, credential queries, and transaction requirements.

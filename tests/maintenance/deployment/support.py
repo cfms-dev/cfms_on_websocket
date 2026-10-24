@@ -51,6 +51,7 @@ def _write_release(
     marker: str,
     *,
     managed_extensions: tuple[str, ...] = ("builtin",),
+    extension_manifest_suffix: str = "",
     with_migrations: bool = False,
     migration: tuple[str, str] | None = None,
 ) -> _Release:
@@ -103,6 +104,11 @@ def _write_release(
         )
     for identifier in managed_extensions:
         _write_extension(root, identifier, identifier, f"# {marker} {identifier}\n")
+        manifest_path = (
+            root / "src" / "include" / "extensions" / identifier / "manifest.toml"
+        )
+        with manifest_path.open("a", encoding="utf-8") as manifest_file:
+            manifest_file.write(extension_manifest_suffix)
 
     release_files = {
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
