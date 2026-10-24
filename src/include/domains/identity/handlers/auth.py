@@ -156,23 +156,29 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
 
     def handle(self, handler, request) -> Result:
         source = handler.token
+        assert source is not None, "Token should be present due to requires_auth=True"
+
+        # Determine the purpose of the new token based on the source token and the
+        # requested target purpose.
         if (
-            source is not None
-            and source.purpose == TokenPurpose.AUTH
+            source.purpose == TokenPurpose.AUTH
             and request.target_purpose == TokenPurpose.GENERAL
-        ):
+        ):  # AUTH -> GENERAL, needs MFA (otherwise it would have been GENERAL already)
             purpose = AuthPurpose.MFA
+
+            # Under normal circumstances, this shouldn't be possible.
             if source.auth_context is None or not source.auth_context.login_method:
                 handler.conclude_request(
                     401, {}, "Authentication context missing; restart login"
                 )
                 return Result(code=401, user_id=handler.user_id)
+
         elif (
-            source is not None
-            and source.purpose == TokenPurpose.GENERAL
-            and request.target_purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
-        ):
+            source.purpose == TokenPurpose.GENERAL
+            and request.target_purpose == TokenPurpose.GENERAL_WITH_ESCALATION
+        ):  # GENERAL -> GENERAL + ESCALATION
             purpose = AuthPurpose.ESCALATION
+
         else:
             handler.conclude_request(403, {}, "Token exchange is not permitted")
             return Result(code=403, user_id=handler.user_id)
@@ -186,14 +192,16 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
                         .where(User.id == source.sub)
                         .values(id=User.id)
                         .execution_options(synchronize_session=False)
-                    )
+                    )  # Magic to acquire a lock on the user row
+
                     user = session.get(User, source.sub)
-                    if user is None:
+                    if user is None:  # FIXME: Is using get_existing() better here?
                         raise AuthenticationFailure(401, "Invalid authentication token")
                     if user.status != UserStatus.ACTIVE:
                         raise AuthenticationFailure(4003, "User account is not active")
                     if not user.is_token_valid(source):
                         raise AuthenticationFailure(401, "Invalid authentication token")
+
                     policy = session.get(
                         UserAuthPolicy, (user.id, AuthPurpose.ESCALATION.value)
                     )
@@ -208,6 +216,7 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
                                 TokenPurpose.GENERAL | TokenPurpose.ESCALATION,
                             ),
                         )
+
                 if issued is not None:
                     username, token = issued
                     handler.conclude_request(
@@ -223,11 +232,13 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
             except AuthenticationFailure as exc:
                 handler.conclude_request(exc.code, exc.data, exc.message)
                 return Result(code=exc.code, user_id=handler.user_id)
+
         if request.method is REQUEST_UNSET or request.data is REQUEST_UNSET:
             handler.conclude_request(
                 400, {}, "Authentication method and data are required"
             )
             return Result(code=400, user_id=handler.user_id)
+
         attempt = AuthenticationAttempt(
             request.method,
             purpose,
@@ -237,6 +248,7 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
             context=source.auth_context if purpose == AuthPurpose.MFA else None,
             expires_at=source.exp,
         )
+
         return authenticate_request(handler, attempt, request.data)
 
 
