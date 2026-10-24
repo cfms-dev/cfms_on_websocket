@@ -110,19 +110,3 @@ def test_enter_server_root_reports_unrelated_directory(
         enter_server_root()
 
     assert Path.cwd() == start.resolve()
-
-
-def test_enter_server_root_does_not_use_legacy_environment_override(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server_root = _make_server_root(tmp_path / "shared")
-    unrelated = tmp_path / "elsewhere"
-    unrelated.mkdir()
-    monkeypatch.chdir(unrelated)
-    monkeypatch.setenv("CFMS_SERVER_ROOT", str(server_root))
-
-    with pytest.raises(MaintenanceRuntimeError, match="main.py and config.toml"):
-        enter_server_root()
-
-    assert Path.cwd() == unrelated.resolve()

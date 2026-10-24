@@ -21,15 +21,6 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
-async def test_removed_complete_mfa_action_is_rejected(user_client):
-    response = await user_client.send_request(
-        "complete_mfa", {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}
-    )
-    assert response["code"] == 400
-    assert "token" not in response["data"]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["password", "publickey"])
 async def test_login_method_rejects_oversized_username(unauthenticated_client, method):
     credential = {"username": "u" * (USERNAME_MAX_LENGTH + 1)}

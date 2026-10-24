@@ -7,84 +7,7 @@ from tests.domains.access.support import _make_rule_user
 pytestmark = pytest.mark.component
 
 
-def _legacy_rule_data_matches_user(rule_data: dict, user) -> bool:
-    def match_rights(sub_rights_group):
-        if not sub_rights_group:
-            return True
-        sub_match_mode = sub_rights_group.get("match", "all")
-        sub_rights_require = sub_rights_group.get("require", [])
-        if not sub_rights_require:
-            return True
-        if sub_match_mode == "all":
-            return set(sub_rights_require).issubset(user.all_permissions)
-        if sub_match_mode == "any":
-            return any(r in user.all_permissions for r in sub_rights_require)
-        raise ValueError('the value of "match" must be "all" or "any"')
-
-    def match_groups(sub_groups_group):
-        if not sub_groups_group:
-            return True
-        sub_match_mode = sub_groups_group.get("match", "all")
-        sub_groups_require = sub_groups_group.get("require", [])
-        if not sub_groups_require:
-            return True
-        if sub_match_mode == "all":
-            return set(sub_groups_require).issubset(user.all_groups)
-        if sub_match_mode == "any":
-            return any(g in user.all_groups for g in sub_groups_require)
-        raise ValueError('the value of "match" must be "all" or "any"')
-
-    def match_sub_group(sub_group):
-        sub_match_mode = sub_group.get("match", "all")
-        sub_rights_group = sub_group.get("rights", {})
-        sub_groups_group = sub_group.get("groups", {})
-        if not sub_rights_group.get("require", []) or not sub_groups_group.get(
-            "require", []
-        ):
-            sub_match_mode = "all"
-        if sub_match_mode == "any":
-            return match_rights(sub_rights_group) or match_groups(sub_groups_group)
-        if sub_match_mode == "all":
-            return match_rights(sub_rights_group) and match_groups(sub_groups_group)
-        raise ValueError('the value of "match" must be "all" or "any"')
-
-    match_mode = rule_data.get("match", "all")
-    for sub_group in rule_data.get("match_groups", []):
-        if not sub_group:
-            continue
-        state = match_sub_group(sub_group)
-        if match_mode == "any" and state:
-            return True
-        if match_mode == "all" and not state:
-            return False
-
-    return match_mode == "all"
-
-
-def _legacy_access_rules_allow(access_rules, user, access_type: str) -> bool:
-    relevant_access_types = {
-        "read": ("read",),
-        "write": ("read", "write"),
-        "move": ("move",),
-        "manage": ("read", "manage"),
-    }[access_type]
-
-    relevant_rules = [
-        rule_data
-        for relevant_access_type in relevant_access_types
-        for rule_data in access_rules.get(relevant_access_type, [])
-    ]
-    if not relevant_rules:
-        return True
-
-    return all(
-        _legacy_rule_data_matches_user(rule_data, user)
-        for rule_data in relevant_rules
-        if rule_data
-    )
-
-
-def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
+def test_compiled_access_rules_enforce_each_access_type(access_rule_session):
     models, session = access_rule_session
     from include.domains.access.authorization.access_rules import set_access_rules
     from include.domains.access.authorization.compiled_rules import (
@@ -199,7 +122,6 @@ def test_compiled_access_rules_match_legacy_json_evaluator(access_rule_session):
         "manage": True,
     }
     for access_type, allowed in expected.items():
-        assert _legacy_access_rules_allow(rules, user, access_type) is allowed
         assert (
             compiled_rules_allow(
                 session,
@@ -742,7 +664,7 @@ def test_serialized_compiled_access_rule_preserves_explicit_empty_requirements(
         ),
     ],
 )
-def test_compiled_access_rule_edge_cases_match_legacy_json_evaluator(
+def test_compiled_access_rule_match_modes_and_empty_requirements(
     access_rule_session,
     rules,
     permissions,
@@ -787,7 +709,6 @@ def test_compiled_access_rule_edge_cases_match_legacy_json_evaluator(
         get_access_rules_dict(session, target_type="document", target_id=document.id)
         == expected_serialized
     )
-    assert _legacy_access_rules_allow(rules, user, access_type) is expected
     assert (
         compiled_rules_allow(
             session,

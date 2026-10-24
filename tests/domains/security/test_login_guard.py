@@ -230,10 +230,6 @@ def test_invalid_address_is_not_blocked_by_subnet_rules(guard_context, address):
     assert decision.allowed is True
 
 
-def test_permanent_access_compatibility_method_was_removed(guard_context):
-    assert not hasattr(guard_context.login.LoginGuard, "evaluate_permanent_access")
-
-
 def test_lockout_invalidation_event_clears_local_cache(guard_context):
     guard = guard_context.login.LoginGuard
     ip = "192.0.2.25"

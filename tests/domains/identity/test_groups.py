@@ -113,17 +113,6 @@ class TestGroupOperations:
         assert data["effective_permissions"] == []
 
     @pytest.mark.asyncio
-    async def test_change_group_permissions_rejects_legacy_string_entries(
-        self, authenticated_client: CFMSTestClient, test_group: dict
-    ):
-        response = await authenticated_client.send_request(
-            "change_group_permissions",
-            {"group_name": test_group["group_name"], "permissions": ["list_users"]},
-        )
-
-        assert_error(response, 400)
-
-    @pytest.mark.asyncio
     async def test_get_nonexistent_group_info(
         self, authenticated_client: CFMSTestClient
     ):

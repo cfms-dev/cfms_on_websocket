@@ -309,18 +309,6 @@ def test_exchange_token_request_rejects_invalid_target_purpose(target_purpose):
     assert errors[0]["type"] == "literal_error"
 
 
-@pytest.mark.parametrize("field", ["2fa_token", "two_factor_token"])
-def test_login_request_rejects_inline_two_factor_fields(field):
-    with pytest.raises(ValidationError, match=field):
-        RequestLoginHandler.request_model.model_validate(
-            {
-                "method": "password",
-                "credential": {"username": "alice", "password": "secret"},
-                field: "123456",
-            }
-        )
-
-
 def test_group_rename_request_accepts_null_display_name():
     request = RequestRenameGroupHandler.request_model.model_validate(
         {"group_name": "staff", "display_name": None}

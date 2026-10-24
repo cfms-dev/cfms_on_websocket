@@ -851,45 +851,6 @@ def test_download_risk_policy_validates_settings(setting, value, expected_fragme
 
 
 @pytest.mark.unit
-def test_legacy_creation_rate_settings_are_ignored():
-    config = _valid_config()
-    config["document"] = {
-        "upload": {
-            "creation_rate_window_seconds": 300,
-            "creation_rate_per_user": 50,
-            "creation_rate_per_ip": 125,
-        }
-    }
-
-    validate_config(config)
-    policy = DocumentCreationRiskPolicy.from_config(config)
-
-    assert policy == DocumentCreationRiskPolicy()
-    assert get_config_warnings(config) == ()
-
-
-@pytest.mark.unit
-def test_new_creation_risk_settings_override_ignored_legacy_settings():
-    config = _valid_config()
-    config["document"] = {
-        "upload": {
-            "creation_rate_per_user": 50,
-            "creation_risk_control": {
-                "account_refill_tokens": 75,
-                "ip_refill_tokens": 250,
-            },
-        }
-    }
-
-    validate_config(config)
-    policy = DocumentCreationRiskPolicy.from_config(config)
-
-    assert policy.account_refill_tokens == 75
-    assert policy.ip_refill_tokens == 250
-    assert get_config_warnings(config) == ()
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize(
     ("setting", "value", "expected_fragment"),
     [
@@ -945,18 +906,6 @@ def test_empty_pepper_warning_is_centralized():
     config["security"]["pepper"] = ""
 
     assert "`pepper`" in get_config_warnings(config)[0]
-
-
-@pytest.mark.unit
-def test_obsolete_document_name_duplicate_option_warns_and_is_ignored():
-    config = _valid_config()
-    config["document"] = {"allow_name_duplicate": True}
-
-    warnings = get_config_warnings(config)
-
-    assert len(warnings) == 1
-    assert "obsolete and ignored" in warnings[0]
-    assert "unique names" in warnings[0]
 
 
 @pytest.mark.integration

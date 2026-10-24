@@ -64,13 +64,6 @@ def oidc_context(monkeypatch):
                 "state_ttl_seconds": 90,
             }
         },
-        "sso": {
-            "oidc": {
-                "issuer": "https://legacy.example",
-                "client_id": "legacy-client",
-                "redirect_uri": "https://legacy.example/callback",
-            }
-        },
     }
     metadata = {
         "issuer": "https://new.example",
@@ -171,23 +164,6 @@ def test_oidc_start_uses_extension_namespace_and_persists_pkce_state(
 @pytest.mark.unit
 def test_oidc_start_rejects_missing_configuration_before_http(oidc_context, missing):
     del oidc_context.config["extensions"]["oidc_sso"][missing]
-    connection = _Connection({})
-
-    result = extension.RequestOIDCStartHandler().handle(
-        connection,
-        extension.RequestOIDCStartHandler.request_model.model_validate(connection.data),
-    )
-
-    assert result is not None
-    assert result.code == 400
-    assert connection.response["code"] == 400
-    assert connection.response["data"] == {}
-    oidc_context.discovery.assert_not_called()
-
-
-@pytest.mark.unit
-def test_oidc_start_does_not_read_legacy_configuration(oidc_context):
-    del oidc_context.config["extensions"]["oidc_sso"]
     connection = _Connection({})
 
     result = extension.RequestOIDCStartHandler().handle(

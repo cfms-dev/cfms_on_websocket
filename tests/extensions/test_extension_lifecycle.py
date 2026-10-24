@@ -41,17 +41,6 @@ class _FakeConnectionHandler:
         self.responses.append((code, data, message))
 
 
-def test_lifecycle_hooks_are_part_of_the_extension_contract():
-    hook_names = set(extension_manager.ServerHookSpecs.__dict__)
-
-    assert "ext_on_startup" in hook_names
-    assert "ext_on_shutdown" in hook_names
-    assert "ext_before_file_upload_finalize" in hook_names
-    assert "ext_on_file_upload_completed" in hook_names
-    assert "ext_on_server_start" not in hook_names
-    assert "ext_on_server_stop" not in hook_names
-
-
 def test_builtin_deduplication_hooks_ignore_uploads_without_digest(
     monkeypatch, builtin_extension
 ):

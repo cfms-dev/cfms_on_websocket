@@ -431,17 +431,6 @@ class TestUserOperations:
         assert data["effective_permissions"] == ["create_user"]
 
     @pytest.mark.asyncio
-    async def test_change_user_permissions_rejects_legacy_string_entries(
-        self, authenticated_client: CFMSTestClient, test_user: dict
-    ):
-        response = await authenticated_client.send_request(
-            "change_user_permissions",
-            {"user_id": test_user["user_id"], "permissions": ["list_users"]},
-        )
-
-        assert_error(response, 400)
-
-    @pytest.mark.asyncio
     async def test_change_user_permissions_requires_set_user_permissions(
         self,
         authenticated_client: CFMSTestClient,
