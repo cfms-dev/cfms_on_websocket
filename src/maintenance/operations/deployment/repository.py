@@ -409,7 +409,7 @@ def _verified_stored_release(root: Path) -> _Release:
     return _release_from_tree(root, exact=True)
 
 
-def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
+def _stored_release_paths(project_root: Path) -> tuple[Path, ...]:
     versions_root = _maintenance_root(project_root) / "versions"
     if versions_root.is_symlink() or versions_root.is_junction():
         raise MaintenanceOperationError(
@@ -440,7 +440,7 @@ def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
                 )
             if _SHA256_PATTERN(path.name) is None:
                 continue
-            stored_paths.append(path)
+            stored_paths.append(resolved_versions_root / path.name)
         stored_paths.sort()
     except MaintenanceOperationError:
         raise
@@ -449,28 +449,41 @@ def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
             f"Unable to inspect stored release root {versions_root}: {exc}"
         ) from exc
 
-    releases = []
-    for path in stored_paths:
-        if not path.is_dir() or path.is_symlink() or path.is_junction():
+    return tuple(stored_paths)
+
+
+def _load_stored_release(path: Path) -> _Release:
+    if not path.is_dir() or path.is_symlink() or path.is_junction():
+        raise MaintenanceOperationError(
+            f"Stored release path is not a regular directory: {path}"
+        )
+    try:
+        if path.resolve(strict=True).parent != path.parent:
             raise MaintenanceOperationError(
-                f"Stored release path is not a regular directory: {path}"
+                f"Stored release path escapes its version root: {path}"
             )
-        try:
-            if path.resolve(strict=True).parent != resolved_versions_root:
-                raise MaintenanceOperationError(
-                    f"Stored release path escapes its version root: {path}"
-                )
-        except OSError as exc:
-            raise MaintenanceOperationError(
-                f"Unable to resolve stored release path {path}: {exc}"
-            ) from exc
+    except OSError as exc:
+        raise MaintenanceOperationError(
+            f"Unable to resolve stored release path {path}: {exc}"
+        ) from exc
+    try:
         release = _verified_stored_release(path / "release")
-        if path.name != release.release_id:
-            raise MaintenanceOperationError(
-                f"Stored release does not match its directory: {path}"
-            )
-        releases.append((path, release))
-    return tuple(releases)
+    except (OSError, MaintenanceOperationError) as exc:
+        raise MaintenanceOperationError(
+            f"Unable to load stored release {path}: {exc}"
+        ) from exc
+    if path.name != release.release_id:
+        raise MaintenanceOperationError(
+            f"Stored release does not match its directory: {path}"
+        )
+    return release
+
+
+def _stored_releases(project_root: Path) -> tuple[tuple[Path, _Release], ...]:
+    return tuple(
+        (path, _load_stored_release(path))
+        for path in _stored_release_paths(project_root)
+    )
 
 
 def _snapshot_release(project_root: Path, release: _Release) -> Path:
@@ -708,12 +721,12 @@ def _archive_active(project_root: Path, release: _Release) -> None:
 
 def _stored_release(project_root: Path, release_id: str) -> _Release:
     matches = [
-        release
-        for _, release in _stored_releases(project_root)
-        if release.release_id.startswith(release_id.lower())
+        path
+        for path in _stored_release_paths(project_root)
+        if path.name.lower().startswith(release_id.lower())
     ]
     if not matches:
         raise MaintenanceOperationError(f"Stored release not found: {release_id}")
     if len(matches) != 1:
         raise MaintenanceOperationError(f"Release ID prefix is ambiguous: {release_id}")
-    return matches[0]
+    return _load_stored_release(matches[0])
