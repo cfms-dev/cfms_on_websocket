@@ -1,7 +1,6 @@
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError
-from sqlalchemy import update
 from websockets.exceptions import ConnectionClosed
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -186,14 +185,7 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
             try:
                 issued: tuple[str, Token] | None = None
                 with Session.begin() as session:
-                    session.execute(
-                        update(User)
-                        .where(User.id == source.sub)
-                        .values(id=User.id)
-                        .execution_options(synchronize_session=False)
-                    )  # Magic to acquire a lock on the user row
-
-                    user = session.get(User, source.sub)
+                    user = session.get(User, source.sub, with_for_update=True)
                     if user is None:  # FIXME: Is using get_existing() better here?
                         raise AuthenticationFailure(401, "Invalid authentication token")
                     if user.status != UserStatus.ACTIVE:

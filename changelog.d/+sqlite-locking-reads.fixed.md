@@ -1,0 +1,1 @@
+Adapt ordinary SQLAlchemy locking reads to SQLite write transactions automatically, replacing authentication and scheduling no-op lock updates while preserving the existing Session API and native MySQL/PostgreSQL row locks.

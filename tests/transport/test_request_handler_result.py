@@ -7,6 +7,7 @@ from argon2 import PasswordHasher
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from include.database.models.auth import UserPasswordCredential
+from include.domains.identity.tokens import TokenPurpose
 
 pytestmark = pytest.mark.unit
 TARGET_USER_ID = uuid.UUID("aabbccdd-0000-4000-8000-000000000001")
@@ -366,7 +367,19 @@ def test_router_reports_safe_pydantic_request_validation_errors(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("target", [None, 1, 3, 4, 8, True, 2.5, "2"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        None,
+        TokenPurpose.AUTH,
+        TokenPurpose.AUTH | TokenPurpose.POST_AUTH,
+        TokenPurpose.POST_AUTH,
+        TokenPurpose.ESCALATION,
+        True,
+        2.5,
+        str(int(TokenPurpose.GENERAL)),
+    ],
+)
 def test_router_rejects_exchange_without_valid_target(monkeypatch, target):
     from include.transport import router
 
@@ -738,7 +751,6 @@ def test_disable_2fa_request_requires_a_credential(monkeypatch, request_data):
 def test_password_change_uses_authentication_throttle(monkeypatch, old_passwd):
     from include.domains.identity.handlers import users
     from include.domains.identity.handlers.users import RequestSetPasswdHandler
-    from include.domains.identity.tokens import TokenPurpose
     from include.transport.request_handler import Result
 
     responses = []
@@ -822,7 +834,6 @@ class _PasswordSession:
 
 
 def _password_request(data, *, user_id="alice", token="token"):
-    from include.domains.identity.tokens import TokenPurpose
 
     if isinstance(token, str):
         token = (

@@ -1,12 +1,14 @@
 import hashlib
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import orjson
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -605,6 +607,63 @@ def test_direct_escalation_rechecks_token_and_account(management, change, expect
         == expected
     )
     assert "token" not in handler.response["data"]
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"), [("signing_key", 401), ("policy", 400)]
+)
+def test_direct_escalation_rechecks_state_after_waiting_for_writer(
+    management, change, expected
+):
+    source = Token.new(management.user_id, 60, management.signing_key)
+    database = management.sessions.kw["bind"]
+    waiting = threading.Event()
+
+    @event.listens_for(database, "before_cursor_execute")
+    def observe_lock(_conn, _cursor, statement, _params, _context, _many):
+        if (
+            threading.current_thread() is not threading.main_thread()
+            and statement == "BEGIN IMMEDIATE"
+        ):
+            waiting.set()
+
+    def exchange_token():
+        handler = Handler(
+            {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}, source
+        )
+        auth.RequestExchangeTokenHandler().handle(
+            handler,
+            auth.RequestExchangeTokenHandler.request_model.model_validate(handler.data),
+        )
+        return handler.response
+
+    try:
+        with (
+            management.sessions() as writer,
+            ThreadPoolExecutor(max_workers=1) as workers,
+        ):
+            user = writer.get(User, management.user_id, with_for_update=True)
+            if change == "signing_key":
+                user.secret_key = "replacement-signing-key" * 2
+            else:
+                replace_auth_policy(
+                    writer,
+                    user,
+                    AuthPurpose.ESCALATION,
+                    [chain("password", management.password_id)],
+                    expected_revision=0,
+                )
+            writer.flush()
+            result = workers.submit(exchange_token)
+            try:
+                assert waiting.wait(5)
+            finally:
+                writer.commit()
+            response = result.result(timeout=10)
+    finally:
+        event.remove(database, "before_cursor_execute", observe_lock)
+    assert response["code"] == expected
+    assert "token" not in response["data"]
 
 
 @pytest.mark.parametrize(

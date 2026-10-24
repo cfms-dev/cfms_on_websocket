@@ -643,7 +643,7 @@ def test_dynamic_system_schedule_is_retired_when_factory_returns_none(
 
 @pytest.mark.component
 def test_unchanged_system_schedule_does_not_acquire_write_lock(
-    monkeypatch, scheduling_sessions
+    schedule_database, scheduling_sessions
 ):
 
     def system_schedule():
@@ -656,19 +656,23 @@ def test_unchanged_system_schedule_does_not_acquire_write_lock(
 
     registry = _system_registry(system_schedule)
     scheduling_reconciliation.synchronize_system_schedules(registry, now=100.0)
-    locked_schedule_ids = []
-    original_lock_schedule = scheduling_reconciliation.lock_schedule
+    transaction_states = []
 
-    def record_lock(session, schedule_id):
-        locked_schedule_ids.append(schedule_id)
-        return original_lock_schedule(session, schedule_id)
+    @event.listens_for(schedule_database, "after_cursor_execute")
+    def observe_transaction(connection, _cursor, _statement, _params, _context, _many):
+        transaction_states.append(
+            connection.connection.driver_connection.in_transaction
+        )
 
-    monkeypatch.setattr(scheduling_reconciliation, "lock_schedule", record_lock)
-
-    assert (
-        scheduling_reconciliation.synchronize_system_schedules(registry, now=101.0) == 0
-    )
-    assert locked_schedule_ids == []
+    try:
+        assert (
+            scheduling_reconciliation.synchronize_system_schedules(registry, now=101.0)
+            == 0
+        )
+    finally:
+        event.remove(schedule_database, "after_cursor_execute", observe_transaction)
+    assert transaction_states
+    assert not any(transaction_states)
 
 
 @pytest.mark.component
@@ -1529,7 +1533,7 @@ def test_execution_lease_refresh_uses_time_after_execution_lock(
     assert claim is not None
 
     database_time = [100.0]
-    refresh_update_started = threading.Event()
+    refresh_lock_started = threading.Event()
     monkeypatch.setattr(
         scheduling_claims,
         "database_now",
@@ -1544,7 +1548,7 @@ def test_execution_lease_refresh_uses_time_after_execution_lock(
     )
 
     @event.listens_for(database, "before_cursor_execute")
-    def observe_refresh_update(
+    def observe_refresh_lock(
         _connection,
         _cursor,
         statement,
@@ -1554,9 +1558,9 @@ def test_execution_lease_refresh_uses_time_after_execution_lock(
     ) -> None:
         if (
             threading.current_thread() is not threading.main_thread()
-            and statement.lstrip().upper().startswith("UPDATE SCHEDULE_EXECUTIONS")
+            and statement == "BEGIN IMMEDIATE"
         ):
-            refresh_update_started.set()
+            refresh_lock_started.set()
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1566,15 +1570,17 @@ def test_execution_lease_refresh_uses_time_after_execution_lock(
                 claim.lease_owner,
                 policy,
             )
-            assert refresh_update_started.wait(5)
-            database_time[0] = 150.0
-            blocker.commit()
+            try:
+                assert refresh_lock_started.wait(5)
+                database_time[0] = 150.0
+            finally:
+                blocker.commit()
             assert refreshed.result(timeout=5) is True
         with factory() as session:
             execution = session.get(ScheduleExecution, claim.id)
             assert execution.lease_expires_at == 210.0
     finally:
-        event.remove(database, "before_cursor_execute", observe_refresh_update)
+        event.remove(database, "before_cursor_execute", observe_refresh_lock)
         blocker.close()
 
 

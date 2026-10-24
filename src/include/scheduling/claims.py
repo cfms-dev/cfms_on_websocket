@@ -301,18 +301,7 @@ def refresh_execution_lease(
             ScheduleExecution.state == "running",
             ScheduleExecution.lease_owner == lease_owner,
         )
-        if session.get_bind().dialect.name == "sqlite":
-            locked = cast(
-                CursorResult,
-                session.execute(
-                    update(ScheduleExecution)
-                    .where(*criteria)
-                    .values(lease_expires_at=ScheduleExecution.lease_expires_at)
-                ),
-            )
-            if locked.rowcount != 1:
-                return False
-        elif (
+        if (
             session.scalar(
                 select(ScheduleExecution.id).where(*criteria).with_for_update()
             )

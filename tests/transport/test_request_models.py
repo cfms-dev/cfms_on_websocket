@@ -39,6 +39,7 @@ from include.domains.identity.handlers.users import (
     RequestSetPasswdHandler,
     RequestUpdateUserBlockHandler,
 )
+from include.domains.identity.tokens import TokenPurpose
 from include.domains.keyrings.handlers.keyrings import RequestListUserKeysHandler
 from include.transport.request_handler import (
     REQUEST_UNSET,
@@ -190,7 +191,9 @@ def test_login_envelope_accepts_extension_method():
     assert request.credential == {"proof": "opaque"}
 
 
-@pytest.mark.parametrize("target_purpose", [2, 6])
+@pytest.mark.parametrize(
+    "target_purpose", [TokenPurpose.GENERAL, TokenPurpose.GENERAL_WITH_ESCALATION]
+)
 def test_exchange_token_request_accepts_totp_token(target_purpose):
     request = RequestExchangeTokenHandler.request_model.model_validate(
         {
@@ -206,7 +209,7 @@ def test_exchange_token_request_accepts_totp_token(target_purpose):
 
 def test_exchange_token_allows_proofless_escalation_envelope():
     request = RequestExchangeTokenHandler.request_model.model_validate(
-        {"target_purpose": 6}
+        {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}
     )
     assert request.method is REQUEST_UNSET
     assert request.data is REQUEST_UNSET
@@ -275,7 +278,21 @@ def test_public_key_request_label_is_bounded():
     assert exc.value.errors()[0]["type"] == "string_too_long"
 
 
-@pytest.mark.parametrize("target_purpose", [0, 1, 3, 4, 8, True, False, "2", None, 2.5])
+@pytest.mark.parametrize(
+    "target_purpose",
+    [
+        0,
+        TokenPurpose.AUTH,
+        TokenPurpose.AUTH | TokenPurpose.POST_AUTH,
+        TokenPurpose.POST_AUTH,
+        TokenPurpose.ESCALATION,
+        True,
+        False,
+        str(int(TokenPurpose.GENERAL)),
+        None,
+        2.5,
+    ],
+)
 def test_exchange_token_request_rejects_invalid_target_purpose(target_purpose):
     with pytest.raises(ValidationError) as exc_info:
         RequestExchangeTokenHandler.request_model.model_validate(

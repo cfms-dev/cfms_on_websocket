@@ -57,6 +57,7 @@ def test_pyright_infers_unannotated_request_parameters(tmp_path):
 from include.domains.identity.handlers.auth import (
     _ExchangeTokenRequest,
 )
+from include.domains.identity.tokens import TokenPurpose
 from include.transport.connection import ConnectionHandler
 from include.transport.request_handler import RequestDataModel, RequestHandler, Result
 
@@ -66,7 +67,10 @@ class DirectHandler(RequestHandler[_ExchangeTokenRequest]):
 
     def handle(self, handler: ConnectionHandler, request) -> Result:
         assert_type(request, _ExchangeTokenRequest)
-        assert_type(request.target_purpose, Literal[2, 6])
+        assert_type(
+            request.target_purpose,
+            Literal[TokenPurpose.GENERAL, TokenPurpose.GENERAL_WITH_ESCALATION],
+        )
         return Result(code=200)
 
 

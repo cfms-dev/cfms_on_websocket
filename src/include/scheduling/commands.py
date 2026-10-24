@@ -26,17 +26,6 @@ class ScheduleConflictError(RuntimeError):
 
 def lock_schedule(session: OrmSession, schedule_id: str) -> Schedule | None:
     """Lock and refresh a schedule before mutating its execution aggregate."""
-    if session.get_bind().dialect.name == "sqlite":
-        locked = cast(
-            CursorResult,
-            session.execute(
-                update(Schedule)
-                .where(Schedule.id == schedule_id)
-                .values(active_execution_id=Schedule.active_execution_id)
-            ),
-        )
-        if locked.rowcount != 1:
-            return None
     return session.scalar(
         select(Schedule)
         .where(Schedule.id == schedule_id)

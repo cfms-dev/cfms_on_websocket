@@ -1,8 +1,9 @@
+import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 lazy from collections.abc import Mapping
 
-from sqlalchemy import URL, Engine, create_engine, event
+from sqlalchemy import URL, Connection, Engine, Select, create_engine, event
 
 from include.config import paths
 from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
@@ -46,6 +47,12 @@ def create_database_engine(
     *,
     echo: bool = False,
 ) -> Engine:
+    """Create an engine with backend-specific locking read support.
+
+    SQLite reserves its writer before native FOR UPDATE reads and initial
+    SAVEPOINTs. Ordinary reads retain legacy driver transaction behavior;
+    sessions continue to own commit and rollback.
+    """
     url = database_url(database_config)
     pool_policy = DatabasePoolPolicy.from_config({"database": database_config})
     pool_options = {
@@ -53,26 +60,55 @@ def create_database_engine(
         "max_overflow": pool_policy.max_overflow,
         "pool_timeout": pool_policy.timeout_seconds,
     }
-    if url.get_backend_name() == "sqlite":
-        if url.database == ":memory:":
-            pool_options = {}
-        engine = create_engine(
-            url,
-            connect_args={"timeout": 30},
-            echo=echo,
-            **pool_options,
-        )
+    match url.get_backend_name():
+        case "sqlite":
+            if url.database == ":memory:":
+                pool_options = {}
+            engine = create_engine(
+                url,
+                connect_args={
+                    "timeout": 30,
+                    "autocommit": sqlite3.LEGACY_TRANSACTION_CONTROL,
+                },
+                echo=echo,
+                **pool_options,
+            )
 
-        @event.listens_for(engine, "connect")
-        def _configure_sqlite(dbapi_connection, _connection_record) -> None:
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.close()
+            @event.listens_for(engine, "connect")
+            def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
 
-        return engine
+            @event.listens_for(engine, "savepoint")
+            def _begin_sqlite_write_transaction(
+                connection: Connection, _name: str | None
+            ) -> None:
+                dbapi_connection = cast(
+                    sqlite3.Connection, connection.connection.driver_connection
+                )
+                if not dbapi_connection.in_transaction:
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+            @event.listens_for(engine, "before_execute")
+            def _lock_sqlite_select(
+                connection: Connection,
+                statement,
+                _multiparams,
+                _params,
+                _execution_options,
+            ) -> None:
+                # SQLAlchemy 2.1 has no public accessor for native FOR UPDATE intent.
+                if (
+                    isinstance(statement, Select)
+                    and statement._for_update_arg is not None
+                ):
+                    _begin_sqlite_write_transaction(connection, None)
+
+            return engine
 
     return create_engine(
         url,

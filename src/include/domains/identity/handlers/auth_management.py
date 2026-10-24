@@ -10,7 +10,6 @@ from cryptography.hazmat.primitives.serialization import (
     load_ssh_public_key,
 )
 from pydantic import Field, model_validator
-from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DatabaseSession
 
@@ -96,13 +95,9 @@ class _UserAuthenticationHandler[RequestT: _UserRequest](RequestHandler[RequestT
             if handler.user_id is None or handler.token is None:
                 raise AuthenticationFailure(401, "Authentication required")
             with Session.begin() as session:
+                user = None
                 if self.write:
-                    session.execute(
-                        update(User)
-                        .where(User.id == target_id)
-                        .values(id=User.id)
-                        .execution_options(synchronize_session=False)
-                    )
+                    user = session.get(User, target_id, with_for_update=True)
                 requester = session.get(User, handler.user_id)
                 required = TokenPurpose.GENERAL
                 if self.write:
@@ -119,7 +114,8 @@ class _UserAuthenticationHandler[RequestT: _UserRequest](RequestHandler[RequestT
                     not in requester.all_permissions
                 ):
                     raise AuthenticationFailure(403, "Permission denied")
-                user = session.get(User, target_id)
+                if not self.write:
+                    user = session.get(User, target_id)
                 if user is None:
                     raise AuthenticationFailure(404, "User not found")
                 audit_data["target_username"] = user.username
