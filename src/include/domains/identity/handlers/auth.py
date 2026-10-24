@@ -147,6 +147,18 @@ class RequestLoginHandler(RequestHandler[_LoginRequest]):
 
 
 class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
+    """Handle the exchange of an existing token for one with a different purpose.
+
+    This handler allows clients to exchange tokens with restricted capabilities
+    for tokens granting broader privileges, subject to the required authentication
+    steps.
+
+    The required authentication flow is inferred from the purposes of the source
+    and target tokens. For example, exchanging an AUTH token for a GENERAL token
+    requires completing two-factor authentication, as AUTH tokens are issued
+    specifically for that purpose.
+    """
+
     request_model = _ExchangeTokenRequest
     rate_limit_cost = 2
     requires_auth = True
@@ -158,28 +170,28 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
 
         # Determine the purpose of the new token based on the source token and the
         # requested target purpose.
-        if (
-            source.purpose == TokenPurpose.AUTH
-            and request.target_purpose == TokenPurpose.GENERAL
-        ):  # AUTH -> GENERAL, needs MFA (otherwise it would have been GENERAL already)
-            purpose = AuthPurpose.MFA
+        #
+        # To make things simpler, we put the original and target purposes into tuples
+        # and match them against known cases.
+        match (source.purpose, request.target_purpose):
+            case (TokenPurpose.AUTH, TokenPurpose.GENERAL):
+                # AUTH -> GENERAL, needs MFA (otherwise it would have been GENERAL
+                # already)
+                purpose = AuthPurpose.MFA
 
-            # Under normal circumstances, this shouldn't be possible.
-            if source.auth_context is None or not source.auth_context.login_method:
-                handler.conclude_request(
-                    401, {}, "Authentication context missing; restart login"
-                )
-                return Result(code=401, user_id=handler.user_id)
+                # Under normal circumstances, this shouldn't be possible.
+                if source.auth_context is None or not source.auth_context.login_method:
+                    handler.conclude_request(
+                        401, {}, "Authentication context missing; restart login"
+                    )
+                    return Result(code=401, user_id=handler.user_id)
 
-        elif (
-            source.purpose == TokenPurpose.GENERAL
-            and request.target_purpose == TokenPurpose.GENERAL_WITH_ESCALATION
-        ):  # GENERAL -> GENERAL + ESCALATION
-            purpose = AuthPurpose.ESCALATION
+            case (TokenPurpose.GENERAL, TokenPurpose.GENERAL_WITH_ESCALATION):
+                purpose = AuthPurpose.ESCALATION
 
-        else:
-            handler.conclude_request(403, {}, "Token exchange is not permitted")
-            return Result(code=403, user_id=handler.user_id)
+            case _:
+                handler.conclude_request(403, {}, "Token exchange is not permitted")
+                return Result(code=403, user_id=handler.user_id)
 
         if purpose == AuthPurpose.ESCALATION:
             try:
