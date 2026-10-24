@@ -1,5 +1,6 @@
 import datetime as dt
 import logging
+import secrets
 import uuid
 from typing import Any
 lazy from collections.abc import Iterator
@@ -84,6 +85,8 @@ def _iter_table_row_batches(
 ) -> Iterator[list[dict[str, Any]]]:
     batch = []
     for row in _iter_raw_table_rows(extract_dir, manifest, table.name):
+        if table.name == "users" and row.get("secret_key") in (None, ""):
+            row = {**row, "secret_key": secrets.token_hex(32)}
         if (
             table.name in {"user_passwords", "user_totp_credentials"}
             and "user_auth_policies" in manifest["tables"]

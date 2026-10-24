@@ -34,9 +34,7 @@ def set_password(
 ) -> None:
     new_secret = secrets.token_hex(32)
     if expected_signing_key is not None:
-        if (
-            user.secret_key or global_config["server"]["secret_key"]
-        ) != expected_signing_key:
+        if user.secret_key != expected_signing_key:
             raise InvalidAuthenticationAttempt(
                 "Authentication credentials changed; restart login"
             )

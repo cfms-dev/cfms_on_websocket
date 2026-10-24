@@ -10,6 +10,7 @@ import jwt
 from sqlalchemy import (
     VARCHAR,
     Boolean,
+    CheckConstraint,
     Double,
     ForeignKey,
     Index,
@@ -25,7 +26,6 @@ from include.config.constants import (
     DEFAULT_TOKEN_EXPIRY_SECONDS,
     USERNAME_DATABASE_MAX_LENGTH,
 )
-from include.config.settings import global_config
 from include.database.session import Base, Session
 from include.domains.identity.tokens import Token, TokenPurpose
 lazy from include.database.models.access import UserBlockEntry
@@ -89,6 +89,9 @@ def _replace_permission_entries(
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("length(secret_key) > 0", name="ck_users_secret_key_nonempty"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         primary_key=True,
@@ -121,11 +124,9 @@ class User(Base):
     )
     status_comment: Mapped["Comment | None"] = relationship("Comment")
 
-    # Per-user secret key. It is regenerated whenever the password changes.
-    # Token verification uses it when present; otherwise it falls back to the
-    # global secret key loaded from config.toml.
+    # Per-user signing key, regenerated whenever the password changes.
     secret_key: Mapped[str] = mapped_column(
-        VARCHAR(64), default=lambda: secrets.token_hex(32), nullable=True
+        VARCHAR(64), default=lambda: secrets.token_hex(32), nullable=False
     )
 
     groups: Mapped[list[UserMembership]] = relationship(
@@ -178,12 +179,7 @@ class User(Base):
         return self.status_comment.comment_text if self.status_comment else None
 
     def create_token_after_authentication(self) -> Token:
-        secret = (
-            global_config["server"]["secret_key"]
-            if not self.secret_key
-            else self.secret_key
-        )
-        token = Token.new(self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, secret)
+        token = Token.new(self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, self.secret_key)
 
         session = object_session(self)
         if session is not None:
@@ -200,11 +196,7 @@ class User(Base):
         try:
             verified = Token.from_raw(
                 raw_token,
-                (
-                    global_config["server"]["secret_key"]
-                    if not self.secret_key
-                    else self.secret_key
-                ),
+                self.secret_key,
             )
             return verified.sub == self.id and bool(verified.purpose & purpose)
         except jwt.ExpiredSignatureError, jwt.InvalidTokenError:
@@ -219,10 +211,11 @@ class User(Base):
             )
         if old is not None and not self.is_token_valid(old, purpose=old.purpose):
             raise jwt.InvalidTokenError("Cannot renew an invalid token")
-        secret = self.secret_key or global_config["server"]["secret_key"]
         purpose = TokenPurpose.GENERAL
 
-        return Token.new(self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, secret, purpose)
+        return Token.new(
+            self.id, DEFAULT_TOKEN_EXPIRY_SECONDS, self.secret_key, purpose
+        )
 
     @property
     def all_groups(self):

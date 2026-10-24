@@ -4,7 +4,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from include.config.settings import global_config
 from include.database.models.identity import User, UserStatus
 from include.database.session import Base
 from include.domains.identity.auth.flows import create_authentication_context
@@ -31,18 +30,16 @@ def test_rotate_secrets_invalidates_every_token_purpose_for_all_users(user_sessi
     with user_sessions.begin() as session:
         for username, secret, status in (
             ("independent", "old-independent-secret" * 2, UserStatus.ACTIVE),
-            ("fallback-null", None, UserStatus.ACTIVE),
-            ("fallback-empty", "", UserStatus.ACTIVE),
+            ("passwordless", None, UserStatus.ACTIVE),
             ("inactive", "old-inactive-secret" * 2, UserStatus.DISABLED),
         ):
-            user = User(username=username, status=status)
+            user = User(username=username, status=status, secret_key=secret)
             session.add(user)
             session.flush()
-            user.secret_key = secret
             context = create_authentication_context(
                 session, user, AuthPurpose.LOGIN, "password"
             )
-            signing_key = secret or global_config["server"]["secret_key"]
+            signing_key = user.secret_key
             tokens = []
             for purpose in (
                 TokenPurpose.AUTH,
@@ -61,7 +58,7 @@ def test_rotate_secrets_invalidates_every_token_purpose_for_all_users(user_sessi
                 )
                 assert Token.from_raw(token.raw, signing_key).purpose == purpose
                 tokens.append(token.raw)
-            previous[user.id] = (secret, status, tokens)
+            previous[user.id] = (signing_key, status, tokens)
 
     assert users.rotate_secrets() == len(previous)
 

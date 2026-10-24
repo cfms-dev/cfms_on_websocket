@@ -78,6 +78,14 @@ def test_request_rate_control_observes_or_enforces_and_hashes_identities(
     assert all(str(ALICE_ID) not in charge.key for charge in provider.charges)
     assert all("192.0.2.55" not in charge.key for charge in provider.charges)
 
+    original_keys = [charge.key for charge in provider.charges]
+    monkeypatch.setitem(guard.global_config["server"], "secret_key", "rotated-secret")
+    guard.check_request_rate("search", 4, "192.0.2.55", user_id=ALICE_ID, bypass=False)
+    assert all(
+        charge.key != previous
+        for charge, previous in zip(provider.charges, original_keys, strict=True)
+    )
+
 
 def test_request_rate_control_bypass_skips_provider(monkeypatch):
     from include.domains.security.guards import request_rate_control as guard

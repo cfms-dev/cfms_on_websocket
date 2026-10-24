@@ -21,6 +21,40 @@ from .support import (
 pytestmark = pytest.mark.component
 
 
+@pytest.mark.parametrize("pre_uuid", [False, True])
+def test_restore_backfills_only_missing_user_secrets(
+    database_factory, backup_context, tmp_path, pre_uuid
+):
+    _, sessions = database_factory(backup_context.Base, tmp_path / "target.db")
+    root = tmp_path / "payload"
+    rows = []
+    for name, key in (
+        ("missing", None),
+        ("null", None),
+        ("empty", ""),
+        ("preserved", "existing-short-secret"),
+    ):
+        row = {"username": name, "created_time": 1.0, "status": 0}
+        if not pre_uuid:
+            row["id"] = str(uuid.uuid4())
+        if name != "missing":
+            row["secret_key"] = key
+        rows.append(row)
+    _write_jsonl(root / "tables/users.jsonl", rows)
+    manifest = {"tables": {"users": {"rows": len(rows)}}}
+
+    _restore_database(root, manifest, sessions)
+
+    with sessions() as session:
+        keys = dict(session.execute(select(User.username, User.secret_key)).all())
+        assert keys["preserved"] == "existing-short-secret"
+        generated = [keys[name] for name in ("missing", "null", "empty")]
+        assert len(set(generated)) == 3
+        assert all(len(bytes.fromhex(key)) == 32 for key in generated)
+        for user in session.scalars(select(User).where(User.username != "preserved")):
+            assert user.is_token_valid(user.renew_token())
+
+
 def test_public_import_restores_real_pre_uuid_archive(
     database_factory, backup_context, tmp_path
 ):

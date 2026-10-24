@@ -7,7 +7,6 @@ from typing import Any, Literal
 from pydantic import Field
 from sqlalchemy.orm import Session
 
-from include.config.settings import global_config
 from include.database.models.auth import UserAuthPolicy
 from include.database.models.identity import User, UserStatus
 from include.domains.identity.auth.types import (
@@ -63,9 +62,7 @@ def create_authentication_context(
         login_revision=revisions.get(AuthPurpose.LOGIN, 0),
         mfa_revision=revisions.get(AuthPurpose.MFA, 0),
         escalation_revision=revisions.get(AuthPurpose.ESCALATION, 0),
-        signing_key_digest=hashlib.sha256(
-            (user.secret_key or global_config["server"]["secret_key"]).encode()
-        ).hexdigest(),
+        signing_key_digest=hashlib.sha256(user.secret_key.encode()).hexdigest(),
     )
 
 
@@ -77,9 +74,7 @@ def validate_authentication_context(
 ) -> None:
     if (
         context.signing_key_digest
-        != hashlib.sha256(
-            (user.secret_key or global_config["server"]["secret_key"]).encode()
-        ).hexdigest()
+        != hashlib.sha256(user.secret_key.encode()).hexdigest()
     ):
         raise InvalidAuthenticationAttempt(
             "Authentication credentials changed; restart authentication"

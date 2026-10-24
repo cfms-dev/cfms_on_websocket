@@ -26,6 +26,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosedOK, InvalidHandshake
 from websockets.typing import DataLike
 
+from include.domains.identity.tokens import TokenPurpose
 from include.transport.multiplexing import (
     Frame,
     FrameType,
@@ -502,7 +503,7 @@ class CFMSTestClient:
                 {
                     "method": "totp",
                     "data": {"token": two_fa_token},
-                    "target_purpose": 2,
+                    "target_purpose": TokenPurpose.GENERAL,
                 },
                 token=response["data"]["token"],
                 auth_responder=auth_responder,

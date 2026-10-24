@@ -54,7 +54,7 @@ def test_real_legacy_schema_preserves_credentials_and_references(sqlite_engine_f
         config = Config(_ROOT / "src/alembic.ini")
         config.attributes["connection"] = connection
         command.stamp(config, "0460356a5ba6")
-        command.upgrade(config, "b2ea9cac8462")
+        command.upgrade(config, "head")
         with sessionmaker(bind=connection)() as session:
             user = session.scalar(select(User).where(User.username == "alice"))
             user_id = user.id
@@ -110,5 +110,5 @@ def test_real_legacy_schema_preserves_credentials_and_references(sqlite_engine_f
             ).scalar_one()
             == "legacy-key"
         )
-        command.upgrade(config, "b2ea9cac8462")
+        command.upgrade(config, "head")
         assert raw.execute("PRAGMA foreign_key_check").fetchall() == []

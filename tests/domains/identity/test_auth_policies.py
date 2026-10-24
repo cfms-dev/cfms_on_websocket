@@ -390,7 +390,7 @@ class Handler:
     def __init__(self, data, token=None):
         self.data = dict(data)
         if token is not None and "method" in data:
-            self.data.setdefault("target_purpose", 2)
+            self.data.setdefault("target_purpose", TokenPurpose.GENERAL)
         self.token = token
         self.user_id = token.sub if token else None
         self.stream = SimpleNamespace(connection=SimpleNamespace(_ws=None), frame_id=1)
@@ -452,7 +452,9 @@ def test_missing_account_rejects_authentication_without_unbound_throttle_records
             {
                 "method": method,
                 "data": proof,
-                "target_purpose": 2 if purpose == AuthPurpose.MFA else 6,
+                "target_purpose": TokenPurpose.GENERAL
+                if purpose == AuthPurpose.MFA
+                else TokenPurpose.GENERAL_WITH_ESCALATION,
             },
             token,
         )
@@ -2355,10 +2357,10 @@ def test_mfa_rejects_expired_auth_token_without_consuming_backup_code(
 @pytest.mark.parametrize(
     ("source", "target"),
     [
-        (TokenPurpose.AUTH, 6),
-        (TokenPurpose.GENERAL, 2),
-        (TokenPurpose.POST_AUTH, 2),
-        (TokenPurpose.GENERAL | TokenPurpose.ESCALATION, 6),
+        (TokenPurpose.AUTH, TokenPurpose.GENERAL_WITH_ESCALATION),
+        (TokenPurpose.GENERAL, TokenPurpose.GENERAL),
+        (TokenPurpose.POST_AUTH, TokenPurpose.GENERAL),
+        (TokenPurpose.GENERAL_WITH_ESCALATION, TokenPurpose.GENERAL_WITH_ESCALATION),
     ],
 )
 def test_mfa_rejects_cross_purpose_exchanges(
@@ -2407,7 +2409,14 @@ def test_escalation_uses_its_own_policy_and_new_expiry(
             expected_revision=0,
         )
     source = Token.new(user_id, 20, signing_key)
-    handler = Handler({"method": method, "data": data, "target_purpose": 6}, source)
+    handler = Handler(
+        {
+            "method": method,
+            "data": data,
+            "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION,
+        },
+        source,
+    )
     if method == "publickey":
 
         def reply(message):
@@ -2433,7 +2442,7 @@ def test_escalation_uses_its_own_policy_and_new_expiry(
     )
     token = Token.from_raw(handler.response["data"]["token"], signing_key)
     assert token.purpose == TokenPurpose.GENERAL | TokenPurpose.ESCALATION
-    assert handler.response["data"]["purpose"] == 6
+    assert handler.response["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
     assert token.exp - token.iat == ESCALATION_TOKEN_EXPIRY_SECONDS
     assert token.exp > source.exp
     assert token.auth_context is None
@@ -2457,7 +2466,7 @@ def test_escalation_uses_its_own_policy_and_new_expiry(
         Token.from_raw(refreshed.response["data"]["token"], signing_key).purpose
         == TokenPurpose.GENERAL
     )
-    assert refreshed.response["data"]["purpose"] == 2
+    assert refreshed.response["data"]["purpose"] == TokenPurpose.GENERAL
 
 
 @pytest.mark.parametrize("policy", [None, []])
@@ -2475,7 +2484,11 @@ def test_escalation_without_a_policy_needs_no_further_proof(
                 expected_revision=0,
             )
     handler = Handler(
-        {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 6},
+        {
+            "method": "totp",
+            "data": {"token": codes[0]},
+            "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION,
+        },
         Token.new(user_id, 60, signing_key),
     )
     assert (
@@ -2509,7 +2522,11 @@ def test_login_mfa_still_requires_method_and_data(
         == 202
     )
     token = Token.from_raw(login.response["data"]["token"], signing_key)
-    data = {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 2}
+    data = {
+        "method": "totp",
+        "data": {"token": codes[0]},
+        "target_purpose": TokenPurpose.GENERAL,
+    }
     for field in ("method", "data") if missing == "both" else (missing,):
         data.pop(field)
     handler = Handler(data, token)
@@ -2598,7 +2615,9 @@ def test_registered_extension_method_uses_the_same_entrypoints(
             {
                 "method": provider.method_id,
                 "data": {"password": "Password123!"},
-                "target_purpose": 6 if purpose == AuthPurpose.ESCALATION else 2,
+                "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION
+                if purpose == AuthPurpose.ESCALATION
+                else TokenPurpose.GENERAL,
             },
             token,
         )
@@ -2609,7 +2628,9 @@ def test_registered_extension_method_uses_the_same_entrypoints(
     assert result.code == 200
     assert "extension-factor" in factors
     assert handler.response["data"]["purpose"] == (
-        6 if purpose == AuthPurpose.ESCALATION else 2
+        TokenPurpose.GENERAL_WITH_ESCALATION
+        if purpose == AuthPurpose.ESCALATION
+        else TokenPurpose.GENERAL
     )
 
 
@@ -2699,7 +2720,7 @@ def test_escalation_rechecks_source_and_account_after_wait(
         {
             "method": "publickey",
             "data": {"fingerprint": fingerprint},
-            "target_purpose": 6,
+            "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION,
         },
         source,
     )

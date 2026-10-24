@@ -552,7 +552,7 @@ def test_no_policy_escalation_issues_short_lived_token_without_proof(
             == 200
         )
     source = Token.new(management.user_id, 60, management.signing_key)
-    handler = Handler({"target_purpose": 6}, source)
+    handler = Handler({"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}, source)
     assert (
         auth.RequestExchangeTokenHandler()
         .handle(
@@ -594,7 +594,7 @@ def test_direct_escalation_rechecks_token_and_account(management, change, expect
             user.status = UserStatus.DISABLED
         elif change == "deleted":
             session.delete(user)
-    handler = Handler({"target_purpose": 6}, source)
+    handler = Handler({"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}, source)
     assert (
         auth.RequestExchangeTokenHandler()
         .handle(
@@ -619,7 +619,7 @@ def test_direct_escalation_rejects_restricted_or_already_elevated_sources(
     management, purpose
 ):
     source = Token.new(management.user_id, 60, management.signing_key, purpose)
-    handler = Handler({"target_purpose": 6}, source)
+    handler = Handler({"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}, source)
     assert (
         auth.RequestExchangeTokenHandler()
         .handle(
@@ -647,7 +647,7 @@ def test_configured_escalation_requires_method_and_data(management, missing):
     data = {
         "method": "password",
         "data": {"password": "Password123!"},
-        "target_purpose": 6,
+        "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION,
     }
     for field in ("method", "data") if missing == "both" else (missing,):
         data.pop(field)

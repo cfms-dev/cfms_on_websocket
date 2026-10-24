@@ -22,7 +22,6 @@ def test_rotate_secrets_confirmation_and_persisted_state(
     _seed_users(src_dir)
     (src_dir / "init").touch()
     with sqlite3.connect(src_dir / "app.db") as connection:
-        connection.execute("UPDATE users SET secret_key = NULL WHERE username = 'bob'")
         original_secrets = dict(
             connection.execute("SELECT username, secret_key FROM users").fetchall()
         )

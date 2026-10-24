@@ -5,6 +5,35 @@ Each authentication method owns its credential tables and verification logic.
 Credentials and policies reference `users.id`; `User` has no reverse credential
 relationships or method-specific properties.
 
+## User signing keys and the global key
+
+Every persisted user has an independent, non-empty `secret_key`, including
+passwordless and OIDC-provisioned accounts. SQLAlchemy generates a random
+32-byte key encoded as 64 hexadecimal characters when inserting a new user.
+The database rejects NULL and empty strings. The default is applied at INSERT,
+so callers must flush a newly constructed user before issuing tokens.
+
+All user JWT purposes (AUTH, POST_AUTH, GENERAL and GENERAL|ESCALATION) are signed
+and verified exclusively with that user's key. Authentication contexts store
+its SHA256 digest to detect key changes during authentication. Changing a
+password or running `maintain user rotate-secrets` replaces user signing keys,
+invalidating their previous tokens and authentication contexts.
+
+`server.secret_key` remains independent configuration for pagination cursor
+encryption and rate-limit identity digests. Changing it invalidates old cursors
+and changes rate-limit bucket identities; it does not revoke user tokens or
+authentication contexts. `security.pepper` is a separate secret used by password
+and backup-code verification.
+
+When upgrading from nullable user keys, stop every instance sharing the
+database, back up the database, run
+`uv run --locked maintain database upgrade --yes`, and then start the new
+release. The migration generates independent random keys only for users whose
+key is NULL or empty; those users must log in again. Existing non-empty keys
+and their tokens remain valid. Restoring a historical backup applies the same
+rule to missing, NULL or empty user keys. Downgrading relaxes the constraints
+without restoring missing keys or reviving invalidated tokens.
+
 ## Registered credentials are not authorization
 
 Password and TOTP remain singleton rows keyed by `user_id`. Their independent
@@ -297,11 +326,10 @@ Apply the same procedure to rollbacks with incompatible authentication semantics
 There is no automatic context migration or version negotiation.
 
 The command assigns each user an independent random 32-byte signing key in a
-single transaction, including inactive users, passwordless users, and users that
-previously fell back to `server.secret_key`. It reports the affected user count
-without printing keys. A failure rolls back the entire rotation. Passwords, TOTP
-secrets, registered credentials, policies and the server configuration are
-unchanged. AUTH, POST_AUTH, GENERAL and GENERAL|ESCALATION tokens signed with
+single transaction, including inactive and passwordless users. It reports the
+affected user count without printing keys. A failure rolls back the entire
+rotation. Passwords, TOTP secrets, registered credentials, policies and the
+server configuration are unchanged. AUTH, POST_AUTH, GENERAL and GENERAL|ESCALATION tokens signed with
 the previous keys fail signature verification. Updating only `server.secret_key`
 does not invalidate tokens belonging to users with independent signing keys.
 

@@ -13,7 +13,6 @@ from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 lazy from websockets.sync.server import ServerConnection
 
 from include.config.constants import NONCE_MIN_LENGTH
-from include.config.settings import global_config
 from include.config.validation import AdmissionControlPolicy
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
@@ -492,11 +491,8 @@ def handle_request(stream: Stream):
                 this_handler.conclude_request(401, {}, "Invalid token")
                 return
 
-            # Determine which `secret` to use.
-            secret: str = user.secret_key or global_config["server"]["secret_key"]
-
             try:
-                token = Token.from_raw(unverified_raw_token, secret)
+                token = Token.from_raw(unverified_raw_token, user.secret_key)
             except jwt.ExpiredSignatureError:
                 this_handler.conclude_request(401, {}, "Token has expired")
                 return

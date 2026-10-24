@@ -771,6 +771,7 @@ def test_oidc_callback_provisions_user_with_configured_group_and_commits_login(
         assert user.status == UserStatus.ACTIVE
         assert user.last_login == context.clock.now
         assert user.all_groups == {"user"}
+        assert len(bytes.fromhex(user.secret_key)) == 32
         assert user.is_token_valid(data["token"])
         assert session.get(UserPasswordCredential, user.id) is None
         binding = session.scalar(
@@ -960,7 +961,7 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
         data={
             "method": "totp",
             "data": {"token": pyotp.TOTP(secret).now()},
-            "target_purpose": 2,
+            "target_purpose": TokenPurpose.GENERAL,
         },
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=None)),
         conclude_request=lambda **response: responses.append(response),

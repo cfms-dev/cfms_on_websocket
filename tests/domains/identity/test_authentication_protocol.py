@@ -22,7 +22,9 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.asyncio
 async def test_removed_complete_mfa_action_is_rejected(user_client):
-    response = await user_client.send_request("complete_mfa", {"target_purpose": 6})
+    response = await user_client.send_request(
+        "complete_mfa", {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}
+    )
     assert response["code"] == 400
     assert "token" not in response["data"]
 
@@ -68,7 +70,11 @@ async def test_password_mfa_post_auth_over_websocket(
     assert denied["code"] == 403
     complete = await client.send_request(
         "exchange_token",
-        {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 2},
+        {
+            "method": "totp",
+            "data": {"token": codes[0]},
+            "target_purpose": TokenPurpose.GENERAL,
+        },
         token=auth_token,
     )
     assert complete["code"] == 4002
@@ -89,7 +95,11 @@ async def test_password_mfa_post_auth_over_websocket(
         ("server_info", {}),
         (
             "exchange_token",
-            {"method": "totp", "data": {"token": codes[1]}, "target_purpose": 2},
+            {
+                "method": "totp",
+                "data": {"token": codes[1]},
+                "target_purpose": TokenPurpose.GENERAL,
+            },
         ),
     ):
         denied = await client.send_request(action, data, token=post_token)
@@ -182,7 +192,11 @@ async def test_multiple_public_keys_in_one_login_request_then_separate_mfa(
     assert stream_ids[0] == stream_ids[1]
     complete = await client.send_request(
         "exchange_token",
-        {"method": "totp", "data": {"token": codes[0]}, "target_purpose": 2},
+        {
+            "method": "totp",
+            "data": {"token": codes[0]},
+            "target_purpose": TokenPurpose.GENERAL,
+        },
         token=login["data"]["token"],
     )
     assert complete["code"] == 200
@@ -214,22 +228,25 @@ async def test_password_escalation_and_refresh_over_websocket(
         {
             "method": "password",
             "data": {"password": account["password"]},
-            "target_purpose": 6,
+            "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION,
         },
     )
     assert elevated["code"] == 200
-    assert elevated["data"]["purpose"] == 6
+    assert elevated["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
     token = elevated["data"]["token"]
-    assert jwt.decode(token, signing_key, algorithms=["HS256"])["purpose"] == 6
+    assert (
+        jwt.decode(token, signing_key, algorithms=["HS256"])["purpose"]
+        == TokenPurpose.GENERAL_WITH_ESCALATION
+    )
     refreshed = await client.send_request("refresh_token", {}, token=token)
     assert refreshed["code"] == 200
-    assert refreshed["data"]["purpose"] == 2
+    assert refreshed["data"]["purpose"] == TokenPurpose.GENERAL
     rejected = await client.send_request(
         "exchange_token",
         {
             "method": "password",
             "data": {"password": account["password"]},
-            "target_purpose": 2,
+            "target_purpose": TokenPurpose.GENERAL,
         },
         token=refreshed["data"]["token"],
     )
@@ -263,10 +280,12 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     )
     assert denied["code"] == 403
     elevated = await client.send_request(
-        "exchange_token", {"target_purpose": 6}, token=general
+        "exchange_token",
+        {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
+        token=general,
     )
     assert elevated["code"] == 200
-    assert elevated["data"]["purpose"] == 6
+    assert elevated["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
     elevated_token = elevated["data"]["token"]
     registered = await client.send_request(
         "register_user_auth_public_key",
@@ -360,28 +379,30 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert blocked["data"]["reason"] == "login_unavailable"
     new_login = await key_login()
     assert new_login["code"] == 202
-    assert new_login["data"]["purpose"] == 1
+    assert new_login["data"]["purpose"] == TokenPurpose.AUTH
     assert "password" in new_login["data"]["methods"]
     complete = await client.send_request(
         "exchange_token",
         {
-            "target_purpose": 2,
+            "target_purpose": TokenPurpose.GENERAL,
             "method": "password",
             "data": {"password": account["password"]},
         },
         token=new_login["data"]["token"],
     )
     assert complete["code"] == 200
-    assert complete["data"]["purpose"] == 2
+    assert complete["data"]["purpose"] == TokenPurpose.GENERAL
     source = complete["data"]["token"]
     missing_proof = await client.send_request(
-        "exchange_token", {"target_purpose": 6}, token=source
+        "exchange_token",
+        {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
+        token=source,
     )
     assert missing_proof["code"] == 400
     verified = await client.send_request(
         "exchange_token",
         {
-            "target_purpose": 6,
+            "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION,
             "method": "publickey",
             "data": {"fingerprint": key["fingerprint"]},
         },
@@ -389,7 +410,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
         auth_responder=respond,
     )
     assert verified["code"] == 200
-    assert verified["data"]["purpose"] == 6
+    assert verified["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
 
 
 @pytest.mark.asyncio
@@ -427,7 +448,9 @@ async def test_default_sysop_manages_another_users_authentication(
     )
     assert inventory["code"] == 200
     assert inventory["data"]["user_id"] == user_id
-    elevated = await client.send_request("exchange_token", {"target_purpose": 6})
+    elevated = await client.send_request(
+        "exchange_token", {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}
+    )
     assert elevated["code"] == 200
     token = elevated["data"]["token"]
     public_key = (

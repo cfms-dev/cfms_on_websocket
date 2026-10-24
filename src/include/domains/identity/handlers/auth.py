@@ -5,7 +5,6 @@ from sqlalchemy import update
 from websockets.exceptions import ConnectionClosed
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
-from include.config.settings import global_config
 from include.database.models.auth import UserAuthPolicy
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
@@ -78,7 +77,7 @@ def authenticate_request(
                 token = Token.new(
                     user.id,
                     ESCALATION_TOKEN_EXPIRY_SECONDS,
-                    user.secret_key or global_config["server"]["secret_key"],
+                    user.secret_key,
                     TokenPurpose.GENERAL | TokenPurpose.ESCALATION,
                 )
                 code, message, data = (
@@ -211,8 +210,7 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
                             Token.new(
                                 user.id,
                                 ESCALATION_TOKEN_EXPIRY_SECONDS,
-                                user.secret_key
-                                or global_config["server"]["secret_key"],
+                                user.secret_key,
                                 TokenPurpose.GENERAL | TokenPurpose.ESCALATION,
                             ),
                         )

@@ -4,7 +4,6 @@ from typing import Any
 lazy from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
-from include.config.settings import global_config
 from include.database.models.identity import User, UserStatus
 from include.database.models.keyrings import UserKey
 from include.domains.identity.auth.flows import get_login_progress
@@ -87,7 +86,7 @@ def finish_login_attempt(
             token = Token.new(
                 user.id,
                 min(300, duration),
-                user.secret_key or global_config["server"]["secret_key"],
+                user.secret_key,
                 purpose=TokenPurpose.POST_AUTH,
                 auth_context=context,
             )
@@ -112,7 +111,7 @@ def finish_login_attempt(
     token = Token.new(
         user.id,
         duration,
-        user.secret_key or global_config["server"]["secret_key"],
+        user.secret_key,
         purpose=TokenPurpose.AUTH,
         auth_context=context,
     )

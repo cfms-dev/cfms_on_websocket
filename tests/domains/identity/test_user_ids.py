@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 import include.database.models  # noqa: F401
 from include.database.models.identity import User
 from include.database.session import Base
-from include.domains.identity.tokens import Token
+from include.domains.identity.tokens import Token, TokenPurpose
 
 pytestmark = pytest.mark.component
 
@@ -121,7 +121,7 @@ def test_legacy_or_invalid_subject_is_rejected(identity_session, claims):
     raw = jwt.encode(
         {
             **claims,
-            "purpose": 2,
+            "purpose": TokenPurpose.GENERAL,
             "exp": time.time() + 300,
             "iat": time.time(),
             "nbf": time.time(),

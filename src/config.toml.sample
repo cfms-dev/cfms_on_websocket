@@ -10,7 +10,8 @@ host = "localhost"
 port = 5104
 # Enable dual-stack IPv6 (bind to both IPv4 and IPv6 if host allows)
 dualstack_ipv6 = true
-# Secret key used for cryptographic operations (e.g., session cookies/tokens)
+# Global key for pagination cursor encryption and rate-limit identity digests.
+# User authentication tokens use independent signing keys stored in the database.
 secret_key = ""
 # Path to the SSL/TLS private key file
 ssl_keyfile = "./content/ssl/key.pem"
