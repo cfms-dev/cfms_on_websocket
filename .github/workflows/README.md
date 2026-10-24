@@ -58,6 +58,8 @@ therefore fail those channels instead of yielding a green optional-backend run.
 MySQL/PostgreSQL use `-k mysql` / `-k postgresql` to select only that backend's
 parameters in the shared scheduler modules. The MySQL job also retains upload
 cleanup, rate limits, and cross-engine migration cases on both MySQL versions.
+System-state creation and scheduled lockdown windows also run with the pure
+Python MySQL connector to cover INSERT row counts after cursor closure.
 Backend XML is uploaded even on failure; normal local integration runs can still
 skip unconfigured opt-in services.
 

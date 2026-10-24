@@ -193,7 +193,7 @@ jobs:
         CFMS_TEST_MYSQL_URL: "mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_migration?charset=utf8mb4"
       run: |
         test -n "$CFMS_TEST_MYSQL_URL"
-        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database tests/domains/documents/test_upload_cleanup_mysql.py tests/domains/documents/test_rate_limits_mysql.py tests/maintenance/database/test_mysql.py -k mysql -q --junitxml=test-results/mysql.xml --durations=25
+        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database tests/domains/documents/test_upload_cleanup_mysql.py tests/domains/documents/test_rate_limits_mysql.py tests/maintenance/database/test_mysql.py tests/database/test_system_states_mysql.py tests/domains/operations/test_lockdown_mysql.py -k mysql -q --junitxml=test-results/mysql.xml --durations=25
       timeout-minutes: 10
 
     - name: Require executed MySQL integration tests
