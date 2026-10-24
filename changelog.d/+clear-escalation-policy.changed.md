@@ -1,1 +1,0 @@
-Allow authenticated users and authorized administrators with GENERAL|ESCALATION tokens to clear an existing escalation policy. Once cleared, a valid GENERAL token can be exchanged directly for a short-lived escalation token without additional verification.

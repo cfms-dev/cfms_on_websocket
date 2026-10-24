@@ -9,9 +9,42 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.2...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.12.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.12.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.12.0) - 2026-10-24
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.11.2...v0.12.0)</small>
+
+### Security
+
+- Unify authentication failures for missing accounts, unauthorized methods and invalid credentials, including failure throttling and dummy password verification, to prevent account enumeration through method permission errors.
+
+### Added
+
+- Add user and delegated administrator WebSocket APIs for authentication inventory, atomic purpose-policy updates, and public-key registration, labels and removal, with escalation requirements, revision conflicts and login/escalation availability checks. Accounts without a configured escalation policy can exchange a valid GENERAL token directly for a short-lived elevated token.
+
+### Changed
+
+- Allow authenticated users and authorized administrators with GENERAL|ESCALATION tokens to clear an existing escalation policy. Once cleared, a valid GENERAL token can be exchanged directly for a short-lived escalation token without additional verification.
+- Authentication credentials now reference accounts in one direction, allowing each method to own its data model without adding attributes to `User`. Extensions using the removed password/TOTP properties and methods must query credentials and use the credential commands instead; database and protocol formats remain unchanged.
+- Move OIDC credential models, identity binding and archive validation into the OIDC extension. Installed extensions can declare independent data entrypoints so disabled extensions retain backup, restore and database transfer support without loading optional runtime dependencies.
+- Protocol (31->28) renames `complete_mfa` to `exchange_token` for login MFA and escalation token exchange, removing the old action. Clients and `security.request_rate_control.action_costs.complete_mfa` overrides must use `exchange_token`. Ordered authentication policy chains and multi-key public-key dialogs remain supported; policy storage, token formats and signing keys are unchanged.
+- Protocol 28 requires UUID user selectors for remote user management, 2FA, keyrings, and user access grants. Discover IDs through login, creation, listing, or explicit username/ID lookup with `get_user_info`. User management audit targets now use UUIDs with username snapshots; credential-based password changes and local maintenance commands retain username semantics. Clients must upgrade with the server and restart affected pagination; no database migration is required.
+- Protocol 29 completes login policies within a multi-message Request, starts any remaining MFA in a separate Request, and supports public-key challenge/response bound to the current authentication dialog. Password compliance is disclosed only after all authentication completes. Restricted POST_AUTH tokens authorize mandatory password changes without issuing a session; anonymous password changes are removed. Existing GENERAL sessions retain their lifetime; clients must support the new dialogs and token purpose.
+- Remove the authentication context version field. Breaking authentication upgrades now require administrators to stop all server instances and run `maintain user rotate-secrets` before restarting. The new maintenance command rotates every user's signing key atomically, invalidating all existing token purposes without changing registered credentials or policies.
+- Request handlers now receive the validated request model as the second argument to `handle(handler, request)`. Core and bundled extension handlers use the supplied model instead of reading raw connection data. Custom extensions and direct callers must adopt the new signature; request validation and structured error responses remain owned by the router.
+- Separate registered credentials from explicit login, MFA and escalation policies; support ordered credential chains and stable OIDC bindings. Existing SSO accounts require explicit issuer/subject binding after migration.
+- Simplify protocol 30 authentication with provider-owned, single-method login and MFA flows; require explicit MFA target token purposes, add short-lived escalation with refresh stripping its flag, and exclude the login method from login MFA. POST_AUTH remains restricted to mandatory password changes followed by a fresh login.
+- User authentication tokens and authentication contexts now use only each user's independent signing key. User keys are required and cannot be empty; schema upgrades and historical backup restores generate keys only for missing values, invalidating those users' old tokens while preserving existing keys. The global server key continues to protect pagination cursors and rate-limit identity digests.
+
+### Fixed
+
+- Adapt ordinary SQLAlchemy locking reads to SQLite write transactions automatically, replacing authentication and scheduling no-op lock updates while preserving the existing Session API and native MySQL/PostgreSQL row locks.
+- Fix MySQL credential migration rollback and update shared database, extension import, authentication logging and server metadata tests for UUID account IDs, isolated runtime configuration and the current protocol version.
+- Restore the credential migration before account UUID conversion, preserve related SQLite data during upgrades and downgrades, use an indexable MySQL public-key fingerprint, and restore pre-UUID backups with their password and MFA policies intact.
+
 
 ## [v0.11.2](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.11.2) - 2026-10-21
 

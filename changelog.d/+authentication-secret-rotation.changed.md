@@ -1,1 +1,0 @@
-Remove the authentication context version field. Breaking authentication upgrades now require administrators to stop all server instances and run `maintain user rotate-secrets` before restarting. The new maintenance command rotates every user's signing key atomically, invalidating all existing token purposes without changing registered credentials or policies.

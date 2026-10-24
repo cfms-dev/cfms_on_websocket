@@ -1,1 +1,0 @@
-Authentication credentials now reference accounts in one direction, allowing each method to own its data model without adding attributes to `User`. Extensions using the removed password/TOTP properties and methods must query credentials and use the credential commands instead; database and protocol formats remain unchanged.

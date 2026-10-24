@@ -1,1 +1,0 @@
-Add user and delegated administrator WebSocket APIs for authentication inventory, atomic purpose-policy updates, and public-key registration, labels and removal, with escalation requirements, revision conflicts and login/escalation availability checks. Accounts without a configured escalation policy can exchange a valid GENERAL token directly for a short-lived elevated token.

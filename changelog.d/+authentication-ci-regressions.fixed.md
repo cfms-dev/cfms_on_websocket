@@ -1,1 +1,0 @@
-Fix MySQL credential migration rollback and update shared database, extension import, authentication logging and server metadata tests for UUID account IDs, isolated runtime configuration and the current protocol version.

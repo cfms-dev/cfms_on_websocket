@@ -1,1 +1,0 @@
-Simplify protocol 30 authentication with provider-owned, single-method login and MFA flows; require explicit MFA target token purposes, add short-lived escalation with refresh stripping its flag, and exclude the login method from login MFA. POST_AUTH remains restricted to mandatory password changes followed by a fresh login.
