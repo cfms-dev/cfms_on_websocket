@@ -76,6 +76,10 @@ class RequestHandler[RequestT: RequestDataModel](ABC):
     # Indicates whether the request handler requires authentication.
     # If True, the router will enforce that a valid token is present in the request.
     requires_auth: bool = False
+
+    # Specify the required token purpose for this request handler.
+    # NOTE: If you wish to specify multiple purposes here, the check will be
+    # considered passed if the target token possesses ANY one of them.
     required_token_purpose: TokenPurpose = TokenPurpose.GENERAL
 
     # Relative token cost used by transport-wide request rate control.

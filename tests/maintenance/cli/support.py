@@ -152,6 +152,9 @@ from include.database.session import Base, Session, engine
 from include.database.models.identity import User
 from include.database.models.auth import UserPasswordCredential, UserTotpCredential
 
+from include.domains.identity.auth.types import AuthPurpose
+from include.domains.identity.commands.auth_policies import replace_auth_policy
+
 Base.metadata.create_all(engine)
 hasher = PasswordHasher()
 with Session() as session:
@@ -171,6 +174,15 @@ with Session() as session:
                 backup_codes='["backup-code"]',
             ),
         ])
+        session.flush()
+        password = session.get(UserPasswordCredential, user.id)
+        totp = session.get(UserTotpCredential, user.id)
+        for purpose, method, credential_id in (
+            (AuthPurpose.LOGIN, "password", password.credential_id),
+            (AuthPurpose.MFA, "totp", totp.credential_id),
+        ):
+            replace_auth_policy(session, user, purpose,
+                [[{"method": method, "credential_ids": [credential_id]}]], expected_revision=0)
     session.commit()
 """,
     )
@@ -188,7 +200,7 @@ load_database_models()
 
 from include.database.session import Session
 from include.database.models.identity import User
-from include.database.models.auth import UserPasswordCredential, UserTotpCredential
+from include.database.models.auth import UserAuthPolicy, UserPasswordCredential, UserTotpCredential
 
 with Session() as session:
     data = {{}}
@@ -201,6 +213,9 @@ with Session() as session:
             "totp_enabled": totp_credential is not None and totp_credential.enabled,
             "totp_secret": totp_credential.secret if totp_credential else None,
             "totp_backup_codes": totp_credential.backup_codes if totp_credential else None,
+            "mfa_chains": session.get(UserAuthPolicy, (user.id, "mfa")).chains,
+            "mfa_revision": session.get(UserAuthPolicy, (user.id, "mfa")).revision,
+            "login_revision": session.get(UserAuthPolicy, (user.id, "login")).revision,
         }}
     print(json.dumps(data, sort_keys=True))
 """,

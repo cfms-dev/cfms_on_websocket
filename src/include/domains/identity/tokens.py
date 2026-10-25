@@ -26,6 +26,16 @@ class TokenPurpose(IntFlag):
 
     However, we still employed the `auto()` determination method, ensuring that
     each flag is a power of 2, starting from 1.
+
+    NOTE: Not all enumeration types defined here can coexist in a practical sense
+    on a single token; for instance, `AUTH` and `POST_AUTH` must be mutually
+    exclusive with any other type. VIOLATION OF THIS RULE MAY HAVE CATASTROPHIC
+    CONSEQUENCES!
+
+    A few exceptions exist—namely, `GENERAL` and `ESCALATION`—which are permitted
+    to coexist because we want an "escalation token" to also be capable of performing
+    standard operations, even though the sets of actions associated with these two
+    purposes are, by design, distinct.
     """
 
     AUTH = 1  # Used for further authentication (e.g., 2FA, etc.)
@@ -112,5 +122,12 @@ class Token:
         )
 
     def has_purpose(self, purpose: TokenPurpose, /) -> bool:
-        """Check if the token has the specified purpose."""
+        """Check if the token has the specified purpose.
+
+        Args:
+            purpose: The `TokenPurpose` to check against the token's purpose.
+                If multiple `purpose` values are combined using a bitwise OR
+                operation, the semantics dictate that the token being checked
+                must possess ALL of the combined purposes.
+        """
         return self.purpose & purpose == purpose

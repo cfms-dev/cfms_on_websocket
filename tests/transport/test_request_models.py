@@ -356,32 +356,16 @@ def test_update_user_block_rejects_empty_reason():
         )
 
 
-@pytest.mark.parametrize(
-    ("old_password_fields", "expected", "provided"),
-    [
-        pytest.param({}, None, False, id="omitted"),
-        pytest.param({"old_passwd": None}, None, True, id="null"),
-        pytest.param({"old_passwd": ""}, "", True, id="empty"),
-        pytest.param({"old_passwd": "secret"}, "secret", True, id="credential"),
-    ],
-)
-def test_password_request_preserves_old_password_mode(
-    old_password_fields, expected, provided
-):
-    request = RequestSetPasswdHandler.request_model.model_validate(
-        {
-            **(
-                {"user_id": str(uuid.uuid4())}
-                if expected is None
-                else {"username": "alice"}
-            ),
-            "new_passwd": "NewPassword123!",
-            **old_password_fields,
-        }
-    )
-
-    assert request.old_passwd == expected
-    assert ("old_passwd" in request.model_fields_set) is provided
+@pytest.mark.parametrize("field", ["username", "old_passwd"])
+@pytest.mark.parametrize("value", [None, "", "secret"])
+def test_password_request_rejects_removed_fields(field, value):
+    with pytest.raises(ValidationError) as error:
+        RequestSetPasswdHandler.request_model.model_validate(
+            {"new_passwd": "NewPassword123!", field: value}
+        )
+    assert [(e["type"], e["loc"]) for e in error.value.errors()] == [
+        ("extra_forbidden", (field,))
+    ]
 
 
 _PERMISSION = {

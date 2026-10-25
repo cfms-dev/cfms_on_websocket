@@ -26,6 +26,7 @@
 - Avoid anti-patterns when coding.
 - Observe the DRY principle.
 - If you need to create an Alembic upgrade/downgrade script, create the framework by running the command `uv run alembic revision --autogenerate`, and then modify the parts you want to change in the generated file, instead of creating a file from scratch.
+- If a pre-commit hook automatically formats the code, do not attempt to revert it, as I will end up having to format it again anyway.
 
 ## Commit conventions
 - When the required changes are substantial, commit them in stages where appropriate to avoid difficulties during subsequent reviews.

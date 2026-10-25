@@ -12,6 +12,7 @@ from include.domains.identity.auth.registry import auth_registry
 from include.domains.identity.auth.types import (
     LOGIN_DISALLOWED_METHODS,
     AuthPurpose,
+    AuthStep,
     auth_chains_adapter,
 )
 
@@ -80,7 +81,14 @@ def replace_auth_policy(
         (c.method, c.credential_id)
         for c in auth_registry.list_user_credentials(session, user)
     }
+    seen = set()
     for chain in parsed:
+        identity = tuple(
+            (step.method, frozenset(step.credential_ids)) for step in chain
+        )
+        if identity in seen:
+            raise ValueError("Duplicate authentication chain")
+        seen.add(identity)
         if len({step.method for step in chain}) != 1:
             raise ValueError("An authentication chain must use exactly one method")
         for step in chain:
@@ -124,6 +132,69 @@ def replace_auth_policy(
                     UserAuthPolicy.revision == expected_revision,
                 )
                 .values(chains=data, revision=expected_revision + 1)
+            ),
+        )
+        if result.rowcount != 1:
+            raise AuthPolicyConflict("Authentication policy changed")
+
+
+def remove_credential_from_auth_policies(
+    session: Session, user: User, method: str, credential_id: str
+) -> None:
+    """Prune deleted credential dependencies without shortening authentication chains."""
+    credentials = [
+        c.model_copy(update={"active": True})
+        for c in auth_registry.list_user_credentials(session, user)
+        if (c.method, c.credential_id) != (method, credential_id)
+    ]
+    for purpose in AuthPurpose:
+        policy = session.get(UserAuthPolicy, (user.id, purpose.value))
+        if policy is None:
+            continue
+        parsed = auth_chains_adapter.validate_python(policy.chains)
+        if not any(
+            step.method == method and credential_id in step.credential_ids
+            for chain in parsed
+            for step in chain
+        ):
+            continue
+        retained = []
+        seen = set()
+        for chain in parsed:
+            affected = any(
+                step.method == method and credential_id in step.credential_ids
+                for step in chain
+            )
+            pruned = []
+            for step in chain:
+                pool = [
+                    cid
+                    for cid in step.credential_ids
+                    if (step.method, cid) != (method, credential_id)
+                ]
+                if not pool:
+                    break
+                pruned.append(AuthStep(method=step.method, credential_ids=pool))
+            else:
+                if affected and not can_complete_auth_chain(pruned, credentials):
+                    continue
+                identity = tuple(
+                    (step.method, frozenset(step.credential_ids)) for step in pruned
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    retained.append(pruned)
+        data = auth_chains_adapter.dump_python(retained, mode="json")
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                update(UserAuthPolicy)
+                .where(
+                    UserAuthPolicy.user_id == user.id,
+                    UserAuthPolicy.purpose == purpose.value,
+                    UserAuthPolicy.revision == policy.revision,
+                )
+                .values(chains=data, revision=policy.revision + 1)
             ),
         )
         if result.rowcount != 1:

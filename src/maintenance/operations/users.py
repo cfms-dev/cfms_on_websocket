@@ -74,14 +74,22 @@ def clear_totp(
 
     with Session() as session:
         if all_users:
-            credentials = session.scalars(select(UserTotpCredential)).all()
-            updated_count = len(credentials)
-            for credential in credentials:
-                remove_totp(session, credential.user, credential)
+            users = session.scalars(
+                select(User)
+                .join(UserTotpCredential)
+                .order_by(User.id)
+                .with_for_update()
+            ).all()
+            updated_count = len(users)
+            for user in users:
+                credential = UserTotpCredential.get_existing(session, user.id)
+                remove_totp(session, user, credential)
             session.commit()
             return TotpClearResult(username=None, updated_count=updated_count)
 
-        user = session.scalar(select(User).where(User.username == username))
+        user = session.scalar(
+            select(User).where(User.username == username).with_for_update()
+        )
         if user is None:
             raise MaintenanceOperationError(f"User {username!r} was not found.")
 

@@ -50,13 +50,13 @@ def test_create_user_persists_credentials_and_account_relations(
     user_commands.create_user(
         username="created",
         password=password,
-        permissions=[{"permission": "set_passwd"}],
+        permissions=[{"permission": "configure_auth_methods"}],
         groups=[{"group_name": "operators"}],
     )
 
     with credential_sessions() as session:
         user = session.scalar(select(User).where(User.username == "created"))
-        assert [entry.permission for entry in user.rights] == ["set_passwd"]
+        assert [entry.permission for entry in user.rights] == ["configure_auth_methods"]
         assert [entry.group_name for entry in user.groups] == ["operators"]
         credential = session.get(UserPasswordCredential, user.id)
         if password is None:

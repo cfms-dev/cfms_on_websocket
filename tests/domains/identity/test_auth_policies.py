@@ -25,13 +25,14 @@ from include.database.models.auth import (
     UserPasswordCredential,
     UserTotpCredential,
 )
-from include.database.models.identity import User, UserStatus
+from include.database.models.identity import User, UserPermission, UserStatus
 from include.database.models.security import (
     AccountThrottle,
     LoginThrottle,
     TrafficThrottle,
 )
 from include.database.session import Base
+from include.domains.access.permissions import Permissions
 from include.domains.identity.auth import auth_registry, flows
 from include.domains.identity.auth.base import AuthVerificationResult
 from include.domains.identity.auth.flows import (
@@ -316,16 +317,30 @@ def test_policy_rollback_reenrollment_and_cascade(auth_sessions):
         assert session.get(UserAuthPolicy, (user_id, "login")) is None
 
 
-def test_totp_activation_does_not_imply_mfa_and_custom_removal_fails_closed(
+def test_totp_activation_does_not_imply_mfa_and_custom_removal_prunes_policy(
     auth_sessions,
 ):
     with auth_sessions.begin() as session:
         user = User(username="totp")
         session.add(user)
         session.flush()
+        set_password(session, user, "Password123!")
+        session.flush()
+        password = session.get(UserPasswordCredential, user.id)
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.LOGIN,
+            [[{"method": "password", "credential_ids": [password.credential_id]}]],
+            expected_revision=0,
+        )
         credential, _ = setup_totp(session, user)
         session.flush()
-        assert not auth_registry.list_user_credentials(session, user)[0].active
+        assert not next(
+            c
+            for c in auth_registry.list_user_credentials(session, user)
+            if c.method == "totp"
+        ).active
         credential.enable()
         assert not auth_registry.user_requires_mfa(session, user)
         enable_login_totp(session, user, credential)
@@ -340,10 +355,9 @@ def test_totp_activation_does_not_imply_mfa_and_custom_removal_fails_closed(
         )
         remove_totp(session, user, credential)
         session.flush()
-        assert auth_registry.user_requires_mfa(session, user)
-        assert not auth_registry.evaluate_user_policy(
-            session, user, AuthPurpose.MFA, [], attempt_id="a"
-        ).satisfied
+        assert not auth_registry.user_requires_mfa(session, user)
+        assert session.get(UserAuthPolicy, (user.id, "mfa")).chains == []
+        assert session.get(UserAuthPolicy, (user.id, "mfa")).revision == 3
 
 
 @pytest.fixture
@@ -699,6 +713,14 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
         session.flush()
         user_id = user.id
         session.add(UserTotpCredential(user_id=user_id, secret=secret, enabled=False))
+        session.add(
+            UserPermission(
+                user_id=user_id,
+                permission=Permissions.CONFIGURE_AUTH_METHODS,
+                granted=True,
+                start_time=0,
+            )
+        )
 
     def unexpected_throttle_call(*_args, **_kwargs):
         raise AssertionError(
@@ -1006,14 +1028,10 @@ def test_concurrent_post_auth_password_change_has_one_winner(
     token = Token.from_raw(complete.response["data"]["token"], signing_key)
     barrier = threading.Barrier(2)
     results, errors = [], []
-    original = users.set_password
-
-    def competing_update(*args, **kwargs):
-        barrier.wait(timeout=5)
-        original(*args, **kwargs)
 
     def worker(password):
         try:
+            barrier.wait(timeout=5)
             request = Handler({"new_passwd": password}, token)
             result = users.RequestSetPasswdHandler().handle(
                 request,
@@ -1025,7 +1043,6 @@ def test_concurrent_post_auth_password_change_has_one_winner(
         except Exception as exc:  # noqa: BLE001 -- propagate worker failures to the test thread
             errors.append(exc)
 
-    monkeypatch.setattr(users, "set_password", competing_update)
     workers = [
         threading.Thread(target=worker, args=(p,))
         for p in ("WinnerPassword123!", "WinnerPassword456!")
@@ -1823,7 +1840,7 @@ def test_post_auth_cannot_select_other_accounts_or_options(
         with pytest.raises(ValidationError) as error:
             users.RequestSetPasswdHandler.request_model.model_validate(handler.data)
         assert [(item["type"], item["loc"]) for item in error.value.errors()] == [
-            ("value_error", ())
+            ("extra_forbidden", (next(iter(extra)),))
         ]
     else:
         request = users.RequestSetPasswdHandler.request_model.model_validate(

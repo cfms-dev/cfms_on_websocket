@@ -214,6 +214,10 @@ def test_clear_totp_for_single_user_preserves_other_users(tmp_path):
     assert state["alice"]["totp_secret"] is None
     assert state["alice"]["totp_backup_codes"] is None
     assert state["bob"]["totp_enabled"] is True
+    assert state["alice"]["mfa_chains"] == []
+    assert state["alice"]["mfa_revision"] == 2
+    assert state["alice"]["login_revision"] == 1
+    assert state["bob"]["mfa_revision"] == 1
 
 
 def test_clear_totp_for_all_users_removes_secrets_and_backup_codes(tmp_path):
@@ -227,6 +231,9 @@ def test_clear_totp_for_all_users_removes_secrets_and_backup_codes(tmp_path):
         assert state[username]["totp_enabled"] is False
         assert state[username]["totp_secret"] is None
         assert state[username]["totp_backup_codes"] is None
+        assert state[username]["mfa_chains"] == []
+        assert state[username]["mfa_revision"] == 2
+        assert state[username]["login_revision"] == 1
 
 
 def test_clear_totp_all_abort_uses_typer_abort_and_keeps_users(tmp_path):

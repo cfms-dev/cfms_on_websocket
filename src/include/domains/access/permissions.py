@@ -27,7 +27,6 @@ class Permissions(StrEnum):
     SUPER_CREATE_DOCUMENT = "super_create_document"
     SUPER_CREATE_DIRECTORY = "super_create_directory"
     SUPER_LIST_DIRECTORY = "super_list_directory"
-    SUPER_SET_PASSWD = "super_set_passwd"
     SUPER_SET_USER_AVATAR = "super_set_user_avatar"
 
     # System and management
@@ -49,9 +48,9 @@ class Permissions(StrEnum):
     MANAGE_USER_STATUS = "manage_user_status"
     GET_USER_INFO = "get_user_info"
     LIST_USERS = "list_users"
-    MANAGE_2FA = "manage_2fa"
-    MANAGE_USER_AUTHENTICATION = "manage_user_authentication"
-    SET_PASSWD = "set_passwd"
+    CONFIGURE_AUTH_METHODS = "configure_auth_methods"
+    SUPER_CONFIGURE_AUTH_METHODS = "super_configure_auth_methods"
+    SUPER_LIST_USER_AUTH_METHODS = "super_list_user_auth_methods"
     SET_USER_PERMISSIONS = "set_user_permissions"
     SET_USER_AVATAR = "set_user_avatar"
 

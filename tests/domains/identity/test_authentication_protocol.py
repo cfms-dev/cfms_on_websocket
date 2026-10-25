@@ -248,7 +248,7 @@ async def test_password_escalation_and_refresh_over_websocket(
 async def test_user_manages_public_key_login_and_mfa_over_websocket(
     user_factory, unauthenticated_client
 ):
-    account = await user_factory()
+    account = await user_factory(groups=[{"group_name": "user", "start_time": 0}])
     client = unauthenticated_client
     login = await client.login(account["username"], account["password"])
     assert login["code"] == 200

@@ -17,6 +17,10 @@ from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.identity.auth.registry import auth_registry
+from include.domains.identity.commands.auth_policies import (
+    AuthPolicyConflict,
+    AuthPolicyUnavailable,
+)
 from include.domains.identity.commands.credentials import (
     enable_login_totp,
     remove_totp,
@@ -105,6 +109,16 @@ class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
     def handle(self, handler, request):
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
+            if (
+                not {
+                    Permissions.CONFIGURE_AUTH_METHODS,
+                    Permissions.SUPER_CONFIGURE_AUTH_METHODS,
+                }
+                & user.all_permissions
+            ):
+                handler.conclude_request(403, {}, "Permission denied")
+                return Result(code=403, target=str(user.id), user_id=handler.user_id)
+            session.refresh(user, with_for_update=True)
 
             # Check if user already has 2FA enabled
             credential = session.get(UserTotpCredential, user.id)
@@ -169,6 +183,17 @@ class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
                 )
                 return
 
+            if (
+                not {
+                    Permissions.CONFIGURE_AUTH_METHODS,
+                    Permissions.SUPER_CONFIGURE_AUTH_METHODS,
+                }
+                & user.all_permissions
+            ):
+                handler.conclude_request(403, {}, "Permission denied")
+                return Result(code=403, target=str(user.id), user_id=handler.user_id)
+            session.refresh(user, with_for_update=True)
+
             # Check if TOTP secret exists but not enabled yet
             credential = session.get(UserTotpCredential, user.id)
             if credential is None or not credential.secret:
@@ -227,11 +252,22 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
         with Session() as session:
             requester = User.get_existing(session, handler.user_id)
             requester_username = requester.username
-        target_user_id = (
-            request.user_id
-            if "user_id" in request.model_fields_set
-            else handler.user_id
-        )
+            target_user_id = (
+                request.user_id
+                if request.user_id is not REQUEST_UNSET
+                else handler.user_id
+            )
+            if not (
+                Permissions.SUPER_CONFIGURE_AUTH_METHODS in requester.all_permissions
+                or (
+                    target_user_id == requester.id
+                    and Permissions.CONFIGURE_AUTH_METHODS in requester.all_permissions
+                )
+            ):
+                handler.conclude_request(403, {}, "Permission denied")
+                return Result(
+                    code=403, target=str(target_user_id), user_id=handler.user_id
+                )
         audit_target = str(target_user_id)
         audit_data = {}
         requester_user_id = handler.user_id
@@ -257,17 +293,7 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
                 )
 
         with Session() as session:
-            if not is_self:
-                requester = User.get_existing(session, requester_user_id)
-                if Permissions.MANAGE_2FA not in requester.all_permissions:
-                    handler.conclude_request(403, {}, "Permission denied")
-                    return Result(
-                        code=403,
-                        target=audit_target,
-                        user_id=requester_user_id,
-                    )
-
-            user = session.get(User, target_user_id)
+            user = session.get(User, target_user_id, with_for_update=True)
             if user is not None:
                 audit_data["target_username"] = user.username
             credential = session.get(UserTotpCredential, user.id) if user else None
@@ -283,7 +309,10 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
             if password:
                 password_credential = session.get(UserPasswordCredential, user.id)
                 if not verify_password_or_dummy(password_credential, password):
-                    LoginGuard.report_failure(ip, user.username, AuthFactor.PASSWORD)
+                    session.rollback()
+                    LoginGuard.report_failure(
+                        ip, requester_username, AuthFactor.PASSWORD
+                    )
                     handler.conclude_request(401, {}, "Invalid password")
                     return Result(
                         code=401,
@@ -291,13 +320,6 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
                         data=audit_data,
                         user_id=requester_user_id,
                     )
-
-                LoginGuard.report_success(
-                    ip,
-                    user.username,
-                    AuthFactor.PASSWORD,
-                    completed_authentication=True,
-                )
 
                 if user.status != UserStatus.ACTIVE:
                     handler.conclude_request(4003, {}, "User account is not active")
@@ -308,9 +330,32 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
                         user_id=requester_user_id,
                     )
 
-            remove_totp(session, user, credential)
-            session.commit()
+            try:
+                remove_totp(session, user, credential)
+                session.commit()
+            except (AuthPolicyConflict, AuthPolicyUnavailable) as exc:
+                reason = (
+                    exc.reason
+                    if isinstance(exc, AuthPolicyUnavailable)
+                    else "revision_conflict"
+                )
+                handler.conclude_request(
+                    409, {"reason": reason}, "Authentication policy conflict"
+                )
+                return Result(
+                    code=409,
+                    target=audit_target,
+                    data=audit_data,
+                    user_id=requester_user_id,
+                )
 
+        if password:
+            LoginGuard.report_success(
+                ip,
+                requester_username,
+                AuthFactor.PASSWORD,
+                completed_authentication=True,
+            )
         handler.conclude_request(200, {}, "2FA disabled successfully")
         return Result(
             code=0, target=audit_target, data=audit_data, user_id=requester_user_id
@@ -333,6 +378,16 @@ class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
     def handle(self, handler, request):
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
+            if (
+                not {
+                    Permissions.CONFIGURE_AUTH_METHODS,
+                    Permissions.SUPER_CONFIGURE_AUTH_METHODS,
+                }
+                & user.all_permissions
+            ):
+                handler.conclude_request(403, {}, "Permission denied")
+                return Result(code=403, target=str(user.id), user_id=handler.user_id)
+            session.refresh(user, with_for_update=True)
 
             # Check if TOTP setup exists but not enabled yet
             credential = session.get(UserTotpCredential, user.id)
@@ -345,8 +400,19 @@ class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
                 return
 
             # Cancel TOTP setup
-            remove_totp(session, user, credential)
-            session.commit()
+            try:
+                remove_totp(session, user, credential)
+                session.commit()
+            except (AuthPolicyConflict, AuthPolicyUnavailable) as exc:
+                reason = (
+                    exc.reason
+                    if isinstance(exc, AuthPolicyUnavailable)
+                    else "revision_conflict"
+                )
+                handler.conclude_request(
+                    409, {"reason": reason}, "Authentication policy conflict"
+                )
+                return Result(code=409, target=str(user.id), user_id=handler.user_id)
 
             handler.conclude_request(
                 code=200,
@@ -377,7 +443,7 @@ class RequestGet2FAStatusHandler(RequestHandler[_Get2FAStatusRequest]):
 
             if (
                 target_user_id != user.id
-                and Permissions.MANAGE_2FA not in user.all_permissions
+                and Permissions.SUPER_LIST_USER_AUTH_METHODS not in user.all_permissions
             ):
                 handler.conclude_request(
                     code=403,

@@ -80,6 +80,7 @@ async def test_stale_id_cannot_manage_same_named_replacement(
         ),
         400,
     )
+    assert_success(await authenticated_client.elevate_token())
     assert_error(
         await authenticated_client.send_request(
             "set_passwd",
@@ -212,11 +213,11 @@ async def test_keyring_authorizes_before_target_lookup(
 async def test_administrator_reset_uses_id_and_audits_actor(
     authenticated_client, user_client, test_user
 ):
+    assert_success(await authenticated_client.elevate_token())
     response = await authenticated_client.send_request(
         "set_passwd",
         {
             "user_id": test_user["user_id"],
-            "old_passwd": None,
             "new_passwd": "UpdatedPassword456!",
         },
     )

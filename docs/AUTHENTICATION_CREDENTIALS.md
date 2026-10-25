@@ -143,14 +143,27 @@ MFA; this supports TOTP used only for escalation. The standard `validate_2fa`
 workflow calls `enable_login_totp`, which explicitly installs a single-step TOTP
 MFA policy only when the MFA policy is empty. It preserves custom policies.
 
-Removing a credential leaves policy references intact. `remove_totp` additionally
-clears the MFA policy when it is exactly that credential's single-step standard
-policy. The self-service disable/cancel and maintenance clear workflows use this
-operation. Custom combinations are preserved, including unavailable references;
-removal never silently shortens a chain or turns required MFA off.
+Public-key deletion and `remove_totp` remove the deleted credential ID from
+all purpose policies in the same transaction. Nonempty credential pools retain
+their remaining selectors. A chain is removed in full if any pool becomes empty
+or distinct public keys can no longer satisfy its steps; steps are never removed
+to shorten a chain. Pending registrations are retained. Reduced duplicate chains
+are merged, preserving the first alternative, and each changed policy revision
+increments once. Empty policy rows retain their revision.
 
-The password-change and self-service 2FA-disable endpoints retain their dedicated
-password checks; escalation issuance does not replace those checks.
+Deletion must preserve a complete login/MFA path; otherwise it rolls back with
+`409` and `reason: login_unavailable`. MFA and escalation policies may become
+empty, disabling their additional verification. The self-service disable/cancel
+and maintenance clear workflows use the shared TOTP removal operation. Extension
+credential removal workflows should call
+`remove_credential_from_auth_policies(session, user, method, credential_id)` in
+their transaction and check availability before committing.
+
+Ordinary password configuration requires a GENERAL|ESCALATION token and the
+applicable configuration permission, without the old password. Self-service
+2FA disabling retains its password verification in addition to configuration
+permission. Empty escalation policies still allow elevation without another
+proof; an elevated token alone does not imply that MFA was performed.
 
 ## Authentication attempts and token exchange (protocol 31)
 
@@ -292,8 +305,21 @@ The new password must satisfy current rules and differ from the old password.
 Policy/credential state is rechecked. Password update and conditional signing-key
 rotation commit atomically, so concurrent uses have one winner. Success returns
 200 with no token: the user must log in again, and old account tokens are invalid.
-Ordinary authenticated self-service and administrator changes keep their existing
-checks. `last_login` changes only when a completed login issues GENERAL.
+Ordinary authenticated password changes require configuration permission and
+a token with ESCALATION purpose. GENERAL may coexist with ESCALATION but is not
+required for password changes. POST_AUTH remains a restricted permission-free
+exception. `last_login` changes only when a completed login issues GENERAL.
+
+`set_passwd` relies on request-entry token authentication in the router and does
+not revalidate the token during handler execution. Self-service password changes
+and POST_AUTH atomically match and rotate the signing key associated with the
+request token in the same transaction as the password update. Requests using the
+same old key have at most one successful commit; a key or account-status conflict
+returns 401 without changing the password or key and is not retried automatically.
+The existing password-rule and unchanged-password checks run before the
+conditional update, so an unchanged password still returns 400. POST_AUTH also
+checks its authentication context. Administrator resets of other users retain
+serialized writes without this version check and may overwrite an earlier reset.
 
 Protocol 31 requires clients to submit `target_purpose` and handle the actual
 issued purpose. No database or archive migration is needed.
@@ -342,15 +368,21 @@ repeat the rotation before serving requests after an incompatible restore.
 ## User authentication management
 
 These authenticated protocol-31 WebSocket actions accept optional `user_id`
-(an account UUID), defaulting to the caller. Managing another account requires
-`manage_user_authentication`; neither `manage_2fa` nor escalation alone grants
-that permission. Authorization is checked before reporting target existence.
+(an account UUID), defaulting to the caller. Self inventory requires no special
+permission. Reading another account's inventory or 2FA status requires
+`super_list_user_auth_methods`. Configuring oneself requires
+`configure_auth_methods` or `super_configure_auth_methods`; configuring another
+account requires `super_configure_auth_methods`. Super configuration does not
+grant cross-user read access, and writes do not additionally require read access.
+Authorization precedes target existence disclosure and credential reads.
+
 The read action accepts GENERAL tokens; all four write actions require
-GENERAL|ESCALATION. Existing password and TOTP lifecycle endpoints retain their
-dedicated checks and behavior. OIDC binding/unbinding remains extension-owned.
-New installations grant this permission to the default `sysop` group. Existing
-installations must grant it to intended administrators through the existing
-user/group permission APIs; this change does not rewrite stored permissions.
+GENERAL|ESCALATION. Password and TOTP lifecycle endpoints use the same
+configuration permission rules. TOTP retains its existing verification
+requirements. OIDC binding/unbinding remains extension-owned.
+New installations grant `configure_auth_methods` to `user` and both super
+permissions to `sysop`. Existing installations must grant the new permissions
+explicitly; there is no data migration or mapping from removed permissions.
 
 | Action | Request fields besides optional `user_id` | Response data |
 | --- | --- | --- |
@@ -376,8 +408,8 @@ fingerprints; it is not the SSH wire-blob fingerprint used by `ssh-keygen`.
 Labels contain at most 255 characters; null clears a label. A registration is
 authorized by the elevated caller without an additional possession challenge.
 It grants no authentication purpose. Keys cannot be replaced in place: register
-a replacement, update policies and then remove the old key. Deletion retains
-policy references and does not shorten chains.
+a replacement, update policies and then remove the old key. Deletion prunes policy
+dependencies atomically as described above and does not shorten chains.
 
 For example, after registering a key, a caller can configure public-key login
 with password MFA and public-key escalation in one transaction:
@@ -390,21 +422,27 @@ with password MFA and public-key escalation in one transaction:
 ]}}
 ```
 
-Each purpose may appear once. Updates use current revisions, increment each
-changed revision by one, and commit or roll back as a group. Write operations
+Each purpose may appear once. Within each purpose, duplicate complete chains
+are rejected with `400` and `reason: invalid_policy`. Equality preserves step
+order and compares each step's method and credential ID set, ignoring pool
+order. Identical chains in different purposes are allowed.
+Updates use current revisions, increment each changed revision by one, and
+commit or roll back as a group. Write operations
 serialize on the target user's row before reading authentication state. Policy
 updates and key deletion must preserve at least one complete login path,
-including a different-method MFA alternative when MFA is required. They must
-also preserve a completable nonempty escalation policy. Inactive registrations
+including a different-method MFA alternative when MFA is required. Policy
+replacements must also preserve a completable nonempty escalation policy. Credential deletion may
+clear escalation by removing its last dependent chain. Inactive registrations
 do not count as available; repeated public-key steps require a distinct key
 assignment. Single-proof password, TOTP and OIDC flows cannot satisfy multi-step
 chains. An escalation policy can be cleared by setting `chains: []` with its
 current revision using a GENERAL|ESCALATION token. This disables the additional
 verification for subsequent escalation: a valid GENERAL token can then be
 exchanged directly for a short-lived GENERAL|ESCALATION token without method
-or proof data. An empty MFA policy is allowed and disables login MFA. These
-availability checks apply to the new management writes, not trusted commands or existing TOTP
-lifecycle endpoints. Availability describes registered active credentials;
+or proof data. An empty MFA policy is allowed and disables login MFA. Availability
+checks also apply to TOTP deletion workflows; ordinary trusted policy replacement
+commands leave final availability checks to their caller. Availability describes
+registered active credentials;
 it does not prove the user still possesses their secrets or that an external
 identity provider is currently reachable.
 

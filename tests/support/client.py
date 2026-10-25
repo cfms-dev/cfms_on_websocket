@@ -516,6 +516,15 @@ class CFMSTestClient:
 
         return response
 
+    async def elevate_token(self) -> dict[str, Any]:
+        """Exchange the current GENERAL token under an empty escalation policy."""
+        response = await self.send_request(
+            "exchange_token", {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}
+        )
+        if response["code"] == 200:
+            self.token = response["data"]["token"]
+        return response
+
     async def server_info(self) -> dict[str, Any]:
         """
         Get server information.

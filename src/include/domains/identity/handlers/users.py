@@ -17,7 +17,6 @@ __all__ = [
 ]
 
 import time
-import uuid
 from typing import Annotated, Literal, Self
 
 import filetype
@@ -48,7 +47,6 @@ from include.domains.identity.auth.password_state import password_change_require
 from include.domains.identity.auth.types import InvalidAuthenticationAttempt
 from include.domains.identity.commands.credentials import set_password
 from include.domains.identity.commands.users import create_user
-from include.domains.identity.password_auth import verify_password_or_dummy
 from include.domains.identity.permission_entries import serialize_permission_entries
 from include.domains.identity.request_models import (
     OffsetPaginationRequest,
@@ -74,9 +72,7 @@ from include.domains.pagination import (
     get_page_size,
     make_cursor_response,
 )
-from include.domains.security.guards.login import AuthFactor, LoginGuard
 from include.messages import Messages as smsg
-from include.transport.client_address import get_client_ip
 from include.transport.request_handler import (
     REQUEST_UNSET,
     Omittable,
@@ -161,24 +157,10 @@ class _ChangeUserPermissionsRequest(_UserIDRequest):
 
 
 class _SetPasswordRequest(RequestDataModel):
-    username: Omittable[RequestUsername] = REQUEST_UNSET
     user_id: Omittable[RequestUserID] = REQUEST_UNSET
-    old_passwd: str | None = None
     new_passwd: NonEmptyString
     force_update_after_login: Omittable[bool] = REQUEST_UNSET
     bypass_passwd_requirements: Omittable[bool] = REQUEST_UNSET
-
-    @model_validator(mode="after")
-    def validate_password_selector(self) -> Self:
-        selectors = {"username", "user_id"} & self.model_fields_set
-        if not selectors and self.old_passwd is None:
-            return self
-        expected = {"username"} if self.old_passwd is not None else {"user_id"}
-        if selectors != expected:
-            raise ValueError(
-                "Use username with old_passwd, or user_id for administrator reset"
-            )
-        return self
 
 
 class _ManageUserStatusRequest(_UserIDRequest):
@@ -1210,84 +1192,75 @@ class RequestSetPasswdHandler(RequestHandler[_SetPasswordRequest]):
     request_model = _SetPasswordRequest
     rate_limit_cost = 10
     requires_auth = True
-    required_token_purpose = TokenPurpose.GENERAL | TokenPurpose.POST_AUTH
+    required_token_purpose = TokenPurpose.ESCALATION | TokenPurpose.POST_AUTH
 
     def handle(self, handler, request):
-        target_username: str | None = (
-            request.username if request.username is not REQUEST_UNSET else None
-        )
-        old_passwd: str | None = request.old_passwd
+        assert handler.token is not None
+
         target_user_id = (
-            request.user_id if "user_id" in request.model_fields_set else None
+            request.user_id if request.user_id is not REQUEST_UNSET else handler.user_id
         )
         audit_data = {}
-        new_passwd: str = request.new_passwd
-        operator_user_id = handler.user_id
-        bypass_passwd_requirements: bool = (
+
+        # Because `POST_AUTH` must be the token's sole purpose, this check is
+        # sufficient.
+        post_auth = handler.token.has_purpose(TokenPurpose.POST_AUTH)
+
+        bypass_passwd_requirements = (
             request.bypass_passwd_requirements
             if request.bypass_passwd_requirements is not REQUEST_UNSET
             else False
         )
-        force_update_after_login: bool = (
+        force_update_after_login = (
             request.force_update_after_login
             if request.force_update_after_login is not REQUEST_UNSET
             else False
         )
-        ip: str | None = None
-        post_auth = (
-            handler.token is not None
-            and handler.token.purpose == TokenPurpose.POST_AUTH
-        )
 
-        def respond(
-            code: int,
-            message: str,
-            data: dict | None = None,
-            *,
-            user_id: uuid.UUID | None = None,
-        ) -> Result:
+        def respond(code: int, message: str, data: dict | None = None) -> Result:
             handler.conclude_request(code=code, data=data or {}, message=message)
             return Result(
                 code=code,
-                target=target_username
-                if old_passwd is not None or post_auth
-                else str(target_user_id),
+                target=str(target_user_id),
                 data=audit_data or None,
-                user_id=user_id,
+                user_id=handler.user_id,
             )
 
-        if handler.token is None or operator_user_id is None:
-            return respond(401, "Authentication required")
-        if not post_auth and not handler.token.has_purpose(TokenPurpose.GENERAL):
-            return respond(403, "A GENERAL or POST_AUTH token is required")
         if post_auth and request.model_fields_set != {"new_passwd"}:
             return respond(400, "POST_AUTH accepts only new_passwd")
 
-        if old_passwd is not None:
-            ip = get_client_ip(handler.stream.connection._ws)
-            decision = LoginGuard.evaluate(ip, target_username, AuthFactor.PASSWORD)
-            if not decision.allowed:
-                data = {}
-                if decision.retry_after_seconds is not None:
-                    data["retry_after_seconds"] = decision.retry_after_seconds
-                return respond(
-                    429,
-                    "Too many authentication attempts. Please try again later.",
-                    data,
-                )
-
         with Session() as session:
-            operator_user = session.get(User, operator_user_id)
-            if not operator_user or not operator_user.is_token_valid(
-                handler.token,
-                purpose=TokenPurpose.POST_AUTH if post_auth else TokenPurpose.GENERAL,
-            ):
-                return respond(401, "Invalid user or token")
+            operator = User.get_existing(session, handler.user_id)
+
+            if not post_auth:
+                permissions = operator.all_permissions
+                is_super = Permissions.SUPER_CONFIGURE_AUTH_METHODS in permissions
+                if not (
+                    is_super
+                    or (
+                        target_user_id == operator.id
+                        and Permissions.CONFIGURE_AUTH_METHODS in permissions
+                    )
+                ):
+                    return respond(403, "Permission denied")
+
+                if (
+                    bypass_passwd_requirements or force_update_after_login
+                ) and not is_super:
+                    return respond(
+                        403,
+                        "Password management options require super permission",
+                    )
+
+            user = session.get(
+                User, target_user_id, with_for_update=True, populate_existing=True
+            )
+            if user is None:
+                return respond(404, "User does not exist")
+
+            audit_data["target_username"] = user.username
 
             if post_auth:
-                user = operator_user
-                actor_user_id = operator_user_id
-                target_username = user.username
                 context = handler.token.auth_context
                 try:
                     if (
@@ -1295,130 +1268,54 @@ class RequestSetPasswdHandler(RequestHandler[_SetPasswordRequest]):
                         or not get_login_progress(session, user, context).satisfied
                         or password_change_requirement(session, user, context) is None
                     ):
-                        return respond(
-                            403,
-                            "Password change is not authorized",
-                            user_id=actor_user_id,
-                        )
+                        return respond(403, "Password change is not authorized")
                 except InvalidAuthenticationAttempt as exc:
-                    return respond(401, str(exc), user_id=actor_user_id)
-            elif old_passwd is not None:
-                assert target_username is not None
-                user = operator_user
-                if user.username != target_username:
-                    return respond(
-                        403,
-                        "Self-service password changes must target the authenticated user",
-                        user_id=operator_user_id,
-                    )
-                password_credential = session.get(UserPasswordCredential, user.id)
-                if not verify_password_or_dummy(password_credential, old_passwd):
-                    assert ip is not None
-                    LoginGuard.report_failure(ip, target_username, AuthFactor.PASSWORD)
-                    return respond(401, "Invalid credentials")
-
-                assert ip is not None
-                LoginGuard.report_success(
-                    ip,
-                    target_username,
-                    AuthFactor.PASSWORD,
-                    completed_authentication=True,
-                )
-                actor_user_id = user.id
-
-                flags_set = []
-                if bypass_passwd_requirements:
-                    flags_set.append("bypass_passwd_requirements")
-                if force_update_after_login:
-                    flags_set.append("force_update_after_login")
-
-                if flags_set:
-                    return respond(
-                        400,
-                        "The following options cannot be set to True when "
-                        "changing your own password: " + ", ".join(flags_set),
-                        {flag: True for flag in flags_set},
-                        user_id=actor_user_id,
-                    )
-                if user.status != UserStatus.ACTIVE:
-                    return respond(403, "Account is not active", user_id=actor_user_id)
-
-                if not (
-                    {Permissions.SET_PASSWD, Permissions.SUPER_SET_PASSWD}
-                    & user.all_permissions
-                ):
-                    return respond(
-                        403,
-                        "You do not have permission to change your own password",
-                        user_id=actor_user_id,
-                    )
-            else:
-                if target_user_id is None:
-                    return respond(400, "Specify user_id for administrator reset")
-                if Permissions.SUPER_SET_PASSWD not in operator_user.all_permissions:
-                    return respond(
-                        403,
-                        "You do not have permission to set user password",
-                        user_id=operator_user_id,
-                    )
-
-                actor_user_id = operator_user_id
-                user = session.get(User, target_user_id)
-                if user is None:
-                    return respond(404, "User does not exist", user_id=actor_user_id)
-                audit_data["target_username"] = user.username
+                    return respond(401, str(exc))
 
             try:
                 if not bypass_passwd_requirements:
                     check_passwd_requirements(
-                        new_passwd,
+                        request.new_passwd,
                         global_config["security"]["passwd_min_length"],
                         global_config["security"]["passwd_max_length"],
                         global_config["security"]["passwd_rules"],
                         global_config["security"]["passwd_min_passed_count"],
                     )
-            except InvalidPasswordLengthError as e:
+            except InvalidPasswordLengthError as exc:
                 return respond(
                     400,
-                    str(e),
-                    {"min_length": e.min_length, "max_length": e.max_length},
-                    user_id=actor_user_id,
+                    str(exc),
+                    {"min_length": exc.min_length, "max_length": exc.max_length},
                 )
-            except RuleRequirementsNotMetError as e:
+            except RuleRequirementsNotMetError as exc:
                 return respond(
                     400,
-                    str(e),
+                    str(exc),
                     {
-                        "passed_count": e.passed_count,
-                        "min_passed_count": e.min_passed_count,
-                        "unpassed_rules": tuple(e.unpassed_rules),
+                        "passed_count": exc.passed_count,
+                        "min_passed_count": exc.min_passed_count,
+                        "unpassed_rules": tuple(exc.unpassed_rules),
                     },
-                    user_id=actor_user_id,
                 )
-
-            password_credential = session.get(UserPasswordCredential, user.id)
-            if password_credential is not None and password_credential.verify(
-                new_passwd
-            ):
-                return respond(
-                    400,
-                    "New password should not be the same",
-                    user_id=actor_user_id,
-                )
-
+            credential = session.get(UserPasswordCredential, user.id)
+            if credential is not None and credential.verify(request.new_passwd):
+                return respond(400, "New password should not be the same")
             try:
                 set_password(
                     session,
                     user,
-                    new_passwd,
+                    request.new_passwd,
                     force_update_after_login=force_update_after_login,
-                    expected_signing_key=handler.token._secret if post_auth else None,
+                    expected_signing_key=(
+                        handler.token._secret
+                        if target_user_id == handler.user_id
+                        else None
+                    ),
                 )
             except InvalidAuthenticationAttempt as exc:
-                return respond(401, str(exc), user_id=actor_user_id)
+                return respond(401, str(exc))
             session.commit()
-
-        return respond(200, "Password set successfully", user_id=actor_user_id)
+        return respond(200, "Password set successfully")
 
 
 class RequestManageUserStatusHandler(RequestHandler[_ManageUserStatusRequest]):

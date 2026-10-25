@@ -190,6 +190,15 @@ class User(Base):
         return token
 
     def is_token_valid(self, token: Token | str, purpose=TokenPurpose.GENERAL) -> bool:
+        """Check whether a token is valid for the user and has the required purpose.
+
+        Args:
+            token: The token to validate, either a `Token` instance or its raw string
+                representation.
+            purpose: The required `TokenPurpose` flag. Must be a single flag; combined
+                flags are not supported and may produce undefined behavior.
+        """
+
         if self.status != UserStatus.ACTIVE:
             return False
         raw_token = token.raw if isinstance(token, Token) else str(token)
@@ -198,7 +207,7 @@ class User(Base):
                 raw_token,
                 self.secret_key,
             )
-            return verified.sub == self.id and bool(verified.purpose & purpose)
+            return verified.sub == self.id and verified.purpose & purpose == purpose
         except jwt.ExpiredSignatureError, jwt.InvalidTokenError:
             return False
 

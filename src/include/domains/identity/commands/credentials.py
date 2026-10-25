@@ -19,7 +19,11 @@ from include.domains.identity.auth.types import (
     AuthPurpose,
     InvalidAuthenticationAttempt,
 )
-from include.domains.identity.commands.auth_policies import replace_auth_policy
+from include.domains.identity.commands.auth_policies import (
+    ensure_authentication_available,
+    remove_credential_from_auth_policies,
+    replace_auth_policy,
+)
 
 _password_hasher = PasswordHasher()
 
@@ -34,17 +38,13 @@ def set_password(
 ) -> None:
     new_secret = secrets.token_hex(32)
     if expected_signing_key is not None:
-        if user.secret_key != expected_signing_key:
-            raise InvalidAuthenticationAttempt(
-                "Authentication credentials changed; restart login"
-            )
         claimed = cast(
             CursorResult,
             session.execute(
                 update(User)
                 .where(
                     User.id == user.id,
-                    User.secret_key == user.secret_key,
+                    User.secret_key == expected_signing_key,
                     User.status == UserStatus.ACTIVE,
                 )
                 .values(secret_key=new_secret)
@@ -103,17 +103,10 @@ def enable_login_totp(
 
 
 def remove_totp(session: Session, user: User, credential: UserTotpCredential) -> None:
-    """Remove TOTP, clearing only its exact standard single-step MFA policy."""
-    policy = session.get(UserAuthPolicy, (user.id, AuthPurpose.MFA.value))
-    if policy is not None and policy.chains == [
-        [
-            {
-                "method": "totp",
-                "credential_ids": [credential.credential_id],
-            }
-        ]
-    ]:
-        replace_auth_policy(
-            session, user, AuthPurpose.MFA, [], expected_revision=policy.revision
-        )
+    """Remove TOTP and its policy dependencies in the caller's transaction."""
+    remove_credential_from_auth_policies(
+        session, user, "totp", credential.credential_id
+    )
     session.delete(credential)
+    session.flush()
+    ensure_authentication_available(session, user)

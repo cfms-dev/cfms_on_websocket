@@ -1,5 +1,6 @@
 import hashlib
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ import orjson
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from sqlalchemy import event
+from sqlalchemy import delete, event
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -23,17 +24,29 @@ from include.database.session import Base
 from include.domains.access.permissions import Permissions
 from include.domains.identity.auth import registry
 from include.domains.identity.auth.base import BaseAuthMethodProvider
+from include.domains.identity.auth.flows import (
+    create_authentication_context,
+    get_login_progress,
+)
 from include.domains.identity.auth.providers.password import PasswordAuthProvider
-from include.domains.identity.auth.types import AuthPurpose
+from include.domains.identity.auth.types import (
+    AuthPurpose,
+    InvalidAuthenticationAttempt,
+)
 from include.domains.identity.commands.auth_policies import replace_auth_policy
 from include.domains.identity.commands.credentials import set_password, setup_totp
-from include.domains.identity.handlers import auth, auth_management
+from include.domains.identity.handlers import auth, auth_management, users
 from include.domains.identity.tokens import Token, TokenPurpose
+from include.domains.operations.commands import audit
+from include.domains.security.guards import replay
+from include.providers.caching.memory import MemoryCachingProvider
+from include.transport import router
 
 pytestmark = pytest.mark.component
 
 HANDLERS = {
     "get": auth_management.RequestGetUserAuthenticationHandler,
+    "password": users.RequestSetPasswdHandler,
     "set": auth_management.RequestSetUserAuthPoliciesHandler,
     "register": auth_management.RequestRegisterUserAuthPublicKeyHandler,
     "update": auth_management.RequestUpdateUserAuthPublicKeyHandler,
@@ -76,6 +89,7 @@ def management(sqlite_engine_factory, tmp_path, monkeypatch):
     sessions = sessionmaker(bind=engine)
     monkeypatch.setattr(auth_management, "Session", sessions)
     monkeypatch.setattr(auth, "Session", sessions)
+    monkeypatch.setattr(users, "Session", sessions)
     with sessions.begin() as session:
         user = User(username="owner", last_login=10)
         other = User(username="other")
@@ -92,6 +106,14 @@ def management(sqlite_engine_factory, tmp_path, monkeypatch):
                 [chain("password", credential.credential_id)],
                 expected_revision=0,
             )
+        session.add(
+            UserPermission(
+                user_id=user.id,
+                permission=Permissions.CONFIGURE_AUTH_METHODS,
+                granted=True,
+                start_time=0,
+            )
+        )
         setup_totp(session, user)
         session.flush()
         user_id, other_id = user.id, other.id
@@ -172,7 +194,16 @@ def test_cross_user_access_checks_permission_before_existence(management, exists
         session.add(
             UserPermission(
                 user_id=management.user_id,
-                permission=Permissions.MANAGE_USER_AUTHENTICATION,
+                permission=Permissions.SUPER_CONFIGURE_AUTH_METHODS,
+                granted=True,
+                start_time=0,
+            )
+        )
+    with management.sessions.begin() as session:
+        session.add(
+            UserPermission(
+                user_id=management.user_id,
+                permission=Permissions.SUPER_LIST_USER_AUTH_METHODS,
                 granted=True,
                 start_time=0,
             )
@@ -262,7 +293,7 @@ def test_labels_and_deletion_are_scoped_to_target_user(management):
         session.add(
             UserPermission(
                 user_id=management.user_id,
-                permission=Permissions.MANAGE_USER_AUTHENTICATION,
+                permission=Permissions.SUPER_CONFIGURE_AUTH_METHODS,
                 granted=True,
                 start_time=0,
             )
@@ -396,11 +427,11 @@ def test_one_complete_login_alternative_is_enough_and_mfa_can_be_cleared(managem
     )
     assert management.call("delete", {"credential_id": key_id}).response["code"] == 200
     login = management.call("get").response["data"]["policies"]["login"]
-    assert login["chains"][1] == chain("publickey", key_id)
-    assert login["revision"] == 2
+    assert login["chains"] == [password]
+    assert login["revision"] == 3
 
 
-@pytest.mark.parametrize("purpose", ["login", "escalation"])
+@pytest.mark.parametrize("purpose", ["login"])
 def test_deleting_the_last_required_key_rolls_back(management, purpose):
     key_id = management.call("register", {"public_key": ssh_key()}).response["data"][
         "credential_id"
@@ -590,7 +621,7 @@ def test_no_policy_escalation_issues_short_lived_token_without_proof(
     with management.sessions() as session:
         user = session.get(User, management.user_id)
         assert user.last_login == 10
-        assert user.all_permissions == set()
+        assert user.all_permissions == {Permissions.CONFIGURE_AUTH_METHODS}
     refreshed = Handler({}, issued)
     auth.RequestRefreshTokenHandler().handle(
         refreshed,
@@ -739,3 +770,634 @@ def test_configured_escalation_requires_method_and_data(management, missing):
         .code
         == 400
     )
+
+
+@pytest.mark.parametrize(
+    ("action", "data"),
+    [
+        ("set", {"policies": [policy("mfa", [])]}),
+        ("register", {"public_key": "invalid"}),
+        ("update", {"credential_id": "missing", "label": None}),
+        ("delete", {"credential_id": "missing"}),
+        ("password", {"new_passwd": "UpdatedPassword456!"}),
+    ],
+)
+def test_self_mutations_require_configuration_permission(management, action, data):
+    with management.sessions.begin() as session:
+        session.execute(
+            delete(UserPermission).where(UserPermission.user_id == management.user_id)
+        )
+    response = management.call(action, data).response
+    assert response["code"] == 403
+    assert management.call("get").response["code"] == 200
+    with management.sessions() as session:
+        assert session.get(UserPasswordCredential, management.user_id).verify(
+            "Password123!"
+        )
+        assert session.get(UserAuthPolicy, (management.user_id, "mfa")) is None
+
+
+@pytest.mark.parametrize(
+    ("permission", "write_code"),
+    [
+        (Permissions.CONFIGURE_AUTH_METHODS, 403),
+        (Permissions.SUPER_CONFIGURE_AUTH_METHODS, 200),
+        (Permissions.SUPER_LIST_USER_AUTH_METHODS, 403),
+    ],
+)
+def test_super_configuration_covers_self_without_ordinary_permission(
+    management, permission, write_code
+):
+    with management.sessions.begin() as session:
+        session.execute(
+            delete(UserPermission).where(UserPermission.user_id == management.user_id)
+        )
+        session.add(
+            UserPermission(
+                user_id=management.user_id,
+                permission=permission,
+                granted=True,
+                start_time=0,
+            )
+        )
+    assert management.call("get").response["code"] == 200
+    response = management.call("register", {"public_key": ssh_key()}).response
+    assert response["code"] == (
+        200 if permission != Permissions.SUPER_LIST_USER_AUTH_METHODS else 403
+    )
+    other = {"user_id": str(management.other_id)}
+    assert management.call("get", other).response["code"] == (
+        200 if permission == Permissions.SUPER_LIST_USER_AUTH_METHODS else 403
+    )
+    assert (
+        management.call("register", {**other, "public_key": ssh_key()}).response["code"]
+        == write_code
+    )
+
+
+@pytest.mark.parametrize("target", ["self", "other"])
+@pytest.mark.parametrize(
+    "purpose", [TokenPurpose.ESCALATION, TokenPurpose.GENERAL_WITH_ESCALATION]
+)
+@pytest.mark.parametrize(
+    "permission",
+    [
+        None,
+        Permissions.CONFIGURE_AUTH_METHODS,
+        Permissions.SUPER_CONFIGURE_AUTH_METHODS,
+    ],
+)
+def test_elevated_password_configuration_uses_ids_and_rotates_tokens(
+    management, target, purpose, permission
+):
+    with management.sessions.begin() as session:
+        session.execute(
+            delete(UserPermission).where(UserPermission.user_id == management.user_id)
+        )
+        if permission is not None:
+            session.add(
+                UserPermission(
+                    user_id=management.user_id,
+                    permission=permission,
+                    granted=True,
+                    start_time=0,
+                )
+            )
+    target_id = management.user_id if target == "self" else management.other_id
+    data = {"new_passwd": "UpdatedPassword456!"}
+    if target == "other":
+        data["user_id"] = str(target_id)
+    source = Token.new(management.user_id, 60, management.signing_key, purpose)
+    result = management.call("password", data, source=source)
+    allowed = permission == Permissions.SUPER_CONFIGURE_AUTH_METHODS or (
+        target == "self" and permission == Permissions.CONFIGURE_AUTH_METHODS
+    )
+    assert result.response["code"] == (200 if allowed else 403)
+    assert result.result.target == str(target_id)
+    assert result.result.user_id == management.user_id
+    with management.sessions() as session:
+        credential = session.get(UserPasswordCredential, target_id)
+        assert credential.verify("UpdatedPassword456!" if allowed else "Password123!")
+        if allowed and target == "self":
+            assert not session.get(User, target_id).is_token_valid(
+                source, purpose=TokenPurpose.ESCALATION
+            )
+
+
+def test_password_configuration_revalidates_escalation(management):
+    general = Token.new(management.user_id, 60, management.signing_key)
+    assert (
+        management.call(
+            "password", {"new_passwd": "UpdatedPassword456!"}, source=general
+        ).response["code"]
+        == 401
+    )
+    with management.sessions() as session:
+        assert session.get(UserPasswordCredential, management.user_id).verify(
+            "Password123!"
+        )
+
+
+@pytest.mark.parametrize(
+    ("purpose", "expected_code"),
+    [
+        (None, 401),
+        (TokenPurpose.GENERAL, 403),
+        (TokenPurpose.AUTH, 403),
+        (TokenPurpose.ESCALATION, 200),
+        (TokenPurpose.GENERAL_WITH_ESCALATION, 200),
+    ],
+)
+def test_password_configuration_router_enforces_token_purpose(
+    management, monkeypatch, purpose, expected_code
+):
+    cache_manager = SimpleNamespace(caching=MemoryCachingProvider())
+    monkeypatch.setattr(replay, "ProviderManager", lambda: cache_manager)
+    monkeypatch.setattr(router, "Session", management.sessions)
+    monkeypatch.setattr(audit, "Session", management.sessions)
+    monkeypatch.setattr(
+        router.LoginGuard,
+        "evaluate_subnet_access",
+        lambda _ip: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router,
+        "check_request_rate",
+        lambda *_args, **_kwargs: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        router.lockdown_state_manager,
+        "get_state",
+        lambda: SimpleNamespace(enabled=False),
+    )
+    envelope = {
+        "action": "set_passwd",
+        "data": {"new_passwd": "UpdatedPassword456!"},
+        "nonce": uuid.uuid4().hex,
+        "timestamp": time.time(),
+    }
+    if purpose is not None:
+        context = None
+        if purpose == TokenPurpose.AUTH:
+            with management.sessions() as session:
+                context = create_authentication_context(
+                    session,
+                    session.get(User, management.user_id),
+                    AuthPurpose.LOGIN,
+                    "password",
+                )
+        envelope["token"] = Token.new(
+            management.user_id,
+            60,
+            management.signing_key,
+            purpose,
+            auth_context=context,
+        ).raw
+    responses = []
+    stream = SimpleNamespace(
+        connection=SimpleNamespace(
+            _ws=SimpleNamespace(
+                remote_address=("192.0.2.10", 1), request=SimpleNamespace(headers={})
+            )
+        ),
+        recv=lambda: SimpleNamespace(data=orjson.dumps(envelope)),
+        send=lambda data, **_kwargs: responses.append(orjson.loads(data)),
+    )
+
+    router.handle_request(stream)
+
+    assert len(responses) == 1
+    assert responses[0]["code"] == expected_code
+    assert responses[0]["data"] == {}
+    with management.sessions() as session:
+        assert session.get(UserPasswordCredential, management.user_id).verify(
+            "UpdatedPassword456!" if expected_code == 200 else "Password123!"
+        )
+        signing_key = session.get(User, management.user_id).secret_key
+        if expected_code == 200:
+            assert signing_key != management.signing_key
+        else:
+            assert signing_key == management.signing_key
+
+
+@pytest.mark.parametrize(
+    "purpose", [TokenPurpose.ESCALATION, TokenPurpose.GENERAL_WITH_ESCALATION]
+)
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"bypass_passwd_requirements": True},
+        {"force_update_after_login": True},
+    ],
+)
+def test_password_management_options_require_super_permission(
+    management, purpose, options
+):
+    source = Token.new(management.user_id, 60, management.signing_key, purpose)
+    response = management.call(
+        "password", {"new_passwd": "UpdatedPassword456!", **options}, source=source
+    ).response
+    assert response["code"] == 403
+    with management.sessions() as session:
+        assert session.get(UserPasswordCredential, management.user_id).verify(
+            "Password123!"
+        )
+
+
+@pytest.mark.parametrize(
+    "purpose", [TokenPurpose.ESCALATION, TokenPurpose.GENERAL_WITH_ESCALATION]
+)
+def test_super_password_configuration_can_bypass_rules_and_require_change(
+    management, purpose
+):
+    with management.sessions.begin() as session:
+        session.add(
+            UserPermission(
+                user_id=management.user_id,
+                permission=Permissions.SUPER_CONFIGURE_AUTH_METHODS,
+                granted=True,
+                start_time=0,
+            )
+        )
+    source = Token.new(management.user_id, 60, management.signing_key, purpose)
+    response = management.call(
+        "password",
+        {
+            "new_passwd": "short",
+            "bypass_passwd_requirements": True,
+            "force_update_after_login": True,
+        },
+        source=source,
+    ).response
+    assert response["code"] == 200
+    with management.sessions() as session:
+        credential = session.get(UserPasswordCredential, management.user_id)
+        assert credential.verify("short")
+        assert credential.passwd_last_modified == 0
+
+
+@pytest.mark.parametrize("password", ["Password123!", "x"])
+def test_password_configuration_preserves_password_rules(management, password):
+    assert management.call("password", {"new_passwd": password}).response["code"] == 400
+    with management.sessions() as session:
+        assert session.get(UserPasswordCredential, management.user_id).verify(
+            "Password123!"
+        )
+
+
+@pytest.mark.parametrize("purpose", ["login", "mfa", "escalation"])
+@pytest.mark.parametrize("reverse_pool", [False, True])
+def test_duplicate_complete_flows_roll_back_the_batch(
+    management, purpose, reverse_pool
+):
+    keys = [
+        management.call("register", {"public_key": ssh_key()}).response["data"][
+            "credential_id"
+        ]
+        for _ in range(2)
+    ]
+    first = chain("publickey", *keys)
+    second = chain("publickey", *(keys[::-1] if reverse_pool else keys))
+    changes = [policy(purpose, [first, second], 1 if purpose == "login" else 0)]
+    if purpose != "mfa":
+        changes.insert(0, policy("mfa", []))
+    response = management.call("set", {"policies": changes}).response
+    assert response["code"] == 400
+    assert response["data"]["reason"] == "invalid_policy"
+    with management.sessions() as session:
+        assert session.get(UserAuthPolicy, (management.user_id, "login")).revision == 1
+        assert session.get(UserAuthPolicy, (management.user_id, "mfa")) is None
+        assert session.get(UserAuthPolicy, (management.user_id, "escalation")) is None
+
+
+def test_identical_password_alternatives_are_rejected(management):
+    password = chain("password", management.password_id)
+    response = management.call(
+        "set", {"policies": [policy("login", [password, password], 1)]}
+    ).response
+    assert response["code"] == 400
+    assert response["data"]["reason"] == "invalid_policy"
+
+
+def test_distinct_ordered_flows_can_be_reused_across_purposes(management):
+    keys = [
+        management.call("register", {"public_key": ssh_key()}).response["data"][
+            "credential_id"
+        ]
+        for _ in range(2)
+    ]
+    a, b = [chain("publickey", key) for key in keys]
+    flows = [a + b, b + a]
+    response = management.call(
+        "set", {"policies": [policy("login", flows, 1), policy("escalation", flows)]}
+    ).response
+    assert response["code"] == 200
+    assert response["data"]["policies"]["login"]["chains"] == flows
+    assert response["data"]["policies"]["escalation"]["chains"] == flows
+
+
+def test_deletion_prunes_all_purposes_and_invalidates_authentication_context(
+    management,
+):
+    key = management.call("register", {"public_key": ssh_key()}).response["data"][
+        "credential_id"
+    ]
+    password = chain("password", management.password_id)
+    assert (
+        management.call(
+            "set",
+            {
+                "policies": [
+                    policy("login", [password, chain("publickey", key)], 1),
+                    policy("mfa", [chain("publickey", key)]),
+                    policy("escalation", [chain("publickey", key)]),
+                ]
+            },
+        ).response["code"]
+        == 200
+    )
+    with management.sessions() as session:
+        context = create_authentication_context(
+            session,
+            session.get(User, management.user_id),
+            AuthPurpose.LOGIN,
+            "password",
+        )
+    assert management.call("delete", {"credential_id": key}).response["code"] == 200
+    state = management.call("get").response["data"]["policies"]
+    assert state["login"] == {"revision": 3, "chains": [password]}
+    assert state["mfa"] == {"revision": 2, "chains": []}
+    assert state["escalation"] == {"revision": 2, "chains": []}
+    with management.sessions() as session:
+        assert session.get(UserAuthPublicKey, key) is None
+        with pytest.raises(InvalidAuthenticationAttempt):
+            get_login_progress(session, session.get(User, management.user_id), context)
+
+
+def test_deletion_deduplicates_reduced_pools_and_removes_impossible_chains(management):
+    keys = [
+        management.call("register", {"public_key": ssh_key()}).response["data"][
+            "credential_id"
+        ]
+        for _ in range(2)
+    ]
+    a, b = keys
+    password = chain("password", management.password_id)
+    assert (
+        management.call(
+            "set",
+            {
+                "policies": [
+                    policy(
+                        "login",
+                        [
+                            password,
+                            chain("publickey", a, b),
+                            chain("publickey", b),
+                            chain("publickey", a, b) * 2,
+                        ],
+                        1,
+                    )
+                ]
+            },
+        ).response["code"]
+        == 200
+    )
+    assert management.call("delete", {"credential_id": a}).response["code"] == 200
+    state = management.call("get").response["data"]["policies"]["login"]
+    assert state == {"revision": 3, "chains": [password, chain("publickey", b)]}
+
+
+def test_unreferenced_deletion_does_not_change_policy_revisions(management):
+    key = management.call("register", {"public_key": ssh_key()}).response["data"][
+        "credential_id"
+    ]
+    assert management.call("delete", {"credential_id": key}).response["code"] == 200
+    assert management.call("get").response["data"]["policies"]["login"]["revision"] == 1
+
+
+@pytest.mark.parametrize(
+    ("handler_type", "data"),
+    [
+        ("RequestSetup2FAHandler", {}),
+        ("RequestValidate2FAHandler", {"token": "invalid"}),
+        ("RequestDisable2FAHandler", {"password": "Password123!"}),
+        ("RequestCancel2FASetupHandler", {}),
+    ],
+)
+def test_totp_mutations_authorize_before_credential_access(
+    management, monkeypatch, handler_type, data
+):
+    from include.domains.security.handlers import two_factor
+
+    monkeypatch.setattr(two_factor, "Session", management.sessions)
+    with management.sessions.begin() as session:
+        session.execute(
+            delete(UserPermission).where(UserPermission.user_id == management.user_id)
+        )
+        credential_id = session.get(
+            UserTotpCredential, management.user_id
+        ).credential_id
+    handler = Handler(data, management.token)
+    handler_class = getattr(two_factor, handler_type)
+    result = handler_class().handle(
+        handler, handler_class.request_model.model_validate(data)
+    )
+    assert result.code == handler.response["code"] == 403
+    with management.sessions() as session:
+        credential = session.get(UserTotpCredential, management.user_id)
+        assert credential.credential_id == credential_id
+        assert credential.enabled is False
+
+
+@pytest.mark.parametrize(
+    "permission",
+    [Permissions.CONFIGURE_AUTH_METHODS, Permissions.SUPER_CONFIGURE_AUTH_METHODS],
+)
+def test_cancelling_pending_totp_prunes_all_dependent_policies(
+    management, monkeypatch, permission
+):
+    from include.domains.security.handlers import two_factor
+
+    monkeypatch.setattr(two_factor, "Session", management.sessions)
+    with management.sessions.begin() as session:
+        session.execute(
+            delete(UserPermission).where(UserPermission.user_id == management.user_id)
+        )
+        session.add(
+            UserPermission(
+                user_id=management.user_id,
+                permission=permission,
+                granted=True,
+                start_time=0,
+            )
+        )
+        user = session.get(User, management.user_id)
+        credential_id = session.get(UserTotpCredential, user.id).credential_id
+        for purpose in (AuthPurpose.MFA, AuthPurpose.ESCALATION):
+            replace_auth_policy(
+                session,
+                user,
+                purpose,
+                [chain("totp", credential_id)],
+                expected_revision=0,
+            )
+    handler = Handler({}, management.token)
+    handler_class = two_factor.RequestCancel2FASetupHandler
+    handler_class().handle(handler, handler_class.request_model.model_validate({}))
+    assert handler.response["code"] == 200
+    with management.sessions() as session:
+        assert session.get(UserTotpCredential, management.user_id) is None
+        assert session.get(UserAuthPolicy, (management.user_id, "login")).revision == 1
+        for purpose in ("mfa", "escalation"):
+            updated = session.get(UserAuthPolicy, (management.user_id, purpose))
+            assert updated.chains == []
+            assert updated.revision == 2
+
+
+@pytest.mark.parametrize(
+    ("permission", "expected"),
+    [
+        (Permissions.SUPER_CONFIGURE_AUTH_METHODS, 403),
+        (Permissions.SUPER_LIST_USER_AUTH_METHODS, 200),
+    ],
+)
+def test_totp_status_requires_independent_cross_user_read_permission(
+    management, monkeypatch, permission, expected
+):
+    from include.domains.security.handlers import two_factor
+
+    monkeypatch.setattr(two_factor, "Session", management.sessions)
+    with management.sessions.begin() as session:
+        session.add(
+            UserPermission(
+                user_id=management.user_id,
+                permission=permission,
+                granted=True,
+                start_time=0,
+            )
+        )
+    data = {"user_id": str(management.other_id)}
+    handler = Handler(data, management.token)
+    handler_class = two_factor.RequestGet2FAStatusHandler
+    result = handler_class().handle(
+        handler, handler_class.request_model.model_validate(data)
+    )
+    assert result.code == handler.response["code"] == expected
+
+
+def test_credential_pruning_does_not_discard_pending_registrations(management):
+    from include.domains.identity.commands.auth_policies import (
+        remove_credential_from_auth_policies,
+    )
+
+    key = management.call("register", {"public_key": ssh_key()}).response["data"][
+        "credential_id"
+    ]
+    with management.sessions.begin() as session:
+        user = session.get(User, management.user_id, with_for_update=True)
+        pending = session.get(UserTotpCredential, user.id)
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.MFA,
+            [chain("totp", pending.credential_id)],
+            expected_revision=0,
+        )
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.ESCALATION,
+            [chain("publickey", key)],
+            expected_revision=0,
+        )
+        remove_credential_from_auth_policies(session, user, "publickey", key)
+        assert session.get(UserAuthPolicy, (user.id, "mfa")).chains == [
+            chain("totp", pending.credential_id)
+        ]
+        assert session.get(UserAuthPolicy, (user.id, "mfa")).revision == 1
+        assert pending.enabled is False
+
+
+def test_user_can_add_password_without_an_existing_password(management):
+    key = management.call("register", {"public_key": ssh_key()}).response["data"][
+        "credential_id"
+    ]
+    key_chain = chain("publickey", key)
+    assert (
+        management.call(
+            "set", {"policies": [policy("login", [key_chain], 1)]}
+        ).response["code"]
+        == 200
+    )
+    with management.sessions.begin() as session:
+        session.delete(session.get(UserPasswordCredential, management.user_id))
+    assert (
+        management.call("password", {"new_passwd": "AddedPassword456!"}).response[
+            "code"
+        ]
+        == 200
+    )
+    with management.sessions() as session:
+        credential = session.get(UserPasswordCredential, management.user_id)
+        assert credential.verify("AddedPassword456!")
+        assert credential.credential_id != management.password_id
+        assert session.get(UserAuthPolicy, (management.user_id, "login")).chains == [
+            key_chain
+        ]
+
+
+@pytest.mark.parametrize("invalid", ["expired", "wrong_signature", "disabled"])
+def test_password_configuration_rejects_invalid_authentication(management, invalid):
+    source = management.token
+    if invalid == "expired":
+        source = Token.new(
+            management.user_id,
+            -60,
+            management.signing_key,
+            TokenPurpose.GENERAL_WITH_ESCALATION,
+        )
+    elif invalid == "wrong_signature":
+        source = Token.new(
+            management.user_id,
+            60,
+            "incorrect-signing-key-for-authentication-tests",
+            TokenPurpose.GENERAL_WITH_ESCALATION,
+        )
+    else:
+        with management.sessions.begin() as session:
+            session.get(User, management.user_id).status = UserStatus.DISABLED
+    response = management.call(
+        "password", {"new_passwd": "UpdatedPassword456!"}, source=source
+    ).response
+    assert response["code"] == 401
+    with management.sessions() as session:
+        assert session.get(UserPasswordCredential, management.user_id).verify(
+            "Password123!"
+        )
+
+
+def test_failed_delete_rolls_back_pruning_in_all_purposes(management):
+    key = management.call("register", {"public_key": ssh_key()}).response["data"][
+        "credential_id"
+    ]
+    assert (
+        management.call(
+            "set",
+            {
+                "policies": [
+                    policy("login", [chain("publickey", key)], 1),
+                    policy("mfa", [chain("password", management.password_id)]),
+                    policy("escalation", [chain("publickey", key)]),
+                ]
+            },
+        ).response["code"]
+        == 200
+    )
+    before = management.call("get").response["data"]["policies"]
+    response = management.call("delete", {"credential_id": key}).response
+    assert response["code"] == 409
+    assert response["data"]["reason"] == "login_unavailable"
+    assert management.call("get").response["data"]["policies"] == before
+    with management.sessions() as session:
+        assert session.get(UserAuthPublicKey, key) is not None

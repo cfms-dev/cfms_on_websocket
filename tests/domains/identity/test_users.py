@@ -75,30 +75,15 @@ class TestUserOperations:
             assert response["data"] == {}
 
     @pytest.mark.asyncio
-    async def test_password_change_does_not_disclose_user_existence(
-        self,
-        unauthenticated_client: CFMSTestClient,
-        test_user: dict,
+    async def test_password_change_requires_authentication(
+        self, unauthenticated_client: CFMSTestClient, test_user: dict
     ):
-        responses = []
-        for username in (
-            test_user["username"],
-            "nonexistent_user_xyz_12345",
-        ):
-            responses.append(
-                await unauthenticated_client.send_request(
-                    "set_passwd",
-                    {
-                        "username": username,
-                        "old_passwd": "incorrect-password",
-                        "new_passwd": "UpdatedPassword456!",
-                        "bypass_passwd_requirements": True,
-                    },
-                )
+        for user_id in (test_user["user_id"], "00000000-0000-4000-8000-000000000001"):
+            response = await unauthenticated_client.send_request(
+                "set_passwd",
+                {"user_id": user_id, "new_passwd": "UpdatedPassword456!"},
             )
-
-        for response in responses:
-            assert response["code"] == 401
+            assert_error(response, 401)
             assert response["data"] == {}
 
     @pytest.mark.asyncio
@@ -131,6 +116,7 @@ class TestUserOperations:
         self,
         authenticated_client: CFMSTestClient,
     ):
+        assert_success(await authenticated_client.elevate_token())
         response = await authenticated_client.send_request(
             "set_passwd",
             {
@@ -156,41 +142,30 @@ class TestUserOperations:
         assert_success(two_factor_status)
 
     @pytest.mark.asyncio
-    async def test_self_password_change_is_throttled_and_can_recover(
+    async def test_self_password_change_requires_escalation_and_rotates_tokens(
         self,
         authenticated_client: CFMSTestClient,
         unauthenticated_client: CFMSTestClient,
         user_factory,
     ):
-        user = await user_factory()
+        user = await user_factory(
+            permissions=[permission_entry("configure_auth_methods")]
+        )
         username = user["username"]
         new_password = "UpdatedPassword456!"
+        assert_success(await unauthenticated_client.login(username, user["password"]))
+        assert_error(
+            await unauthenticated_client.send_request(
+                "set_passwd", {"new_passwd": new_password}
+            ),
+            403,
+        )
+        assert_success(await unauthenticated_client.elevate_token())
         assert_success(
-            await authenticated_client.change_user_permissions(
-                user["user_id"], [permission_entry("set_passwd")]
+            await unauthenticated_client.send_request(
+                "set_passwd", {"new_passwd": new_password}
             )
         )
-
-        failed = await unauthenticated_client.send_request(
-            "set_passwd",
-            {
-                "username": username,
-                "old_passwd": "wrong-password",
-                "new_passwd": new_password,
-            },
-        )
-        assert_error(failed, 401)
-        assert_success(await unauthenticated_client.login(username, user["password"]))
-
-        changed = await unauthenticated_client.send_request(
-            "set_passwd",
-            {
-                "username": username,
-                "old_passwd": user["password"],
-                "new_passwd": new_password,
-            },
-        )
-        assert_success(changed)
         assert_error(await unauthenticated_client.refresh_token(), 401)
         assert_error(
             await unauthenticated_client.login(username, user["password"]), 401

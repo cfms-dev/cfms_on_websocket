@@ -137,7 +137,7 @@ def server_init():
     create_group(
         group_name="user",
         permissions=[
-            {"permission": Permissions.SET_PASSWD},
+            {"permission": Permissions.CONFIGURE_AUTH_METHODS},
             {"permission": Permissions.SEARCH},
         ],
     )
@@ -167,7 +167,7 @@ def server_init():
             {"permission": Permissions.SET_USER_PERMISSIONS},
             {"permission": Permissions.GET_GROUP_INFO},
             {"permission": Permissions.CHANGE_USER_GROUPS},
-            {"permission": Permissions.SUPER_SET_PASSWD},
+            {"permission": Permissions.SUPER_CONFIGURE_AUTH_METHODS},
             {"permission": Permissions.VIEW_ACCESS_RULES},
             {"permission": Permissions.SET_ACCESS_RULES},
             {"permission": Permissions.VIEW_METADATA},
@@ -190,8 +190,7 @@ def server_init():
             {"permission": Permissions.UNBLOCK},
             {"permission": Permissions.SUPER_SET_USER_AVATAR},
             {"permission": Permissions.DEBUGGING},
-            {"permission": Permissions.MANAGE_2FA},
-            {"permission": Permissions.MANAGE_USER_AUTHENTICATION},
+            {"permission": Permissions.SUPER_LIST_USER_AUTH_METHODS},
             {"permission": Permissions.LIST_REVISIONS},
             {"permission": Permissions.VIEW_REVISION},
             {"permission": Permissions.SET_CURRENT_REVISION},

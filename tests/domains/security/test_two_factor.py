@@ -20,6 +20,11 @@ from tests.support.utils import assert_error, assert_success
 
 
 @pytest_asyncio.fixture
+async def test_user(user_factory):
+    return await user_factory(groups=[{"group_name": "user", "start_time": 0}])
+
+
+@pytest_asyncio.fixture
 async def pending_totp(user_client: CFMSTestClient):
     return assert_success(await user_client.setup_2fa())
 
@@ -84,7 +89,7 @@ class TestTwoFactorAuth:
         assert assert_success(await user_client.get_2fa_status())["enabled"] is True
 
     @pytest.mark.asyncio
-    async def test_manage_2fa_permission_preserves_target_diagnostics(
+    async def test_super_list_auth_methods_preserves_target_diagnostics(
         self,
         authenticated_client: CFMSTestClient,
         test_user,
@@ -181,12 +186,15 @@ class TestTwoFactorAuth:
     async def test_cancel_2fa_with_invalid_password(
         self,
         user_client: CFMSTestClient,
+        test_user,
         enabled_totp,
     ):
         response = await user_client.cancel_2fa("wrong_password")
 
         assert_error(response, 401)
         assert assert_success(await user_client.get_2fa_status())["enabled"] is True
+        assert_success(await user_client.cancel_2fa(test_user["password"]))
+        assert assert_success(await user_client.get_2fa_status())["enabled"] is False
 
     @pytest.mark.asyncio
     async def test_cancel_2fa_when_not_enabled(

@@ -81,17 +81,19 @@ After reading `response.data.user_id`, use that UUID:
 the owner's `user_id`. `unblock_user` and `update_user_block` keep `block_id`;
 key-specific actions keep their key ID; `revoke_access` keeps `entry_id`.
 
-`set_passwd` has two exclusive modes:
+`set_passwd` accepts `new_passwd` and optional `user_id` (default: caller).
+Ordinary requests require a GENERAL|ESCALATION token and
+`configure_auth_methods` for oneself or `super_configure_auth_methods` for any
+account. The super permission also gates `bypass_passwd_requirements` and
+`force_update_after_login`. The removed `username` and `old_passwd` fields return
+`400`; no old password is required. A restricted POST_AUTH token can still
+complete its subject's mandatory password change using only `new_passwd`, without
+configuration permission or elevation.
 
-- With non-null `old_passwd`, submit `username` and `new_passwd`. This credential
-  mode remains usable without a session, validates the old password, and retains
-  username-based authentication throttles and existing password policy.
-- With `old_passwd` omitted or null, submit `user_id` and `new_passwd` with an
-  authenticated administrator token and `super_set_passwd` permission.
-
-Mixing modes or selectors returns `400`. Disabling one's own 2FA still requires
-the current password; disabling another account's 2FA requires `manage_2fa`
-and must not include a password.
+Disabling one's own 2FA still requires the current password and a configuration
+permission. Disabling another account's 2FA requires
+`super_configure_auth_methods` and must not include a password. Reading another
+account's 2FA status requires `super_list_user_auth_methods`.
 
 User management audit `target` contains the canonical UUID and `user_id` contains
 the actor UUID. Once the target is authorized and resolved,

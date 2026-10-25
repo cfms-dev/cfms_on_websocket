@@ -24,6 +24,7 @@ from include.domains.identity.commands.auth_policies import (
     AuthPolicyConflict,
     AuthPolicyUnavailable,
     ensure_authentication_available,
+    remove_credential_from_auth_policies,
     replace_auth_policy,
 )
 from include.domains.identity.tokens import TokenPurpose
@@ -95,9 +96,6 @@ class _UserAuthenticationHandler[RequestT: _UserRequest](RequestHandler[RequestT
             if handler.user_id is None or handler.token is None:
                 raise AuthenticationFailure(401, "Authentication required")
             with Session.begin() as session:
-                user = None
-                if self.write:
-                    user = session.get(User, target_id, with_for_update=True)
                 requester = session.get(User, handler.user_id)
                 required = TokenPurpose.GENERAL
                 if self.write:
@@ -108,16 +106,33 @@ class _UserAuthenticationHandler[RequestT: _UserRequest](RequestHandler[RequestT
                     raise AuthenticationFailure(401, "Invalid authentication token")
                 if not handler.token.has_purpose(required):
                     raise AuthenticationFailure(403, "Token purpose is insufficient")
-                if (
-                    target_id != requester.id
-                    and Permissions.MANAGE_USER_AUTHENTICATION
-                    not in requester.all_permissions
-                ):
+                permissions = requester.all_permissions
+                if self.write:
+                    allowed = (
+                        Permissions.SUPER_CONFIGURE_AUTH_METHODS in permissions
+                        or (
+                            target_id == requester.id
+                            and Permissions.CONFIGURE_AUTH_METHODS in permissions
+                        )
+                    )
+                else:
+                    allowed = target_id == requester.id or (
+                        Permissions.SUPER_LIST_USER_AUTH_METHODS in permissions
+                    )
+                if not allowed:
                     raise AuthenticationFailure(403, "Permission denied")
-                if not self.write:
-                    user = session.get(User, target_id)
+                user = session.get(
+                    User,
+                    target_id,
+                    with_for_update=self.write,
+                    populate_existing=self.write,
+                )
                 if user is None:
                     raise AuthenticationFailure(404, "User not found")
+                if target_id == requester.id and not user.is_token_valid(
+                    handler.token, purpose=required
+                ):
+                    raise AuthenticationFailure(401, "Invalid authentication token")
                 audit_data["target_username"] = user.username
                 data = self.perform(session, user, request)
                 if "credential_id" in data:
@@ -293,6 +308,7 @@ class RequestDeleteUserAuthPublicKeyHandler(
         credential = session.get(UserAuthPublicKey, request.credential_id)
         if credential is None or credential.user_id != user.id:
             raise AuthenticationFailure(404, "Public key not found")
+        remove_credential_from_auth_policies(session, user, "publickey", credential.id)
         session.delete(credential)
         session.flush()
         ensure_authentication_available(session, user)
