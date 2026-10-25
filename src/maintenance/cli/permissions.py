@@ -4,6 +4,7 @@ import typer
 from rich.table import Table
 
 import maintenance.operations.permissions as operations
+from include.domains.identity.default_groups import DEFAULT_GROUP_PERMISSIONS
 from maintenance.cli.common import (
     _confirm_or_abort,
     _print_success,
@@ -67,3 +68,82 @@ def purge_expired_permissions(
         status="Purging expired permission entries...",
     )
     _print_permission_purge_result(result, title="Purged Permission Entries")
+
+
+def _print_default_group_permission_diff(
+    result: operations.DefaultGroupPermissionDiff,
+) -> None:
+    table = Table(title="Default Group Permission Records")
+    table.add_column("Group", style="cyan")
+    table.add_column("Defaults", justify="right")
+    table.add_column("Recorded", justify="right")
+    table.add_column("Missing permissions")
+    for group_name in result.group_names:
+        recorded = sum(group == group_name for group, _ in result.existing_permissions)
+        missing = sorted(
+            permission
+            for group, permission in result.missing_permissions
+            if group == group_name
+        )
+        table.add_row(
+            group_name,
+            str(len(DEFAULT_GROUP_PERMISSIONS[group_name])),
+            str(recorded),
+            "Group missing; skipped"
+            if group_name in result.missing_groups
+            else "\n".join(missing) or "—",
+        )
+    console.print(table)
+    console.print("Recorded permissions may be revoked, expired, or not yet active.")
+
+
+@app.command("sync-defaults")
+def sync_default_permissions(
+    group: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--group",
+            help="Select a default group; may be repeated. Defaults to all default groups.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show missing records without inserting them."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip confirmation before adding missing records."),
+    ] = False,
+) -> None:
+    """Restore missing default group permission records. Stop all servers before writing."""
+    unknown_groups = set(group or ()) - DEFAULT_GROUP_PERMISSIONS.keys()
+    if unknown_groups:
+        raise typer.BadParameter(
+            f"Unknown default groups: {', '.join(sorted(unknown_groups))}. "
+            f"Choose from: {', '.join(DEFAULT_GROUP_PERMISSIONS)}.",
+            param_hint="--group",
+        )
+
+    preview = _run(
+        lambda: operations.inspect_default_group_permissions(group),
+        status="Inspecting default group permission records...",
+    )
+    _print_default_group_permission_diff(preview)
+    if dry_run:
+        return
+    if not preview.missing_permissions:
+        _print_success(
+            "No permission records need to be added to existing default groups."
+        )
+        return
+
+    _confirm_or_abort(
+        f"Add {len(preview.missing_permissions)} missing default permission records? "
+        "All servers sharing this database must be stopped",
+        yes,
+    )
+    added = _run(
+        lambda: operations.sync_default_group_permissions(preview),
+        status="Adding missing default group permission records...",
+    )
+    _print_success(f"Added {added} default group permission records.")

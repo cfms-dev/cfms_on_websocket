@@ -13,7 +13,7 @@ COMMANDS = {
     "config": ("fill-pepper", "sync-template"),
     "backup": ("export", "info", "import"),
     "audit": ("export", "purge"),
-    "permission": ("purge-expired",),
+    "permission": ("purge-expired", "sync-defaults"),
     "database": ("upgrade", "migrate"),
     "deployment": (
         "upgrade",
@@ -60,18 +60,24 @@ def test_every_cli_group_has_a_help_entry(group: str | None) -> None:
 
 
 @pytest.mark.integration
-def test_cli_import_does_not_eagerly_load_backup_providers_or_models() -> None:
+@pytest.mark.parametrize("arguments", [[], ["permission", "sync-defaults", "--help"]])
+def test_cli_import_does_not_eagerly_load_backup_providers_or_models(arguments) -> None:
     code = """
 import sys
 from maintenance.cli import app
 assert app is not None
+if sys.argv[1:]:
+    from typer.testing import CliRunner
+    result = CliRunner().invoke(app, sys.argv[1:])
+    assert result.exit_code == 0, result.output
 assert "maintenance.backup" not in sys.modules
 assert "include.providers.manager" not in sys.modules
 assert not any(name.startswith("include.database.models.") for name in sys.modules)
+assert "main" not in sys.modules
 """
 
     result = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-c", code, *arguments],
         capture_output=True,
         check=False,
         text=True,

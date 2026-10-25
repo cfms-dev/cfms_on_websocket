@@ -48,9 +48,9 @@ from include.database.models.documents import (
 from include.database.models.files import File
 from include.database.session import Base, Session, engine
 from include.domains.access.authorization.access_rules import set_access_rules
-from include.domains.access.permissions import Permissions
 from include.domains.documents.file_task_signals import on_file_task_event
 from include.domains.identity.auth.registry import auth_registry
+from include.domains.identity.default_groups import DEFAULT_GROUP_PERMISSIONS
 from include.domains.operations.broadcast import on_global_broadcast
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.request_rate_control import (
@@ -134,80 +134,11 @@ def server_init():
     # Ensure the root folder exists before seeding any objects that reference it.
     ensure_root_folder()
 
-    create_group(
-        group_name="user",
-        permissions=[
-            {"permission": Permissions.CONFIGURE_AUTH_METHODS},
-            {"permission": Permissions.SEARCH},
-        ],
-    )
-    create_group(
-        group_name="sysop",
-        permissions=[
-            {"permission": Permissions.MOVE},
-            {"permission": Permissions.SHUTDOWN},
-            {"permission": Permissions.SUPER_CREATE_DOCUMENT},
-            {"permission": Permissions.SUPER_CREATE_DIRECTORY},
-            {"permission": Permissions.SUPER_LIST_DIRECTORY},
-            {"permission": Permissions.CREATE_DOCUMENT},
-            {"permission": Permissions.CREATE_DIRECTORY},
-            {"permission": Permissions.DELETE_DOCUMENT},
-            {"permission": Permissions.RENAME_DOCUMENT},
-            {"permission": Permissions.DELETE_DIRECTORY},
-            {"permission": Permissions.RENAME_DIRECTORY},
-            {"permission": Permissions.MANAGE_SYSTEM},
-            {"permission": Permissions.DIAGNOSTICS},
-            {"permission": Permissions.VIEW_SCHEDULES},
-            {"permission": Permissions.MANAGE_SCHEDULES},
-            {"permission": Permissions.CREATE_USER},
-            {"permission": Permissions.DELETE_USER},
-            {"permission": Permissions.RENAME_USER},
-            {"permission": Permissions.MANAGE_USER_STATUS},
-            {"permission": Permissions.GET_USER_INFO},
-            {"permission": Permissions.SET_USER_PERMISSIONS},
-            {"permission": Permissions.GET_GROUP_INFO},
-            {"permission": Permissions.CHANGE_USER_GROUPS},
-            {"permission": Permissions.SUPER_CONFIGURE_AUTH_METHODS},
-            {"permission": Permissions.VIEW_ACCESS_RULES},
-            {"permission": Permissions.SET_ACCESS_RULES},
-            {"permission": Permissions.VIEW_METADATA},
-            {"permission": Permissions.SET_METADATA_TAGS},
-            {"permission": Permissions.LIST_USERS},
-            {"permission": Permissions.LIST_GROUPS},
-            {"permission": Permissions.CREATE_GROUP},
-            {"permission": Permissions.DELETE_GROUP},
-            {"permission": Permissions.RENAME_GROUP},
-            {"permission": Permissions.SET_GROUP_PERMISSIONS},
-            {"permission": Permissions.BYPASS_LOCKDOWN},
-            {"permission": Permissions.BYPASS_DOCUMENT_CREATION_RATE_LIMIT},
-            {"permission": Permissions.BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT},
-            {"permission": Permissions.BYPASS_REQUEST_RATE_LIMIT},
-            {"permission": Permissions.APPLY_LOCKDOWN},
-            {"permission": Permissions.VIEW_AUDIT_LOGS},
-            {"permission": Permissions.MANAGE_ACCESS},
-            {"permission": Permissions.VIEW_ACCESS_ENTRIES},
-            {"permission": Permissions.BLOCK},
-            {"permission": Permissions.UNBLOCK},
-            {"permission": Permissions.SUPER_SET_USER_AVATAR},
-            {"permission": Permissions.DEBUGGING},
-            {"permission": Permissions.SUPER_LIST_USER_AUTH_METHODS},
-            {"permission": Permissions.LIST_REVISIONS},
-            {"permission": Permissions.VIEW_REVISION},
-            {"permission": Permissions.SET_CURRENT_REVISION},
-            {"permission": Permissions.DELETE_REVISION},
-            {"permission": Permissions.MANAGE_KEYRINGS},
-            {"permission": Permissions.LIST_USER_BLOCKS},
-            {"permission": Permissions.LIST_BANNED_SUBNETS},
-            {"permission": Permissions.MANAGE_BANNED_SUBNETS},
-            {"permission": Permissions.LIST_AUTH_LOCKOUTS},
-            {"permission": Permissions.UNLOCK_AUTH_LOCKOUTS},
-            {"permission": Permissions.PURGE},
-            {"permission": Permissions.RESTORE},
-            {"permission": Permissions.LIST_DELETED_ITEMS},
-            {"permission": Permissions.SUPER_RENAME_USER},
-            {"permission": Permissions.SET_USER_AVATAR},
-        ],
-    )
+    for group_name, permissions in DEFAULT_GROUP_PERMISSIONS.items():
+        create_group(
+            group_name=group_name,
+            permissions=[{"permission": permission} for permission in permissions],
+        )
 
     # Initialize providers, since we need to use the storage provider later.
     initialize_providers()

@@ -46,6 +46,55 @@ Expired-entry cleanup always runs as the system-managed
 `identity.permission_retention.cleanup_interval_seconds` and it is not exposed as
 an operator-editable schedule.
 
+## Restoring default group permission records
+
+The maintenance CLI compares the current code's default permissions for `user`
+and `sysop` with database records. Preview all default groups, or select one or
+more groups with repeatable `--group` options:
+
+```console
+uv run --locked maintain permission sync-defaults --dry-run
+uv run --locked maintain permission sync-defaults --group sysop --dry-run
+```
+
+The report lists each selected group's default count, recorded count, and missing
+permission names. A recorded permission may be revoked, expired, or not yet
+active; the comparison checks record presence, not effective authorization.
+Missing groups are reported and skipped, without recreating groups or memberships.
+Unknown group names are rejected.
+
+Stop **all server instances sharing the database** before applying changes:
+
+```console
+uv run --locked maintain permission sync-defaults
+uv run --locked maintain permission sync-defaults --group user --group sysop --yes
+```
+
+Without `--yes`, the command previews the differences and asks for confirmation.
+`--dry-run` never inserts permission records, including when combined with `--yes`,
+and can run while the server is online. Applying changes acquires the existing
+runtime-directory lock; a running server, another holder of that lock, or an
+unfinished deployment prevents the write. This lock coordinates one runtime
+directory only, not other machines or other directories sharing the database.
+
+A permission is missing only if no record exists for its `(group_name, permission)`
+pair. Existing grants, revocations, validity windows, and duplicate records remain
+unchanged. Missing permissions are inserted as permanent grants with
+`granted=true`, `start_time=0.0`, and `end_time=null`. Additional permissions,
+custom groups, display names, direct user permissions, and memberships are preserved.
+
+The command checks the preview again under the lock, then inserts all missing
+records in one transaction. Changed differences require a new preview; database
+failures roll back all inserts. Repeating a completed synchronization adds nothing.
+Successful previews, synchronization, and skipped missing groups exit with `0`;
+cancellation or runtime failures exit with `1`; invalid arguments exit with `2`.
+
+The tool cannot distinguish a newly introduced default permission from a record
+an administrator deliberately deleted. If deletion or expired-entry cleanup leaves
+no record for a default permission, synchronization restores it. It does not run
+automatically on startup, replace Alembic schema upgrades, or restore effective
+access when a grant is blocked by an existing revocation.
+
 ## Write actions
 
 The following authenticated actions accept only structured entries in their

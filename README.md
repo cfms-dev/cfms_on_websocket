@@ -51,7 +51,7 @@ Distributed scheduling also requires `--extra ext-scheduling-cluster`. See the
 ## Maintenance
 
 The `maintain` command covers release-bundle deployment, configuration updates,
-database migrations, audit logs, and extensions:
+database migrations, permission records, audit logs, and extensions:
 
 ```bash
 uv run maintain --help
@@ -59,6 +59,7 @@ uv run maintain --help
 
 More detailed guides are available for
 [extensions](docs/EXTENSIONS.md),
+[default group permission synchronization](docs/IDENTITY_PERMISSIONS_API.md#restoring-default-group-permission-records),
 [audit log queries](docs/AUDIT_LOG_API.md), and
 [audit log maintenance](docs/AUDIT_LOG_MAINTENANCE.md).
 
