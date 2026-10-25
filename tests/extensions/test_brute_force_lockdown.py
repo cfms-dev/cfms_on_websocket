@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import orjson
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import ColumnDefault, select
+from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -118,11 +118,6 @@ def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
         monkeypatch.setattr(module, "time", fixed_time)
     for module in (lockdown_commands, lockdown_state):
         monkeypatch.setattr(module, "database_now", lambda _session: clock.now)
-    monkeypatch.setattr(
-        AuditEntry.__table__.c.logged_time,
-        "default",
-        ColumnDefault(lambda: clock.now),
-    )
     monkeypatch.setattr(extension, "_STARTED_AT", 0.0)
     monkeypatch.setattr(
         extension,
@@ -392,6 +387,7 @@ def test_detector_cancels_file_tasks_and_audits_once(detector_context):
             )
         )
 
+    audit_started_at = time.time()
     with watch_file_task("pending") as pending, watch_file_task("running") as running:
         for _ in range(2):
             extension.ext_post_request(
@@ -402,6 +398,7 @@ def test_detector_cancels_file_tasks_and_audits_once(detector_context):
             )
         assert pending.is_set()
         assert running.is_set()
+    audit_finished_at = time.time()
 
     assert lockdown_state_manager.get_state() == LockdownState(
         enabled=True, reason=extension.DEFAULT_REASON
@@ -415,7 +412,7 @@ def test_detector_cancels_file_tasks_and_audits_once(detector_context):
             select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
         ).one()
         assert automatic_audit.result == 0
-        assert automatic_audit.logged_time == 1000.0
+        assert audit_started_at <= automatic_audit.logged_time <= audit_finished_at
         assert automatic_audit.user_id is None
         assert automatic_audit.target is None
         assert automatic_audit.remote_address is None

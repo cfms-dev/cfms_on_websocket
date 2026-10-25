@@ -9,7 +9,7 @@ import orjson
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from sqlalchemy import delete, event
+from sqlalchemy import delete, event, select
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
@@ -174,9 +174,46 @@ def test_inventory_contains_registered_pending_credentials_without_secrets(manag
         ("delete", {"credential_id": "missing"}),
     ],
 )
-def test_mutations_require_escalation(management, action, data):
-    ordinary = Token.new(management.user_id, 60, management.signing_key)
-    assert management.call(action, data, source=ordinary).response["code"] == 403
+@pytest.mark.parametrize("purpose", [TokenPurpose.GENERAL, TokenPurpose.ESCALATION])
+def test_mutations_require_general_and_escalation(management, action, data, purpose):
+    source = Token.new(management.user_id, 60, management.signing_key, purpose)
+    assert management.call(action, data, source=source).response["code"] == 403
+    with management.sessions() as session:
+        assert session.get(UserAuthPolicy, (management.user_id, "mfa")) is None
+        assert (
+            session.scalars(
+                select(UserAuthPublicKey).where(
+                    UserAuthPublicKey.user_id == management.user_id
+                )
+            ).all()
+            == []
+        )
+
+
+@pytest.mark.parametrize("invalid", ["expired", "wrong_signature", "disabled"])
+@pytest.mark.parametrize(
+    "purpose", [TokenPurpose.GENERAL, TokenPurpose.GENERAL_WITH_ESCALATION]
+)
+def test_auth_configuration_rejects_invalid_tokens(management, invalid, purpose):
+    source = Token.new(
+        management.user_id,
+        -60 if invalid == "expired" else 60,
+        "incorrect-signing-key-for-authentication-tests"
+        if invalid == "wrong_signature"
+        else management.signing_key,
+        purpose,
+    )
+    if invalid == "disabled":
+        with management.sessions.begin() as session:
+            session.get(User, management.user_id).status = UserStatus.DISABLED
+
+    response = management.call(
+        "set", {"policies": [policy("mfa", [])]}, source=source
+    ).response
+
+    assert response["code"] == 401
+    with management.sessions() as session:
+        assert session.get(UserAuthPolicy, (management.user_id, "mfa")) is None
 
 
 def test_unauthenticated_inventory_is_rejected(management):
@@ -884,33 +921,8 @@ def test_elevated_password_configuration_uses_ids_and_rotates_tokens(
             )
 
 
-def test_password_configuration_revalidates_escalation(management):
-    general = Token.new(management.user_id, 60, management.signing_key)
-    assert (
-        management.call(
-            "password", {"new_passwd": "UpdatedPassword456!"}, source=general
-        ).response["code"]
-        == 401
-    )
-    with management.sessions() as session:
-        assert session.get(UserPasswordCredential, management.user_id).verify(
-            "Password123!"
-        )
-
-
-@pytest.mark.parametrize(
-    ("purpose", "expected_code"),
-    [
-        (None, 401),
-        (TokenPurpose.GENERAL, 403),
-        (TokenPurpose.AUTH, 403),
-        (TokenPurpose.ESCALATION, 200),
-        (TokenPurpose.GENERAL_WITH_ESCALATION, 200),
-    ],
-)
-def test_password_configuration_router_enforces_token_purpose(
-    management, monkeypatch, purpose, expected_code
-):
+@pytest.fixture
+def password_router(management, monkeypatch):
     cache_manager = SimpleNamespace(caching=MemoryCachingProvider())
     monkeypatch.setattr(replay, "ProviderManager", lambda: cache_manager)
     monkeypatch.setattr(router, "Session", management.sessions)
@@ -930,12 +942,48 @@ def test_password_configuration_router_enforces_token_purpose(
         "get_state",
         lambda: SimpleNamespace(enabled=False),
     )
-    envelope = {
-        "action": "set_passwd",
-        "data": {"new_passwd": "UpdatedPassword456!"},
-        "nonce": uuid.uuid4().hex,
-        "timestamp": time.time(),
-    }
+
+    def call(token):
+        envelope = {
+            "action": "set_passwd",
+            "data": {"new_passwd": "UpdatedPassword456!"},
+            "nonce": uuid.uuid4().hex,
+            "timestamp": time.time(),
+        }
+        if token is not None:
+            envelope["token"] = token.raw
+        responses = []
+        stream = SimpleNamespace(
+            connection=SimpleNamespace(
+                _ws=SimpleNamespace(
+                    remote_address=("192.0.2.10", 1),
+                    request=SimpleNamespace(headers={}),
+                )
+            ),
+            recv=lambda: SimpleNamespace(data=orjson.dumps(envelope)),
+            send=lambda data, **_kwargs: responses.append(orjson.loads(data)),
+        )
+        router.handle_request(stream)
+        assert len(responses) == 1
+        return responses[0]
+
+    return call
+
+
+@pytest.mark.parametrize(
+    ("purpose", "expected_code"),
+    [
+        (None, 401),
+        (TokenPurpose.GENERAL, 403),
+        (TokenPurpose.AUTH, 403),
+        (TokenPurpose.ESCALATION, 200),
+        (TokenPurpose.GENERAL_WITH_ESCALATION, 200),
+    ],
+)
+def test_password_configuration_router_enforces_token_purpose(
+    management, password_router, purpose, expected_code
+):
+    token = None
     if purpose is not None:
         context = None
         if purpose == TokenPurpose.AUTH:
@@ -946,29 +994,16 @@ def test_password_configuration_router_enforces_token_purpose(
                     AuthPurpose.LOGIN,
                     "password",
                 )
-        envelope["token"] = Token.new(
+        token = Token.new(
             management.user_id,
             60,
             management.signing_key,
             purpose,
             auth_context=context,
-        ).raw
-    responses = []
-    stream = SimpleNamespace(
-        connection=SimpleNamespace(
-            _ws=SimpleNamespace(
-                remote_address=("192.0.2.10", 1), request=SimpleNamespace(headers={})
-            )
-        ),
-        recv=lambda: SimpleNamespace(data=orjson.dumps(envelope)),
-        send=lambda data, **_kwargs: responses.append(orjson.loads(data)),
-    )
-
-    router.handle_request(stream)
-
-    assert len(responses) == 1
-    assert responses[0]["code"] == expected_code
-    assert responses[0]["data"] == {}
+        )
+    response = password_router(token)
+    assert response["code"] == expected_code
+    assert response["data"] == {}
     with management.sessions() as session:
         assert session.get(UserPasswordCredential, management.user_id).verify(
             "UpdatedPassword456!" if expected_code == 200 else "Password123!"
@@ -1348,7 +1383,9 @@ def test_user_can_add_password_without_an_existing_password(management):
 
 
 @pytest.mark.parametrize("invalid", ["expired", "wrong_signature", "disabled"])
-def test_password_configuration_rejects_invalid_authentication(management, invalid):
+def test_password_configuration_rejects_invalid_authentication(
+    management, password_router, invalid
+):
     source = management.token
     if invalid == "expired":
         source = Token.new(
@@ -1367,13 +1404,14 @@ def test_password_configuration_rejects_invalid_authentication(management, inval
     else:
         with management.sessions.begin() as session:
             session.get(User, management.user_id).status = UserStatus.DISABLED
-    response = management.call(
-        "password", {"new_passwd": "UpdatedPassword456!"}, source=source
-    ).response
+    response = password_router(source)
     assert response["code"] == 401
     with management.sessions() as session:
         assert session.get(UserPasswordCredential, management.user_id).verify(
             "Password123!"
+        )
+        assert (
+            session.get(User, management.user_id).secret_key == management.signing_key
         )
 
 

@@ -101,7 +101,7 @@ class _UserAuthenticationHandler[RequestT: _UserRequest](RequestHandler[RequestT
                 if self.write:
                     required |= TokenPurpose.ESCALATION
                 if requester is None or not requester.is_token_valid(
-                    handler.token, purpose=required
+                    handler.token, purpose=handler.token.purpose
                 ):
                     raise AuthenticationFailure(401, "Invalid authentication token")
                 if not handler.token.has_purpose(required):
