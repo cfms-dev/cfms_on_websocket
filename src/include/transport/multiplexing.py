@@ -254,6 +254,8 @@ class MultiplexedConnection:
                                 f"open server-reserved stream id {frame.stream_id}"
                             )
                             close_for_protocol_error = True
+                        elif frame.frame_type == FrameType.CONCLUSION:
+                            continue
                         else:
                             # Notify the local main thread about the peer stream.
                             new_stream = Stream(self, frame.stream_id)

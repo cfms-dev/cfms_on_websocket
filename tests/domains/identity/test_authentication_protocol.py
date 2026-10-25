@@ -16,8 +16,91 @@ from include.domains.identity.auth.types import AuthPurpose
 from include.domains.identity.commands.auth_policies import replace_auth_policy
 from include.domains.identity.commands.credentials import enable_login_totp, setup_totp
 from include.domains.identity.tokens import TokenPurpose
+from include.transport.multiplexing import FrameType, encode_frame
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", [AuthPurpose.LOGIN, AuthPurpose.MFA])
+async def test_public_key_authentication_and_late_conclusion_keep_connection_usable(
+    user_factory, unauthenticated_client, purpose
+):
+    account = await user_factory()
+    user_id = uuid.UUID(account["user_id"])
+    private = ed25519.Ed25519PrivateKey.generate()
+    public = private.public_key()
+    fingerprint = hashlib.sha256(
+        public.public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+    ).digest()
+    with Session.begin() as session:
+        user = session.get(User, user_id)
+        key = UserAuthPublicKey(
+            user_id=user_id,
+            public_key_der=public.public_bytes(
+                Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+            ),
+            fingerprint=fingerprint,
+        )
+        session.add(key)
+        session.flush()
+        replace_auth_policy(
+            session,
+            user,
+            purpose,
+            [[{"method": "publickey", "credential_ids": [key.id]}]],
+            expected_revision=1 if purpose == AuthPurpose.LOGIN else 0,
+        )
+
+    stream_ids = []
+
+    async def respond(message):
+        assert message["data"]["stage"] == purpose.value
+        challenge = base64.b64decode(message["data"]["challenge"])
+        stream_ids.append(orjson.loads(challenge)["stream_id"])
+        return {
+            "method": "publickey",
+            "data": {
+                "fingerprint": fingerprint.hex(),
+                "signature": base64.b64encode(private.sign(challenge)).decode(),
+            },
+        }
+
+    client = unauthenticated_client
+    if purpose == AuthPurpose.LOGIN:
+        response = await client.send_request(
+            "login",
+            {
+                "method": "publickey",
+                "credential": {
+                    "username": account["username"],
+                    "fingerprint": fingerprint.hex(),
+                },
+            },
+            include_auth=False,
+            auth_responder=respond,
+        )
+    else:
+        login = await client.login(account["username"], account["password"])
+        assert login["code"] == 202
+        response = await client.send_request(
+            "exchange_token",
+            {
+                "method": "publickey",
+                "data": {"fingerprint": fingerprint.hex()},
+                "target_purpose": TokenPurpose.GENERAL,
+            },
+            token=login["data"]["token"],
+            auth_responder=respond,
+        )
+    assert response["code"] == 200
+    assert response["data"]["purpose"] == TokenPurpose.GENERAL
+    assert len(stream_ids) == 1
+    await client.websocket.send(encode_frame(stream_ids[0], FrameType.CONCLUSION, b""))
+    following = await client.send_request(
+        "server_info", {}, token=response["data"]["token"]
+    )
+    assert following["code"] == 200
 
 
 @pytest.mark.asyncio

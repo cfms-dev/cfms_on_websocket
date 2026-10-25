@@ -317,6 +317,66 @@ def test_queued_conclusion_rejects_later_frames_for_finished_server_stream():
         _finish_connection_close(connection, websocket)
 
 
+@pytest.mark.parametrize("finish_existing_stream", [False, True])
+def test_orphan_client_conclusions_do_not_create_request_streams(
+    finish_existing_stream,
+):
+    websocket = _ControlledInboundWebSocket()
+    connection = MultiplexedConnection(websocket, max_pending_inbound_streams=1)
+
+    try:
+        if finish_existing_stream:
+            websocket.incoming.put(encode_frame(1, FrameType.PROCESS, b"request"))
+            original = connection.accept_stream()
+            assert original.recv(timeout=1).data == b"request"
+            original.send(b"done", FrameType.CONCLUSION)
+
+        for _ in range(20):
+            websocket.incoming.put(encode_frame(1, FrameType.CONCLUSION, b""))
+        websocket.incoming.put(encode_frame(3, FrameType.PROCESS, b"next request"))
+
+        next_stream = connection.accept_stream()
+        assert next_stream is not None
+        assert next_stream.frame_id == 3
+        assert next_stream.recv(timeout=1).data == b"next request"
+        assert connection._pending_inbound_streams.empty()
+        assert connection._is_running
+    finally:
+        _finish_connection_close(connection, websocket)
+
+
+def test_active_client_stream_receives_cancellation_conclusion():
+    websocket = _ControlledInboundWebSocket()
+    connection = MultiplexedConnection(websocket)
+
+    try:
+        websocket.incoming.put(encode_frame(1, FrameType.PROCESS, b"request"))
+        stream = connection.accept_stream()
+        assert stream.recv(timeout=1).data == b"request"
+        websocket.incoming.put(encode_frame(1, FrameType.CONCLUSION, b""))
+
+        cancelled = stream.recv(timeout=1)
+        assert cancelled.frame_type is FrameType.CONCLUSION
+        assert cancelled.data == b""
+        assert connection._pending_inbound_streams.empty()
+    finally:
+        _finish_connection_close(connection, websocket)
+
+
+def test_unknown_server_stream_conclusion_is_still_a_protocol_error():
+    websocket = _ControlledInboundWebSocket()
+    connection = MultiplexedConnection(websocket)
+
+    try:
+        websocket.incoming.put(encode_frame(2, FrameType.CONCLUSION, b""))
+        connection._dispatcher.join(timeout=1)
+        assert not connection._dispatcher.is_alive()
+        assert connection.close_code == 1002
+        assert connection.accept_stream() is None
+    finally:
+        _finish_connection_close(connection, websocket)
+
+
 def test_unqueued_conclusion_keeps_original_stream_receiving_frames():
     websocket = _ControlledInboundWebSocket(block_send=True)
     connection = MultiplexedConnection(websocket)

@@ -447,6 +447,9 @@ def handle_request(stream: Stream):
 
     try:
         this_handler = ConnectionHandler(stream)
+    except orjson.JSONDecodeError:
+        send_conclusion(stream, 400, {}, "Invalid request JSON")
+        return
     except jsonschema.ValidationError as error:
         # Request envelope failed schema validation — send error and bail out
         response = {
