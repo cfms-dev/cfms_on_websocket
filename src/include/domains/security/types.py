@@ -1,7 +1,7 @@
-__all__ = ["TwoFactorToken"]
+__all__ = ["TotpToken"]
 
 from typing import Annotated
 
 from pydantic import StringConstraints
 
-TwoFactorToken = Annotated[str, StringConstraints(min_length=1, max_length=64)]
+TotpToken = Annotated[str, StringConstraints(min_length=1, max_length=64)]

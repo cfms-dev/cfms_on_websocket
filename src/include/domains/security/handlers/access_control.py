@@ -200,7 +200,7 @@ class RequestListBannedSubnetsHandler(RequestHandler[_ListBannedSubnetsRequest])
         try:
             decoded_cursor = PaginationCursor.decode(
                 cursor,
-                action="list_banned_subnets",
+                action="core.security.banned_subnet.list",
                 sort=sort,
                 filters=filters,
                 ttl=3600,
@@ -249,7 +249,7 @@ class RequestListBannedSubnetsHandler(RequestHandler[_ListBannedSubnetsRequest])
         response = make_cursor_response(
             items,
             page_size=page_size,
-            action="list_banned_subnets",
+            action="core.security.banned_subnet.list",
             sort=sort,
             filters=filters,
             cursor_key=lambda item: [item["created_at"], item["subnet"]],
@@ -528,7 +528,7 @@ class RequestListAuthLockoutsHandler(RequestHandler[_ListAuthLockoutsRequest]):
         try:
             decoded_cursor = PaginationCursor.decode(
                 request.cursor,
-                action="list_auth_lockouts",
+                action="core.security.auth_lockout.list",
                 sort=sort,
                 filters=filters,
                 ttl=3600,
@@ -581,7 +581,7 @@ class RequestListAuthLockoutsHandler(RequestHandler[_ListAuthLockoutsRequest]):
         response = make_cursor_response(
             items,
             page_size=page_size,
-            action="list_auth_lockouts",
+            action="core.security.auth_lockout.list",
             sort=sort,
             filters=filters,
             cursor_key=lambda item: [

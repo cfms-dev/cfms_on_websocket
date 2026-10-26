@@ -97,7 +97,7 @@ class RequestViewAuditLogsHandler(RequestHandler[_ViewAuditLogsRequest]):
         try:
             decoded_cursor = PaginationCursor.decode(
                 cursor,
-                action="view_audit_logs",
+                action="core.audit.entry.list",
                 sort=sort,
                 filters=filters,
                 ttl=3600,
@@ -154,7 +154,7 @@ class RequestViewAuditLogsHandler(RequestHandler[_ViewAuditLogsRequest]):
             response_data = make_cursor_response(
                 result,
                 page_size=page_size,
-                action="view_audit_logs",
+                action="core.audit.entry.list",
                 sort=sort,
                 filters=filters,
                 cursor_key=lambda item: [item["logged_time"], item["id"]],

@@ -1,9 +1,4 @@
-"""
-Two-Factor Authentication (TOTP) handlers for CFMS.
-
-This module provides handlers for setting up, validating, and canceling
-two-factor authentication using Time-based One-Time Passwords (TOTP).
-"""
+"""Manage TOTP credentials independently of multi_factor_auth (MFA) policies."""
 
 import uuid
 from operator import xor
@@ -16,13 +11,11 @@ from include.database.models.auth import UserPasswordCredential, UserTotpCredent
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.identity.auth.registry import auth_registry
 from include.domains.identity.commands.auth_policies import (
     AuthPolicyConflict,
     AuthPolicyUnavailable,
 )
 from include.domains.identity.commands.credentials import (
-    enable_login_totp,
     remove_totp,
     setup_totp,
 )
@@ -42,20 +35,20 @@ from include.transport.request_handler import (
     Result,
 )
 lazy from include.domains.identity.types import RequestUserID
-lazy from include.domains.security.types import TwoFactorToken
+lazy from include.domains.security.types import TotpToken
 lazy from include.transport.connection import ConnectionHandler
 lazy from include.types import NonEmptyString
 
 
-class _Setup2FARequest(RequestDataModel):
+class _SetupTotpRequest(RequestDataModel):
     method: Omittable[Literal["totp"]] = REQUEST_UNSET
 
 
-class _Validate2FARequest(RequestDataModel):
-    token: TwoFactorToken
+class _ConfirmTotpSetupRequest(RequestDataModel):
+    token: TotpToken
 
 
-class _Disable2FARequest(RequestDataModel):
+class _DeleteTotpRequest(RequestDataModel):
     user_id: Omittable[RequestUserID] = REQUEST_UNSET
     password: Omittable[NonEmptyString] = REQUEST_UNSET
 
@@ -66,7 +59,7 @@ class _Disable2FARequest(RequestDataModel):
         return self
 
 
-class _Get2FAStatusRequest(RequestDataModel):
+class _GetTotpStatusRequest(RequestDataModel):
     user_id: Omittable[RequestUserID] = REQUEST_UNSET
 
 
@@ -87,9 +80,9 @@ def _conclude_throttled(
     return Result(code=429, target=target, user_id=user_id)
 
 
-class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
+class RequestSetupTotpHandler(RequestHandler[_SetupTotpRequest]):
     """
-    Handler for setting up two-factor authentication.
+    Handler for setting up TOTP credentials.
 
     This handler generates a TOTP secret and backup codes for the user.
     The TOTP secret is returned as a provisioning URI that can be used
@@ -101,7 +94,7 @@ class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
         - backup_codes: List of backup codes for account recovery
     """
 
-    request_model = _Setup2FARequest
+    request_model = _SetupTotpRequest
 
     requires_auth = True
     rate_limit_cost = 20
@@ -120,15 +113,13 @@ class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
                 return Result(code=403, target=str(user.id), user_id=handler.user_id)
             session.refresh(user, with_for_update=True)
 
-            # Check if user already has 2FA enabled
+            # Check if user already has TOTP enabled
             credential = session.get(UserTotpCredential, user.id)
             if credential is not None and credential.enabled:
                 handler.conclude_request(
                     code=400,
-                    message="Two-factor authentication is already enabled. Please cancel it first.",
-                    data={
-                        "method": "totp"
-                    },  # will be extended if other methods are added
+                    message="TOTP credential is already enabled. Please cancel it first.",
+                    data={"method": "totp"},
                 )
                 return
 
@@ -138,7 +129,7 @@ class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
 
             handler.conclude_request(
                 code=200,
-                message="Two-factor authentication setup initiated. Please verify with your authenticator app.",
+                message="TOTP setup initiated. Please verify with your authenticator app.",
                 data={
                     "secret": credential.secret,
                     "provisioning_uri": credential.provisioning_uri,
@@ -153,15 +144,16 @@ class RequestSetup2FAHandler(RequestHandler[_Setup2FARequest]):
             )
 
 
-class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
+class RequestConfirmTotpSetupHandler(RequestHandler[_ConfirmTotpSetupRequest]):
     """
-    Handler for validating and enabling two-factor authentication.
+    Handler for validating and enabling TOTP credentials.
 
     After setup, the user must validate their TOTP configuration by
-    providing a valid code from their authenticator app. This enables 2FA.
+    providing a valid code from their authenticator app. This activates the
+    credential without changing MFA policies.
     """
 
-    request_model = _Validate2FARequest
+    request_model = _ConfirmTotpSetupRequest
 
     requires_auth = True
     rate_limit_cost = 2
@@ -199,7 +191,7 @@ class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
             if credential is None or not credential.secret:
                 handler.conclude_request(
                     code=400,
-                    message="Two-factor authentication has not been set up. Please set it up first.",
+                    message="TOTP credential has not been set up. Please set it up first.",
                     data={},
                 )
                 return
@@ -207,7 +199,7 @@ class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
             if credential.enabled:
                 handler.conclude_request(
                     code=400,
-                    message="Two-factor authentication is already enabled.",
+                    message="TOTP credential is already enabled.",
                     data={"method": "totp"},
                 )
                 return
@@ -216,14 +208,14 @@ class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
 
             # Verify the provided TOTP token
             if credential.verify(token):
-                enable_login_totp(session, user, credential)
+                credential.enable()
                 session.commit()
                 success = True
 
         if success:
             handler.conclude_request(
                 code=200,
-                message="Two-factor authentication enabled successfully",
+                message="TOTP credentials enabled successfully",
                 data={"method": "totp"},
             )
         else:
@@ -234,15 +226,15 @@ class RequestValidate2FAHandler(RequestHandler[_Validate2FARequest]):
         )
 
 
-class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
+class RequestDeleteTotpHandler(RequestHandler[_DeleteTotpRequest]):
     """
-    Handler for canceling two-factor authentication.
+    Handler for canceling TOTP credentials.
 
     This handler disables and removes TOTP configuration for the user.
     The user must provide their password for verification.
     """
 
-    request_model = _Disable2FARequest
+    request_model = _DeleteTotpRequest
 
     requires_auth = True
     rate_limit_cost = 5
@@ -277,9 +269,9 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
 
         if xor(is_self, has_password):
             error_msg = (
-                "Password is required when disabling your own 2FA"
+                "Password is required when disabling your own TOTP"
                 if is_self
-                else "Password should not be provided when disabling 2FA for another user"
+                else "Password should not be provided when disabling TOTP for another user"
             )
             handler.conclude_request(400, {}, error_msg)
             return Result(code=400, target=audit_target, user_id=requester_user_id)
@@ -298,7 +290,7 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
                 audit_data["target_username"] = user.username
             credential = session.get(UserTotpCredential, user.id) if user else None
             if user is None or credential is None or not credential.enabled:
-                handler.conclude_request(400, {}, "2FA not enabled or user not found")
+                handler.conclude_request(400, {}, "TOTP not enabled or user not found")
                 return Result(
                     code=400,
                     target=audit_target,
@@ -356,15 +348,15 @@ class RequestDisable2FAHandler(RequestHandler[_Disable2FARequest]):
                 AuthFactor.PASSWORD,
                 completed_authentication=True,
             )
-        handler.conclude_request(200, {}, "2FA disabled successfully")
+        handler.conclude_request(200, {}, "TOTP disabled successfully")
         return Result(
             code=0, target=audit_target, data=audit_data, user_id=requester_user_id
         )
 
 
-class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
+class RequestCancelTotpSetupHandler(RequestHandler[EmptyRequestDataModel]):
     """
-    Handler for canceling two-factor authentication setup.
+    Handler for canceling TOTP setup.
 
     This handler removes the TOTP configuration that was set up
     but not yet validated/enabled.
@@ -394,7 +386,7 @@ class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
             if credential is None or not credential.secret or credential.enabled:
                 handler.conclude_request(
                     code=400,
-                    message="No pending two-factor authentication setup to cancel.",
+                    message="No pending TOTP setup to cancel.",
                     data={},
                 )
                 return
@@ -416,19 +408,19 @@ class RequestCancel2FASetupHandler(RequestHandler[EmptyRequestDataModel]):
 
             handler.conclude_request(
                 code=200,
-                message="Two-factor authentication setup canceled successfully",
+                message="TOTP setup canceled successfully",
                 data={},
             )
 
 
-class RequestGet2FAStatusHandler(RequestHandler[_Get2FAStatusRequest]):
+class RequestGetTotpStatusHandler(RequestHandler[_GetTotpStatusRequest]):
     """
-    Handler for getting two-factor authentication status.
+    Handler for getting TOTP credential status.
 
-    Returns whether 2FA is enabled for the authenticated user.
+    Returns whether TOTP is enabled for the authenticated user.
     """
 
-    request_model = _Get2FAStatusRequest
+    request_model = _GetTotpStatusRequest
 
     requires_auth = True
     rate_limit_cost = 1
@@ -447,7 +439,7 @@ class RequestGet2FAStatusHandler(RequestHandler[_Get2FAStatusRequest]):
             ):
                 handler.conclude_request(
                     code=403,
-                    message="Forbidden: Cannot access another user's two-factor authentication status",
+                    message="Forbidden: Cannot access another user's TOTP credential status",
                     data={},
                 )
                 return Result(
@@ -466,15 +458,12 @@ class RequestGet2FAStatusHandler(RequestHandler[_Get2FAStatusRequest]):
                 )
 
             credential = session.get(UserTotpCredential, target.id)
-            enabled = auth_registry.user_requires_mfa(session, target)
-            methods = auth_registry.get_user_mfa_methods(session, target)
             handler.conclude_request(
                 code=200,
-                message="Two-factor authentication status",
+                message="TOTP credential status",
                 data={
-                    "enabled": enabled,
-                    "method": methods[0] if len(methods) == 1 else None,
-                    "methods": methods,
+                    "configured": credential is not None,
+                    "enabled": credential.enabled if credential is not None else False,
                     "backup_codes_count": (
                         len(orjson.loads(credential.backup_codes))
                         if credential is not None and credential.backup_codes

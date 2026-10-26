@@ -205,7 +205,7 @@ class TestDocumentOperations:
         title = f"Invalid Access Rules {secrets.token_hex(4)}"
 
         response = await authenticated_client.send_request(
-            "create_document",
+            "core.document.create",
             {
                 "title": title,
                 "access_rules": {"read": None},
@@ -274,7 +274,7 @@ class TestDocumentOperations:
         )
 
         move_response = await authenticated_client.send_request(
-            "move_document",
+            "core.document.move",
             {"document_id": document_id, "target_folder_id": target["id"]},
         )
         assert_error(move_response, 409)
@@ -297,13 +297,13 @@ class TestDocumentWithoutAuth:
     @pytest.mark.asyncio
     async def test_create_document_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
-            "create_document", {"title": "Test Document"}, include_auth=False
+            "core.document.create", {"title": "Test Document"}, include_auth=False
         )
         assert_error(response, 401)
 
     @pytest.mark.asyncio
     async def test_get_document_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
-            "get_document", {"document_id": "test_doc_id"}, include_auth=False
+            "core.document.get", {"document_id": "test_doc_id"}, include_auth=False
         )
         assert_error(response, 401)

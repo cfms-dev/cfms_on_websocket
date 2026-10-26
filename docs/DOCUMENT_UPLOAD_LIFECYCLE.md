@@ -82,7 +82,7 @@ storage has already been reclaimed. Worker logs include source and canonical
 IDs, retry delays, lease recovery, and storage cleanup failures. Upgrades do
 not enqueue historical files automatically.
 
-Calling `upload_document` repeatedly does not refresh a lease. An existing
+Calling `core.document.upload` repeatedly does not refresh a lease. An existing
 pending upload task is returned unchanged, and an upload already in progress is
 reported as a conflict. At most one non-terminal upload revision is retained for
 a document.
@@ -193,9 +193,9 @@ server's structured logs.
 Protocol version 19 applies a separate adaptive policy to downloads at two
 boundaries:
 
-- `get_document` and `get_revision` consume task-issuance tokens for the
+- `core.document.get` and `core.document.revision.get` consume task-issuance tokens for the
   authenticated account and effective source IP after access checks succeed.
-- `download_file` first validates and claims the bearer task, then consumes
+- `core.file.download` first validates and claims the bearer task, then consumes
   transfer-start tokens for the issuing account (when it still exists), the
   current source IP, and the individual task. A denied start atomically returns
   the task to `PENDING`, so it can be retried within its existing deadline.

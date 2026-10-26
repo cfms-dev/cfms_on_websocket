@@ -144,12 +144,13 @@ class TestUserBlocksAndStatus:
 
         first_page = assert_success(
             await authenticated_client.send_request(
-                "list_user_blocks", {"user_id": test_user["user_id"], "page_size": 1}
+                "core.user.block.list",
+                {"user_id": test_user["user_id"], "page_size": 1},
             )
         )
         second_page = assert_success(
             await authenticated_client.send_request(
-                "list_user_blocks",
+                "core.user.block.list",
                 {
                     "user_id": test_user["user_id"],
                     "page_size": 1,
@@ -200,13 +201,15 @@ class TestUserBlocksAndStatus:
         assert assert_success(response)["reason"] == reason
         page = assert_success(
             await authenticated_client.send_request(
-                "list_user_blocks", {"user_id": test_user["user_id"]}
+                "core.user.block.list", {"user_id": test_user["user_id"]}
             )
         )
         assert page["items"][0]["block_id"] == block["block_id"]
         assert page["items"][0]["reason"] == reason
         entries = assert_success(
-            await authenticated_client.view_audit_logs(filters=["update_user_block"])
+            await authenticated_client.view_audit_logs(
+                filters=["core.user.block.update"]
+            )
         )["items"]
         entry = next(item for item in entries if item["target"] == block["block_id"])
         assert entry["data"]["reason_change"] == {

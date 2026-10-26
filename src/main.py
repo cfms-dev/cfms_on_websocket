@@ -286,7 +286,7 @@ def prepare_handlers():
             auth_registry.register(provider)
 
     if global_config["debug"]:  # Debugging
-        available_functions["throw_exception"] = RequestThrowExceptionHandler
+        available_functions["core.debug.exception.throw"] = RequestThrowExceptionHandler
 
     # Load available request handlers from extensions
     extension_handlers = pm.hook.ext_register_handlers()

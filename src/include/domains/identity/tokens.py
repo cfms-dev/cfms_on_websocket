@@ -38,7 +38,7 @@ class TokenPurpose(IntFlag):
     purposes are, by design, distinct.
     """
 
-    AUTH = 1  # Used for further authentication (e.g., 2FA, etc.)
+    AUTH = 1  # Used to complete multi_factor_auth (MFA)
     POST_AUTH = 2  # Restricted actions after all authentication has completed.
     GENERAL = 4  # Used for general purposes (e.g., API access, etc.)
     ESCALATION = 8  # Token with superuser privileges

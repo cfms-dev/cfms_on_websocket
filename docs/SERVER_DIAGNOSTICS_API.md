@@ -1,6 +1,6 @@
 # Server Diagnostics API
 
-The `diagnostics` action returns a static snapshot for troubleshooting without
+The `core.server.diagnostics.get` action returns a static snapshot for troubleshooting without
 probing the database, Redis, S3, or other external services. It requires an
 authenticated request with the `diagnostics` permission and uses a
 request-rate cost of 3.
@@ -13,7 +13,7 @@ response is returned before the diagnostics permission check.
 
 ```json
 {
-  "action": "diagnostics",
+  "action": "core.server.diagnostics.get",
   "token": "<token>",
   "nonce": "<unique nonce>",
   "timestamp": 1786600000,
@@ -29,7 +29,7 @@ response is returned before the diagnostics permission check.
   "server": {
     "server_name": "CFMS WebSocket Server",
     "core_version": "0.5.0.260812_alpha",
-    "protocol_version": 31,
+    "protocol_version": 29,
     "debug_configured": false
   },
   "runtime": {

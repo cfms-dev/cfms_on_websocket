@@ -138,10 +138,13 @@ grants that password's single-step login policy. New keys and replacement
 credentials gain no purpose automatically.
 
 `setup_totp` returns a pending credential and plaintext backup codes, storing only
-hashed codes. `credential.enable()` activates verification without enabling login
-MFA; this supports TOTP used only for escalation. The standard `validate_2fa`
-workflow calls `enable_login_totp`, which explicitly installs a single-step TOTP
-MFA policy only when the MFA policy is empty. It preserves custom policies.
+hashed codes. `core.user.authentication.totp.setup.confirm` verifies the setup code
+and activates the TOTP credential without creating or modifying any authentication
+policy or revision. Configure multi_factor_auth (MFA) explicitly through
+`core.user.authentication.policy.set` with `purpose: "mfa"`. An active TOTP
+credential may instead be used only for escalation, and MFA may use other supported
+methods such as public keys. Existing credentials and policies survive the upgrade
+unchanged. See [the protocol 29 migration guide](PROTOCOL_29_MIGRATION.md).
 
 Public-key deletion and `remove_totp` remove the deleted credential ID from
 all purpose policies in the same transaction. Nonempty credential pools retain
@@ -161,19 +164,19 @@ their transaction and check availability before committing.
 
 Ordinary password configuration requires a GENERAL|ESCALATION token and the
 applicable configuration permission, without the old password. Self-service
-2FA disabling retains its password verification in addition to configuration
+TOTP deletion retains its password verification in addition to configuration
 permission. Empty escalation policies still allow elevation without another
 proof; an elevated token alone does not imply that MFA was performed.
 
-## Authentication attempts and token exchange (protocol 31)
+## Authentication attempts and token exchange (protocol 29)
 
-Protocol 31 renames `complete_mfa` to `exchange_token` and removes the old action.
+Protocol 29 renames `complete_mfa` to `core.auth.token.exchange` and removes the old action.
 Clients must use the new action for both login MFA and escalation. Deployments
 with an `action_costs.complete_mfa` override must rename it to
-`action_costs.exchange_token`. Policy storage and token formats are unchanged;
+`action_costs."core.auth.token.exchange"`. Policy storage and token formats are unchanged;
 this rename does not require signing-key rotation.
 
-Each login or `exchange_token` Request uses exactly one method for its entire
+Each login or `core.auth.token.exchange` Request uses exactly one method for its entire
 lifetime. Method changes in PROCESS responses are rejected with 400. Password
 login verifies the initial Request and sends no PROCESS messages. Repeated
 password steps that one proof cannot satisfy fail with 403. TOTP likewise
@@ -200,7 +203,7 @@ as described below. This also invalidates existing GENERAL sessions.
 Password login retains its payload:
 
 ```json
-{"action":"login","data":{"method":"password","credential":{"username":"alice","password":"current password"}}}
+{"action":"core.auth.login","data":{"method":"password","credential":{"username":"alice","password":"current password"}}}
 ```
 
 Public-key login uses `credential.username` and `credential.fingerprint` (hex or
@@ -208,7 +211,7 @@ base64). Extensions own their `credential` payload shape and identity resolution
 TOTP cannot initiate a login. MFA/escalation always fixes the account to the
 verified source token's subject; method payloads cannot select another account.
 
-`exchange_token` requires `target_purpose` as an integer, either 2 or 6:
+`core.auth.token.exchange` requires `target_purpose` as an integer, either 2 or 6:
 
 ```json
 {"method":"totp","data":{"token":"123456"},"target_purpose":2}
@@ -258,7 +261,7 @@ interactions as 400; invalid proofs as 401.
 Escalation has no preceding authentication step in the current Request. It can
 use password, public key, TOTP, or an extension method explicitly authorized by
 the independent `escalation` policy. With a missing/empty escalation policy,
-submit `{"target_purpose":6}` to `exchange_token` using a valid GENERAL token;
+submit `{"target_purpose":6}` to `core.auth.token.exchange` using a valid GENERAL token;
 `method` and `data` may be omitted and no provider is invoked. A configured
 nonempty policy requires both fields and fresh verification; missing fields
 return 400. Login MFA always requires both fields. Direct escalation rechecks
@@ -270,7 +273,7 @@ does not bypass any existing business permission checks and does not update
 
 `ESCALATION_TOKEN_EXPIRY_SECONDS` defaults to 300. Its lifetime starts at successful
 issuance and is not capped by the old GENERAL token's expiry. The old token must
-still be valid when verification finishes. `refresh_token` returns only GENERAL,
+still be valid when verification finishes. `core.auth.token.refresh` returns only GENERAL,
 including when refreshing a GENERAL|ESCALATION token; further escalation requires
 fresh verification. AUTH and POST_AUTH cannot be refreshed.
 
@@ -295,7 +298,7 @@ After login and MFA pass, an AUTH request for GENERAL can instead return
 ```
 
 POST_AUTH lasts at most five minutes, bounded by the source AUTH expiry. It
-allows only `set_passwd` with `new_passwd`, normal nonce/timestamp protection, and
+allows only `core.user.password.set` with `new_passwd`, normal nonce/timestamp protection, and
 the token subject as target. No account selectors, old password or administrator
 options are accepted. It grants no GENERAL/ESCALATION authority and cannot be
 used for MFA, refresh, or other WebSocket/HTTP endpoints. Only the restricted
@@ -310,7 +313,7 @@ a token with ESCALATION purpose. GENERAL may coexist with ESCALATION but is not
 required for password changes. POST_AUTH remains a restricted permission-free
 exception. `last_login` changes only when a completed login issues GENERAL.
 
-`set_passwd` relies on request-entry token authentication in the router and does
+`core.user.password.set` relies on request-entry token authentication in the router and does
 not revalidate the token during handler execution. Self-service password changes
 and POST_AUTH atomically match and rotate the signing key associated with the
 request token in the same transaction as the password update. Requests using the
@@ -321,10 +324,12 @@ conditional update, so an unchanged password still returns 400. POST_AUTH also
 checks its authentication context. Administrator resets of other users retain
 serialized writes without this version check and may overwrite an earlier reset.
 
-Protocol 31 requires clients to submit `target_purpose` and handle the actual
+Protocol 29 requires clients to submit `target_purpose` and handle the actual
 issued purpose. No database or archive migration is needed.
-`get_2fa_status.enabled` still reflects whether the
-MFA policy is nonempty; activation of a TOTP credential alone does not enable MFA.
+`core.user.authentication.totp.status.get` returns `configured`, `enabled`, and
+`backup_codes_count` for the TOTP credential only. Read MFA configuration from
+`core.user.authentication.get` under `policies.mfa`; a nonempty chain list requires
+additional login authentication. TOTP activation alone does not enable MFA.
 
 ### Breaking authentication upgrades
 
@@ -367,9 +372,9 @@ repeat the rotation before serving requests after an incompatible restore.
 
 ## User authentication management
 
-These authenticated protocol-31 WebSocket actions accept optional `user_id`
+These authenticated protocol-29 WebSocket actions accept optional `user_id`
 (an account UUID), defaulting to the caller. Self inventory requires no special
-permission. Reading another account's inventory or 2FA status requires
+permission. Reading another account's inventory or TOTP status requires
 `super_list_user_auth_methods`. Configuring oneself requires
 `configure_auth_methods` or `super_configure_auth_methods`; configuring another
 account requires `super_configure_auth_methods`. Super configuration does not
@@ -386,11 +391,11 @@ explicitly; there is no data migration or mapping from removed permissions.
 
 | Action | Request fields besides optional `user_id` | Response data |
 | --- | --- | --- |
-| `get_user_authentication` | None | `user_id`, `methods`, `credentials`, `policies` |
-| `set_user_auth_policies` | Nonempty `policies` array of `{purpose, expected_revision, chains}` | Updated `policies`, keyed by purpose, with `revision` and `chains` |
-| `register_user_auth_public_key` | `public_key` (OpenSSH text), optional `label` | `credential_id`, `fingerprint` (hex), `label` |
-| `update_user_auth_public_key` | `credential_id`, required `label` (text or null) | `credential_id`, `label` |
-| `delete_user_auth_public_key` | `credential_id` | `credential_id` |
+| `core.user.authentication.get` | None | `user_id`, `methods`, `credentials`, `policies` |
+| `core.user.authentication.policy.set` | Nonempty `policies` array of `{purpose, expected_revision, chains}` | Updated `policies`, keyed by purpose, with `revision` and `chains` |
+| `core.user.authentication.public_key.register` | `public_key` (OpenSSH text), optional `label` | `credential_id`, `fingerprint` (hex), `label` |
+| `core.user.authentication.public_key.update` | `credential_id`, required `label` (text or null) | `credential_id`, `label` |
+| `core.user.authentication.public_key.delete` | `credential_id` | `credential_id` |
 
 `methods` is keyed by each loaded provider's method ID, with `category`,
 `throttle_factor`, supported `purposes`, and credential JSON `schema`.
@@ -415,7 +420,7 @@ For example, after registering a key, a caller can configure public-key login
 with password MFA and public-key escalation in one transaction:
 
 ```json
-{"action":"set_user_auth_policies","data":{"policies":[
+{"action":"core.user.authentication.policy.set","data":{"policies":[
   {"purpose":"login","expected_revision":1,"chains":[[{"method":"publickey","credential_ids":["key-id"]}]]},
   {"purpose":"mfa","expected_revision":0,"chains":[[{"method":"password","credential_ids":["password-id"]}]]},
   {"purpose":"escalation","expected_revision":0,"chains":[[{"method":"publickey","credential_ids":["key-id"]}]]}
@@ -507,9 +512,9 @@ is created only from a verified callback; client-supplied issuer/subject pairs
 cannot substitute for verification. Upstream MFA claims do not satisfy local MFA.
 
 Extensions register providers through `ext_register_auth_methods`, invoked before
-requests are served. OIDC declares only `login` support. Both the existing
-`sso_oidc_callback` action and `login` with `method="oidc"` use its provider flow
-and the shared login finalization. The prior `sso_oidc_start` flow is unchanged. Optional OIDC dependencies stay within the extension.
+requests are served. OIDC declares only the `login` purpose. Both the existing
+`oidc_sso.session.callback` action and `core.auth.login` with `method="oidc"` use its provider flow
+and the shared login finalization. The prior `oidc_sso.session.start` flow is unchanged. Optional OIDC dependencies stay within the extension.
 
 ## Migration and backups
 

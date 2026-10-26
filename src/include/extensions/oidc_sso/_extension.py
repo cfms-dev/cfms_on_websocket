@@ -557,14 +557,14 @@ class RequestOIDCCallbackHandler(RequestHandler[_OIDCCallbackRequest]):
 @hookimpl
 def ext_register_handlers() -> dict[str, type[RequestHandler]]:
     return {
-        "sso_oidc_start": RequestOIDCStartHandler,
-        "sso_oidc_callback": RequestOIDCCallbackHandler,
+        "oidc_sso.session.start": RequestOIDCStartHandler,
+        "oidc_sso.session.callback": RequestOIDCCallbackHandler,
     }
 
 
 @hookimpl
 def ext_register_whitelisted_actions() -> set[str]:
-    return {"sso_oidc_start", "sso_oidc_callback"}
+    return {"oidc_sso.session.start", "oidc_sso.session.callback"}
 
 
 @hookimpl

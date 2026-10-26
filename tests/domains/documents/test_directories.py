@@ -49,7 +49,7 @@ class TestDirectoryOperations:
         }
         assert_success(
             await authenticated_client.send_request(
-                "set_directory_rules",
+                "core.directory.access_rule.set",
                 {
                     "directory_id": parent["folder_id"],
                     "access_rules": restricted_rule,
@@ -71,7 +71,7 @@ class TestDirectoryOperations:
         listing = assert_success(await user_client.list_directory(child["folder_id"]))
         info = assert_success(
             await user_client.send_request(
-                "get_directory_info", {"directory_id": child["folder_id"]}
+                "core.directory.info.get", {"directory_id": child["folder_id"]}
             )
         )
 
@@ -90,7 +90,7 @@ class TestDirectoryOperations:
         child = await directory_factory(parent_id=parent["folder_id"])
         assert_success(
             await authenticated_client.send_request(
-                "set_directory_rules",
+                "core.directory.access_rule.set",
                 {
                     "directory_id": parent["folder_id"],
                     "access_rules": {
@@ -131,7 +131,7 @@ class TestDirectoryOperations:
 
         info = assert_success(
             await authenticated_client.send_request(
-                "get_directory_info", {"directory_id": data["id"]}
+                "core.directory.info.get", {"directory_id": data["id"]}
             )
         )
         assert info["name"] == "Test Directory"
@@ -159,7 +159,7 @@ class TestDirectoryOperations:
         )
 
         response = await authenticated_client.send_request(
-            "create_directory",
+            "core.directory.create",
             {
                 "name": existing["name"],
                 "parent_id": parent["folder_id"],
@@ -186,7 +186,7 @@ class TestDirectoryOperations:
         )
 
         response = await authenticated_client.send_request(
-            "create_directory",
+            "core.directory.create",
             {
                 "name": document["title"],
                 "parent_id": parent["folder_id"],
@@ -211,7 +211,7 @@ class TestDirectoryOperations:
         )
         assert_success(
             await authenticated_client.send_request(
-                "set_directory_rules",
+                "core.directory.access_rule.set",
                 {
                     "directory_id": winner["folder_id"],
                     "inherit_parent": False,
@@ -250,13 +250,13 @@ class TestDirectoryOperations:
         assert_success(await user_client.list_directory(parent["folder_id"]))
         assert_error(
             await user_client.send_request(
-                "get_directory_info", {"directory_id": winner["folder_id"]}
+                "core.directory.info.get", {"directory_id": winner["folder_id"]}
             ),
             403,
         )
 
         response = await user_client.send_request(
-            "create_directory",
+            "core.directory.create",
             {
                 "name": winner["name"],
                 "parent_id": parent["folder_id"],
@@ -288,7 +288,7 @@ class TestDirectoryOperations:
         assert error["data"]["duplicate_id"] == winner["document_id"]
         info = assert_success(
             await authenticated_client.send_request(
-                "get_directory_info", {"directory_id": moving["folder_id"]}
+                "core.directory.info.get", {"directory_id": moving["folder_id"]}
             )
         )
         assert info["parent_id"] == source["folder_id"]
@@ -305,7 +305,7 @@ class TestDirectoryOperations:
         winner = await document_factory("Rename Winner", folder_id=parent["folder_id"])
 
         response = await authenticated_client.send_request(
-            "rename_directory",
+            "core.directory.rename",
             {"folder_id": moving["folder_id"], "new_name": winner["title"]},
         )
 
@@ -313,7 +313,7 @@ class TestDirectoryOperations:
         assert error["data"]["duplicate_id"] == winner["document_id"]
         info = assert_success(
             await authenticated_client.send_request(
-                "get_directory_info", {"directory_id": moving["folder_id"]}
+                "core.directory.info.get", {"directory_id": moving["folder_id"]}
             )
         )
         assert info["name"] == moving["name"]
@@ -433,7 +433,7 @@ class TestDirectoryOperations:
 
         info = assert_success(
             await authenticated_client.send_request(
-                "get_directory_info", {"directory_id": parent["folder_id"]}
+                "core.directory.info.get", {"directory_id": parent["folder_id"]}
             )
         )
 
@@ -463,7 +463,7 @@ class TestDirectoryMove:
         assert_success(response)
         info = assert_success(
             await authenticated_client.send_request(
-                "get_directory_info", {"directory_id": child["folder_id"]}
+                "core.directory.info.get", {"directory_id": child["folder_id"]}
             )
         )
         assert info["parent_id"] == "/"
@@ -499,7 +499,7 @@ class TestDirectoryMove:
         assert_error(response, 400)
         info = assert_success(
             await authenticated_client.send_request(
-                "get_directory_info", {"directory_id": parent["folder_id"]}
+                "core.directory.info.get", {"directory_id": parent["folder_id"]}
             )
         )
         assert info["parent_id"] == "/"
@@ -521,7 +521,7 @@ class TestDirectoryMove:
         assert_success(response)
         info = assert_success(
             await authenticated_client.send_request(
-                "get_directory_info", {"directory_id": second["folder_id"]}
+                "core.directory.info.get", {"directory_id": second["folder_id"]}
             )
         )
         assert info["parent_id"] == first["folder_id"]
@@ -538,7 +538,7 @@ class TestDirectoryWithoutAuth:
     async def test_list_directory_without_auth(self, client: CFMSTestClient):
         """Test that listing directories requires authentication."""
         response = await client.send_request(
-            "list_directory", {"folder_id": None}, include_auth=False
+            "core.directory.list", {"folder_id": None}, include_auth=False
         )
 
         assert response["code"] == 401
@@ -547,7 +547,7 @@ class TestDirectoryWithoutAuth:
     async def test_create_directory_without_auth(self, client: CFMSTestClient):
         """Test that creating a directory requires authentication."""
         response = await client.send_request(
-            "create_directory", {"name": "Test"}, include_auth=False
+            "core.directory.create", {"name": "Test"}, include_auth=False
         )
 
         assert response["code"] == 401

@@ -87,7 +87,7 @@ class TOTPAuthProvider(BaseAuthMethodProvider):
             return AuthVerificationResult(
                 success=False,
                 error_code=400,
-                error_message="Two-factor authentication is not enabled for this user",
+                error_message="TOTP credential is not enabled for this user",
             )
 
         token: str = payload.get("token", "")
@@ -96,7 +96,7 @@ class TOTPAuthProvider(BaseAuthMethodProvider):
             return AuthVerificationResult(
                 success=False,
                 error_code=401,
-                error_message="Invalid two-factor authentication token",
+                error_message="Invalid TOTP token",
             )
 
         if credential.backup_codes != backup_codes:
@@ -119,7 +119,7 @@ class TOTPAuthProvider(BaseAuthMethodProvider):
             if consumed.rowcount != 1:
                 return AuthVerificationResult(
                     success=False,
-                    error_message="Invalid two-factor authentication token",
+                    error_message="Invalid TOTP token",
                 )
 
         return AuthVerificationResult(

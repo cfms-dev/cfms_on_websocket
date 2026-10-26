@@ -19,12 +19,12 @@ class _Payload(BaseModel):
 
 
 _CORE_HANDLERS = {
-    "list_scheduled_task_types": handlers.RequestListScheduledTaskTypesHandler,
-    "create_schedule": handlers.RequestCreateScheduleHandler,
-    "get_schedule": handlers.RequestGetScheduleHandler,
-    "list_schedules": handlers.RequestListSchedulesHandler,
-    "update_schedule": handlers.RequestUpdateScheduleHandler,
-    "delete_schedule": handlers.RequestDeleteScheduleHandler,
+    "core.schedule.task_type.list": handlers.RequestListScheduledTaskTypesHandler,
+    "core.schedule.create": handlers.RequestCreateScheduleHandler,
+    "core.schedule.get": handlers.RequestGetScheduleHandler,
+    "core.schedule.list": handlers.RequestListSchedulesHandler,
+    "core.schedule.update": handlers.RequestUpdateScheduleHandler,
+    "core.schedule.delete": handlers.RequestDeleteScheduleHandler,
 }
 
 

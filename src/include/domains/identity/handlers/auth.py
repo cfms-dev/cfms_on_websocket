@@ -155,7 +155,7 @@ class RequestExchangeTokenHandler(RequestHandler[_ExchangeTokenRequest]):
 
     The required authentication flow is inferred from the purposes of the source
     and target tokens. For example, exchanging an AUTH token for a GENERAL token
-    requires completing two-factor authentication, as AUTH tokens are issued
+    requires completing multi_factor_auth (MFA), as AUTH tokens are issued
     specifically for that purpose.
     """
 

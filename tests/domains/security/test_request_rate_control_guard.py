@@ -60,7 +60,7 @@ def test_request_rate_control_observes_or_enforces_and_hashes_identities(
     )
 
     decision = guard.check_request_rate(
-        "search",
+        "core.search.query",
         4,
         "192.0.2.55",
         user_id=ALICE_ID,
@@ -80,7 +80,9 @@ def test_request_rate_control_observes_or_enforces_and_hashes_identities(
 
     original_keys = [charge.key for charge in provider.charges]
     monkeypatch.setitem(guard.global_config["server"], "secret_key", "rotated-secret")
-    guard.check_request_rate("search", 4, "192.0.2.55", user_id=ALICE_ID, bypass=False)
+    guard.check_request_rate(
+        "core.search.query", 4, "192.0.2.55", user_id=ALICE_ID, bypass=False
+    )
     assert all(
         charge.key != previous
         for charge, previous in zip(provider.charges, original_keys, strict=True)
@@ -97,7 +99,7 @@ def test_request_rate_control_bypass_skips_provider(monkeypatch):
     )
 
     decision = guard.check_request_rate(
-        "search",
+        "core.search.query",
         1,
         "192.0.2.55",
         user_id=ALICE_ID,

@@ -245,7 +245,7 @@ def serialize_document_metadata(document: Document) -> dict:
 
 
 class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
-    """Handles the "get_document_info" action."""
+    """Handles the "core.document.info.get" action."""
 
     request_model = _DocumentInfoRequest
 
@@ -355,7 +355,7 @@ class RequestGetDocumentAccessRulesHandler(RequestHandler[_DocumentIDRequest]):
 
 
 class RequestGetDocumentHandler(RequestHandler[_DocumentIDRequest]):
-    """Handles the "get_document" action."""
+    """Handles the "core.document.get" action."""
 
     request_model = _DocumentIDRequest
 
@@ -564,7 +564,7 @@ def _create_document_in_transaction(
 
 
 class RequestCreateDocumentHandler(RequestHandler[_CreateDocumentRequest]):
-    """Handles the "create_document" action."""
+    """Handles the "core.document.create" action."""
 
     request_model = _CreateDocumentRequest
 
@@ -639,7 +639,7 @@ class RequestCreateDocumentHandler(RequestHandler[_CreateDocumentRequest]):
 
 
 class RequestUploadDocumentHandler(RequestHandler[_UploadDocumentRequest]):
-    """Handles the "upload_document" action."""
+    """Handles the "core.document.upload" action."""
 
     request_model = _UploadDocumentRequest
 
@@ -773,7 +773,7 @@ class RequestUploadDocumentHandler(RequestHandler[_UploadDocumentRequest]):
 
 
 class RequestDeleteDocumentHandler(RequestHandler[_DocumentIDRequest]):
-    """Handles the "delete_document" action."""
+    """Handles the "core.document.delete" action."""
 
     request_model = _DocumentIDRequest
 
@@ -821,7 +821,7 @@ class RequestDeleteDocumentHandler(RequestHandler[_DocumentIDRequest]):
 
 
 class RequestRenameDocumentHandler(RequestHandler[_RenameDocumentRequest]):
-    """Handles the "rename_document" action."""
+    """Handles the "core.document.rename" action."""
 
     request_model = _RenameDocumentRequest
 
@@ -883,7 +883,7 @@ class RequestRenameDocumentHandler(RequestHandler[_RenameDocumentRequest]):
 
 
 class RequestDownloadFileHandler(RequestHandler[_DownloadFileRequest]):
-    """Handles the "download_file" action."""
+    """Handles the "core.file.download" action."""
 
     request_model = _DownloadFileRequest
     rate_limit_cost = 5
@@ -898,7 +898,7 @@ class RequestDownloadFileHandler(RequestHandler[_DownloadFileRequest]):
 
 
 class RequestUploadFileHandler(RequestHandler[_UploadFileRequest]):
-    """Handles the "upload_file" action."""
+    """Handles the "core.file.upload" action."""
 
     request_model = _UploadFileRequest
     rate_limit_cost = 5
@@ -921,7 +921,7 @@ class RequestUploadFileHandler(RequestHandler[_UploadFileRequest]):
 
 
 class RequestSetDocumentRulesHandler(RequestHandler[_SetDocumentRulesRequest]):
-    """Handles the "set_document_rules" action."""
+    """Handles the "core.document.access_rule.set" action."""
 
     request_model = _SetDocumentRulesRequest
 
@@ -980,7 +980,7 @@ class RequestSetDocumentRulesHandler(RequestHandler[_SetDocumentRulesRequest]):
 
 
 class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
-    """Handles the "move_document" action."""
+    """Handles the "core.document.move" action."""
 
     request_model = _MoveDocumentRequest
 
@@ -1095,7 +1095,7 @@ class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
 
 
 class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
-    """Handles the "purge_document" action, which permanently deletes a document and all its revisions.
+    """Handles the "core.document.purge" action, which permanently deletes a document and all its revisions.
 
     This action is irreversible and should only be allowed for users with special permissions.
     """
@@ -1141,7 +1141,7 @@ class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
 
 
 class RequestRestoreDocumentHandler(RequestHandler[_RestoreDocumentRequest]):
-    """Handles the "restore_document" action.
+    """Handles the "core.document.restore" action.
     Restores a marked-as-deleted document. Supports renaming and moving to a
     new folder during restoration. Maps virtual ROOT_DIRECTORY_ID to database None.
     """

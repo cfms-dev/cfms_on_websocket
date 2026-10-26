@@ -269,7 +269,9 @@ class AuthenticationAttempt:
                 400, "Invalid authentication interaction or method"
             )
         rate = check_request_rate(
-            "login" if self.purpose == AuthPurpose.LOGIN else "exchange_token",
+            "core.auth.login"
+            if self.purpose == AuthPurpose.LOGIN
+            else "core.auth.token.exchange",
             self.rate_limit_cost,
             self.ip,
             user_id=None,

@@ -329,7 +329,7 @@ async def login_client(
 ) -> None:
     response = await timed_call(
         stats,
-        "login",
+        "core.auth.login",
         lambda: client.login(credentials.username, credentials.password),
         include_in_total=False,
     )
@@ -426,12 +426,12 @@ async def run_mixed_action(
 ) -> None:
     action = _select_weighted_action(rng, weights)
     if action == "read":
-        await timed_call(stats, "list_directory", context.client.list_directory)
+        await timed_call(stats, "core.directory.list", context.client.list_directory)
         return
     if action == "create" or not context.created_directories:
         response = await timed_call(
             stats,
-            "create_directory",
+            "core.directory.create",
             lambda: context.client.create_directory(
                 f"Perf_{context.worker_id}_{sequence}_{time.time_ns()}"
             ),
@@ -445,9 +445,9 @@ async def run_mixed_action(
     if action == "update":
         await timed_call(
             stats,
-            "rename_directory",
+            "core.directory.rename",
             lambda: context.client.send_request(
-                "rename_directory",
+                "core.directory.rename",
                 {
                     "folder_id": directory_id,
                     "new_name": (
@@ -459,7 +459,7 @@ async def run_mixed_action(
         return
     response = await timed_call(
         stats,
-        "delete_directory",
+        "core.directory.delete",
         lambda: context.client.delete_directory(directory_id),
     )
     if response is not None and response.get("code") == 200:
@@ -479,7 +479,7 @@ async def _create_file_iteration(
 ) -> FileIteration | None:
     response = await timed_call(
         stats,
-        "create_document",
+        "core.document.create",
         lambda: context.client.create_document(title),
         include_in_total=False,
     )
@@ -490,7 +490,7 @@ async def _create_file_iteration(
     task_id = data.get("task_data", {}).get("task_id")
     if not isinstance(document_id, str) or not isinstance(task_id, str):
         stats.record_error(
-            "create_document",
+            "core.document.create",
             "invalid_create_document_contract",
             None,
             include_in_total=False,
@@ -539,14 +539,14 @@ async def _upload_payload(
         await context.client.upload_file_to_server(task_id, str(payload_path))
     except Exception as exc:  # noqa: BLE001 -- aggregate transfer failures into benchmark results
         stats.record_error(
-            "upload_file_resume" if resume else "upload_file",
+            "upload_file_resume" if resume else "core.file.upload",
             exc,
             (time.perf_counter() - start) * 1000,
             include_in_total=False,
         )
         return False
     stats.record_success(
-        "upload_file_resume" if resume else "upload_file",
+        "upload_file_resume" if resume else "core.file.upload",
         (time.perf_counter() - start) * 1000,
         include_in_total=False,
         transferred_bytes=payload_path.stat().st_size,
@@ -559,7 +559,7 @@ async def _current_revision_id(
 ) -> str | None:
     response = await timed_call(
         stats,
-        "list_revisions",
+        "core.document.revision.list",
         lambda: context.client.list_revisions(document_id),
         include_in_total=False,
     )
@@ -574,7 +574,7 @@ async def _current_revision_id(
         ):
             return item["id"]
     stats.record_error(
-        "list_revisions",
+        "core.document.revision.list",
         "invalid_current_revision_contract",
         None,
         include_in_total=False,
@@ -593,7 +593,7 @@ async def _download_payload(
 ) -> bool:
     task_response = await timed_call(
         stats,
-        "get_revision",
+        "core.document.revision.get",
         lambda: context.client.get_revision(revision_id),
         include_in_total=False,
     )
@@ -602,7 +602,7 @@ async def _download_payload(
     task_id = task_response.get("data", {}).get("task_data", {}).get("task_id")
     if not isinstance(task_id, str):
         stats.record_error(
-            "get_revision",
+            "core.document.revision.get",
             "invalid_download_task_contract",
             None,
             include_in_total=False,
@@ -631,14 +631,14 @@ async def _download_payload(
             raise RuntimeError("Downloaded file size does not match source")
     except Exception as exc:  # noqa: BLE001 -- aggregate transfer failures into benchmark results
         stats.record_error(
-            "download_file_resume" if resume else "download_file",
+            "download_file_resume" if resume else "core.file.download",
             exc,
             (time.perf_counter() - start) * 1000,
             include_in_total=False,
         )
         return False
     stats.record_success(
-        "download_file_resume" if resume else "download_file",
+        "download_file_resume" if resume else "core.file.download",
         (time.perf_counter() - start) * 1000,
         include_in_total=False,
         transferred_bytes=payload_size,
@@ -826,13 +826,13 @@ async def run_worker_phase(
             if delay > 0:
                 await asyncio.sleep(delay)
         if args.scenario == "server-info":
-            await timed_call(stats, "server_info", context.client.server_info)
+            await timed_call(stats, "core.server.info.get", context.client.server_info)
         elif args.scenario == "auth-read":
             action, operation = rng.choice(
                 [
-                    ("list_directory", context.client.list_directory),
-                    ("list_users", context.client.list_users),
-                    ("list_groups", context.client.list_groups),
+                    ("core.directory.list", context.client.list_directory),
+                    ("core.user.list", context.client.list_users),
+                    ("core.group.list", context.client.list_groups),
                 ]
             )
             await timed_call(stats, action, operation)
@@ -847,7 +847,9 @@ async def run_worker_phase(
         elif args.scenario == "multiplex":
             await asyncio.gather(
                 *(
-                    timed_call(stats, "server_info", context.client.server_info)
+                    timed_call(
+                        stats, "core.server.info.get", context.client.server_info
+                    )
                     for _ in range(args.inflight_per_user)
                 )
             )
@@ -856,7 +858,7 @@ async def run_worker_phase(
                 *(
                     timed_call(
                         stats,
-                        "server_info",
+                        "core.server.info.get",
                         context.client.server_info,
                         expected_rejection_codes={503},
                     )
@@ -866,7 +868,7 @@ async def run_worker_phase(
         elif args.scenario == "request-rate-control":
             await timed_call(
                 stats,
-                "server_info",
+                "core.server.info.get",
                 context.client.server_info,
                 expected_rejection_codes={429},
             )

@@ -618,7 +618,7 @@ async def test_unlock_auth_lockouts_over_websocket(
     username = "security-lockout-target"
     for _index in range(5):
         response = await unauthenticated_client.send_request(
-            "login",
+            "core.auth.login",
             {
                 "method": "password",
                 "credential": {"username": username, "password": "incorrect"},
@@ -628,7 +628,7 @@ async def test_unlock_auth_lockouts_over_websocket(
         assert_error(response, 401)
     assert_error(
         await unauthenticated_client.send_request(
-            "login",
+            "core.auth.login",
             {
                 "method": "password",
                 "credential": {"username": username, "password": "incorrect"},
@@ -669,7 +669,7 @@ async def test_unlock_auth_lockouts_over_websocket(
     assert unlocked == {"cleared": selectors, "not_found": []}
     assert_error(
         await unauthenticated_client.send_request(
-            "login",
+            "core.auth.login",
             {
                 "method": "password",
                 "credential": {"username": username, "password": "incorrect"},
@@ -680,6 +680,8 @@ async def test_unlock_auth_lockouts_over_websocket(
     )
 
     audit_items = assert_success(
-        await authenticated_client.view_audit_logs(filters=["unlock_auth_lockouts"])
+        await authenticated_client.view_audit_logs(
+            filters=["core.security.auth_lockout.unlock"]
+        )
     )["items"]
     assert audit_items[0]["data"]["reason"] == "Approved integration-test access"

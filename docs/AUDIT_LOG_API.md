@@ -1,6 +1,6 @@
 # Audit log API
 
-The `view_audit_logs` action returns audit entries in reverse chronological
+The `core.audit.entry.list` action returns audit entries in reverse chronological
 order. It requires an authenticated request with the `view_audit_logs`
 permission and uses a request-rate cost of 3.
 
@@ -8,14 +8,14 @@ permission and uses a request-rate cost of 3.
 
 ```json
 {
-  "action": "view_audit_logs",
+  "action": "core.audit.entry.list",
   "token": "<token>",
   "nonce": "<unique nonce>",
   "timestamp": 1786600000,
   "data": {
     "page_size": 50,
     "cursor": null,
-    "filters": ["login", "create_directory"]
+    "filters": ["core.auth.login", "core.directory.create"]
   }
 }
 ```
@@ -39,7 +39,7 @@ extensions; they are not a closed enum.
   "items": [
     {
       "id": "<audit entry id>",
-      "action": "create_directory",
+      "action": "core.directory.create",
       "user_id": "<user UUID>",
       "target": null,
       "data": null,

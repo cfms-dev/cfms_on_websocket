@@ -85,7 +85,7 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
             try:
                 decoded_cursor = PaginationCursor.decode(
                     cursor,
-                    action="list_revisions",
+                    action="core.document.revision.list",
                     sort=sort,
                     filters=filters,
                     value_types=[(int, float), str],
@@ -130,7 +130,7 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
             response_data = make_cursor_response(
                 revisions,
                 page_size=page_size,
-                action="list_revisions",
+                action="core.document.revision.list",
                 sort=sort,
                 filters=filters,
                 cursor_key=lambda item: [item["created_time"], item["id"]],

@@ -37,9 +37,11 @@ async def test_client_times_out_when_a_live_connection_returns_no_response(opera
 
     try:
         if operation == "request":
-            response = client.send_request("server_info", include_auth=False)
+            response = client.send_request("core.server.info.get", include_auth=False)
         elif operation == "raw":
-            response = client.send_raw_request({"action": "server_info", "data": {}})
+            response = client.send_raw_request(
+                {"action": "core.server.info.get", "data": {}}
+            )
         else:
             response = client.accept_event()
         with pytest.raises(TimeoutError, match="timeout"):
@@ -112,7 +114,7 @@ async def test_file_protocol_waits_have_the_client_deadline(
     with pytest.raises(TimeoutError, match="Stream recv timeout"):
         await transfer
 
-    assert orjson.loads(sent[0])["action"] == f"{operation}_file"
+    assert orjson.loads(sent[0])["action"] == f"core.file.{operation}"
 
 
 @pytest.mark.asyncio

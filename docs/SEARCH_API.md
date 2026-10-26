@@ -9,7 +9,7 @@ and returned with cursor pagination.
 
 ## Endpoint
 
-**Action:** `search`
+**Action:** `core.search.query`
 
 **Authentication:** Required, with the `search` permission
 
@@ -17,7 +17,7 @@ and returned with cursor pagination.
 
 ```json
 {
-    "action": "search",
+    "action": "core.search.query",
     "token": "<auth_token>",
     "data": {
         "query": "<search_query>",

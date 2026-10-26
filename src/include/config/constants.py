@@ -29,7 +29,7 @@ __all__ = [
 from include.config.version import Version
 
 CORE_VERSION = Version("0.12.0")
-PROTOCOL_VERSION = 28
+PROTOCOL_VERSION = 29
 
 # Event bus channels
 GLOBAL_BROADCAST_EVENT_CHANNEL = "system:broadcast"

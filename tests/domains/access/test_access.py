@@ -243,7 +243,7 @@ class TestAccessManagement:
         # Clean up
         await authenticated_client.delete_document(document_id)
         await authenticated_client.send_request(
-            "delete_group", {"group_name": test_group_name}
+            "core.group.delete", {"group_name": test_group_name}
         )
 
     @pytest.mark.asyncio

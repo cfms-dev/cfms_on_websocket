@@ -20,7 +20,7 @@ class TestSearch:
     @pytest.mark.asyncio
     async def test_search_requires_authentication(self, client: CFMSTestClient):
         response = await client.send_request(
-            "search", {"query": "AuthenticationRequired"}, include_auth=False
+            "core.search.query", {"query": "AuthenticationRequired"}, include_auth=False
         )
 
         assert_error(response, 401)

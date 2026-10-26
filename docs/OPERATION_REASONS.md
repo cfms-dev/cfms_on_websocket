@@ -20,12 +20,12 @@ reason-change audit payload or repeat operational side effects.
 
 | Business operation | Create or activate | Update an active reason | Storage | Visibility |
 | --- | --- | --- | --- | --- |
-| Account disabled status | `manage_user_status` with `status: "disabled"` | Repeat `manage_user_status` while disabled | Deduplicated comment | Included in disabled-login response |
-| User block | `block_user` | `update_user_block` | Deduplicated comment | Included in `block_user`, `update_user_block`, and `list_user_blocks` responses; users may list their own blocks |
-| Service lockdown | `lockdown` with `status: true` | Repeat `lockdown` while enabled | Lockdown state | Included in lockdown state and broadcast responses |
-| Banned subnet | `create_banned_subnet` | `update_banned_subnet` | Deduplicated comment | Included in banned-subnet responses |
+| Account disabled status | `core.user.status.set` with `status: "disabled"` | Repeat `core.user.status.set` while disabled | Deduplicated comment | Included in disabled-login response |
+| User block | `core.user.block.create` | `core.user.block.update` | Deduplicated comment | Included in `core.user.block.create`, `core.user.block.update`, and `core.user.block.list` responses; users may list their own blocks |
+| Service lockdown | `core.server.lockdown.set` with `status: true` | Repeat `core.server.lockdown.set` while enabled | Lockdown state | Included in lockdown state and broadcast responses |
+| Banned subnet | `core.security.banned_subnet.create` | `core.security.banned_subnet.update` | Deduplicated comment | Included in banned-subnet responses |
 
-`manage_user_status` and `lockdown` reject a `reason` field when activating an
+`core.user.status.set` and `core.server.lockdown.set` reject a `reason` field when activating an
 incompatible state (`status: "active"` and `status: false`, respectively).
 Changing only a lockdown reason does not cancel file tasks. Changing only a
 banned-subnet reason does not refresh the active subnet guard. When a lockdown was

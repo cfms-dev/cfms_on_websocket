@@ -101,6 +101,7 @@ state_retention_seconds = 600
 # Optional positive integer costs keyed by request action. Unlisted actions use
 # calibrated handler defaults in the 1, 2, 3, 5, 10, and 20 cost tiers. Values
 # here override those defaults. See docs/REQUEST_RATE_CONTROL.md for the matrix.
+# Quote namespaced action keys, for example: "core.search.query" = 4
 
 [identity.permission_retention]
 # Expired direct-user and group permission entries remain visible for this many days.

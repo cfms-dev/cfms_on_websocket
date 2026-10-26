@@ -14,7 +14,7 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.identity.auth.types import AuthPurpose
 from include.domains.identity.commands.auth_policies import replace_auth_policy
-from include.domains.identity.commands.credentials import enable_login_totp, setup_totp
+from include.domains.identity.commands.credentials import setup_totp
 from include.domains.identity.tokens import TokenPurpose
 from include.transport.multiplexing import FrameType, encode_frame
 
@@ -69,7 +69,7 @@ async def test_public_key_authentication_and_late_conclusion_keep_connection_usa
     client = unauthenticated_client
     if purpose == AuthPurpose.LOGIN:
         response = await client.send_request(
-            "login",
+            "core.auth.login",
             {
                 "method": "publickey",
                 "credential": {
@@ -84,7 +84,7 @@ async def test_public_key_authentication_and_late_conclusion_keep_connection_usa
         login = await client.login(account["username"], account["password"])
         assert login["code"] == 202
         response = await client.send_request(
-            "exchange_token",
+            "core.auth.token.exchange",
             {
                 "method": "publickey",
                 "data": {"fingerprint": fingerprint.hex()},
@@ -98,7 +98,7 @@ async def test_public_key_authentication_and_late_conclusion_keep_connection_usa
     assert len(stream_ids) == 1
     await client.websocket.send(encode_frame(stream_ids[0], FrameType.CONCLUSION, b""))
     following = await client.send_request(
-        "server_info", {}, token=response["data"]["token"]
+        "core.server.info.get", {}, token=response["data"]["token"]
     )
     assert following["code"] == 200
 
@@ -111,7 +111,9 @@ async def test_login_method_rejects_oversized_username(unauthenticated_client, m
         {"password": "secret"} if method == "password" else {"fingerprint": "f" * 64}
     )
     response = await unauthenticated_client.send_request(
-        "login", {"method": method, "credential": credential}, include_auth=False
+        "core.auth.login",
+        {"method": method, "credential": credential},
+        include_auth=False,
     )
     assert response["code"] == 400
     assert "token" not in response["data"]
@@ -128,7 +130,15 @@ async def test_password_mfa_post_auth_over_websocket(
         user.last_login = 10
         session.get(UserPasswordCredential, user_id).passwd_last_modified = 0
         totp, codes = setup_totp(session, user)
-        enable_login_totp(session, user, totp)
+        totp.enable()
+        session.flush()
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.MFA,
+            [[{"method": "totp", "credential_ids": [totp.credential_id]}]],
+            expected_revision=0,
+        )
         signing_key = user.secret_key
     client = unauthenticated_client
     login = await client.login(account["username"], account["password"])
@@ -139,11 +149,13 @@ async def test_password_mfa_post_auth_over_websocket(
     assert "version" not in payload["auth_context"]
     assert "required_actions" not in login["data"]
     denied = await client.send_request(
-        "set_passwd", {"new_passwd": "UpdatedPassword456!"}, token=auth_token
+        "core.user.password.set",
+        {"new_passwd": "UpdatedPassword456!"},
+        token=auth_token,
     )
     assert denied["code"] == 403
     complete = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {
             "method": "totp",
             "data": {"token": codes[0]},
@@ -165,10 +177,10 @@ async def test_password_mfa_post_auth_over_websocket(
     with Session() as session:
         assert session.get(User, user_id).last_login == 10
     for action, data in (
-        ("refresh_token", {}),
-        ("server_info", {}),
+        ("core.auth.token.refresh", {}),
+        ("core.server.info.get", {}),
         (
-            "exchange_token",
+            "core.auth.token.exchange",
             {
                 "method": "totp",
                 "data": {"token": codes[1]},
@@ -179,16 +191,20 @@ async def test_password_mfa_post_auth_over_websocket(
         denied = await client.send_request(action, data, token=post_token)
         assert denied["code"] == 403
     changed = await client.send_request(
-        "set_passwd", {"new_passwd": "UpdatedPassword456!"}, token=post_token
+        "core.user.password.set",
+        {"new_passwd": "UpdatedPassword456!"},
+        token=post_token,
     )
     assert changed["code"] == 200
     assert changed["data"] == {}
     replay = await client.send_request(
-        "set_passwd", {"new_passwd": "AnotherPassword789!"}, token=post_token
+        "core.user.password.set",
+        {"new_passwd": "AnotherPassword789!"},
+        token=post_token,
     )
     assert replay["code"] == 401
     logged_in = await client.login(
-        account["username"], "UpdatedPassword456!", two_fa_token=codes[1]
+        account["username"], "UpdatedPassword456!", totp_token=codes[1]
     )
     assert logged_in["code"] == 200
 
@@ -223,7 +239,15 @@ async def test_multiple_public_keys_in_one_login_request_then_separate_mfa(
             session, user, AuthPurpose.LOGIN, [chain], expected_revision=1
         )
         totp, codes = setup_totp(session, user)
-        enable_login_totp(session, user, totp)
+        totp.enable()
+        session.flush()
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.MFA,
+            [[{"method": "totp", "credential_ids": [totp.credential_id]}]],
+            expected_revision=0,
+        )
         session.get(UserPasswordCredential, user_id).passwd_last_modified = 0
     events, stream_ids = [], []
     fingerprints = list(keys)
@@ -249,7 +273,7 @@ async def test_multiple_public_keys_in_one_login_request_then_separate_mfa(
 
     client = unauthenticated_client
     login = await client.send_request(
-        "login",
+        "core.auth.login",
         {
             "method": "publickey",
             "credential": {
@@ -265,7 +289,7 @@ async def test_multiple_public_keys_in_one_login_request_then_separate_mfa(
     assert len(stream_ids) == 2
     assert stream_ids[0] == stream_ids[1]
     complete = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {
             "method": "totp",
             "data": {"token": codes[0]},
@@ -298,7 +322,7 @@ async def test_password_escalation_and_refresh_over_websocket(
     login = await client.login(account["username"], account["password"])
     assert login["code"] == 200
     elevated = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {
             "method": "password",
             "data": {"password": account["password"]},
@@ -312,11 +336,11 @@ async def test_password_escalation_and_refresh_over_websocket(
         jwt.decode(token, signing_key, algorithms=["HS256"])["purpose"]
         == TokenPurpose.GENERAL_WITH_ESCALATION
     )
-    refreshed = await client.send_request("refresh_token", {}, token=token)
+    refreshed = await client.send_request("core.auth.token.refresh", {}, token=token)
     assert refreshed["code"] == 200
     assert refreshed["data"]["purpose"] == TokenPurpose.GENERAL
     rejected = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {
             "method": "password",
             "data": {"password": account["password"]},
@@ -336,7 +360,9 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     login = await client.login(account["username"], account["password"])
     assert login["code"] == 200
     general = login["data"]["token"]
-    inventory = await client.send_request("get_user_authentication", {}, token=general)
+    inventory = await client.send_request(
+        "core.user.authentication.get", {}, token=general
+    )
     assert inventory["code"] == 200
     password_id = next(
         c["credential_id"]
@@ -350,11 +376,13 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
         .decode()
     )
     denied = await client.send_request(
-        "register_user_auth_public_key", {"public_key": public}, token=general
+        "core.user.authentication.public_key.register",
+        {"public_key": public},
+        token=general,
     )
     assert denied["code"] == 403
     elevated = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
         token=general,
     )
@@ -362,7 +390,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert elevated["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
     elevated_token = elevated["data"]["token"]
     registered = await client.send_request(
-        "register_user_auth_public_key",
+        "core.user.authentication.public_key.register",
         {"public_key": public, "label": "test key"},
         token=elevated_token,
     )
@@ -381,7 +409,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
 
     async def key_login():
         return await client.send_request(
-            "login",
+            "core.auth.login",
             {
                 "method": "publickey",
                 "credential": {
@@ -397,7 +425,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert unauthorized["code"] == 401
     assert "token" not in unauthorized["data"]
     configured = await client.send_request(
-        "set_user_auth_policies",
+        "core.user.authentication.policy.set",
         {
             "policies": [
                 {
@@ -438,14 +466,14 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert configured["code"] == 200
     assert configured["data"]["policies"]["login"]["revision"] == 2
     updated = await client.send_request(
-        "update_user_auth_public_key",
+        "core.user.authentication.public_key.update",
         {"credential_id": key["credential_id"], "label": None},
         token=elevated_token,
     )
     assert updated["code"] == 200
     assert updated["data"]["label"] is None
     blocked = await client.send_request(
-        "delete_user_auth_public_key",
+        "core.user.authentication.public_key.delete",
         {"credential_id": key["credential_id"]},
         token=elevated_token,
     )
@@ -456,7 +484,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert new_login["data"]["purpose"] == TokenPurpose.AUTH
     assert "password" in new_login["data"]["methods"]
     complete = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {
             "target_purpose": TokenPurpose.GENERAL,
             "method": "password",
@@ -468,13 +496,13 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert complete["data"]["purpose"] == TokenPurpose.GENERAL
     source = complete["data"]["token"]
     missing_proof = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
         token=source,
     )
     assert missing_proof["code"] == 400
     verified = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {
             "target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION,
             "method": "publickey",
@@ -487,7 +515,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
     assert verified["data"]["purpose"] == TokenPurpose.GENERAL_WITH_ESCALATION
 
     cleared = await client.send_request(
-        "set_user_auth_policies",
+        "core.user.authentication.policy.set",
         {"policies": [{"purpose": "escalation", "expected_revision": 1, "chains": []}]},
         token=verified["data"]["token"],
     )
@@ -497,7 +525,7 @@ async def test_user_manages_public_key_login_and_mfa_over_websocket(
         "chains": [],
     }
     direct = await client.send_request(
-        "exchange_token",
+        "core.auth.token.exchange",
         {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
         token=source,
     )
@@ -514,14 +542,18 @@ async def test_authentication_management_schema_rejects_invalid_fields(
     client = unauthenticated_client
     assert (await client.login(account["username"], account["password"]))["code"] == 200
     for action, data, location in (
-        ("get_user_authentication", {"user_id": "invalid"}, ["user_id", "uuid"]),
+        ("core.user.authentication.get", {"user_id": "invalid"}, ["user_id", "uuid"]),
         (
-            "register_user_auth_public_key",
+            "core.user.authentication.public_key.register",
             {"public_key": "key", "label": "x" * 256},
             ["label"],
         ),
-        ("set_user_auth_policies", {"policies": []}, ["policies"]),
-        ("update_user_auth_public_key", {"credential_id": "key"}, ["label"]),
+        ("core.user.authentication.policy.set", {"policies": []}, ["policies"]),
+        (
+            "core.user.authentication.public_key.update",
+            {"credential_id": "key"},
+            ["label"],
+        ),
     ):
         response = await client.send_request(action, data)
         assert response["code"] == 400
@@ -537,12 +569,13 @@ async def test_default_sysop_manages_another_users_authentication(
     client = authenticated_client
     user_id = account["user_id"]
     inventory = await client.send_request(
-        "get_user_authentication", {"user_id": user_id}
+        "core.user.authentication.get", {"user_id": user_id}
     )
     assert inventory["code"] == 200
     assert inventory["data"]["user_id"] == user_id
     elevated = await client.send_request(
-        "exchange_token", {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}
+        "core.auth.token.exchange",
+        {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
     )
     assert elevated["code"] == 200
     token = elevated["data"]["token"]
@@ -553,7 +586,7 @@ async def test_default_sysop_manages_another_users_authentication(
         .decode()
     )
     registered = await client.send_request(
-        "register_user_auth_public_key",
+        "core.user.authentication.public_key.register",
         {"user_id": user_id, "public_key": public_key},
         token=token,
     )
@@ -561,14 +594,14 @@ async def test_default_sysop_manages_another_users_authentication(
     key_id = registered["data"]["credential_id"]
     for action, data in (
         (
-            "set_user_auth_policies",
+            "core.user.authentication.policy.set",
             {"policies": [{"purpose": "mfa", "expected_revision": 0, "chains": []}]},
         ),
         (
-            "update_user_auth_public_key",
+            "core.user.authentication.public_key.update",
             {"credential_id": key_id, "label": "managed by sysop"},
         ),
-        ("delete_user_auth_public_key", {"credential_id": key_id}),
+        ("core.user.authentication.public_key.delete", {"credential_id": key_id}),
     ):
         response = await client.send_request(
             action, {**data, "user_id": user_id}, token=token

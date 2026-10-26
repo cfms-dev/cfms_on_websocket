@@ -102,16 +102,16 @@ The following authenticated actions accept only structured entries in their
 
 | Action | Required permission | Behavior |
 | --- | --- | --- |
-| `create_user` | `create_user` | Sets the new user's direct entries. |
-| `change_user_permissions` | `set_user_permissions` | Replaces all direct entries for the user. |
-| `create_group` | `create_group` | Sets the new group's entries. |
-| `change_group_permissions` | `set_group_permissions` | Replaces all entries for the group. |
+| `core.user.create` | `create_user` | Sets the new user's direct entries. |
+| `core.user.permission.change` | `set_user_permissions` | Replaces all direct entries for the user. |
+| `core.group.create` | `create_group` | Sets the new group's entries. |
+| `core.group.permission.change` | `set_group_permissions` | Replaces all entries for the group. |
 
 For example:
 
 ```json
 {
-  "action": "change_user_permissions",
+  "action": "core.user.permission.change",
   "data": {
     "user_id": "aabbccdd-0000-4000-8000-000000000001",
     "permissions": [
@@ -136,20 +136,20 @@ Each change action is a complete replacement. Omitting an existing entry from
 the submitted list deletes that entry. Strings, missing fields, unknown fields,
 wrong JSON types, and reversed time windows return `400`.
 
-Since protocol 28, `change_user_permissions` requires the account's `user_id`.
-Obtain it from `create_user`, `list_users`, or `get_user_info`; see
+Since protocol 28, the user-permission change request requires the account's `user_id`.
+Obtain it from `core.user.create`, `core.user.list`, or `core.user.info.get`; see
 [account identity](USER_IDS.md#protocol-28-user-management).
 
 ## Read actions
 
-`get_user_info` and each item returned by `list_users` expose:
+`core.user.info.get` and each item returned by `core.user.list` expose:
 
 - `permissions`: all direct structured permission entries;
 - `effective_permissions`: final effective permission names;
 - `effective_own_permissions`: effective names from direct entries alone;
 - `effective_inherited_permissions`: effective names from active group entries.
 
-`get_group_info` and each item returned by `list_groups` expose structured
+`core.group.info.get` and each item returned by `core.group.list` expose structured
 `permissions` plus `effective_permissions`. The former protocol 23
 `own_permissions` and `inherited_permissions` response fields no longer exist.
 

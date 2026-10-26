@@ -227,7 +227,7 @@ class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
             try:
                 decoded_cursor = PaginationCursor.decode(
                     cursor,
-                    action="list_directory",
+                    action="core.directory.list",
                     sort=sort,
                     filters=filters,
                     value_types=[int, str, str],
@@ -247,7 +247,7 @@ class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
             data = make_cursor_response(
                 items,
                 page_size=page_size,
-                action="list_directory",
+                action="core.directory.list",
                 sort=sort,
                 filters=filters,
                 cursor_key=directory_cursor_key,
@@ -758,7 +758,7 @@ class RequestMoveDirectoryHandler(RequestHandler[_MoveDirectoryRequest]):
 
 
 class RequestSetDirectoryRulesHandler(RequestHandler[_SetDirectoryRulesRequest]):
-    """Handles the "set_directory_rules" action."""
+    """Handles the "core.directory.access_rule.set" action."""
 
     request_model = _SetDirectoryRulesRequest
 
@@ -818,7 +818,7 @@ class RequestSetDirectoryRulesHandler(RequestHandler[_SetDirectoryRulesRequest])
 
 
 class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
-    """Handles the "purge_directory" action.
+    """Handles the "core.directory.purge" action.
     Permanently removes a directory, all its subdirectories, and all documents within.
     This action is irreversible.
     """
@@ -913,7 +913,7 @@ class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
 
 
 class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
-    """Handles the "restore_directory" action.
+    """Handles the "core.directory.restore" action.
     Supports virtual ROOT_DIRECTORY_ID translation to database None.
     """
 
@@ -1019,7 +1019,7 @@ class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
 
 
 class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
-    """Handles the "list_deleted_items" action.
+    """Handles the "core.directory.deleted_item.list" action.
     Lists folders and documents that have been marked as deleted within
      a specific parent directory.
     """
@@ -1065,7 +1065,7 @@ class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
             try:
                 decoded_cursor = PaginationCursor.decode(
                     cursor,
-                    action="list_deleted_items",
+                    action="core.directory.deleted_item.list",
                     sort=sort,
                     filters=filters,
                     value_types=[int, str, str],
@@ -1085,7 +1085,7 @@ class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
             result_data = make_cursor_response(
                 items,
                 page_size=page_size,
-                action="list_deleted_items",
+                action="core.directory.deleted_item.list",
                 sort=sort,
                 filters=filters,
                 cursor_key=directory_cursor_key,

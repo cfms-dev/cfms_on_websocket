@@ -740,7 +740,7 @@ class RequestListUserBlocksHandler(RequestHandler[_ListUserBlocksRequest]):
             try:
                 decoded_cursor = PaginationCursor.decode(
                     cursor,
-                    action="list_user_blocks",
+                    action="core.user.block.list",
                     sort=sort,
                     filters=filters,
                     value_types=[(int, float), str],
@@ -788,7 +788,7 @@ class RequestListUserBlocksHandler(RequestHandler[_ListUserBlocksRequest]):
             response_data = make_cursor_response(
                 blocks_data,
                 page_size=page_size,
-                action="list_user_blocks",
+                action="core.user.block.list",
                 sort=sort,
                 filters=filters,
                 cursor_key=lambda item: [item["timestamp"], item["block_id"]],

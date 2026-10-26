@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import orjson
+import pyotp
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -39,6 +40,7 @@ from include.domains.identity.handlers import auth, auth_management, users
 from include.domains.identity.tokens import Token, TokenPurpose
 from include.domains.operations.commands import audit
 from include.domains.security.guards import replay
+from include.domains.security.handlers import totp as totp_handlers
 from include.providers.caching.memory import MemoryCachingProvider
 from include.transport import router
 
@@ -945,7 +947,7 @@ def password_router(management, monkeypatch):
 
     def call(token):
         envelope = {
-            "action": "set_passwd",
+            "action": "core.user.password.set",
             "data": {"new_passwd": "UpdatedPassword456!"},
             "nonce": uuid.uuid4().hex,
             "timestamp": time.time(),
@@ -1214,18 +1216,18 @@ def test_unreferenced_deletion_does_not_change_policy_revisions(management):
 @pytest.mark.parametrize(
     ("handler_type", "data"),
     [
-        ("RequestSetup2FAHandler", {}),
-        ("RequestValidate2FAHandler", {"token": "invalid"}),
-        ("RequestDisable2FAHandler", {"password": "Password123!"}),
-        ("RequestCancel2FASetupHandler", {}),
+        ("RequestSetupTotpHandler", {}),
+        ("RequestConfirmTotpSetupHandler", {"token": "invalid"}),
+        ("RequestDeleteTotpHandler", {"password": "Password123!"}),
+        ("RequestCancelTotpSetupHandler", {}),
     ],
 )
 def test_totp_mutations_authorize_before_credential_access(
     management, monkeypatch, handler_type, data
 ):
-    from include.domains.security.handlers import two_factor
+    from include.domains.security.handlers import totp
 
-    monkeypatch.setattr(two_factor, "Session", management.sessions)
+    monkeypatch.setattr(totp, "Session", management.sessions)
     with management.sessions.begin() as session:
         session.execute(
             delete(UserPermission).where(UserPermission.user_id == management.user_id)
@@ -1234,7 +1236,7 @@ def test_totp_mutations_authorize_before_credential_access(
             UserTotpCredential, management.user_id
         ).credential_id
     handler = Handler(data, management.token)
-    handler_class = getattr(two_factor, handler_type)
+    handler_class = getattr(totp, handler_type)
     result = handler_class().handle(
         handler, handler_class.request_model.model_validate(data)
     )
@@ -1252,9 +1254,9 @@ def test_totp_mutations_authorize_before_credential_access(
 def test_cancelling_pending_totp_prunes_all_dependent_policies(
     management, monkeypatch, permission
 ):
-    from include.domains.security.handlers import two_factor
+    from include.domains.security.handlers import totp
 
-    monkeypatch.setattr(two_factor, "Session", management.sessions)
+    monkeypatch.setattr(totp, "Session", management.sessions)
     with management.sessions.begin() as session:
         session.execute(
             delete(UserPermission).where(UserPermission.user_id == management.user_id)
@@ -1278,7 +1280,7 @@ def test_cancelling_pending_totp_prunes_all_dependent_policies(
                 expected_revision=0,
             )
     handler = Handler({}, management.token)
-    handler_class = two_factor.RequestCancel2FASetupHandler
+    handler_class = totp.RequestCancelTotpSetupHandler
     handler_class().handle(handler, handler_class.request_model.model_validate({}))
     assert handler.response["code"] == 200
     with management.sessions() as session:
@@ -1300,9 +1302,9 @@ def test_cancelling_pending_totp_prunes_all_dependent_policies(
 def test_totp_status_requires_independent_cross_user_read_permission(
     management, monkeypatch, permission, expected
 ):
-    from include.domains.security.handlers import two_factor
+    from include.domains.security.handlers import totp
 
-    monkeypatch.setattr(two_factor, "Session", management.sessions)
+    monkeypatch.setattr(totp, "Session", management.sessions)
     with management.sessions.begin() as session:
         session.add(
             UserPermission(
@@ -1314,11 +1316,103 @@ def test_totp_status_requires_independent_cross_user_read_permission(
         )
     data = {"user_id": str(management.other_id)}
     handler = Handler(data, management.token)
-    handler_class = two_factor.RequestGet2FAStatusHandler
+    handler_class = totp.RequestGetTotpStatusHandler
     result = handler_class().handle(
         handler, handler_class.request_model.model_validate(data)
     )
     assert result.code == handler.response["code"] == expected
+
+
+@pytest.mark.parametrize(
+    "policy_state", ["absent", "empty", "totp", "publickey", "escalation"]
+)
+def test_totp_confirmation_preserves_all_authentication_policies(
+    management, monkeypatch, policy_state
+):
+    monkeypatch.setattr(totp_handlers, "Session", management.sessions)
+    if policy_state == "publickey":
+        key_id = management.call("register", {"public_key": ssh_key()}).response[
+            "data"
+        ]["credential_id"]
+    with management.sessions.begin() as session:
+        user = session.get(User, management.user_id)
+        credential = session.get(UserTotpCredential, user.id)
+        secret = credential.secret
+        if policy_state != "absent":
+            purpose = (
+                AuthPurpose.ESCALATION
+                if policy_state == "escalation"
+                else AuthPurpose.MFA
+            )
+            chains = (
+                []
+                if policy_state == "empty"
+                else [
+                    chain("publickey", key_id)
+                    if policy_state == "publickey"
+                    else chain("totp", credential.credential_id)
+                ]
+            )
+            replace_auth_policy(session, user, purpose, chains, expected_revision=0)
+        before = {
+            row.purpose: (row.revision, row.chains)
+            for row in session.scalars(
+                select(UserAuthPolicy).where(UserAuthPolicy.user_id == user.id)
+            )
+        }
+
+    data = {"token": pyotp.TOTP(secret).now()}
+    handler = Handler(data, management.token)
+    handler_class = totp_handlers.RequestConfirmTotpSetupHandler
+    handler_class().handle(handler, handler_class.request_model.model_validate(data))
+    assert handler.response["code"] == 200
+    with management.sessions() as session:
+        assert session.get(UserTotpCredential, management.user_id).enabled is True
+        after = {
+            row.purpose: (row.revision, row.chains)
+            for row in session.scalars(
+                select(UserAuthPolicy).where(
+                    UserAuthPolicy.user_id == management.user_id
+                )
+            )
+        }
+        assert after == before
+    status = Handler({}, management.token)
+    status_class = totp_handlers.RequestGetTotpStatusHandler
+    status_class().handle(status, status_class.request_model())
+    assert status.response["code"] == 200
+    assert status.response["data"] == {
+        "configured": True,
+        "enabled": True,
+        "backup_codes_count": 10,
+    }
+
+
+def test_public_key_mfa_does_not_imply_a_totp_credential(management, monkeypatch):
+    monkeypatch.setattr(totp_handlers, "Session", management.sessions)
+    key_id = management.call("register", {"public_key": ssh_key()}).response["data"][
+        "credential_id"
+    ]
+    with management.sessions.begin() as session:
+        session.delete(session.get(UserTotpCredential, management.user_id))
+        replace_auth_policy(
+            session,
+            session.get(User, management.user_id),
+            AuthPurpose.MFA,
+            [chain("publickey", key_id)],
+            expected_revision=0,
+        )
+    handler = Handler({}, management.token)
+    handler_class = totp_handlers.RequestGetTotpStatusHandler
+    handler_class().handle(handler, handler_class.request_model())
+    assert handler.response["code"] == 200
+    assert handler.response["data"] == {
+        "configured": False,
+        "enabled": False,
+        "backup_codes_count": 0,
+    }
+    overview = management.call("get").response["data"]
+    assert overview["policies"]["mfa"]["chains"] == [chain("publickey", key_id)]
 
 
 def test_credential_pruning_does_not_discard_pending_registrations(management):

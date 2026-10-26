@@ -18,7 +18,8 @@ async def test_discover_and_manage_user_by_id(authenticated_client, test_user):
 
     assert_success(
         await authenticated_client.send_request(
-            "rename_user", {"user_id": user_id.upper(), "nickname": "Updated nickname"}
+            "core.user.rename",
+            {"user_id": user_id.upper(), "nickname": "Updated nickname"},
         )
     )
     updated = assert_success(await authenticated_client.get_user_info(user_id=user_id))
@@ -34,10 +35,10 @@ async def test_discover_and_manage_user_by_id(authenticated_client, test_user):
 
     entries = assert_success(
         await authenticated_client.view_audit_logs(
-            filters=["rename_user", "create_user"]
+            filters=["core.user.rename", "core.user.create"]
         )
     )["items"]
-    for action in ("rename_user", "create_user"):
+    for action in ("core.user.rename", "core.user.create"):
         entry = next(
             item
             for item in entries
@@ -76,14 +77,14 @@ async def test_stale_id_cannot_manage_same_named_replacement(
     )
     assert_error(
         await authenticated_client.send_request(
-            "rename_user", {"user_id": old["user_id"], "nickname": "Wrong account"}
+            "core.user.rename", {"user_id": old["user_id"], "nickname": "Wrong account"}
         ),
         400,
     )
     assert_success(await authenticated_client.elevate_token())
     assert_error(
         await authenticated_client.send_request(
-            "set_passwd",
+            "core.user.password.set",
             {"user_id": old["user_id"], "new_passwd": "UpdatedPassword456!"},
         ),
         404,
@@ -151,25 +152,25 @@ async def test_block_cursor_binds_canonical_user_id(
         assert block["user_id"] == user_id
     first = assert_success(
         await authenticated_client.send_request(
-            "list_user_blocks",
+            "core.user.block.list",
             {"user_id": user_id.upper().replace("-", ""), "page_size": 1},
         )
     )
     data = {"user_id": user_id, "page_size": 1, "cursor": first["next_cursor"]}
     second = assert_success(
-        await authenticated_client.send_request("list_user_blocks", data)
+        await authenticated_client.send_request("core.user.block.list", data)
     )
     assert second["items"][0]["block_id"] != first["items"][0]["block_id"]
     assert second["items"][0]["user_id"] == user_id
     assert_error(
         await authenticated_client.send_request(
-            "list_user_blocks", {**data, "user_id": other["user_id"]}
+            "core.user.block.list", {**data, "user_id": other["user_id"]}
         ),
         400,
     )
     missing = assert_success(
         await authenticated_client.send_request(
-            "list_user_blocks", {"user_id": str(uuid.uuid4())}
+            "core.user.block.list", {"user_id": str(uuid.uuid4())}
         )
     )
     assert missing["items"] == []
@@ -193,7 +194,7 @@ async def test_administrator_manages_keyring_by_user_id(
 
 @pytest.mark.parametrize(
     ("action", "extra"),
-    [("upload_user_key", {"content": "encrypted"}), ("list_user_keys", {})],
+    [("core.user.key.upload", {"content": "encrypted"}), ("core.user.key.list", {})],
 )
 async def test_keyring_authorizes_before_target_lookup(
     low_privilege_client, test_user, action, extra
@@ -215,7 +216,7 @@ async def test_administrator_reset_uses_id_and_audits_actor(
 ):
     assert_success(await authenticated_client.elevate_token())
     response = await authenticated_client.send_request(
-        "set_passwd",
+        "core.user.password.set",
         {
             "user_id": test_user["user_id"],
             "new_passwd": "UpdatedPassword456!",
@@ -227,7 +228,7 @@ async def test_administrator_reset_uses_id_and_audits_actor(
         await user_client.login(test_user["username"], "UpdatedPassword456!")
     )
     entries = assert_success(
-        await authenticated_client.view_audit_logs(filters=["set_passwd"])
+        await authenticated_client.view_audit_logs(filters=["core.user.password.set"])
     )["items"]
     entry = next(item for item in entries if item["target"] == test_user["user_id"])
     assert entry["user_id"] == authenticated_client.user_id

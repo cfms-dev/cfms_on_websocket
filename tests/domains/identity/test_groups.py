@@ -129,7 +129,7 @@ class TestGroupOperations:
         group_name = test_group["group_name"]
 
         delete_response = await authenticated_client.send_request(
-            "delete_group", {"group_name": group_name}
+            "core.group.delete", {"group_name": group_name}
         )
         assert_success(delete_response)
 
@@ -164,13 +164,13 @@ class TestGroupOperations:
 class TestGroupWithoutAuth:
     @pytest.mark.asyncio
     async def test_list_groups_without_auth(self, client: CFMSTestClient):
-        response = await client.send_request("list_groups", {}, include_auth=False)
+        response = await client.send_request("core.group.list", {}, include_auth=False)
         assert_error(response, 401)
 
     @pytest.mark.asyncio
     async def test_create_group_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
-            "create_group",
+            "core.group.create",
             {"group_name": "testgroup", "permissions": []},
             include_auth=False,
         )

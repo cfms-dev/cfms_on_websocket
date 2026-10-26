@@ -26,7 +26,7 @@ class TestReplayProtection:
         self, authenticated_client: CFMSTestClient
     ):
         """Test that a normal authenticated request with valid nonce and timestamp succeeds."""
-        response = await authenticated_client.send_request("list_users", {})
+        response = await authenticated_client.send_request("core.user.list", {})
         assert response["code"] == 200, (
             f"Normal authenticated request should succeed, got: {response}"
         )
@@ -39,7 +39,7 @@ class TestReplayProtection:
         ts = time.time()
 
         request1 = {
-            "action": "list_users",
+            "action": "core.user.list",
             "data": {},
             "username": authenticated_client.username,
             "token": authenticated_client.token,
@@ -64,7 +64,7 @@ class TestReplayProtection:
         """Test that a request with an expired timestamp is rejected."""
 
         request = {
-            "action": "list_users",
+            "action": "core.user.list",
             "data": {},
             "username": authenticated_client.username,
             "token": authenticated_client.token,
@@ -83,7 +83,7 @@ class TestReplayProtection:
         """Test that a request with a far-future timestamp is rejected."""
 
         request = {
-            "action": "list_users",
+            "action": "core.user.list",
             "data": {},
             "username": authenticated_client.username,
             "token": authenticated_client.token,
@@ -100,7 +100,7 @@ class TestReplayProtection:
         """Test that an authenticated request without a nonce is rejected."""
 
         request = {
-            "action": "list_users",
+            "action": "core.user.list",
             "data": {},
             "username": authenticated_client.username,
             "token": authenticated_client.token,
@@ -117,7 +117,7 @@ class TestReplayProtection:
         """Test that a nonce that is too short is rejected."""
 
         request = {
-            "action": "list_users",
+            "action": "core.user.list",
             "data": {},
             "username": authenticated_client.username,
             "token": authenticated_client.token,
@@ -136,7 +136,7 @@ class TestReplayProtection:
         """Test that an authenticated request without a timestamp is rejected."""
 
         request = {
-            "action": "list_users",
+            "action": "core.user.list",
             "data": {},
             "username": authenticated_client.username,
             "token": authenticated_client.token,
@@ -154,18 +154,22 @@ class TestReplayProtection:
     ):
         """Test that unauthenticated requests (no username/token) are not subject to replay checks."""
         # server_info is an unauthenticated endpoint
-        response1 = await client.send_request("server_info", include_auth=False)
+        response1 = await client.send_request(
+            "core.server.info.get", include_auth=False
+        )
         assert response1["code"] == 200
 
         # Can send same request again without nonce/timestamp
-        response2 = await client.send_request("server_info", include_auth=False)
+        response2 = await client.send_request(
+            "core.server.info.get", include_auth=False
+        )
         assert response2["code"] == 200
 
     @pytest.mark.asyncio
     async def test_unique_nonces_succeed(self, authenticated_client: CFMSTestClient):
         """Test that multiple requests with unique nonces all succeed."""
         for _ in range(5):
-            response = await authenticated_client.send_request("list_users", {})
+            response = await authenticated_client.send_request("core.user.list", {})
             assert response["code"] == 200, (
                 f"Request with unique nonce should succeed, got: {response}"
             )

@@ -312,7 +312,7 @@ class ServerHookSpecs(ABC):
     @abstractmethod
     def ext_register_extension_flags(self) -> set[str]:
         """
-        Register extension capability flags advertised by server_info.
+        Register extension capability flags advertised by core.server.info.get.
 
         Should return a set of string flags that are currently enabled.
         """

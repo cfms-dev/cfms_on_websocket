@@ -2,13 +2,17 @@ import asyncio
 import ssl
 import struct
 import time
+import uuid
 from importlib.metadata import version as distribution_version
 
 import pytest
+from sqlalchemy import delete
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
 from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
+from include.database.models.operations import AuditEntry
+from include.database.session import Session
 from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings
 from tests.support.utils import assert_error, assert_success, permission_entry
@@ -41,7 +45,9 @@ def _collect_keys(value) -> set[str]:
 class TestSystemManagement:
     @pytest.mark.asyncio
     async def test_diagnostics_requires_authentication(self, client: CFMSTestClient):
-        response = await client.send_request("diagnostics", include_auth=False)
+        response = await client.send_request(
+            "core.server.diagnostics.get", include_auth=False
+        )
         assert_error(response, 401)
 
     @pytest.mark.asyncio
@@ -54,7 +60,9 @@ class TestSystemManagement:
         assert_error(response, 403)
 
         audit_items = assert_success(
-            await authenticated_client.view_audit_logs(filters=["diagnostics"])
+            await authenticated_client.view_audit_logs(
+                filters=["core.server.diagnostics.get"]
+            )
         )["items"]
         denied = next(
             item
@@ -160,9 +168,11 @@ class TestSystemManagement:
         assert _collect_keys(diagnostics).isdisjoint(forbidden_keys)
 
         audit_items = assert_success(
-            await authenticated_client.view_audit_logs(filters=["diagnostics"])
+            await authenticated_client.view_audit_logs(
+                filters=["core.server.diagnostics.get"]
+            )
         )["items"]
-        assert audit_items[0]["action"] == "diagnostics"
+        assert audit_items[0]["action"] == "core.server.diagnostics.get"
         assert audit_items[0]["result"] == 0
         assert audit_items[0]["data"] is None
 
@@ -262,7 +272,9 @@ class TestSystemManagement:
             assert server_info["lockdown"] is True
             assert server_info["lockdown_reason"] == "Corrected maintenance window"
             audit_items = assert_success(
-                await authenticated_client.view_audit_logs(filters=["lockdown"])
+                await authenticated_client.view_audit_logs(
+                    filters=["core.server.lockdown.set"]
+                )
             )["items"]
             assert audit_items[0]["data"]["reason_change"] == {
                 "previous": "Scheduled maintenance",
@@ -318,7 +330,7 @@ class TestSystemManagement:
         )
 
         async with connect(uri, ssl=ssl_context, proxy=None) as websocket:
-            request = b'{"action":"server_info","data":{}}'
+            request = b'{"action":"core.server.info.get","data":{}}'
             payload = bytearray(5 + len(request))
             struct.pack_into("!IB", payload, 0, 2, 0)
             payload[5:] = request
@@ -345,19 +357,23 @@ class TestSystemManagement:
         assert_success(await authenticated_client.diagnostics())
 
         create_entries = assert_success(
-            await authenticated_client.view_audit_logs(filters=["create_directory"])
+            await authenticated_client.view_audit_logs(
+                filters=["core.directory.create"]
+            )
         )["items"]
         assert create_entries
-        assert {entry["action"] for entry in create_entries} == {"create_directory"}
+        assert {entry["action"] for entry in create_entries} == {
+            "core.directory.create"
+        }
 
         selected_entries = assert_success(
             await authenticated_client.view_audit_logs(
-                filters=["create_directory", "diagnostics"]
+                filters=["core.directory.create", "core.server.diagnostics.get"]
             )
         )["items"]
         assert {entry["action"] for entry in selected_entries} == {
-            "create_directory",
-            "diagnostics",
+            "core.directory.create",
+            "core.server.diagnostics.get",
         }
 
         unfiltered_entries = assert_success(
@@ -367,10 +383,10 @@ class TestSystemManagement:
             await authenticated_client.view_audit_logs(filters=[])
         )["items"]
         assert any(
-            entry["action"] == "create_directory" for entry in unfiltered_entries
+            entry["action"] == "core.directory.create" for entry in unfiltered_entries
         )
         assert any(
-            entry["action"] == "create_directory" for entry in empty_filter_entries
+            entry["action"] == "core.directory.create" for entry in empty_filter_entries
         )
 
         unknown_action_page = assert_success(
@@ -392,7 +408,7 @@ class TestSystemManagement:
         first_page = assert_success(
             await authenticated_client.view_audit_logs(
                 page_size=1,
-                filters=["diagnostics", "create_directory"],
+                filters=["core.server.diagnostics.get", "core.directory.create"],
             )
         )
         assert first_page["next_cursor"] is not None
@@ -401,7 +417,7 @@ class TestSystemManagement:
             await authenticated_client.view_audit_logs(
                 page_size=1,
                 cursor=first_page["next_cursor"],
-                filters=["create_directory", "diagnostics"],
+                filters=["core.directory.create", "core.server.diagnostics.get"],
             )
         )
         assert len(reordered_filter_page["items"]) == 1
@@ -415,7 +431,7 @@ class TestSystemManagement:
         changed_filter_response = await authenticated_client.view_audit_logs(
             page_size=1,
             cursor=first_page["next_cursor"],
-            filters=["diagnostics"],
+            filters=["core.server.diagnostics.get"],
         )
         assert_error(changed_filter_response, 400)
 
@@ -423,5 +439,54 @@ class TestSystemManagement:
     async def test_audit_logs_require_dedicated_permission(
         self, low_privilege_client: CFMSTestClient
     ):
-        response = await low_privilege_client.view_audit_logs(filters=["diagnostics"])
+        response = await low_privilege_client.view_audit_logs(
+            filters=["core.server.diagnostics.get"]
+        )
         assert_error(response, 403)
+
+
+@pytest.mark.asyncio
+async def test_historical_audit_actions_are_preserved_and_filtered_exactly(
+    authenticated_client,
+):
+    old_id, new_id = (uuid.uuid4().hex for _ in range(2))
+    with Session.begin() as session:
+        session.add_all(
+            [
+                AuditEntry(
+                    id=old_id,
+                    action="login",
+                    result=401,
+                    target="historical",
+                    logged_time=time.time(),
+                ),
+                AuditEntry(
+                    id=new_id,
+                    action="core.auth.login",
+                    result=401,
+                    target="current",
+                    logged_time=time.time(),
+                ),
+            ]
+        )
+    try:
+        historical = assert_success(
+            await authenticated_client.view_audit_logs(filters=["login"])
+        )
+        current = assert_success(
+            await authenticated_client.view_audit_logs(filters=["core.auth.login"])
+        )
+        assert any(
+            item["id"] == old_id and item["action"] == "login"
+            for item in historical["items"]
+        )
+        assert all(item["action"] == "login" for item in historical["items"])
+        assert any(item["id"] == new_id for item in current["items"])
+        assert all(item["action"] == "core.auth.login" for item in current["items"])
+        with Session() as session:
+            assert session.get(AuditEntry, old_id).action == "login"
+    finally:
+        with Session.begin() as session:
+            session.execute(
+                delete(AuditEntry).where(AuditEntry.id.in_([old_id, new_id]))
+            )

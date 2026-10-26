@@ -55,7 +55,6 @@ from include.domains.identity.commands.auth_policies import (
     replace_auth_policy,
 )
 from include.domains.identity.commands.credentials import (
-    enable_login_totp,
     remove_totp,
     set_password,
     setup_totp,
@@ -343,7 +342,14 @@ def test_totp_activation_does_not_imply_mfa_and_custom_removal_prunes_policy(
         ).active
         credential.enable()
         assert not auth_registry.user_requires_mfa(session, user)
-        enable_login_totp(session, user, credential)
+        session.flush()
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.MFA,
+            [[{"method": "totp", "credential_ids": [credential.credential_id]}]],
+            expected_revision=0,
+        )
         assert auth_registry.user_requires_mfa(session, user)
         mfa = session.get(UserAuthPolicy, (user.id, "mfa"))
         replace_auth_policy(
@@ -396,7 +402,15 @@ def login_context(auth_sessions, monkeypatch):
             expected_revision=0,
         )
         credential, codes = setup_totp(session, user)
-        enable_login_totp(session, user, credential)
+        credential.enable()
+        session.flush()
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.MFA,
+            [[{"method": "totp", "credential_ids": [credential.credential_id]}]],
+            expected_revision=0,
+        )
         return user.id, credential.secret, codes, user.secret_key
 
 
@@ -702,8 +716,8 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
     import pyotp
 
     from include.database.models.auth import UserAuthPolicy, UserTotpCredential
-    from include.domains.security.handlers import two_factor
-    from include.domains.security.handlers.two_factor import RequestValidate2FAHandler
+    from include.domains.security.handlers import totp
+    from include.domains.security.handlers.totp import RequestConfirmTotpSetupHandler
 
     sessions = auth_sessions
     secret = pyotp.random_base32()
@@ -724,7 +738,7 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
 
     def unexpected_throttle_call(*_args, **_kwargs):
         raise AssertionError(
-            "2FA setup validation must not use authentication throttle"
+            "TOTP setup confirmation must not use authentication throttle"
         )
 
     responses = []
@@ -733,15 +747,15 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
         data={"token": "invalid"},
         conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
     )
-    monkeypatch.setattr(two_factor, "Session", sessions)
-    monkeypatch.setattr(two_factor, "get_client_ip", unexpected_throttle_call)
+    monkeypatch.setattr(totp, "Session", sessions)
+    monkeypatch.setattr(totp, "get_client_ip", unexpected_throttle_call)
     for name in ("evaluate", "report_failure", "report_success"):
-        monkeypatch.setattr(two_factor.LoginGuard, name, unexpected_throttle_call)
+        monkeypatch.setattr(totp.LoginGuard, name, unexpected_throttle_call)
     assert (
-        RequestValidate2FAHandler()
+        RequestConfirmTotpSetupHandler()
         .handle(
             handler,
-            RequestValidate2FAHandler.request_model.model_validate(handler.data),
+            RequestConfirmTotpSetupHandler.request_model.model_validate(handler.data),
         )
         .code
         == 401
@@ -750,10 +764,10 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
     handler.data["token"] = pyotp.TOTP(secret).now()
     responses.clear()
     assert (
-        RequestValidate2FAHandler()
+        RequestConfirmTotpSetupHandler()
         .handle(
             handler,
-            RequestValidate2FAHandler.request_model.model_validate(handler.data),
+            RequestConfirmTotpSetupHandler.request_model.model_validate(handler.data),
         )
         .code
         == 0
@@ -762,14 +776,7 @@ def test_totp_setup_validation_does_not_use_authentication_throttle(
     with sessions() as session:
         credential = session.get(UserTotpCredential, user_id)
         assert credential.enabled
-        assert session.get(UserAuthPolicy, (user_id, "mfa")).chains == [
-            [
-                {
-                    "method": "totp",
-                    "credential_ids": [credential.credential_id],
-                }
-            ]
-        ]
+        assert session.get(UserAuthPolicy, (user_id, "mfa")) is None
 
 
 def test_password_does_not_collect_more_credentials(login_context, auth_sessions):
@@ -1578,7 +1585,8 @@ def test_public_key_dialog_rejects_invalid_or_stale_proofs(
             return RateLimitDecision(False, retry_after_seconds=17)
 
         policy = RequestRateControlPolicy(
-            mode="enforce", action_costs=(("login", 9), ("exchange_token", 7))
+            mode="enforce",
+            action_costs=(("core.auth.login", 9), ("core.auth.token.exchange", 7)),
         )
         monkeypatch.setattr(
             request_rate_control.RequestRateControlPolicy,
@@ -1879,7 +1887,13 @@ def test_continuation_tokens_reject_missing_context_and_cross_purpose_claims(
 
 @pytest.mark.parametrize(
     "action",
-    ["server_info", "login", "refresh_token", "exchange_token", "get_user_info"],
+    [
+        "core.server.info.get",
+        "core.auth.login",
+        "core.auth.token.refresh",
+        "core.auth.token.exchange",
+        "core.user.info.get",
+    ],
 )
 def test_post_auth_router_rejects_every_other_action(
     login_context, auth_sessions, monkeypatch, action

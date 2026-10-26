@@ -178,7 +178,7 @@ def test_connection_handler_audits_effective_client_address(
     stream = SimpleNamespace(
         connection=SimpleNamespace(_ws=websocket),
         recv=lambda: SimpleNamespace(
-            data=orjson.dumps({"action": "server_info", "data": {}})
+            data=orjson.dumps({"action": "core.server.info.get", "data": {}})
         ),
     )
 
@@ -201,7 +201,7 @@ def test_connection_handler_rejects_forwarding_from_untrusted_peer(
     stream = SimpleNamespace(
         connection=SimpleNamespace(_ws=websocket),
         recv=lambda: SimpleNamespace(
-            data=orjson.dumps({"action": "server_info", "data": {}})
+            data=orjson.dumps({"action": "core.server.info.get", "data": {}})
         ),
     )
 

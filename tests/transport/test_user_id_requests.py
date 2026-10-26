@@ -24,9 +24,9 @@ from include.domains.keyrings.handlers.keyrings import (
     RequestListUserKeysHandler,
     RequestUploadUserKeyHandler,
 )
-from include.domains.security.handlers.two_factor import (
-    RequestDisable2FAHandler,
-    RequestGet2FAStatusHandler,
+from include.domains.security.handlers.totp import (
+    RequestDeleteTotpHandler,
+    RequestGetTotpStatusHandler,
 )
 
 pytestmark = pytest.mark.unit
@@ -44,8 +44,8 @@ USER_REQUESTS = [
     (RequestSetPasswdHandler, {"new_passwd": "NewPassword123!"}),
 ]
 OPTIONAL_USER_REQUESTS = [
-    (RequestDisable2FAHandler, {"password": "current-password"}, "username"),
-    (RequestGet2FAStatusHandler, {}, "target"),
+    (RequestDeleteTotpHandler, {"password": "current-password"}, "username"),
+    (RequestGetTotpStatusHandler, {}, "target"),
     (RequestUploadUserKeyHandler, {"content": "encrypted-key"}, "target_username"),
     (RequestListUserKeysHandler, {}, "target_username"),
 ]

@@ -167,13 +167,55 @@ def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
 def _audit_failure(session, username, ip_address, logged_time):
     session.add(
         AuditEntry(
-            action="login",
+            action="core.auth.login",
             result=401,
             target=username,
             remote_address=ip_address,
             logged_time=logged_time,
         )
     )
+
+
+@pytest.mark.component
+def test_detector_does_not_count_pre_upgrade_login_audit_entries(detector_context):
+    with detector_context.sessions.begin() as session:
+        for username, ip in (
+            ("alice", "192.0.2.1"),
+            ("bob", "192.0.2.2"),
+            ("alice", "192.0.2.3"),
+        ):
+            session.add(
+                AuditEntry(
+                    action="login",
+                    result=401,
+                    target=username,
+                    remote_address=ip,
+                    logged_time=1000.0,
+                )
+            )
+        _audit_failure(session, "alice", "192.0.2.1", 1000.0)
+    extension.ext_post_request(
+        "core.auth.login",
+        SimpleNamespace(data={}, remote_address="192.0.2.1"),
+        Result(code=401, target="alice"),
+        0.1,
+    )
+    assert lockdown_state_manager.get_state() == LockdownState()
+    with detector_context.sessions() as session:
+        assert (
+            len(
+                session.scalars(
+                    select(AuditEntry).where(AuditEntry.action == "login")
+                ).all()
+            )
+            == 3
+        )
+        assert (
+            session.scalar(
+                select(AuditEntry).where(AuditEntry.action == "automatic_lockdown")
+            )
+            is None
+        )
 
 
 @pytest.mark.component
@@ -215,7 +257,7 @@ def test_detector_uses_failure_and_either_distinct_threshold(
             _audit_failure(session, username, ip_address, 1000.0)
 
     extension.ext_post_request(
-        "login",
+        "core.auth.login",
         SimpleNamespace(data={}, remote_address="192.0.2.1"),
         Result(code=401, target="alice"),
         0.1,
@@ -278,9 +320,9 @@ def test_detector_excludes_failures_before_its_window(
         _audit_failure(session, "alice", "192.0.2.2", 1000.0)
         _audit_failure(session, "unknown", "192.0.2.3", 1000.0)
         for action, result in (
-            ("sso_oidc_callback", 401),
-            ("login", 200),
-            ("login", 429),
+            ("oidc_sso.session.callback", 401),
+            ("core.auth.login", 200),
+            ("core.auth.login", 429),
         ):
             session.add(
                 AuditEntry(
@@ -293,7 +335,7 @@ def test_detector_excludes_failures_before_its_window(
             )
 
     extension.ext_post_request(
-        "login",
+        "core.auth.login",
         SimpleNamespace(data={}, remote_address="192.0.2.2"),
         Result(code=401, target="alice"),
         0.1,
@@ -311,7 +353,7 @@ def test_detector_excludes_failures_before_its_window(
         _audit_failure(session, "bob", "192.0.2.3", 1000.0)
 
     extension.ext_post_request(
-        "login",
+        "core.auth.login",
         SimpleNamespace(data={}, remote_address="192.0.2.3"),
         Result(code=401, target="bob"),
         0.1,
@@ -331,14 +373,14 @@ def test_detector_excludes_failures_before_its_window(
 @pytest.mark.parametrize(
     ("action", "callback"),
     [
-        ("login", None),
-        ("login", Result(code=200, target="alice")),
-        ("login", Result(code=202, target="alice")),
-        ("login", Result(code=429, target="alice")),
-        ("login", Result(code=401)),
-        ("login", Result(code=401, target="")),
-        ("login", Result(code=401, target="unknown")),
-        ("sso_oidc_callback", Result(code=401, target="alice")),
+        ("core.auth.login", None),
+        ("core.auth.login", Result(code=200, target="alice")),
+        ("core.auth.login", Result(code=202, target="alice")),
+        ("core.auth.login", Result(code=429, target="alice")),
+        ("core.auth.login", Result(code=401)),
+        ("core.auth.login", Result(code=401, target="")),
+        ("core.auth.login", Result(code=401, target="unknown")),
+        ("oidc_sso.session.callback", Result(code=401, target="alice")),
     ],
 )
 def test_detector_ignores_non_credential_failures(detector_context, action, callback):
@@ -391,7 +433,7 @@ def test_detector_cancels_file_tasks_and_audits_once(detector_context):
     with watch_file_task("pending") as pending, watch_file_task("running") as running:
         for _ in range(2):
             extension.ext_post_request(
-                "login",
+                "core.auth.login",
                 SimpleNamespace(data={}, remote_address="192.0.2.3"),
                 Result(code=401, target="alice"),
                 0.1,
@@ -462,7 +504,7 @@ def test_concurrent_detector_callbacks_have_one_transition_and_audit(detector_co
     def detect():
         barrier.wait(timeout=5)
         extension.ext_post_request(
-            "login",
+            "core.auth.login",
             SimpleNamespace(data={}, remote_address="192.0.2.3"),
             Result(code=401, target="alice"),
             0.1,
@@ -505,7 +547,7 @@ def test_detector_takes_over_releasable_lockdown_without_changing_reason(
         _audit_failure(session, "alice", "192.0.2.3", 1000.0)
 
     extension.ext_post_request(
-        "login",
+        "core.auth.login",
         SimpleNamespace(data={}, remote_address="192.0.2.3"),
         Result(code=401, target="alice"),
         0.1,
@@ -561,7 +603,7 @@ def test_detector_preserves_existing_protected_lockdown(detector_context, source
         _audit_failure(session, "alice", "192.0.2.3", 1000.0)
 
     extension.ext_post_request(
-        "login",
+        "core.auth.login",
         SimpleNamespace(data={}, remote_address="192.0.2.3"),
         Result(code=401, target="alice"),
         0.1,
@@ -593,7 +635,7 @@ def test_detector_database_failure_does_not_break_login(detector_context, monkey
     try:
         monkeypatch.setattr(extension, "Session", unavailable_session)
         extension.ext_post_request(
-            "login",
+            "core.auth.login",
             SimpleNamespace(data={}, remote_address="192.0.2.1"),
             callback,
             0.1,

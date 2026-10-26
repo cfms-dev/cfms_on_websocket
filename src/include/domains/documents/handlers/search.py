@@ -53,7 +53,7 @@ class _SearchRequest(RequestDataModel):
 
 class RequestSearchHandler(RequestHandler[_SearchRequest]):
     """
-    Handles the "search" action for finding documents and directories by name.
+    Handles the "core.search.query" action for finding documents and directories by name.
 
     Features:
     1. Accepts a search query (name) as the main parameter
@@ -114,7 +114,7 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
         try:
             decoded_cursor = PaginationCursor.decode(
                 cursor,
-                action="search",
+                action="core.search.query",
                 sort=sort,
                 filters=filters,
                 value_types=[(int, float, str), int, str],
@@ -150,7 +150,7 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
             response_data = make_cursor_response(
                 all_results,
                 page_size=page_size,
-                action="search",
+                action="core.search.query",
                 sort=sort,
                 filters=filters,
                 cursor_key=lambda item: search_cursor_key(item, sort_by),

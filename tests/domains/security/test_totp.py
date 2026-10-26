@@ -1,4 +1,4 @@
-"""Public two-factor setup, validation, disabling, and login contracts."""
+"""Public TOTP setup, validation, disabling, and login contracts."""
 
 import uuid
 
@@ -15,6 +15,7 @@ from include.database.models import auth
 from include.database.models.auth import UserTotpCredential
 from include.database.models.identity import User
 from include.database.session import Base
+from include.domains.identity.tokens import TokenPurpose
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
 
@@ -26,29 +27,64 @@ async def test_user(user_factory):
 
 @pytest_asyncio.fixture
 async def pending_totp(user_client: CFMSTestClient):
-    return assert_success(await user_client.setup_2fa())
+    return assert_success(await user_client.setup_totp())
 
 
 @pytest_asyncio.fixture
 async def enabled_totp(user_client: CFMSTestClient, pending_totp):
     token = pyotp.TOTP(pending_totp["secret"]).now()
-    assert_success(await user_client.validate_2fa(token))
+    assert_success(await user_client.confirm_totp_setup(token))
     return pending_totp
 
 
+@pytest_asyncio.fixture
+async def login_mfa(user_client: CFMSTestClient, enabled_totp):
+    assert_success(await user_client.elevate_token())
+    authentication = assert_success(
+        await user_client.send_request("core.user.authentication.get")
+    )
+    credential = next(
+        item for item in authentication["credentials"] if item["method"] == "totp"
+    )
+    assert_success(
+        await user_client.send_request(
+            "core.user.authentication.policy.set",
+            {
+                "policies": [
+                    {
+                        "purpose": "mfa",
+                        "expected_revision": authentication["policies"]["mfa"][
+                            "revision"
+                        ],
+                        "chains": [
+                            [
+                                {
+                                    "method": "totp",
+                                    "credential_ids": [credential["credential_id"]],
+                                }
+                            ]
+                        ],
+                    }
+                ]
+            },
+        )
+    )
+    return enabled_totp
+
+
 @pytest.mark.integration
-class TestTwoFactorAuth:
+class TestTotpCredentials:
     @pytest.mark.asyncio
-    async def test_administrator_cannot_disable_2fa_for_missing_user(
+    async def test_administrator_cannot_delete_totp_for_missing_user(
         self, authenticated_client: CFMSTestClient
     ):
         response = await authenticated_client.send_request(
-            "disable_2fa", {"user_id": str(uuid.uuid4())}
+            "core.user.authentication.totp.delete", {"user_id": str(uuid.uuid4())}
         )
         assert_error(response, 400)
 
     @pytest.mark.asyncio
-    async def test_administrator_disables_2fa_by_user_id(
+    async def test_administrator_deletes_totp_by_user_id(
         self,
         authenticated_client,
         user_client,
@@ -57,19 +93,21 @@ class TestTwoFactorAuth:
     ):
         status = assert_success(
             await authenticated_client.send_request(
-                "get_2fa_status", {"user_id": test_user["user_id"]}
+                "core.user.authentication.totp.status.get",
+                {"user_id": test_user["user_id"]},
             )
         )
         assert status["enabled"] is True
         assert_success(
             await authenticated_client.send_request(
-                "disable_2fa", {"user_id": test_user["user_id"]}
+                "core.user.authentication.totp.delete",
+                {"user_id": test_user["user_id"]},
             )
         )
-        assert assert_success(await user_client.get_2fa_status())["enabled"] is False
+        assert assert_success(await user_client.get_totp_status())["enabled"] is False
 
     @pytest.mark.asyncio
-    async def test_disable_2fa_does_not_disclose_cross_user_target(
+    async def test_delete_totp_does_not_disclose_cross_user_target(
         self,
         user_client: CFMSTestClient,
         test_user,
@@ -77,16 +115,17 @@ class TestTwoFactorAuth:
         low_privilege_client: CFMSTestClient,
     ):
         existing_response = await low_privilege_client.send_request(
-            "disable_2fa", {"user_id": test_user["user_id"]}
+            "core.user.authentication.totp.delete", {"user_id": test_user["user_id"]}
         )
         missing_response = await low_privilege_client.send_request(
-            "disable_2fa", {"user_id": "00000000-0000-4000-8000-000000000001"}
+            "core.user.authentication.totp.delete",
+            {"user_id": "00000000-0000-4000-8000-000000000001"},
         )
 
         for response in (existing_response, missing_response):
             assert response["code"] == 403
             assert response["data"] == {}
-        assert assert_success(await user_client.get_2fa_status())["enabled"] is True
+        assert assert_success(await user_client.get_totp_status())["enabled"] is True
 
     @pytest.mark.asyncio
     async def test_super_list_auth_methods_preserves_target_diagnostics(
@@ -95,28 +134,30 @@ class TestTwoFactorAuth:
         test_user,
     ):
         existing_response = await authenticated_client.send_request(
-            "get_2fa_status", {"user_id": test_user["user_id"]}
+            "core.user.authentication.totp.status.get",
+            {"user_id": test_user["user_id"]},
         )
         missing_response = await authenticated_client.send_request(
-            "get_2fa_status", {"user_id": "00000000-0000-4000-8000-000000000001"}
+            "core.user.authentication.totp.status.get",
+            {"user_id": "00000000-0000-4000-8000-000000000001"},
         )
 
         assert_success(existing_response)
         assert_error(missing_response, 404)
 
     @pytest.mark.asyncio
-    async def test_get_2fa_status_disabled_by_default(
+    async def test_get_totp_status_disabled_by_default(
         self, user_client: CFMSTestClient
     ):
-        status = assert_success(await user_client.get_2fa_status())
+        status = assert_success(await user_client.get_totp_status())
 
         assert status["enabled"] is False
-        assert status["method"] is None
+        assert status["configured"] is False
         assert status["backup_codes_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_setup_2fa(self, user_client: CFMSTestClient):
-        data = assert_success(await user_client.setup_2fa())
+    async def test_setup_totp(self, user_client: CFMSTestClient):
+        data = assert_success(await user_client.setup_totp())
 
         assert isinstance(data["secret"], str)
         assert data["secret"]
@@ -124,93 +165,112 @@ class TestTwoFactorAuth:
         assert len(data["backup_codes"]) == 10
         assert data["provisioning_uri"].startswith("otpauth://totp/")
         assert pyotp.parse_uri(data["provisioning_uri"]).secret == data["secret"]
+        status = assert_success(await user_client.get_totp_status())
+        assert status == {
+            "configured": True,
+            "enabled": False,
+            "backup_codes_count": 10,
+        }
 
     @pytest.mark.asyncio
-    async def test_validate_2fa_with_valid_token(
+    async def test_active_totp_does_not_require_login_mfa(
+        self, client, test_user, enabled_totp
+    ):
+        response = await client.login(test_user["username"], test_user["password"])
+        assert response["code"] == 200
+        assert response["data"]["purpose"] == TokenPurpose.GENERAL
+
+    @pytest.mark.asyncio
+    async def test_confirm_totp_setup_with_valid_token(
         self,
         user_client: CFMSTestClient,
         pending_totp,
     ):
         token = pyotp.TOTP(pending_totp["secret"]).now()
 
-        data = assert_success(await user_client.validate_2fa(token))
+        data = assert_success(await user_client.confirm_totp_setup(token))
 
         assert data == {"method": "totp"}
-        status = assert_success(await user_client.get_2fa_status())
+        status = assert_success(await user_client.get_totp_status())
         assert status["enabled"] is True
-        assert status["method"] == "totp"
+        assert status["configured"] is True
+        authentication = assert_success(
+            await user_client.send_request("core.user.authentication.get")
+        )
+        assert authentication["policies"]["mfa"] == {"revision": 0, "chains": []}
 
     @pytest.mark.asyncio
-    async def test_validate_2fa_with_invalid_token(
+    async def test_confirm_totp_setup_with_invalid_token(
         self,
         user_client: CFMSTestClient,
         pending_totp,
     ):
-        response = await user_client.validate_2fa("invalid-totp")
+        response = await user_client.confirm_totp_setup("invalid-totp")
 
         assert_error(response, 401)
-        assert assert_success(await user_client.get_2fa_status())["enabled"] is False
+        assert assert_success(await user_client.get_totp_status())["enabled"] is False
 
     @pytest.mark.asyncio
-    async def test_validate_2fa_without_setup(self, user_client: CFMSTestClient):
-        response = await user_client.validate_2fa("123456")
+    async def test_confirm_totp_setup_without_setup(self, user_client: CFMSTestClient):
+        response = await user_client.confirm_totp_setup("123456")
 
         assert_error(response, 400)
 
     @pytest.mark.asyncio
-    async def test_setup_2fa_twice_fails(
+    async def test_setup_totp_twice_fails(
         self, user_client: CFMSTestClient, enabled_totp
     ):
-        response = await user_client.setup_2fa()
+        response = await user_client.setup_totp()
 
         error = assert_error(response, 400)
         assert error["data"] == {"method": "totp"}
-        assert assert_success(await user_client.get_2fa_status())["enabled"] is True
+        assert assert_success(await user_client.get_totp_status())["enabled"] is True
 
     @pytest.mark.asyncio
-    async def test_cancel_2fa_with_valid_password(
+    async def test_delete_totp_with_valid_password(
         self,
         user_client: CFMSTestClient,
         test_user,
         enabled_totp,
     ):
-        response = await user_client.cancel_2fa(test_user["password"])
+        response = await user_client.delete_totp(test_user["password"])
 
         assert_success(response)
-        status = assert_success(await user_client.get_2fa_status())
+        status = assert_success(await user_client.get_totp_status())
         assert status["enabled"] is False
-        assert status["method"] is None
+        assert status["configured"] is False
         assert status["backup_codes_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_cancel_2fa_with_invalid_password(
+    async def test_delete_totp_with_invalid_password(
         self,
         user_client: CFMSTestClient,
         test_user,
         enabled_totp,
     ):
-        response = await user_client.cancel_2fa("wrong_password")
+        response = await user_client.delete_totp("wrong_password")
 
         assert_error(response, 401)
-        assert assert_success(await user_client.get_2fa_status())["enabled"] is True
-        assert_success(await user_client.cancel_2fa(test_user["password"]))
-        assert assert_success(await user_client.get_2fa_status())["enabled"] is False
+        assert assert_success(await user_client.get_totp_status())["enabled"] is True
+        assert_success(await user_client.delete_totp(test_user["password"]))
+        assert assert_success(await user_client.get_totp_status())["enabled"] is False
 
     @pytest.mark.asyncio
-    async def test_cancel_2fa_when_not_enabled(
+    async def test_delete_totp_when_not_enabled(
         self,
         user_client: CFMSTestClient,
         test_user,
     ):
-        response = await user_client.cancel_2fa(test_user["password"])
+        response = await user_client.delete_totp(test_user["password"])
 
         assert_error(response, 400)
 
 
 @pytest.mark.integration
-class TestTwoFactorAuthLogin:
+@pytest.mark.usefixtures("login_mfa")
+class TestMfaLogin:
     @pytest.mark.asyncio
-    async def test_login_with_2fa_enabled_returns_202(
+    async def test_login_with_mfa_policy_returns_202(
         self,
         client: CFMSTestClient,
         test_user,
@@ -222,7 +282,7 @@ class TestTwoFactorAuthLogin:
         assert response["data"]["methods"] == ["totp"]
 
     @pytest.mark.asyncio
-    async def test_verify_2fa_login_with_valid_token(
+    async def test_totp_mfa_login_with_valid_token(
         self,
         client: CFMSTestClient,
         test_user,
@@ -232,7 +292,7 @@ class TestTwoFactorAuthLogin:
 
         data = assert_success(
             await client.login(
-                test_user["username"], test_user["password"], two_fa_token=token
+                test_user["username"], test_user["password"], totp_token=token
             )
         )
 
@@ -240,20 +300,20 @@ class TestTwoFactorAuthLogin:
         assert "exp" in data
 
     @pytest.mark.asyncio
-    async def test_verify_2fa_login_with_invalid_token(
+    async def test_totp_mfa_login_with_invalid_token(
         self,
         client: CFMSTestClient,
         test_user,
         enabled_totp,
     ):
         response = await client.login(
-            test_user["username"], test_user["password"], two_fa_token="invalid-totp"
+            test_user["username"], test_user["password"], totp_token="invalid-totp"
         )
 
         assert_error(response, 401)
 
     @pytest.mark.asyncio
-    async def test_verify_2fa_login_consumes_backup_code_once(
+    async def test_totp_mfa_login_consumes_backup_code_once(
         self,
         client: CFMSTestClient,
         user_client: CFMSTestClient,
@@ -261,28 +321,28 @@ class TestTwoFactorAuthLogin:
         enabled_totp,
     ):
         backup_code = enabled_totp["backup_codes"][0]
-        before = assert_success(await user_client.get_2fa_status())
+        before = assert_success(await user_client.get_totp_status())
         assert before["backup_codes_count"] == 10
 
         data = assert_success(
             await client.login(
                 test_user["username"],
                 test_user["password"],
-                two_fa_token=backup_code,
+                totp_token=backup_code,
             )
         )
 
         assert data["token"]
-        after = assert_success(await user_client.get_2fa_status())
+        after = assert_success(await user_client.get_totp_status())
         assert after["backup_codes_count"] == 9
 
         replay = await client.login(
-            test_user["username"], test_user["password"], two_fa_token=backup_code
+            test_user["username"], test_user["password"], totp_token=backup_code
         )
 
         error = assert_error(replay, 401)
         assert error["data"] == {}
-        remaining = assert_success(await user_client.get_2fa_status())
+        remaining = assert_success(await user_client.get_totp_status())
         assert remaining["backup_codes_count"] == 9
         assert remaining["enabled"] is True
 

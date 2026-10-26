@@ -4,7 +4,7 @@ from textwrap import dedent, indent
 from types import SimpleNamespace
 
 import pytest
-from tomlkit import dumps
+from tomlkit import dumps, parse
 
 from include.config.validation import (
     AdmissionControlPolicy,
@@ -429,10 +429,10 @@ def test_identity_permission_retention_rejects_invalid_values(setting, value):
         ("state_retention_seconds", 1, "cover every refill period"),
         (
             "action_costs",
-            {"search": 0},
+            {"core.search.query": 0},
             "security.request_rate_control.action_costs",
         ),
-        ("action_costs", {"search": 1_000}, "must not exceed"),
+        ("action_costs", {"core.search.query": 1_000}, "must not exceed"),
     ],
 )
 def test_request_rate_control_values_are_validated(setting, value, expected_fragment):
@@ -448,12 +448,27 @@ def test_request_rate_control_values_are_validated(setting, value, expected_frag
 @pytest.mark.unit
 def test_request_rate_control_action_cost_overrides_handler_default():
     config = _valid_config()
-    config["security"]["request_rate_control"] = {"action_costs": {"search": 5}}
+    config["security"]["request_rate_control"] = {
+        "action_costs": {"core.search.query": 5}
+    }
 
     policy = RequestRateControlPolicy.from_config(config)
 
-    assert policy.cost_for("search", 2) == 5
-    assert policy.cost_for("list_users", 2) == 2
+    assert policy.cost_for("core.search.query", 2) == 5
+    assert policy.cost_for("core.user.list", 2) == 2
+
+
+@pytest.mark.unit
+def test_quoted_namespaced_action_costs_are_literal_toml_keys():
+    config = _valid_config()
+    config["security"]["request_rate_control"] = parse("""
+[action_costs]
+"core.search.query" = 7
+"core.document.upload" = 9
+""")
+    policy = RequestRateControlPolicy.from_config(config)
+    assert policy.cost_for("core.search.query", 1) == 7
+    assert policy.cost_for("core.document.upload", 1) == 9
 
 
 @pytest.mark.unit
@@ -758,14 +773,14 @@ def test_policy_mapping_conversion_and_unknown_fields_preserve_compatibility():
         {
             "security": {
                 "request_rate_control": {
-                    "action_costs": {"search": 5, "login": 2},
+                    "action_costs": {"core.search.query": 5, "core.auth.login": 2},
                     "future_setting": "ignored",
                 }
             }
         }
     )
 
-    assert policy.action_costs == (("login", 2), ("search", 5))
+    assert policy.action_costs == (("core.auth.login", 2), ("core.search.query", 5))
 
 
 @pytest.mark.unit

@@ -73,9 +73,9 @@ def test_load_test_rejects_invalid_parameters(monkeypatch, arguments):
 @pytest.mark.unit
 def test_load_stats_report_total_and_per_action_metrics():
     stats = LoadStats()
-    stats.record_success("server_info", 10)
-    stats.record_error("server_info", "code_503", 20)
-    stats.record_success("list_users", 30)
+    stats.record_success("core.server.info.get", 10)
+    stats.record_error("core.server.info.get", "code_503", 20)
+    stats.record_success("core.user.list", 30)
     stats.dropped_iterations = 2
 
     result = summarize(stats, elapsed=2, scenario="mixed", users=3)
@@ -85,23 +85,23 @@ def test_load_stats_report_total_and_per_action_metrics():
     assert result["success_rate"] == pytest.approx(2 / 3, abs=0.0001)
     assert result["throughput_rps"] == 1.5
     assert result["dropped_iterations"] == 2
-    assert result["actions"]["server_info"]["errors"] == {"code_503": 1}
-    assert result["actions"]["list_users"]["latency_ms"]["p95"] == 30
+    assert result["actions"]["core.server.info.get"]["errors"] == {"code_503": 1}
+    assert result["actions"]["core.user.list"]["latency_ms"]["p95"] == 30
 
 
 @pytest.mark.unit
 def test_upload_action_metrics_can_be_separate_from_iteration_metrics():
     stats = LoadStats()
-    stats.record_success("create_document", 10, include_in_total=False)
-    stats.record_success("upload_file", 20, include_in_total=False)
+    stats.record_success("core.document.create", 10, include_in_total=False)
+    stats.record_success("core.file.upload", 20, include_in_total=False)
     stats.record_iteration_success(35)
 
     result = summarize(stats, elapsed=1, scenario="upload-unique", users=1)
 
     assert result["requests"] == 1
     assert result["latency_ms"]["p95"] == 35
-    assert result["actions"]["create_document"]["latency_ms"]["p95"] == 10
-    assert result["actions"]["upload_file"]["latency_ms"]["p95"] == 20
+    assert result["actions"]["core.document.create"]["latency_ms"]["p95"] == 10
+    assert result["actions"]["core.file.upload"]["latency_ms"]["p95"] == 20
 
 
 @pytest.mark.unit
@@ -140,7 +140,7 @@ def test_fixed_global_arrival_rate_uses_the_full_scheduling_window():
             slot, _ = pacer.next_slot(pacer.next_start)
             if slot is None:
                 break
-            stats.record_success("server_info", 1)
+            stats.record_success("core.server.info.get", 1)
 
     result = summarize(stats, elapsed=2, scenario="server-info", users=2)
 
@@ -415,7 +415,7 @@ async def test_expected_rate_rejection_is_separate_from_errors():
 
     await timed_call(
         stats,
-        "server_info",
+        "core.server.info.get",
         lambda: _response(
             429,
             {"scope": "ip", "limit": 12, "retry_after_seconds": 3},
@@ -437,7 +437,7 @@ async def test_invalid_rate_rejection_contract_is_an_error():
 
     await timed_call(
         stats,
-        "server_info",
+        "core.server.info.get",
         lambda: _response(429, {"scope": "ip"}),
         expected_rejection_codes={429},
     )

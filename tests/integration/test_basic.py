@@ -44,7 +44,7 @@ class TestAuthentication:
     ):
         assert_success(await client.login(test_user["username"], test_user["password"]))
 
-        response = await authenticated_client.send_request("list_users")
+        response = await authenticated_client.send_request("core.user.list")
 
         assert_success(response)
         assert authenticated_client.username == "admin"
@@ -71,14 +71,14 @@ class TestAuthentication:
     @pytest.mark.asyncio
     async def test_login_missing_username(self, client: CFMSTestClient):
         response = await client.send_request(
-            "login", {"password": "test_password"}, include_auth=False
+            "core.auth.login", {"password": "test_password"}, include_auth=False
         )
         assert_error(response, 400)
 
     @pytest.mark.asyncio
     async def test_login_missing_password(self, client: CFMSTestClient):
         response = await client.send_request(
-            "login", {"username": "test_user"}, include_auth=False
+            "core.auth.login", {"username": "test_user"}, include_auth=False
         )
         assert_error(response, 400)
 
@@ -97,7 +97,7 @@ class TestAuthentication:
 
     @pytest.mark.asyncio
     async def test_authentication_required(self, client: CFMSTestClient):
-        response = await client.send_request("list_users", include_auth=False)
+        response = await client.send_request("core.user.list", include_auth=False)
         assert_error(response, 401)
 
     @pytest.mark.asyncio
@@ -106,7 +106,7 @@ class TestAuthentication:
         await client.login(admin_credentials["username"], admin_credentials["password"])
 
         response = await client.send_request(
-            "list_users",
+            "core.user.list",
             username=admin_credentials["username"],
             token="invalid_token_xyz_12345",
         )

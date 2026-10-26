@@ -82,6 +82,12 @@ AI-generated contributions are accepted. Changes to core logic under
 `src/include` require human review; tests and maintenance tools are evaluated by
 their externally observable correctness.
 
+## Migrating from Older Protocol Versions
+
+Protocol 29 introduces namespaced requests and separates TOTP credentials from
+MFA policy configuration. See the [migration guide](docs/PROTOCOL_29_MIGRATION.md)
+for the complete request mapping and required client/configuration changes.
+
 ## Contributing and Security
 
 Bug reports, improvement proposals, and testing contributions are welcome through

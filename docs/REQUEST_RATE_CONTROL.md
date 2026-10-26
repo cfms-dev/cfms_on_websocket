@@ -71,8 +71,8 @@ ip_refill_tokens = 600
 state_retention_seconds = 600
 
 [security.request_rate_control.action_costs]
-search = 4
-upload_document = 8
+"core.search.query" = 4
+"core.document.upload" = 8
 ```
 
 Each handler declares a positive integer `rate_limit_cost`, defaulting to one.
@@ -80,15 +80,15 @@ Configuration overrides are checked at startup, including handlers registered by
 extensions. An override for an unknown action produces a warning. Costs cannot
 exceed either request bucket capacity.
 
-Protocol 31 authentication dialogs charge each continuation frame against the
-current action's request-rate policy (`login`: 5; `exchange_token`: 2 by default).
+Protocol 29 authentication dialogs charge each continuation frame against the
+current action's request-rate policy (`core.auth.login`: 5; `core.auth.token.exchange`: 2 by default).
 These frames remain part of the same Request and also undergo factor-specific
 authentication throttling. AUTH/POST_AUTH holders receive no GENERAL account
 quota or permission-based bypass.
 
-Protocol 31 replaces `complete_mfa` with `exchange_token`. Rename any
+Protocol 29 replaces `complete_mfa` with `core.auth.token.exchange`. Rename any
 `security.request_rate_control.action_costs.complete_mfa` override to
-`security.request_rate_control.action_costs.exchange_token`; the old name is an
+`security.request_rate_control.action_costs."core.auth.token.exchange"`; the old name is an
 unknown action and no longer configures token exchange costs.
 
 ### Default action costs
@@ -101,12 +101,12 @@ calibration, not measurements of wall-clock time.
 
 | Cost | Actions |
 | ---: | --- |
-| 1 | `cancel_2fa_setup`, `get_2fa_status`, `get_user_key`, `server_info`, `shutdown` |
-| 2 | `exchange_token`, `refresh_token`, `validate_2fa`, `list_banned_subnets`, `get_document_access_rules`, `list_revisions`, `get_directory_access_rules`, `unblock_user`, `get_user_info`, `revoke_access`, `upload_user_key`, `delete_user_key`, `set_user_preference_dek`, `list_user_keys` |
-| 3 | `diagnostics`, `list_auth_lockouts`, `get_document`, `restore_document`, `rename_document`, `move_document`, `get_document_info`, `set_document_tags`, `get_revision`, `set_current_revision`, `list_directory`, `get_directory_info`, `create_directory`, `rename_directory`, `move_directory`, `list_deleted_items`, `search`, `manage_user_status`, `block_user`, `update_user_block`, `list_user_blocks`, `list_users`, `get_user_avatar`, `set_user_avatar`, `change_user_groups`, `change_user_permissions`, `list_groups`, `create_group`, `get_group_info`, `change_group_permissions`, `grant_access`, `view_access_entries`, `view_audit_logs`, `sso_oidc_start`, `throw_exception` |
-| 5 | `login`, `disable_2fa`, `create_banned_subnet`, `update_banned_subnet`, `delete_banned_subnet`, `create_document`, `upload_document`, `delete_document`, `set_document_rules`, `delete_revision`, `download_file`, `upload_file`, `set_directory_rules`, `create_user`, `delete_user`, `rename_user`, `delete_group`, `rename_group` |
-| 10 | `unlock_auth_lockouts`, `purge_document`, `delete_directory`, `restore_directory`, `set_passwd`, `lockdown`, `sso_oidc_callback` |
-| 20 | `setup_2fa`, `purge_directory` |
+| 1 | `core.user.authentication.totp.setup.cancel`, `core.user.authentication.totp.status.get`, `core.schedule.task_type.list`, `core.schedule.get`, `core.schedule.list`, `core.user.key.get`, `core.server.info.get`, `core.server.shutdown` |
+| 2 | `core.auth.token.exchange`, `core.user.authentication.get`, `core.user.authentication.public_key.update`, `core.auth.token.refresh`, `core.user.authentication.totp.setup.confirm`, `core.security.banned_subnet.list`, `core.document.access_rule.get`, `core.document.revision.list`, `core.directory.access_rule.get`, `core.user.block.delete`, `core.user.info.get`, `core.access.entry.revoke`, `core.user.key.upload`, `core.user.key.delete`, `core.user.preferred_dek.set`, `core.user.key.list` |
+| 3 | `core.user.authentication.public_key.delete`, `core.security.auth_lockout.list`, `core.document.get`, `core.document.restore`, `core.document.rename`, `core.document.move`, `core.document.info.get`, `core.document.tag.set`, `core.document.revision.get`, `core.document.revision.current.set`, `core.directory.list`, `core.directory.info.get`, `core.directory.create`, `core.directory.rename`, `core.directory.move`, `core.directory.deleted_item.list`, `core.search.query`, `core.user.status.set`, `core.user.block.create`, `core.user.block.update`, `core.user.block.list`, `core.user.list`, `core.user.avatar.get`, `core.user.avatar.set`, `core.user.group.change`, `core.user.permission.change`, `core.group.list`, `core.group.create`, `core.group.info.get`, `core.group.permission.change`, `core.access.entry.grant`, `core.access.entry.list`, `core.audit.entry.list`, `core.schedule.create`, `core.schedule.update`, `core.schedule.delete`, `core.server.diagnostics.get`, `oidc_sso.session.start`, `core.debug.exception.throw` |
+| 5 | `core.auth.login`, `core.user.authentication.policy.set`, `core.user.authentication.public_key.register`, `core.user.authentication.totp.delete`, `core.security.banned_subnet.create`, `core.security.banned_subnet.update`, `core.security.banned_subnet.delete`, `core.document.create`, `core.document.upload`, `core.document.delete`, `core.document.access_rule.set`, `core.document.revision.delete`, `core.file.download`, `core.file.upload`, `core.directory.access_rule.set`, `core.user.create`, `core.user.delete`, `core.user.rename`, `core.group.delete`, `core.group.rename` |
+| 10 | `core.security.auth_lockout.unlock`, `core.document.purge`, `core.directory.delete`, `core.directory.restore`, `core.user.password.set`, `core.server.lockdown.set`, `oidc_sso.session.callback` |
+| 20 | `core.user.authentication.totp.setup`, `core.directory.purge` |
 
 The tiers reflect relative database, cryptographic, file-transfer, external
 network, and bulk-operation pressure. Method-specific weighted costs are an

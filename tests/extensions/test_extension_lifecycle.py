@@ -232,17 +232,17 @@ def test_extension_handler_overrides_and_unregistration_keep_existing_order(
     monkeypatch.chdir(protected_test_config.src_dir)
     import main as server_main
 
-    core_list_handler = server_main.available_functions["list_schedules"]
-    replacement_handler = server_main.available_functions["get_schedule"]
+    core_list_handler = server_main.available_functions["core.schedule.list"]
+    replacement_handler = server_main.available_functions["core.schedule.get"]
     hook = SimpleNamespace(
         ext_register_auth_methods=list,
         ext_register_handlers=lambda: [
             {
-                "list_schedules": replacement_handler,
+                "core.schedule.list": replacement_handler,
                 "extension_action": core_list_handler,
             }
         ],
-        ext_unregister_handlers=lambda: [{"get_schedule", "extension_action"}],
+        ext_unregister_handlers=lambda: [{"core.schedule.get", "extension_action"}],
         ext_register_whitelisted_actions=list,
     )
     monkeypatch.setattr(
@@ -265,8 +265,8 @@ def test_extension_handler_overrides_and_unregistration_keep_existing_order(
 
     server_main.prepare_handlers()
 
-    assert server_main.available_functions["list_schedules"] is replacement_handler
-    assert "get_schedule" not in server_main.available_functions
+    assert server_main.available_functions["core.schedule.list"] is replacement_handler
+    assert "core.schedule.get" not in server_main.available_functions
     assert "extension_action" not in server_main.available_functions
 
 

@@ -397,7 +397,7 @@ class CFMSTestClient:
 
         while frame.frame_type == FrameType.PROCESS:
             if (
-                action not in {"login", "exchange_token"}
+                action not in {"core.auth.login", "core.auth.token.exchange"}
                 or not isinstance(payload, dict)
                 or payload.get("action") not in {"auth_continue", "auth_challenge"}
                 or auth_responder is None
@@ -472,7 +472,7 @@ class CFMSTestClient:
         self,
         username: str,
         password: str,
-        two_fa_token: str | None = None,
+        totp_token: str | None = None,
         *,
         auth_responder: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
         | None = None,
@@ -483,7 +483,7 @@ class CFMSTestClient:
         Args:
             username: Username to authenticate with
             password: Password for the user
-            two_fa_token: Optional 2FA token for two-factor authentication
+            totp_token: Optional TOTP token for TOTP credentials
 
         Returns:
             The login response from the server
@@ -494,15 +494,15 @@ class CFMSTestClient:
         }
 
         response = await self.send_request(
-            "login", data, include_auth=False, auth_responder=auth_responder
+            "core.auth.login", data, include_auth=False, auth_responder=auth_responder
         )
 
-        if response.get("code") == 202 and two_fa_token:
+        if response.get("code") == 202 and totp_token:
             response = await self.send_request(
-                "exchange_token",
+                "core.auth.token.exchange",
                 {
                     "method": "totp",
-                    "data": {"token": two_fa_token},
+                    "data": {"token": totp_token},
                     "target_purpose": TokenPurpose.GENERAL,
                 },
                 token=response["data"]["token"],
@@ -519,7 +519,8 @@ class CFMSTestClient:
     async def elevate_token(self) -> dict[str, Any]:
         """Exchange the current GENERAL token under an empty escalation policy."""
         response = await self.send_request(
-            "exchange_token", {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION}
+            "core.auth.token.exchange",
+            {"target_purpose": TokenPurpose.GENERAL_WITH_ESCALATION},
         )
         if response["code"] == 200:
             self.token = response["data"]["token"]
@@ -532,11 +533,11 @@ class CFMSTestClient:
         Returns:
             Public server identity, protocol, lockdown, and capability information
         """
-        return await self.send_request("server_info", include_auth=False)
+        return await self.send_request("core.server.info.get", include_auth=False)
 
     async def diagnostics(self) -> dict[str, Any]:
         """Get permission-protected server diagnostics."""
-        return await self.send_request("diagnostics")
+        return await self.send_request("core.server.diagnostics.get")
 
     async def refresh_token(self) -> dict[str, Any]:
         """
@@ -545,7 +546,7 @@ class CFMSTestClient:
         Returns:
             Response with new token
         """
-        response = await self.send_request("refresh_token")
+        response = await self.send_request("core.auth.token.refresh")
 
         if response.get("code") == 200:
             self.token = response.get("data", {}).get("token")
@@ -562,7 +563,9 @@ class CFMSTestClient:
         Returns:
             The document data
         """
-        return await self.send_request("get_document", {"document_id": document_id})
+        return await self.send_request(
+            "core.document.get", {"document_id": document_id}
+        )
 
     async def create_document(
         self, title: str, folder_id: str | None = None
@@ -580,7 +583,7 @@ class CFMSTestClient:
         data = {"title": title}
         if folder_id is not None:
             data["folder_id"] = folder_id
-        return await self.send_request("create_document", data)
+        return await self.send_request("core.document.create", data)
 
     async def upload_document(
         self, document_id: str, parent_revision_id: str | None = None
@@ -588,7 +591,7 @@ class CFMSTestClient:
         data = {"document_id": document_id}
         if parent_revision_id:
             data["parent_revision_id"] = parent_revision_id
-        return await self.send_request("upload_document", data)
+        return await self.send_request("core.document.upload", data)
 
     async def delete_document(self, document_id: str) -> dict[str, Any]:
         """
@@ -600,10 +603,14 @@ class CFMSTestClient:
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("delete_document", {"document_id": document_id})
+        return await self.send_request(
+            "core.document.delete", {"document_id": document_id}
+        )
 
     async def purge_document(self, document_id: str) -> dict[str, Any]:
-        return await self.send_request("purge_document", {"document_id": document_id})
+        return await self.send_request(
+            "core.document.purge", {"document_id": document_id}
+        )
 
     async def restore_document(
         self,
@@ -616,7 +623,7 @@ class CFMSTestClient:
             data["target_folder_id"] = target_folder_id
         if new_title is not None:
             data["new_title"] = new_title
-        return await self.send_request("restore_document", data)
+        return await self.send_request("core.document.restore", data)
 
     async def rename_document(self, document_id: str, new_title: str) -> dict[str, Any]:
         """
@@ -630,7 +637,7 @@ class CFMSTestClient:
             Response indicating success or failure
         """
         return await self.send_request(
-            "rename_document", {"document_id": document_id, "new_title": new_title}
+            "core.document.rename", {"document_id": document_id, "new_title": new_title}
         )
 
     async def get_document_info(self, document_id: str) -> dict[str, Any]:
@@ -644,14 +651,14 @@ class CFMSTestClient:
             Document information
         """
         return await self.send_request(
-            "get_document_info", {"document_id": document_id}
+            "core.document.info.get", {"document_id": document_id}
         )
 
     async def set_document_tags(
         self, document_id: str, tags: list[str]
     ) -> dict[str, Any]:
         return await self.send_request(
-            "set_document_tags",
+            "core.document.tag.set",
             {"document_id": document_id, "tags": tags},
         )
 
@@ -667,21 +674,25 @@ class CFMSTestClient:
             data["page_size"] = page_size
         if cursor is not None:
             data["cursor"] = cursor
-        return await self.send_request("list_revisions", data)
+        return await self.send_request("core.document.revision.list", data)
 
     async def get_revision(self, revision_id: str) -> dict[str, Any]:
-        return await self.send_request("get_revision", {"id": revision_id})
+        return await self.send_request(
+            "core.document.revision.get", {"id": revision_id}
+        )
 
     async def set_document_revision(
         self, document_id: str, revision_id: str
     ) -> dict[str, Any]:
         return await self.send_request(
-            "set_current_revision",
+            "core.document.revision.current.set",
             {"document_id": document_id, "revision_id": revision_id},
         )
 
     async def delete_revision(self, revision_id: str) -> dict[str, Any]:
-        return await self.send_request("delete_revision", {"id": revision_id})
+        return await self.send_request(
+            "core.document.revision.delete", {"id": revision_id}
+        )
 
     async def list_directory(
         self,
@@ -705,7 +716,7 @@ class CFMSTestClient:
         if cursor is not None:
             data["cursor"] = cursor
 
-        return await self.send_request("list_directory", data)
+        return await self.send_request("core.directory.list", data)
 
     async def create_directory(
         self, name: str, parent_id: str | None = None
@@ -723,7 +734,7 @@ class CFMSTestClient:
         data = {"name": name}
         if parent_id is not None:
             data["parent_id"] = parent_id
-        return await self.send_request("create_directory", data)
+        return await self.send_request("core.directory.create", data)
 
     async def delete_directory(self, folder_id: str) -> dict[str, Any]:
         """
@@ -735,7 +746,9 @@ class CFMSTestClient:
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("delete_directory", {"folder_id": folder_id})
+        return await self.send_request(
+            "core.directory.delete", {"folder_id": folder_id}
+        )
 
     async def list_deleted_items(
         self,
@@ -748,10 +761,10 @@ class CFMSTestClient:
             data["page_size"] = page_size
         if cursor is not None:
             data["cursor"] = cursor
-        return await self.send_request("list_deleted_items", data)
+        return await self.send_request("core.directory.deleted_item.list", data)
 
     async def purge_directory(self, folder_id: str) -> dict[str, Any]:
-        return await self.send_request("purge_directory", {"folder_id": folder_id})
+        return await self.send_request("core.directory.purge", {"folder_id": folder_id})
 
     async def restore_directory(
         self,
@@ -764,7 +777,7 @@ class CFMSTestClient:
             data["target_parent_id"] = target_parent_id
         if new_name is not None:
             data["new_name"] = new_name
-        return await self.send_request("restore_directory", data)
+        return await self.send_request("core.directory.restore", data)
 
     async def move_directory(
         self, folder_id: str, target_folder_id: str | None
@@ -780,7 +793,7 @@ class CFMSTestClient:
             Response indicating success or failure
         """
         return await self.send_request(
-            "move_directory",
+            "core.directory.move",
             {"folder_id": folder_id, "target_folder_id": target_folder_id},
         )
 
@@ -822,7 +835,7 @@ class CFMSTestClient:
             data["search_documents"] = search_documents
         if search_directories is not None:
             data["search_directories"] = search_directories
-        return await self.send_request("search", data)
+        return await self.send_request("core.search.query", data)
 
     async def create_user(
         self,
@@ -852,7 +865,7 @@ class CFMSTestClient:
             data["groups"] = groups
         if permissions is not None:
             data["permissions"] = permissions
-        return await self.send_request("create_user", data)
+        return await self.send_request("core.user.create", data)
 
     async def delete_user(self, user_id: str) -> dict[str, Any]:
         """
@@ -864,7 +877,7 @@ class CFMSTestClient:
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("delete_user", {"user_id": user_id})
+        return await self.send_request("core.user.delete", {"user_id": user_id})
 
     async def get_user_info(
         self, *, username: str | None = None, user_id: str | None = None
@@ -874,13 +887,13 @@ class CFMSTestClient:
             data["username"] = username
         if user_id is not None:
             data["user_id"] = user_id
-        return await self.send_request("get_user_info", data)
+        return await self.send_request("core.user.info.get", data)
 
     async def change_user_permissions(
         self, user_id: str, permissions: list[dict[str, Any]]
     ) -> dict[str, Any]:
         return await self.send_request(
-            "change_user_permissions",
+            "core.user.permission.change",
             {"user_id": user_id, "permissions": permissions},
         )
 
@@ -902,7 +915,7 @@ class CFMSTestClient:
             data["count"] = count
         if offset is not None:
             data["offset"] = offset
-        return await self.send_request("list_users", data)
+        return await self.send_request("core.user.list", data)
 
     async def create_group(
         self, group_name: str, permissions: list | None = None
@@ -920,7 +933,7 @@ class CFMSTestClient:
         data: dict[str, Any] = {"group_name": group_name}
         if permissions is not None:
             data["permissions"] = permissions
-        return await self.send_request("create_group", data)
+        return await self.send_request("core.group.create", data)
 
     async def list_groups(
         self, count: int | None = None, offset: int | None = None
@@ -936,7 +949,7 @@ class CFMSTestClient:
             data["count"] = count
         if offset is not None:
             data["offset"] = offset
-        return await self.send_request("list_groups", data)
+        return await self.send_request("core.group.list", data)
 
     async def get_group_info(self, group_name: str) -> dict[str, Any]:
         """
@@ -948,13 +961,15 @@ class CFMSTestClient:
         Returns:
             Group information
         """
-        return await self.send_request("get_group_info", {"group_name": group_name})
+        return await self.send_request(
+            "core.group.info.get", {"group_name": group_name}
+        )
 
     async def change_group_permissions(
         self, group_name: str, permissions: list[dict[str, Any]]
     ) -> dict[str, Any]:
         return await self.send_request(
-            "change_group_permissions",
+            "core.group.permission.change",
             {"group_name": group_name, "permissions": permissions},
         )
 
@@ -973,7 +988,7 @@ class CFMSTestClient:
         stream = self.multiplexer.open_stream()
         frame = await self._build_and_send_request(
             stream,
-            "download_file",
+            "core.file.download",
             {
                 "task_id": dl_task_id,
                 "offset": resume_state.offset if resume_state is not None else 0,
@@ -1107,7 +1122,7 @@ class CFMSTestClient:
         stream = self.multiplexer.open_stream()
         frame = await self._build_and_send_request(
             stream,
-            "upload_file",
+            "core.file.upload",
             {
                 "task_id": task_id,
                 "file_size": file_size,
@@ -1326,20 +1341,20 @@ class CFMSTestClient:
         """Async context manager exit."""
         await self.disconnect()
 
-    # Two-Factor Authentication methods
+    # TOTP credential methods
 
-    async def setup_2fa(self) -> dict[str, Any]:
+    async def setup_totp(self) -> dict[str, Any]:
         """
-        Setup two-factor authentication for the authenticated user.
+        Setup TOTP credentials for the authenticated user.
 
         Returns:
             Response with TOTP secret, provisioning URI, and backup codes
         """
-        return await self.send_request("setup_2fa", {})
+        return await self.send_request("core.user.authentication.totp.setup", {})
 
-    async def validate_2fa(self, token: str) -> dict[str, Any]:
+    async def confirm_totp_setup(self, token: str) -> dict[str, Any]:
         """
-        Validate and enable two-factor authentication.
+        Validate and enable TOTP credentials.
 
         Args:
             token: TOTP token from authenticator app
@@ -1347,20 +1362,22 @@ class CFMSTestClient:
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("validate_2fa", {"token": token})
+        return await self.send_request(
+            "core.user.authentication.totp.setup.confirm", {"token": token}
+        )
 
-    async def cancel_2fa_setup(self) -> dict[str, Any]:
+    async def cancel_totp_setup(self) -> dict[str, Any]:
         """
-        Cancel two-factor authentication setup (before validation).
+        Cancel TOTP setup (before validation).
 
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("cancel_2fa_setup", {})
+        return await self.send_request("core.user.authentication.totp.setup.cancel", {})
 
-    async def cancel_2fa(self, password: str) -> dict[str, Any]:
+    async def delete_totp(self, password: str) -> dict[str, Any]:
         """
-        Cancel two-factor authentication for the authenticated user.
+        Cancel TOTP credentials for the authenticated user.
 
         Args:
             password: User's password for verification
@@ -1368,16 +1385,18 @@ class CFMSTestClient:
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("disable_2fa", {"password": password})
+        return await self.send_request(
+            "core.user.authentication.totp.delete", {"password": password}
+        )
 
-    async def get_2fa_status(self) -> dict[str, Any]:
+    async def get_totp_status(self) -> dict[str, Any]:
         """
-        Get two-factor authentication status for the authenticated user.
+        Get TOTP credential status for the authenticated user.
 
         Returns:
-            Response with 2FA status information
+            Response with TOTP status information
         """
-        return await self.send_request("get_2fa_status", {})
+        return await self.send_request("core.user.authentication.totp.status.get", {})
 
     async def grant_access(
         self,
@@ -1414,7 +1433,7 @@ class CFMSTestClient:
         }
         if end_time is not None:
             data["end_time"] = end_time
-        return await self.send_request("grant_access", data)
+        return await self.send_request("core.access.entry.grant", data)
 
     async def revoke_access(self, entry_id: int) -> dict[str, Any]:
         """
@@ -1426,7 +1445,9 @@ class CFMSTestClient:
         Returns:
             Response indicating success or failure
         """
-        return await self.send_request("revoke_access", {"entry_id": entry_id})
+        return await self.send_request(
+            "core.access.entry.revoke", {"entry_id": entry_id}
+        )
 
     async def view_access_entries(
         self,
@@ -1453,7 +1474,7 @@ class CFMSTestClient:
             data["page_size"] = page_size
         if cursor is not None:
             data["cursor"] = cursor
-        return await self.send_request("view_access_entries", data)
+        return await self.send_request("core.access.entry.list", data)
 
     # Keyring methods
 
@@ -1468,25 +1489,25 @@ class CFMSTestClient:
             data["label"] = label
         if user_id is not None:
             data["user_id"] = user_id
-        return await self.send_request("upload_user_key", data)
+        return await self.send_request("core.user.key.upload", data)
 
     async def get_keyring(
         self,
         key_id: str,
     ) -> dict[str, Any]:
-        return await self.send_request("get_user_key", {"id": key_id})
+        return await self.send_request("core.user.key.get", {"id": key_id})
 
     async def delete_keyring(
         self,
         key_id: str,
     ) -> dict[str, Any]:
-        return await self.send_request("delete_user_key", {"id": key_id})
+        return await self.send_request("core.user.key.delete", {"id": key_id})
 
     async def set_preference_keyring(
         self,
         key_id: str,
     ) -> dict[str, Any]:
-        return await self.send_request("set_user_preference_dek", {"id": key_id})
+        return await self.send_request("core.user.preferred_dek.set", {"id": key_id})
 
     async def list_keyrings(
         self,
@@ -1501,7 +1522,7 @@ class CFMSTestClient:
             data["count"] = count
         if offset is not None:
             data["offset"] = offset
-        return await self.send_request("list_user_keys", data)
+        return await self.send_request("core.user.key.list", data)
 
     # ------------------------------------------------------------------------
     # System and Management Functions
@@ -1519,7 +1540,7 @@ class CFMSTestClient:
             data["cursor"] = cursor
         if status is not None:
             data["status"] = status
-        return await self.send_request("list_banned_subnets", data)
+        return await self.send_request("core.security.banned_subnet.list", data)
 
     async def create_banned_subnet(
         self,
@@ -1538,7 +1559,7 @@ class CFMSTestClient:
             data["expires_at"] = expires_at
         if confirm_self_block:
             data["confirm_self_block"] = True
-        return await self.send_request("create_banned_subnet", data)
+        return await self.send_request("core.security.banned_subnet.create", data)
 
     async def update_banned_subnet(
         self,
@@ -1546,11 +1567,13 @@ class CFMSTestClient:
         **changes: Any,
     ) -> dict[str, Any]:
         return await self.send_request(
-            "update_banned_subnet", {"subnet": subnet, **changes}
+            "core.security.banned_subnet.update", {"subnet": subnet, **changes}
         )
 
     async def delete_banned_subnet(self, subnet: str) -> dict[str, Any]:
-        return await self.send_request("delete_banned_subnet", {"subnet": subnet})
+        return await self.send_request(
+            "core.security.banned_subnet.delete", {"subnet": subnet}
+        )
 
     async def list_auth_lockouts(
         self,
@@ -1563,13 +1586,13 @@ class CFMSTestClient:
             data["page_size"] = page_size
         if cursor is not None:
             data["cursor"] = cursor
-        return await self.send_request("list_auth_lockouts", data)
+        return await self.send_request("core.security.auth_lockout.list", data)
 
     async def unlock_auth_lockouts(
         self, locks: list[dict[str, str]], reason: str
     ) -> dict[str, Any]:
         return await self.send_request(
-            "unlock_auth_lockouts", {"locks": locks, "reason": reason}
+            "core.security.auth_lockout.unlock", {"locks": locks, "reason": reason}
         )
 
     async def set_lockdown(
@@ -1581,7 +1604,7 @@ class CFMSTestClient:
         data: dict[str, Any] = {"status": status}
         if not isinstance(reason, _RequestValueUnset):
             data["reason"] = reason
-        return await self.send_request("lockdown", data)
+        return await self.send_request("core.server.lockdown.set", data)
 
     async def update_user_status(
         self,
@@ -1593,7 +1616,7 @@ class CFMSTestClient:
         data = {"user_id": user_id, "status": status}
         if not isinstance(reason, _RequestValueUnset):
             data["reason"] = reason
-        return await self.send_request("manage_user_status", data)
+        return await self.send_request("core.user.status.set", data)
 
     async def block_user(
         self,
@@ -1617,14 +1640,14 @@ class CFMSTestClient:
         if reason is not None:
             data["reason"] = reason
 
-        return await self.send_request("block_user", data)
+        return await self.send_request("core.user.block.create", data)
 
     async def update_user_block(
         self, block_id: str, reason: str | None
     ) -> dict[str, Any]:
         """Replace or clear a user block's reason."""
         return await self.send_request(
-            "update_user_block", {"block_id": block_id, "reason": reason}
+            "core.user.block.update", {"block_id": block_id, "reason": reason}
         )
 
     async def view_audit_logs(
@@ -1645,4 +1668,4 @@ class CFMSTestClient:
             data["cursor"] = cursor
         if filters is not None:
             data["filters"] = filters
-        return await self.send_request("view_audit_logs", data)
+        return await self.send_request("core.audit.entry.list", data)

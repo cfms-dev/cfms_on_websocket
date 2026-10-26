@@ -244,7 +244,11 @@ Extension handler mappings are applied after the core mapping and may replace an
 action with the same name. `ext_unregister_handlers()` is applied afterward and
 may remove either a core or extension action. Registration conflicts between
 multiple extensions have no stable winner, so extensions should use owner-scoped
-action names unless deliberately replacing an existing action.
+action names unless deliberately replacing an existing action. Use
+`namespace.resource[.subresource...].action`, with singular resources and snake_case
+segments. Core actions use `core`; extensions use their identifier. Registration
+does not validate this grammar or translate legacy names. See the
+[protocol 29 migration guide](PROTOCOL_29_MIGRATION.md).
 
 ```python
 from include.extensions.manager import hookimpl
@@ -273,7 +277,7 @@ class EchoHandler(RequestHandler[EchoRequest]):
 
 @hookimpl
 def ext_register_handlers() -> dict[str, type[RequestHandler]]:
-    return {"echo": EchoHandler}
+    return {"example.echo.execute": EchoHandler}
 ```
 
 `RequestDataModel` uses strict Pydantic validation and rejects unknown fields by
@@ -503,7 +507,7 @@ distinct_ip_threshold = 10
 reason = "Automatic security lockdown: suspected credential-guessing attack detected."
 ```
 
-The extension counts only HTTP-style `401` results from the built-in `login`
+The extension counts only HTTP-style `401` results from the built-in `core.auth.login`
 action that target existing accounts. Successful authentication, requests for a
 second factor, throttled requests, unknown usernames, and OIDC actions are not
 counted. Lockdown begins when the failure threshold is reached and either the
@@ -513,7 +517,7 @@ Automatic lockdown never replaces the public reason of an existing lockdown and
 does not expire automatically. Once the threshold is reached, it takes protected
 ownership from an active manual or scheduled lockdown so a later scheduled disable
 or window deadline cannot release a security lockdown. An administrator must
-disable it through the existing `lockdown` action. Doing so starts a fresh detection
+disable it through the existing `core.server.lockdown.set` action. Doing so starts a fresh detection
 window. The public reason is generic for a newly activated automatic lockdown;
 aggregate trigger counts, thresholds, the previous lockdown source, and whether
 scheduled ownership was taken over are recorded under the `automatic_lockdown`
@@ -567,7 +571,7 @@ To disable a current manual or scheduled lockdown, use
 An enable occurrence does not replace any active lockdown. A disable occurrence
 does nothing when the current lockdown is automatic or has unknown legacy
 ownership. Administrators can still explicitly disable any lockdown through the
-normal `lockdown` action.
+normal `core.server.lockdown.set` action.
 
 Each enable or window occurrence owns only the lockdown it activated. A window's
 expiration is measured as elapsed seconds from the occurrence's scheduled time,

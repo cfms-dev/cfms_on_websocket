@@ -148,7 +148,7 @@ def _collect_window_stats(
             .select_from(AuditEntry)
             .join(User, User.username == AuditEntry.target)
             .filter(
-                AuditEntry.action == "login",
+                AuditEntry.action == "core.auth.login",
                 AuditEntry.result == 401,
                 AuditEntry.logged_time >= window_started_at,
             )
@@ -205,7 +205,7 @@ def ext_post_request(
 ) -> None:
     del time_cost
     try:
-        if action != "login" or callback is None or callback.code != 401:
+        if action != "core.auth.login" or callback is None or callback.code != 401:
             return
         if not isinstance(callback.target, str) or not callback.target:
             return

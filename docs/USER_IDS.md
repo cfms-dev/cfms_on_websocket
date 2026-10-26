@@ -24,7 +24,7 @@ information include `user_id` as a UUID string.
 A password login submits `data.method = "password"` and
 `data.credential = {"username": "alice", "password": "..."}`. If the response
 is `202`, its `data.token` is an `AUTH` token and `data.methods` lists the
-available second factors. Submit that token to `exchange_token` with
+available second factors. Submit that token to `core.auth.token.exchange` with
 `data = {"method": "totp", "data": {"token": "123456"}, "target_purpose": 2}`,
 a fresh nonce and timestamp. A successful response supplies the general session
 token.
@@ -39,28 +39,31 @@ strings in `creator` and `last_modified_by`. HTTP extensions use
 
 ## Protocol 28 user management
 
+Protocol 29 keeps these UUID selectors and changes the request names as listed in
+the [request-name migration guide](PROTOCOL_29_MIGRATION.md).
+
 Protocol 28 makes user management selectors UUID-based. Discover an account with
-`list_users` or `get_user_info`, then use its `user_id` for subsequent operations.
-Login responses and successful `create_user` responses also supply `user_id`;
+`core.user.list` or `core.user.info.get`, then use its `user_id` for subsequent operations.
+Login responses and successful `core.user.create` responses also supply `user_id`;
 the creation response includes `username` as well.
 
-`get_user_info` requires exactly one of `username` and `user_id`. Fields determine
+`core.user.info.get` requires exactly one of `username` and `user_id`. Fields determine
 their meaning: a UUID-shaped username supplied as `username` is still a username.
 An omitted selector, both selectors, null values, invalid UUIDs, and unknown
-fields return `400`. Reading another account still requires `get_user_info`.
+fields return `400`. Reading another account still requires `core.user.info.get`.
 
 For example, submit these authenticated action/data pairs with the usual token,
 fresh nonce, and timestamp on each request:
 
 ```json
-{"action": "get_user_info", "data": {"username": "alice"}}
+{"action": "core.user.info.get", "data": {"username": "alice"}}
 ```
 
 After reading `response.data.user_id`, use that UUID:
 
 ```json
 {
-  "action": "change_user_permissions",
+  "action": "core.user.permission.change",
   "data": {
     "user_id": "aabbccdd-0000-4000-8000-000000000001",
     "permissions": []
@@ -70,18 +73,18 @@ After reading `response.data.user_id`, use that UUID:
 
 | Actions | Account selector |
 | --- | --- |
-| `delete_user`, `rename_user`, `block_user`, `list_user_blocks` | Required `user_id` |
-| `get_user_avatar`, `set_user_avatar`, `change_user_groups`, `change_user_permissions`, `manage_user_status` | Required `user_id` |
-| `disable_2fa`, `get_2fa_status`, `upload_user_key`, `list_user_keys` | Optional `user_id`; omitted means the authenticated account |
-| `grant_access` with `entity_type = "user"` | User UUID in `entity_identifier` |
-| `view_access_entries` with `object_type = "user"` | User UUID in `object_identifier` |
+| `core.user.delete`, `core.user.rename`, `core.user.block.create`, `core.user.block.list` | Required `user_id` |
+| `core.user.avatar.get`, `core.user.avatar.set`, `core.user.group.change`, `core.user.permission.change`, `core.user.status.set` | Required `user_id` |
+| `core.user.authentication.totp.delete`, `core.user.authentication.totp.status.get`, `core.user.key.upload`, `core.user.key.list` | Optional `user_id`; omitted means the authenticated account |
+| `core.access.entry.grant` with `entity_type = "user"` | User UUID in `entity_identifier` |
+| `core.access.entry.list` with `object_type = "user"` | User UUID in `object_identifier` |
 
-`rename_user` changes only the nickname. `manage_user_status` returns `user_id`,
+`core.user.rename` changes only the nickname. `core.user.status.set` returns `user_id`,
 `username`, `status`, and `reason`. Block creation, update, and listing include
-the owner's `user_id`. `unblock_user` and `update_user_block` keep `block_id`;
-key-specific actions keep their key ID; `revoke_access` keeps `entry_id`.
+the owner's `user_id`. `core.user.block.delete` and `core.user.block.update` keep `block_id`;
+key-specific actions keep their key ID; `core.access.entry.revoke` keeps `entry_id`.
 
-`set_passwd` accepts `new_passwd` and optional `user_id` (default: caller).
+`core.user.password.set` accepts `new_passwd` and optional `user_id` (default: caller).
 Ordinary requests require a GENERAL|ESCALATION token and
 `configure_auth_methods` for oneself or `super_configure_auth_methods` for any
 account. The super permission also gates `bypass_passwd_requirements` and
@@ -90,10 +93,10 @@ account. The super permission also gates `bypass_passwd_requirements` and
 complete its subject's mandatory password change using only `new_passwd`, without
 configuration permission or elevation.
 
-Disabling one's own 2FA still requires the current password and a configuration
-permission. Disabling another account's 2FA requires
+Deleting one's own TOTP credential still requires the current password and a configuration
+permission. Deleting another account's TOTP credential requires
 `super_configure_auth_methods` and must not include a password. Reading another
-account's 2FA status requires `super_list_user_auth_methods`.
+account's TOTP status requires `super_list_user_auth_methods`.
 
 User management audit `target` contains the canonical UUID and `user_id` contains
 the actor UUID. Once the target is authorized and resolved,

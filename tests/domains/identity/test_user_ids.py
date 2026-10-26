@@ -237,7 +237,7 @@ def test_router_rejects_invalid_subject_as_authentication_error(
 
     request = orjson.dumps(
         {
-            "action": "refresh_token",
+            "action": "core.auth.token.refresh",
             "data": {},
             "token": jwt.encode({"sub": subject}, "s" * 64, algorithm="HS256"),
         }
@@ -281,7 +281,7 @@ def test_router_derives_identity_only_from_token(
     identity_session.add(user)
     identity_session.commit()
     request = {
-        "action": "refresh_token",
+        "action": "core.auth.token.refresh",
         "data": {},
         "token": user.renew_token().raw,
         "nonce": uuid.uuid4().hex,

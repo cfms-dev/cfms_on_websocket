@@ -390,7 +390,7 @@ def test_router_rejects_exchange_without_valid_target(monkeypatch, target):
         def __init__(self, stream):
             self.stream = stream
             self.request = {}
-            self.action = "exchange_token"
+            self.action = "core.auth.token.exchange"
             self.data = data
             self.user_id = None
             self.token = None
@@ -692,12 +692,12 @@ def _throttled_decision():
     return ThrottleDecision(False, ThrottleScope.ACCOUNT, retry_after_seconds=45)
 
 
-def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
+def test_delete_totp_password_check_uses_authentication_throttle(monkeypatch):
     from contextlib import nullcontext
 
     from include.domains.access.permissions import Permissions
-    from include.domains.security.handlers import two_factor
-    from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
+    from include.domains.security.handlers import totp
+    from include.domains.security.handlers.totp import RequestDeleteTotpHandler
 
     responses = []
     handler = SimpleNamespace(
@@ -706,13 +706,13 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
         stream=SimpleNamespace(connection=SimpleNamespace(_ws=object())),
         conclude_request=lambda *args, **kwargs: responses.append((args, kwargs)),
     )
-    monkeypatch.setattr(two_factor, "get_client_ip", lambda _websocket: "127.0.0.1")
+    monkeypatch.setattr(totp, "get_client_ip", lambda _websocket: "127.0.0.1")
     monkeypatch.setattr(
-        two_factor.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
+        totp.LoginGuard, "evaluate", lambda *_args: _throttled_decision()
     )
 
     monkeypatch.setattr(
-        two_factor,
+        totp,
         "Session",
         lambda: nullcontext(
             SimpleNamespace(
@@ -725,8 +725,8 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
         ),
     )
 
-    result = RequestDisable2FAHandler().handle(
-        handler, RequestDisable2FAHandler.request_model.model_validate(handler.data)
+    result = RequestDeleteTotpHandler().handle(
+        handler, RequestDeleteTotpHandler.request_model.model_validate(handler.data)
     )
 
     assert result.code == 429
@@ -734,10 +734,10 @@ def test_disable_2fa_password_check_uses_authentication_throttle(monkeypatch):
     assert responses[0][0][1] == {"retry_after_seconds": 45}
 
 
-def test_disable_2fa_request_accepts_a_credential(monkeypatch):
-    from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
+def test_delete_totp_request_accepts_a_credential(monkeypatch):
+    from include.domains.security.handlers.totp import RequestDeleteTotpHandler
 
-    request = RequestDisable2FAHandler.request_model.model_validate(
+    request = RequestDeleteTotpHandler.request_model.model_validate(
         {"password": "secret"}
     )
 
@@ -747,10 +747,10 @@ def test_disable_2fa_request_accepts_a_credential(monkeypatch):
 @pytest.mark.parametrize(
     "request_data", [{}, {"password": None}], ids=["missing", "null"]
 )
-def test_disable_2fa_request_requires_a_credential(monkeypatch, request_data):
+def test_delete_totp_request_requires_a_credential(monkeypatch, request_data):
     from pydantic import ValidationError
 
-    from include.domains.security.handlers.two_factor import RequestDisable2FAHandler
+    from include.domains.security.handlers.totp import RequestDeleteTotpHandler
 
     with pytest.raises(ValidationError, match="password"):
-        RequestDisable2FAHandler.request_model.model_validate(request_data)
+        RequestDeleteTotpHandler.request_model.model_validate(request_data)

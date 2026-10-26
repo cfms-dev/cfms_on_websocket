@@ -278,7 +278,7 @@ class RequestListSchedulesHandler(RequestHandler[_ListSchedulesRequest]):
         try:
             cursor = PaginationCursor.decode(
                 request.cursor,
-                action="list_schedules",
+                action="core.schedule.list",
                 sort=sort,
                 filters=filters,
                 ttl=3600,
@@ -313,7 +313,7 @@ class RequestListSchedulesHandler(RequestHandler[_ListSchedulesRequest]):
         response = make_cursor_response(
             items,
             page_size=page_size,
-            action="list_schedules",
+            action="core.schedule.list",
             sort=sort,
             filters=filters,
             cursor_key=lambda item: [item["created_at"], item["id"]],

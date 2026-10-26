@@ -260,7 +260,7 @@ async def group_factory(
     for group_name in reversed(created_groups):
         try:
             response = await authenticated_client.send_request(
-                "delete_group", {"group_name": group_name}
+                "core.group.delete", {"group_name": group_name}
             )
             assert response["code"] in (200, 404), response
         except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned group

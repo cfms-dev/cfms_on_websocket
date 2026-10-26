@@ -118,7 +118,7 @@ def finish_login_attempt(
     session.commit()
     return (
         202,
-        "Two-factor authentication required",
+        "Multi-factor authentication required",
         {
             "token": token.raw,
             "exp": token.exp,

@@ -211,19 +211,19 @@ exists.
 
 ## WebSocket management actions
 
-Protocol version 27 makes these actions unconditional core APIs and removes the
-former `scheduling` extension flag:
+Scheduling management has been an unconditional core API since protocol 27.
+Protocol 29 uses these request names:
 
-- `list_scheduled_task_types`
-- `create_schedule`
-- `get_schedule`
-- `list_schedules`
-- `update_schedule`
-- `delete_schedule`
+- `core.schedule.task_type.list`
+- `core.schedule.create`
+- `core.schedule.get`
+- `core.schedule.list`
+- `core.schedule.update`
+- `core.schedule.delete`
 
 Configurations that still list `scheduling` in `extensions.enabled` are rejected;
 remove that identifier before starting this version. Clients must require protocol
-version 27 before relying on unconditional availability. The actions expose only
+version 29 to use these names. The actions expose only
 user-managed schedules and task types. System-managed maintenance remains
 observable through execution history, failure audits, and successful audit records
 when the task reports meaningful work, rather than through mutable schedule

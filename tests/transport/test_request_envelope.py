@@ -20,5 +20,7 @@ async def test_invalid_request_returns_400_and_keeps_connection_usable(client, p
     assert response["code"] == 400
     assert response["data"] == {}
 
-    following = await client.send_request("server_info", {}, include_auth=False)
+    following = await client.send_request(
+        "core.server.info.get", {}, include_auth=False
+    )
     assert following["code"] == 200

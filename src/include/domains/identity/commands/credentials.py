@@ -10,19 +10,14 @@ from sqlalchemy.orm import Session
 
 from include.config.settings import global_config
 from include.database.models.auth import (
-    UserAuthPolicy,
     UserPasswordCredential,
     UserTotpCredential,
 )
 from include.database.models.identity import User, UserStatus
-from include.domains.identity.auth.types import (
-    AuthPurpose,
-    InvalidAuthenticationAttempt,
-)
+from include.domains.identity.auth.types import InvalidAuthenticationAttempt
 from include.domains.identity.commands.auth_policies import (
     ensure_authentication_available,
     remove_credential_from_auth_policies,
-    replace_auth_policy,
 )
 
 _password_hasher = PasswordHasher()
@@ -76,30 +71,6 @@ def setup_totp(session: Session, user: User) -> tuple[UserTotpCredential, list[s
     credential.backup_codes = orjson.dumps(hashed_codes).decode("utf-8")
     credential.created_time = time.time()
     return credential, backup_codes
-
-
-def enable_login_totp(
-    session: Session, user: User, credential: UserTotpCredential
-) -> None:
-    """Activate TOTP and explicitly establish the standard login MFA policy."""
-    credential.enable()
-    session.flush()
-    policy = session.get(UserAuthPolicy, (user.id, AuthPurpose.MFA.value))
-    if policy is None or not policy.chains:
-        replace_auth_policy(
-            session,
-            user,
-            AuthPurpose.MFA,
-            [
-                [
-                    {
-                        "method": "totp",
-                        "credential_ids": [credential.credential_id],
-                    }
-                ]
-            ],
-            expected_revision=policy.revision if policy else 0,
-        )
 
 
 def remove_totp(session: Session, user: User, credential: UserTotpCredential) -> None:

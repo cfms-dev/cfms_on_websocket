@@ -69,7 +69,7 @@ def _component_versions() -> dict[str, str]:
 
 class RequestServerInfoHandler(RequestHandler[EmptyRequestDataModel]):
     """
-    Handle the 'server_info' action to return server information.
+    Handle the 'core.server.info.get' action to return server information.
 
     Args:
         this_handler: The ConnectionHandler instance handling the request.
@@ -163,7 +163,7 @@ class RequestDiagnosticsHandler(RequestHandler[EmptyRequestDataModel]):
 
 class RequestShutdownHandler(RequestHandler[EmptyRequestDataModel]):
     """
-    Handle the 'shutdown' action to gracefully shut down the server.
+    Handle the 'core.server.shutdown' action to gracefully shut down the server.
 
     Args:
         this_handler: The ConnectionHandler instance handling the request.
@@ -226,9 +226,9 @@ def ext_on_shutdown() -> None:
 @hookimpl
 def ext_register_handlers():
     return {
-        "server_info": RequestServerInfoHandler,
-        "diagnostics": RequestDiagnosticsHandler,
-        "shutdown": RequestShutdownHandler,
+        "core.server.info.get": RequestServerInfoHandler,
+        "core.server.diagnostics.get": RequestDiagnosticsHandler,
+        "core.server.shutdown": RequestShutdownHandler,
     }
 
 

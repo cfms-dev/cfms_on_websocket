@@ -205,7 +205,7 @@ class RequestViewAccessEntriesHandler(RequestHandler[_ViewAccessEntriesRequest])
             try:
                 decoded_cursor = PaginationCursor.decode(
                     cursor,
-                    action="view_access_entries",
+                    action="core.access.entry.list",
                     sort=sort,
                     filters=filters,
                     value_types=[int],
@@ -253,7 +253,7 @@ class RequestViewAccessEntriesHandler(RequestHandler[_ViewAccessEntriesRequest])
             response_data = make_cursor_response(
                 result,
                 page_size=page_size,
-                action="view_access_entries",
+                action="core.access.entry.list",
                 sort=sort,
                 filters=filters,
                 cursor_key=lambda item: [item["id"]],

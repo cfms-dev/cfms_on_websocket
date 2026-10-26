@@ -104,7 +104,7 @@ def test_oidc_start_uses_extension_namespace_and_persists_pkce_state(
     oidc_context, requested_redirect
 ):
     data = {} if requested_redirect is None else {"redirect_uri": requested_redirect}
-    handler_type = extension.ext_register_handlers()["sso_oidc_start"]
+    handler_type = extension.ext_register_handlers()["oidc_sso.session.start"]
     connection = _Connection(
         handler_type.request_model.model_validate(data).model_dump(exclude_unset=True)
     )
@@ -887,7 +887,6 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
     import pyotp
 
     from include.domains.identity.commands.credentials import (
-        enable_login_totp,
         setup_totp,
     )
     from include.domains.identity.handlers import auth as auth_handlers
@@ -897,7 +896,15 @@ def test_oidc_returns_auth_context_when_local_totp_is_required(
     with context.sessions.begin() as session:
         user = session.scalar(select(User).where(User.username == "alice"))
         credential, _ = setup_totp(session, user)
-        enable_login_totp(session, user, credential)
+        credential.enable()
+        session.flush()
+        replace_auth_policy(
+            session,
+            user,
+            AuthPurpose.MFA,
+            [[{"method": "totp", "credential_ids": [credential.credential_id]}]],
+            expected_revision=0,
+        )
         signing_key = user.secret_key
         secret = credential.secret
     connection = _Connection(context.request_data)

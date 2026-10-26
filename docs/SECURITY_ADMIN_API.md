@@ -7,16 +7,16 @@ lockouts. All times are Unix epoch seconds encoded as JSON numbers.
 
 | Permission | Actions |
 | --- | --- |
-| `list_banned_subnets` | `list_banned_subnets` |
-| `manage_banned_subnets` | `create_banned_subnet`, `update_banned_subnet`, `delete_banned_subnet` |
-| `list_auth_lockouts` | `list_auth_lockouts` |
-| `unlock_auth_lockouts` | `unlock_auth_lockouts` |
+| `list_banned_subnets` | `core.security.banned_subnet.list` |
+| `manage_banned_subnets` | `core.security.banned_subnet.create`, `core.security.banned_subnet.update`, `core.security.banned_subnet.delete` |
+| `list_auth_lockouts` | `core.security.auth_lockout.list` |
+| `unlock_auth_lockouts` | `core.security.auth_lockout.unlock` |
 
 The default `sysop` group receives all four permissions.
 
 ## CIDR rules
 
-`list_banned_subnets` accepts `page_size`, `cursor`, and an optional `status` of
+`core.security.banned_subnet.list` accepts `page_size`, `cursor`, and an optional `status` of
 `scheduled`, `active`, or `expired`. It returns the standard cursor response; each
 item contains `subnet`, `reason`, `created_at`, `starts_at`, `expires_at`, and
 `status`.
@@ -25,7 +25,7 @@ Create a rule with:
 
 ```json
 {
-  "action": "create_banned_subnet",
+  "action": "core.security.banned_subnet.create",
   "data": {
     "subnet": "192.0.2.7/24",
     "reason": "Incident response",
@@ -41,17 +41,17 @@ the current time and `expires_at` defaults to `null`. The interval is
 requester's effective IP requires `"confirm_self_block": true`.
 
 `reason` follows the shared 1-to-1024-character operation-reason contract.
-`update_banned_subnet` identifies the rule by `subnet` and accepts any of
+`core.security.banned_subnet.update` identifies the rule by `subnet` and accepts any of
 `reason`, `starts_at`, or `expires_at`; omitted values remain unchanged and an
 explicit `null` clears the reason. A reason-only update does not refresh the
 active subnet guard. To change the CIDR itself, delete the old rule and create a
-new one. `delete_banned_subnet` accepts only `subnet`. See
+new one. `core.security.banned_subnet.delete` accepts only `subnet`. See
 [`OPERATION_REASONS.md`](OPERATION_REASONS.md) for the shared update and audit
 semantics.
 
 ## Authentication lockouts
 
-`list_auth_lockouts` accepts cursor pagination and optional exact filters:
+`core.security.auth_lockout.list` accepts cursor pagination and optional exact filters:
 `scope`, `username`, `ip_address`, and `factor`. It returns active lockouts sorted
 by expiration time. Scope-specific identifiers are:
 
@@ -66,7 +66,7 @@ Clear up to 100 exact lockouts in one transaction:
 
 ```json
 {
-  "action": "unlock_auth_lockouts",
+  "action": "core.security.auth_lockout.unlock",
   "data": {
     "reason": "Approved emergency access",
     "locks": [

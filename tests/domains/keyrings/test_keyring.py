@@ -142,12 +142,12 @@ class TestKeyringWithoutAuth:
     @pytest.mark.parametrize(
         ("action", "data"),
         [
-            pytest.param("upload_user_key", {"content": "test"}, id="upload"),
-            pytest.param("get_user_key", {"id": "someid"}, id="get"),
-            pytest.param("delete_user_key", {"id": "someid"}, id="delete"),
-            pytest.param("list_user_keys", {}, id="list"),
+            pytest.param("core.user.key.upload", {"content": "test"}, id="upload"),
+            pytest.param("core.user.key.get", {"id": "someid"}, id="get"),
+            pytest.param("core.user.key.delete", {"id": "someid"}, id="delete"),
+            pytest.param("core.user.key.list", {}, id="list"),
             pytest.param(
-                "set_user_preference_dek", {"id": "someid"}, id="set-preference"
+                "core.user.preferred_dek.set", {"id": "someid"}, id="set-preference"
             ),
         ],
     )

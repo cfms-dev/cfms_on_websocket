@@ -129,12 +129,12 @@ from include.domains.security.handlers.access_control import (
     RequestUnlockAuthLockoutsHandler,
     RequestUpdateBannedSubnetHandler,
 )
-from include.domains.security.handlers.two_factor import (
-    RequestCancel2FASetupHandler,
-    RequestDisable2FAHandler,
-    RequestGet2FAStatusHandler,
-    RequestSetup2FAHandler,
-    RequestValidate2FAHandler,
+from include.domains.security.handlers.totp import (
+    RequestCancelTotpSetupHandler,
+    RequestConfirmTotpSetupHandler,
+    RequestDeleteTotpHandler,
+    RequestGetTotpStatusHandler,
+    RequestSetupTotpHandler,
 )
 from include.domains.security.validators.certificates import get_client_cert_subject
 from include.extensions.manager import pm
@@ -149,117 +149,117 @@ logger = log.bind(name="connection_handler")
 
 available_functions: dict[str, type[RequestHandler]] = {
     # Authentication
-    "login": RequestLoginHandler,
-    "exchange_token": RequestExchangeTokenHandler,
-    "refresh_token": RequestRefreshTokenHandler,
-    "get_user_authentication": RequestGetUserAuthenticationHandler,
-    "set_user_auth_policies": RequestSetUserAuthPoliciesHandler,
-    "register_user_auth_public_key": RequestRegisterUserAuthPublicKeyHandler,
-    "update_user_auth_public_key": RequestUpdateUserAuthPublicKeyHandler,
-    "delete_user_auth_public_key": RequestDeleteUserAuthPublicKeyHandler,
-    # Two-factor authentication
-    "setup_2fa": RequestSetup2FAHandler,
-    "cancel_2fa_setup": RequestCancel2FASetupHandler,  # especially for cancelling setup
-    "validate_2fa": RequestValidate2FAHandler,
-    "disable_2fa": RequestDisable2FAHandler,
-    "get_2fa_status": RequestGet2FAStatusHandler,
+    "core.auth.login": RequestLoginHandler,
+    "core.auth.token.exchange": RequestExchangeTokenHandler,
+    "core.auth.token.refresh": RequestRefreshTokenHandler,
+    "core.user.authentication.get": RequestGetUserAuthenticationHandler,
+    "core.user.authentication.policy.set": RequestSetUserAuthPoliciesHandler,
+    "core.user.authentication.public_key.register": RequestRegisterUserAuthPublicKeyHandler,
+    "core.user.authentication.public_key.update": RequestUpdateUserAuthPublicKeyHandler,
+    "core.user.authentication.public_key.delete": RequestDeleteUserAuthPublicKeyHandler,
+    # TOTP credentials
+    "core.user.authentication.totp.setup": RequestSetupTotpHandler,
+    "core.user.authentication.totp.setup.cancel": RequestCancelTotpSetupHandler,  # especially for cancelling setup
+    "core.user.authentication.totp.setup.confirm": RequestConfirmTotpSetupHandler,
+    "core.user.authentication.totp.delete": RequestDeleteTotpHandler,
+    "core.user.authentication.totp.status.get": RequestGetTotpStatusHandler,
     # Security administration
-    "list_banned_subnets": RequestListBannedSubnetsHandler,
-    "create_banned_subnet": RequestCreateBannedSubnetHandler,
-    "update_banned_subnet": RequestUpdateBannedSubnetHandler,
-    "delete_banned_subnet": RequestDeleteBannedSubnetHandler,
-    "list_auth_lockouts": RequestListAuthLockoutsHandler,
-    "unlock_auth_lockouts": RequestUnlockAuthLockoutsHandler,
+    "core.security.banned_subnet.list": RequestListBannedSubnetsHandler,
+    "core.security.banned_subnet.create": RequestCreateBannedSubnetHandler,
+    "core.security.banned_subnet.update": RequestUpdateBannedSubnetHandler,
+    "core.security.banned_subnet.delete": RequestDeleteBannedSubnetHandler,
+    "core.security.auth_lockout.list": RequestListAuthLockoutsHandler,
+    "core.security.auth_lockout.unlock": RequestUnlockAuthLockoutsHandler,
     # Documents
-    "get_document": RequestGetDocumentHandler,
-    "create_document": RequestCreateDocumentHandler,
-    "upload_document": RequestUploadDocumentHandler,
-    "delete_document": RequestDeleteDocumentHandler,
-    "restore_document": RequestRestoreDocumentHandler,
-    "purge_document": RequestPurgeDocumentHandler,
-    "rename_document": RequestRenameDocumentHandler,
-    "move_document": RequestMoveDocumentHandler,
-    "get_document_info": RequestGetDocumentInfoHandler,
-    "get_document_access_rules": RequestGetDocumentAccessRulesHandler,
-    "set_document_rules": RequestSetDocumentRulesHandler,
-    "set_document_tags": RequestSetDocumentTagsHandler,
+    "core.document.get": RequestGetDocumentHandler,
+    "core.document.create": RequestCreateDocumentHandler,
+    "core.document.upload": RequestUploadDocumentHandler,
+    "core.document.delete": RequestDeleteDocumentHandler,
+    "core.document.restore": RequestRestoreDocumentHandler,
+    "core.document.purge": RequestPurgeDocumentHandler,
+    "core.document.rename": RequestRenameDocumentHandler,
+    "core.document.move": RequestMoveDocumentHandler,
+    "core.document.info.get": RequestGetDocumentInfoHandler,
+    "core.document.access_rule.get": RequestGetDocumentAccessRulesHandler,
+    "core.document.access_rule.set": RequestSetDocumentRulesHandler,
+    "core.document.tag.set": RequestSetDocumentTagsHandler,
     # Revisions
-    "list_revisions": RequestListRevisionsHandler,
-    "get_revision": RequestGetRevisionHandler,
-    "set_current_revision": RequestSetDocumentRevisionHandler,
-    "delete_revision": RequestDeleteRevisionHandler,
+    "core.document.revision.list": RequestListRevisionsHandler,
+    "core.document.revision.get": RequestGetRevisionHandler,
+    "core.document.revision.current.set": RequestSetDocumentRevisionHandler,
+    "core.document.revision.delete": RequestDeleteRevisionHandler,
     # Files
-    "download_file": RequestDownloadFileHandler,
-    "upload_file": RequestUploadFileHandler,
+    "core.file.download": RequestDownloadFileHandler,
+    "core.file.upload": RequestUploadFileHandler,
     # Directories
-    "list_directory": RequestListDirectoryHandler,
-    "get_directory_info": RequestGetDirectoryInfoHandler,
-    "get_directory_access_rules": RequestGetDirectoryAccessRulesHandler,
-    "set_directory_rules": RequestSetDirectoryRulesHandler,
-    "create_directory": RequestCreateDirectoryHandler,
-    "delete_directory": RequestDeleteDirectoryHandler,
-    "restore_directory": RequestRestoreDirectoryHandler,
-    "purge_directory": RequestPurgeDirectoryHandler,
-    "rename_directory": RequestRenameDirectoryHandler,
-    "move_directory": RequestMoveDirectoryHandler,
-    "list_deleted_items": RequestListDeletedItemsHandler,
+    "core.directory.list": RequestListDirectoryHandler,
+    "core.directory.info.get": RequestGetDirectoryInfoHandler,
+    "core.directory.access_rule.get": RequestGetDirectoryAccessRulesHandler,
+    "core.directory.access_rule.set": RequestSetDirectoryRulesHandler,
+    "core.directory.create": RequestCreateDirectoryHandler,
+    "core.directory.delete": RequestDeleteDirectoryHandler,
+    "core.directory.restore": RequestRestoreDirectoryHandler,
+    "core.directory.purge": RequestPurgeDirectoryHandler,
+    "core.directory.rename": RequestRenameDirectoryHandler,
+    "core.directory.move": RequestMoveDirectoryHandler,
+    "core.directory.deleted_item.list": RequestListDeletedItemsHandler,
     # Search
-    "search": RequestSearchHandler,
+    "core.search.query": RequestSearchHandler,
     # Users
-    "manage_user_status": RequestManageUserStatusHandler,
-    "block_user": RequestBlockUserHandler,
-    "unblock_user": RequestUnblockUserHandler,
-    "update_user_block": RequestUpdateUserBlockHandler,
-    "list_user_blocks": RequestListUserBlocksHandler,
-    "list_users": RequestListUsersHandler,
-    "create_user": RequestCreateUserHandler,
-    "delete_user": RequestDeleteUserHandler,
-    "rename_user": RequestRenameUserHandler,
-    "get_user_info": RequestGetUserInfoHandler,
-    "get_user_avatar": RequestGetUserAvatarHandler,
-    "set_user_avatar": RequestSetUserAvatarHandler,
-    "change_user_groups": RequestChangeUserGroupsHandler,
-    "change_user_permissions": RequestChangeUserPermissionsHandler,
-    "set_passwd": RequestSetPasswdHandler,
+    "core.user.status.set": RequestManageUserStatusHandler,
+    "core.user.block.create": RequestBlockUserHandler,
+    "core.user.block.delete": RequestUnblockUserHandler,
+    "core.user.block.update": RequestUpdateUserBlockHandler,
+    "core.user.block.list": RequestListUserBlocksHandler,
+    "core.user.list": RequestListUsersHandler,
+    "core.user.create": RequestCreateUserHandler,
+    "core.user.delete": RequestDeleteUserHandler,
+    "core.user.rename": RequestRenameUserHandler,
+    "core.user.info.get": RequestGetUserInfoHandler,
+    "core.user.avatar.get": RequestGetUserAvatarHandler,
+    "core.user.avatar.set": RequestSetUserAvatarHandler,
+    "core.user.group.change": RequestChangeUserGroupsHandler,
+    "core.user.permission.change": RequestChangeUserPermissionsHandler,
+    "core.user.password.set": RequestSetPasswdHandler,
     # Groups
-    "list_groups": RequestListGroupsHandler,
-    "create_group": RequestCreateGroupHandler,
-    "delete_group": RequestDeleteGroupHandler,
-    "rename_group": RequestRenameGroupHandler,
-    "get_group_info": RequestGetGroupInfoHandler,
-    "change_group_permissions": RequestChangeGroupPermissionsHandler,
+    "core.group.list": RequestListGroupsHandler,
+    "core.group.create": RequestCreateGroupHandler,
+    "core.group.delete": RequestDeleteGroupHandler,
+    "core.group.rename": RequestRenameGroupHandler,
+    "core.group.info.get": RequestGetGroupInfoHandler,
+    "core.group.permission.change": RequestChangeGroupPermissionsHandler,
     # Access
-    "grant_access": RequestGrantAccessHandler,
-    "revoke_access": RequestRevokeAccessHandler,
-    "view_access_entries": RequestViewAccessEntriesHandler,
+    "core.access.entry.grant": RequestGrantAccessHandler,
+    "core.access.entry.revoke": RequestRevokeAccessHandler,
+    "core.access.entry.list": RequestViewAccessEntriesHandler,
     # System
-    "lockdown": RequestLockdownHandler,
-    "view_audit_logs": RequestViewAuditLogsHandler,
+    "core.server.lockdown.set": RequestLockdownHandler,
+    "core.audit.entry.list": RequestViewAuditLogsHandler,
     # Scheduling
-    "list_scheduled_task_types": RequestListScheduledTaskTypesHandler,
-    "create_schedule": RequestCreateScheduleHandler,
-    "get_schedule": RequestGetScheduleHandler,
-    "list_schedules": RequestListSchedulesHandler,
-    "update_schedule": RequestUpdateScheduleHandler,
-    "delete_schedule": RequestDeleteScheduleHandler,
+    "core.schedule.task_type.list": RequestListScheduledTaskTypesHandler,
+    "core.schedule.create": RequestCreateScheduleHandler,
+    "core.schedule.get": RequestGetScheduleHandler,
+    "core.schedule.list": RequestListSchedulesHandler,
+    "core.schedule.update": RequestUpdateScheduleHandler,
+    "core.schedule.delete": RequestDeleteScheduleHandler,
     # Keyring
-    "upload_user_key": RequestUploadUserKeyHandler,
-    "get_user_key": RequestGetUserKeyHandler,
-    "delete_user_key": RequestDeleteUserKeyHandler,
-    "set_user_preference_dek": RequestSetPreferenceDEKHandler,
-    "list_user_keys": RequestListUserKeysHandler,
+    "core.user.key.upload": RequestUploadUserKeyHandler,
+    "core.user.key.get": RequestGetUserKeyHandler,
+    "core.user.key.delete": RequestDeleteUserKeyHandler,
+    "core.user.preferred_dek.set": RequestSetPreferenceDEKHandler,
+    "core.user.key.list": RequestListUserKeysHandler,
 }
 
 # Requests that remain available to all users during lockdown.
 whitelisted_functions = [
-    "server_info",
-    "login",
-    "exchange_token",
-    "refresh_token",
-    "validate_2fa",
-    "upload_file",
-    "download_file",
-    "lockdown",
+    "core.server.info.get",
+    "core.auth.login",
+    "core.auth.token.exchange",
+    "core.auth.token.refresh",
+    "core.user.authentication.totp.setup.confirm",
+    "core.file.upload",
+    "core.file.download",
+    "core.server.lockdown.set",
 ]
 
 
@@ -522,9 +522,14 @@ def handle_request(stream: Stream):
     if (
         token is not None
         and token.purpose & TokenPurpose.POST_AUTH
-        and (token.purpose != TokenPurpose.POST_AUTH or action != "set_passwd")
+        and (
+            token.purpose != TokenPurpose.POST_AUTH
+            or action != "core.user.password.set"
+        )
     ):
-        this_handler.conclude_request(403, {}, "POST_AUTH is restricted to set_passwd")
+        this_handler.conclude_request(
+            403, {}, "POST_AUTH is restricted to core.user.password.set"
+        )
         return
 
     handler_type = available_functions.get(action)
@@ -561,7 +566,7 @@ def handle_request(stream: Stream):
         and not (
             token is not None
             and token.purpose == TokenPurpose.POST_AUTH
-            and action == "set_passwd"
+            and action == "core.user.password.set"
         )
     ):
         can_bypass_lockdown = False

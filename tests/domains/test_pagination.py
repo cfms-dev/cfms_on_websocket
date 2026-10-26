@@ -87,7 +87,7 @@ def pagination(monkeypatch):
 @pytest.fixture
 def directory_cursor(pagination):
     return pagination.PaginationCursor(
-        action="list_directory",
+        action="core.directory.list",
         sort="type_name_id:asc",
         filters={"folder_id": "root"},
         last=[0, "alpha", "id-1"],
@@ -100,11 +100,11 @@ def test_encrypted_cursor_round_trip_hides_request_details(
     token = directory_cursor.encode()
 
     raw_token = base64.urlsafe_b64decode(token)
-    assert b"list_directory" not in raw_token
+    assert b"core.directory.list" not in raw_token
     assert b"alpha" not in raw_token
     decoded = pagination.PaginationCursor.decode(
         token,
-        action="list_directory",
+        action="core.directory.list",
         sort="type_name_id:asc",
         filters={"folder_id": "root"},
         value_types=[int, str, str],
@@ -115,10 +115,17 @@ def test_encrypted_cursor_round_trip_hides_request_details(
 @pytest.mark.parametrize(
     ("action", "sort", "filters"),
     [
-        pytest.param("search", "type_name_id:asc", {"folder_id": "root"}, id="action"),
-        pytest.param("list_directory", "name:desc", {"folder_id": "root"}, id="sort"),
         pytest.param(
-            "list_directory", "type_name_id:asc", {"folder_id": "other"}, id="filters"
+            "core.search.query", "type_name_id:asc", {"folder_id": "root"}, id="action"
+        ),
+        pytest.param(
+            "core.directory.list", "name:desc", {"folder_id": "root"}, id="sort"
+        ),
+        pytest.param(
+            "core.directory.list",
+            "type_name_id:asc",
+            {"folder_id": "other"},
+            id="filters",
         ),
     ],
 )
@@ -137,7 +144,7 @@ def test_cursor_is_bound_to_request(
 
 def test_cursor_filter_binding_is_independent_of_mapping_order(pagination):
     token = pagination.PaginationCursor(
-        action="search",
+        action="core.search.query",
         sort="name:asc",
         filters={"query": "alpha", "include_deleted": False},
         last=["alpha", 0, "id-1"],
@@ -145,7 +152,7 @@ def test_cursor_filter_binding_is_independent_of_mapping_order(pagination):
 
     decoded = pagination.PaginationCursor.decode(
         token,
-        action="search",
+        action="core.search.query",
         sort="name:asc",
         filters={"include_deleted": False, "query": "alpha"},
         value_types=[str, int, str],
@@ -163,7 +170,7 @@ def test_cursor_rejects_tampering(pagination, directory_cursor):
     with pytest.raises(pagination.CursorError, match="Invalid cursor"):
         pagination.PaginationCursor.decode(
             token,
-            action="list_directory",
+            action="core.directory.list",
             sort="type_name_id:asc",
             filters={"folder_id": "root"},
         )
@@ -188,7 +195,7 @@ def test_cursor_rejects_invalid_tokens(pagination, token):
     with pytest.raises(pagination.CursorError, match="Invalid cursor"):
         pagination.PaginationCursor.decode(
             token,
-            action="list_directory",
+            action="core.directory.list",
             sort="type_name_id:asc",
             filters={"folder_id": "root"},
         )
@@ -216,6 +223,17 @@ def test_cursor_rejects_authenticated_invalid_payloads(pagination, token):
         )
 
 
+def test_pre_upgrade_cursor_is_rejected_for_new_request_name(pagination):
+    with pytest.raises(pagination.CursorError):
+        pagination.PaginationCursor.decode(
+            _VALID_CURSOR_V2,
+            action="core.directory.list",
+            sort="type_name_id:asc",
+            filters={"folder_id": "root"},
+            value_types=[int, str, str],
+        )
+
+
 @pytest.mark.parametrize(
     "last",
     [
@@ -228,7 +246,7 @@ def test_cursor_rejects_authenticated_invalid_payloads(pagination, token):
 )
 def test_cursor_rejects_incorrect_key_types_or_arity(pagination, last):
     token = pagination.PaginationCursor(
-        action="view_access_entries",
+        action="core.access.entry.list",
         sort="id:asc",
         filters={"object_type": "user", "object_identifier": "alice"},
         last=last,
@@ -237,7 +255,7 @@ def test_cursor_rejects_incorrect_key_types_or_arity(pagination, last):
     with pytest.raises(pagination.CursorError, match="Invalid cursor"):
         pagination.PaginationCursor.decode(
             token,
-            action="view_access_entries",
+            action="core.access.entry.list",
             sort="id:asc",
             filters={"object_type": "user", "object_identifier": "alice"},
             value_types=[int],
@@ -257,7 +275,7 @@ def test_cursor_is_invalid_after_secret_rotation(
     with pytest.raises(pagination.CursorError, match="Invalid cursor"):
         pagination.PaginationCursor.decode(
             token,
-            action="list_directory",
+            action="core.directory.list",
             sort="type_name_id:asc",
             filters={"folder_id": "root"},
         )
@@ -267,7 +285,7 @@ def test_missing_cursor_starts_a_new_page(pagination):
     assert (
         pagination.PaginationCursor.decode(
             None,
-            action="list_directory",
+            action="core.directory.list",
             sort="type_name_id:asc",
             filters={"folder_id": "root"},
         )
@@ -285,7 +303,7 @@ def test_cursor_response_contains_page_and_continuation(pagination, item_count):
     response = pagination.make_cursor_response(
         items,
         page_size=1,
-        action="list_directory",
+        action="core.directory.list",
         sort="type_name_id:asc",
         filters={"folder_id": "root"},
         cursor_key=lambda item: item["_cursor_key"],
@@ -296,7 +314,7 @@ def test_cursor_response_contains_page_and_continuation(pagination, item_count):
     assert response["has_more"] is (item_count > 1)
     decoded = pagination.PaginationCursor.decode(
         response["next_cursor"],
-        action="list_directory",
+        action="core.directory.list",
         sort="type_name_id:asc",
         filters={"folder_id": "root"},
         value_types=[int, str, str],
@@ -312,7 +330,7 @@ def test_cursor_ttl_defaults_to_no_expiration(pagination, monkeypatch):
     now = 2_000_000_000
     monkeypatch.setattr(fernet_module, "time", SimpleNamespace(time=lambda: now))
     token = pagination.PaginationCursor(
-        action="search",
+        action="core.search.query",
         sort="name:asc",
         filters={"query": "alpha"},
         last=["alpha", 0, "id-1"],
@@ -323,7 +341,7 @@ def test_cursor_ttl_defaults_to_no_expiration(pagination, monkeypatch):
     )
     decoded_cursor = pagination.PaginationCursor.decode(
         token,
-        action="search",
+        action="core.search.query",
         sort="name:asc",
         filters={"query": "alpha"},
         value_types=[str, int, str],
@@ -336,7 +354,7 @@ def test_cursor_ttl_rejects_expired_tokens(pagination, monkeypatch):
     now = 2_000_000_000
     monkeypatch.setattr(fernet_module, "time", SimpleNamespace(time=lambda: now))
     token = pagination.PaginationCursor(
-        action="view_audit_logs",
+        action="core.audit.entry.list",
         sort="logged_time_id:desc",
         filters={"filters": []},
         last=[1000.0, "audit-1"],
@@ -346,7 +364,7 @@ def test_cursor_ttl_rejects_expired_tokens(pagination, monkeypatch):
     with pytest.raises(pagination.CursorError):
         pagination.PaginationCursor.decode(
             token,
-            action="view_audit_logs",
+            action="core.audit.entry.list",
             sort="logged_time_id:desc",
             filters={"filters": []},
             ttl=3600,
@@ -355,7 +373,7 @@ def test_cursor_ttl_rejects_expired_tokens(pagination, monkeypatch):
 
     decoded_cursor = pagination.PaginationCursor.decode(
         token,
-        action="view_audit_logs",
+        action="core.audit.entry.list",
         sort="logged_time_id:desc",
         filters={"filters": []},
         value_types=[(int, float), str],
@@ -375,7 +393,7 @@ def test_cursor_response_token_expiration_is_controlled_by_decode_ttl(
             {"id": "audit-2", "logged_time": 1.0},
         ],
         page_size=1,
-        action="view_audit_logs",
+        action="core.audit.entry.list",
         sort="logged_time_id:desc",
         filters={"filters": []},
         cursor_key=lambda item: [item["logged_time"], item["id"]],
@@ -386,7 +404,7 @@ def test_cursor_response_token_expiration_is_controlled_by_decode_ttl(
     with pytest.raises(pagination.CursorError):
         pagination.PaginationCursor.decode(
             response["next_cursor"],
-            action="view_audit_logs",
+            action="core.audit.entry.list",
             sort="logged_time_id:desc",
             filters={"filters": []},
             ttl=3600,

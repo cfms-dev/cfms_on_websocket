@@ -14,7 +14,7 @@ class TestUserOperations:
     @pytest.mark.asyncio
     async def test_rename_user_requires_authentication(self, unauthenticated_client):
         response = await unauthenticated_client.send_request(
-            "rename_user",
+            "core.user.rename",
             {
                 "user_id": "00000000-0000-4000-8000-000000000001",
                 "nickname": "unauthorized",
@@ -27,10 +27,10 @@ class TestUserOperations:
     @pytest.mark.parametrize(
         ("action", "selector_field"),
         [
-            ("get_user_info", "username"),
-            ("get_user_info", "user_id"),
-            ("get_user_avatar", "user_id"),
-            ("get_2fa_status", "user_id"),
+            ("core.user.info.get", "username"),
+            ("core.user.info.get", "user_id"),
+            ("core.user.avatar.get", "user_id"),
+            ("core.user.authentication.totp.status.get", "user_id"),
         ],
     )
     async def test_cross_user_lookup_does_not_disclose_user_existence(
@@ -80,7 +80,7 @@ class TestUserOperations:
     ):
         for user_id in (test_user["user_id"], "00000000-0000-4000-8000-000000000001"):
             response = await unauthenticated_client.send_request(
-                "set_passwd",
+                "core.user.password.set",
                 {"user_id": user_id, "new_passwd": "UpdatedPassword456!"},
             )
             assert_error(response, 401)
@@ -99,7 +99,7 @@ class TestUserOperations:
         ):
             responses.append(
                 await low_privilege_client.send_request(
-                    "set_passwd",
+                    "core.user.password.set",
                     {
                         "user_id": user_id,
                         "new_passwd": "UpdatedPassword456!",
@@ -118,7 +118,7 @@ class TestUserOperations:
     ):
         assert_success(await authenticated_client.elevate_token())
         response = await authenticated_client.send_request(
-            "set_passwd",
+            "core.user.password.set",
             {
                 "user_id": "00000000-0000-4000-8000-000000000001",
                 "new_passwd": "UpdatedPassword456!",
@@ -136,10 +136,10 @@ class TestUserOperations:
         user_info = await low_privilege_client.get_user_info(
             username=low_privilege_client.username
         )
-        two_factor_status = await low_privilege_client.get_2fa_status()
+        totp_status = await low_privilege_client.get_totp_status()
 
         assert_success(user_info)
-        assert_success(two_factor_status)
+        assert_success(totp_status)
 
     @pytest.mark.asyncio
     async def test_self_password_change_requires_escalation_and_rotates_tokens(
@@ -156,14 +156,14 @@ class TestUserOperations:
         assert_success(await unauthenticated_client.login(username, user["password"]))
         assert_error(
             await unauthenticated_client.send_request(
-                "set_passwd", {"new_passwd": new_password}
+                "core.user.password.set", {"new_passwd": new_password}
             ),
             403,
         )
         assert_success(await unauthenticated_client.elevate_token())
         assert_success(
             await unauthenticated_client.send_request(
-                "set_passwd", {"new_passwd": new_password}
+                "core.user.password.set", {"new_passwd": new_password}
             )
         )
         assert_error(await unauthenticated_client.refresh_token(), 401)
@@ -348,7 +348,7 @@ class TestUserOperations:
         assert_success(permissions_response)
 
         groups_response = await authenticated_client.send_request(
-            "change_user_groups",
+            "core.user.group.change",
             {
                 "user_id": test_user["user_id"],
                 "groups": [test_group["group_name"]],
@@ -435,13 +435,13 @@ class TestUserOperations:
 class TestUserWithoutAuth:
     @pytest.mark.asyncio
     async def test_list_users_without_auth(self, client: CFMSTestClient):
-        response = await client.send_request("list_users", {}, include_auth=False)
+        response = await client.send_request("core.user.list", {}, include_auth=False)
         assert_error(response, 401)
 
     @pytest.mark.asyncio
     async def test_create_user_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
-            "create_user",
+            "core.user.create",
             {"username": "testuser", "password": "TestPassword123!"},
             include_auth=False,
         )
@@ -450,14 +450,14 @@ class TestUserWithoutAuth:
     @pytest.mark.asyncio
     async def test_get_user_info_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
-            "get_user_info", {"username": "admin"}, include_auth=False
+            "core.user.info.get", {"username": "admin"}, include_auth=False
         )
         assert_error(response, 401)
 
     @pytest.mark.asyncio
     async def test_change_user_permissions_without_auth(self, client: CFMSTestClient):
         response = await client.send_request(
-            "change_user_permissions",
+            "core.user.permission.change",
             {"user_id": "00000000-0000-4000-8000-000000000001", "permissions": []},
             include_auth=False,
         )

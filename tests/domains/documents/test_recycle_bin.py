@@ -312,7 +312,7 @@ class TestRecycleBin:
         assert_success(await authenticated_client.delete_directory(child["folder_id"]))
 
         response = await authenticated_client.send_request(
-            "purge_directory", {"folder_id": child["folder_id"], **pagination_data}
+            "core.directory.purge", {"folder_id": child["folder_id"], **pagination_data}
         )
 
         assert_error(response, 400)
