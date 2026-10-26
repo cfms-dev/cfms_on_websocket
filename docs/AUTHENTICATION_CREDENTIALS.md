@@ -219,9 +219,9 @@ verified source token's subject; method payloads cannot select another account.
 
 | Source token | Requested purpose | Operation |
 | --- | --- | --- |
-| AUTH (1) | GENERAL (2) | Finish login MFA using the `mfa` policy |
-| GENERAL (2) | GENERAL\|ESCALATION (6) | Reauthenticate using the `escalation` policy |
-| POST_AUTH (8), any other combination | Any | Denied |
+| AUTH | GENERAL | Finish login MFA using the `mfa` policy |
+| GENERAL | GENERAL\|ESCALATION | Reauthenticate using the `escalation` policy |
+| POST_AUTH, any other combination | Any | Denied |
 
 POST_AUTH cannot be requested. Invalid/missing target values return 400; invalid
 source/target combinations return 403. Successful issuance responses expose the

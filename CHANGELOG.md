@@ -9,9 +9,26 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.12.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.13.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.13.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.13.0) - 2026-10-26
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.12.0...v0.13.0)</small>
+
+### Changed
+
+- Protocol 29 replaces top-level request names with namespace.resource[.subresource...].action without legacy aliases. TOTP setup confirmation now activates only its credential; configure MFA policies explicitly. TOTP status reports configured, enabled and backup_codes_count independently of MFA. Clients, extension registrations and quoted TOML action-cost keys must be upgraded together; existing credentials, policies and audit history are preserved.
+- Separate self authentication configuration, cross-user configuration and cross-user inventory permissions; remove the previous password and authentication management permissions. Require elevation without an old password for ordinary password changes, preserve restricted mandatory password changes, prune deleted credential dependencies atomically, and reject duplicate authentication flows. Existing deployments must explicitly grant the new permissions; stored permissions and policies are not migrated.
+
+### Fixed
+
+- Allow deployment upgrades, downgrades, and recovery across extension manifest schema changes by validating extension file ownership independently of the running server's manifest schema.
+- Fix deployment recovery and explicit version downgrades being blocked by damaged unrelated historical snapshots, while retaining full validation for status and pruning operations.
+- Fix state creation with the pure Python MySQL connector so scheduled lockdowns persist successfully instead of failing with repeated concurrent-update errors.
+- Return 403 for valid authentication-configuration tokens with insufficient purposes while preserving 401 for invalid tokens.
+
 
 ## [v0.12.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.12.0) - 2026-10-24
 
