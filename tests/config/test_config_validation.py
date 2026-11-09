@@ -19,6 +19,7 @@ from include.config.validation import (
     RequestRateControlPolicy,
     S3StoragePolicy,
     SchedulingPolicy,
+    ServerTLSReloadPolicy,
     get_config_warnings,
     get_enabled_extensions,
     get_trusted_proxy_networks,
@@ -41,6 +42,48 @@ def _valid_config() -> dict:
             "auth_throttle": {},
         },
     }
+
+
+@pytest.mark.unit
+def test_tls_reload_policy_defaults_and_override():
+    config = _valid_config()
+    defaults = ServerTLSReloadPolicy.from_config(config)
+    assert defaults.ssl_reload_enabled is True
+    assert defaults.ssl_reload_debounce_seconds == 0.5
+    assert defaults.ssl_reload_scan_interval_seconds == 30.0
+    config["server"].update(
+        ssl_reload_enabled=False,
+        ssl_reload_debounce_seconds=1,
+        ssl_reload_scan_interval_seconds=15,
+    )
+    validate_config(config)
+    policy = ServerTLSReloadPolicy.from_config(config)
+    assert policy.ssl_reload_enabled is False
+    assert policy.ssl_reload_debounce_seconds == 1
+    assert policy.ssl_reload_scan_interval_seconds == 15
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "key", ["ssl_reload_debounce_seconds", "ssl_reload_scan_interval_seconds"]
+)
+@pytest.mark.parametrize("value", [0, -1, True, "1", float("inf"), float("nan")])
+def test_tls_reload_policy_rejects_invalid_intervals(key, value):
+    config = _valid_config()
+    config["server"][key] = value
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == (key,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [0, 1, "true", None])
+def test_tls_reload_policy_requires_boolean_switch(value):
+    config = _valid_config()
+    config["server"]["ssl_reload_enabled"] = value
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == ("ssl_reload_enabled",)
 
 
 @pytest.fixture

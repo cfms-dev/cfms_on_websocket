@@ -1,0 +1,1 @@
+Automatically reload WSS and HTTP API server certificates after file updates, retaining existing connections and the previous certificate when a replacement cannot be loaded. Add shared reload controls, filesystem notifications and periodic recovery scans.

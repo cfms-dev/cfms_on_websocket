@@ -13,7 +13,8 @@ lazy from fastapi import FastAPI
 lazy from uvicorn.server import ServerState
 
 from include.config.settings import global_config
-from include.transport.tls import create_server_ssl_context
+from include.config.validation import ServerTLSReloadPolicy
+from include.transport.tls import ReloadableServerTLS
 
 lazy from .config import HttpApiPolicy
 
@@ -99,6 +100,7 @@ class _ActiveServer:
     thread: threading.Thread
     startup_event: threading.Event
     shutdown_timeout_seconds: float
+    tls: ReloadableServerTLS | None = None
     failure: BaseException | None = None
 
 
@@ -108,17 +110,19 @@ class HttpApiRuntime:
         self._active: _ActiveServer | None = None
 
     @staticmethod
-    def _create_ssl_context(policy: HttpApiPolicy):
+    def _create_tls(policy: HttpApiPolicy) -> ReloadableServerTLS:
         server_config = global_config["server"]
         security_config = global_config.get("security", {})
         require_client_cert = security_config.get("require_client_cert", False)
-        return create_server_ssl_context(
+        return ReloadableServerTLS(
             policy.ssl_certfile or server_config["ssl_certfile"],
             policy.ssl_keyfile or server_config["ssl_keyfile"],
+            policy=ServerTLSReloadPolicy.from_config(global_config),
             require_client_cert=require_client_cert,
             client_ca_path=(
                 security_config["client_cert_ca_path"] if require_client_cert else None
             ),
+            name="http_api",
         )
 
     def start(self, app: FastAPI, policy: HttpApiPolicy) -> None:
@@ -127,6 +131,12 @@ class HttpApiRuntime:
                 raise RuntimeError("The HTTP API server is already active")
 
             startup_event = threading.Event()
+
+            def create_tls_context(_config, _factory):
+                active.tls = self._create_tls(policy)
+                active.tls.__enter__()
+                return active.tls.context
+
             config = _HttpApiConfig(
                 app,
                 host=policy.host,
@@ -139,9 +149,7 @@ class HttpApiRuntime:
                 # this limit, so N + 1 is required to admit exactly N connections.
                 limit_concurrency=policy.max_concurrency + 1,
                 timeout_graceful_shutdown=ceil(policy.shutdown_timeout_seconds),
-                ssl_context_factory=lambda _config, _factory: self._create_ssl_context(
-                    policy
-                ),
+                ssl_context_factory=create_tls_context,
             )
             config.request_header_timeout_seconds = (
                 policy.request_header_timeout_seconds
@@ -158,7 +166,11 @@ class HttpApiRuntime:
                 shutdown_timeout_seconds=policy.shutdown_timeout_seconds,
             )
             self._active = active
-            active.thread.start()
+            try:
+                active.thread.start()
+            except BaseException:
+                self._active = None
+                raise
 
         if not startup_event.wait(policy.startup_timeout_seconds):
             if not self._stop(active):
@@ -195,6 +207,8 @@ class HttpApiRuntime:
                     "HTTP API server stopped unexpectedly after startup"
                 )
         finally:
+            if active.tls is not None:
+                active.tls.close()
             active.startup_event.set()
             with self._lock:
                 if self._active is active:

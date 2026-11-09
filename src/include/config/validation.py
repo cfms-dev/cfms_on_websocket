@@ -4,9 +4,9 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import field
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from pydantic.dataclasses import dataclass
 from tomlkit import TOMLDocument, parse
 from tomlkit.exceptions import TOMLKitError
@@ -47,6 +47,7 @@ __all__ = [
     "RequestRateControlPolicy",
     "S3StoragePolicy",
     "SchedulingPolicy",
+    "ServerTLSReloadPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
     "get_trusted_proxy_networks",
@@ -558,6 +559,19 @@ class SchedulingPolicy(_ConfigPolicy):
             )
 
 
+@dataclass(frozen=True)
+class ServerTLSReloadPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("server", required=True),))
+
+    ssl_reload_enabled: bool = True
+    ssl_reload_debounce_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = (
+        0.5
+    )
+    ssl_reload_scan_interval_seconds: Annotated[
+        float, Field(gt=0, allow_inf_nan=False)
+    ] = 30.0
+
+
 def _validate_client_certificate_config(config: _ConfigSource) -> None:
     security = _section(config, "security")
     require_client_cert = security.get("require_client_cert", False)
@@ -597,6 +611,7 @@ def _validate_storage_provider_config(
 
 
 def validate_config(config: _ConfigSource) -> None:
+    ServerTLSReloadPolicy.from_config(config)
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
     AuthThrottlePolicy.from_config(config)

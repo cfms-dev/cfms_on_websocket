@@ -37,7 +37,11 @@ from include.config.paths import (
     EXTENSION_ROOT,
 )
 from include.config.settings import global_config
-from include.config.validation import get_config_warnings, get_enabled_extensions
+from include.config.validation import (
+    ServerTLSReloadPolicy,
+    get_config_warnings,
+    get_enabled_extensions,
+)
 from include.database.initialization import initialize_database_schema
 from include.database.models.documents import (
     Document,
@@ -79,7 +83,7 @@ from include.transport.router import (
     handle_connection,
     whitelisted_functions,
 )
-from include.transport.tls import create_server_ssl_context
+from include.transport.tls import ReloadableServerTLS
 lazy from include.domains.identity.commands.groups import create_group
 lazy from include.domains.identity.commands.users import create_user
 
@@ -372,12 +376,13 @@ def _run_server():
     logger.info("Initializating CFMS WebSocket server...")
     logger.info(f"Core Version: {CORE_VERSION}")
 
-    # TODO: Add support for TLS ECH when upstream libraries support it.
+    # TODO: Add support for TLS ECH when Python 3.16 is released (3.16.0a2+)
     security_cfg = global_config.get("security", {})
     require_client_cert = security_cfg.get("require_client_cert", False)
-    ssl_context = create_server_ssl_context(
+    tls = ReloadableServerTLS(
         global_config["server"]["ssl_certfile"],
         global_config["server"]["ssl_keyfile"],
+        policy=ServerTLSReloadPolicy.from_config(global_config),
         require_client_cert=require_client_cert,
         client_ca_path=(
             security_cfg["client_cert_ca_path"] if require_client_cert else None
@@ -447,15 +452,18 @@ def _run_server():
     )
 
     try:
-        with serve(
-            handle_connection,
-            host,
-            port,
-            ssl=ssl_context,
-            family=socket_family,
-            dualstack_ipv6=dualstack_ipv6,
-            process_request=global_process_request,
-        ) as server:
+        with (
+            tls,
+            serve(
+                handle_connection,
+                host,
+                port,
+                ssl=tls.context,
+                family=socket_family,
+                dualstack_ipv6=dualstack_ipv6,
+                process_request=global_process_request,
+            ) as server,
+        ):
             bound_address = server.socket.getsockname()
             bound_host = bound_address[0]
             display_host = (

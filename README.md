@@ -50,6 +50,10 @@ Distributed scheduling also requires `--extra ext-scheduling-cluster`. See the
 
 ## Maintenance
 
+WSS and HTTP API certificates reload automatically when their files change.
+See [TLS certificate reload](docs/TLS_CERTIFICATE_RELOAD.md) for renewal,
+configuration and rollback instructions.
+
 The `maintain` command covers release-bundle deployment, configuration updates,
 database migrations, permission records, audit logs, and extensions:
 

@@ -17,6 +17,11 @@ secret_key = ""
 ssl_keyfile = "./content/ssl/key.pem"
 # Path to the SSL/TLS certificate file
 ssl_certfile = "./content/ssl/cert.pem"
+# Apply certificate/key file updates to new TLS handshakes without restarting.
+# Shared by WSS and the HTTP API; these settings are captured at startup.
+ssl_reload_enabled = true
+ssl_reload_debounce_seconds = 0.5
+ssl_reload_scan_interval_seconds = 30.0
 # Reverse proxies allowed to supply X-Forwarded-For or X-Real-IP.
 trusted_proxy_networks = ["127.0.0.1/32", "::1/128"]
 

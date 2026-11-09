@@ -20,6 +20,13 @@ from starlette import convertors as starlette_convertors
 
 from include.domains.access.permissions import Permissions
 from include.extensions import manager as extension_manager
+from tests.support.tls import (
+    client_context,
+    create_ca,
+    issue_certificate,
+    peer_serial,
+    wait_until,
+)
 
 
 @pytest.fixture
@@ -1289,7 +1296,7 @@ def test_real_tls_listener_reclaims_slow_headers_and_releases_port(
         return {"status": "ok"}
 
     runtime = modules.runtime.HttpApiRuntime()
-    assert runtime._create_ssl_context(policy).minimum_version == ssl.TLSVersion.TLSv1_3
+    assert runtime._create_tls(policy).context.minimum_version == ssl.TLSVersion.TLSv1_3
     runtime.start(app, policy)
     try:
         assert runtime._active is not None
@@ -1360,6 +1367,101 @@ def test_real_tls_listener_reclaims_slow_headers_and_releases_port(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("independent", [False, True])
+@pytest.mark.parametrize("hostname", ["localhost", "127.0.0.1"])
+def test_https_certificate_reload_preserves_keepalive(
+    monkeypatch, http_api_modules, tmp_path, independent, hostname
+):
+    modules = http_api_modules
+    ca = create_ca()
+    first, second = issue_certificate(ca, 1), issue_certificate(ca, 2)
+    certfile, keyfile = tmp_path / "cert.pem", tmp_path / "key.pem"
+    certfile.write_bytes(first[0])
+    keyfile.write_bytes(first[1])
+    global_cert = tmp_path / "wss-cert.pem" if independent else certfile
+    global_key = tmp_path / "wss-key.pem" if independent else keyfile
+    if independent:
+        global_cert.write_bytes(first[0])
+        global_key.write_bytes(first[1])
+    monkeypatch.setattr(
+        modules.runtime,
+        "global_config",
+        {
+            "server": {
+                "ssl_certfile": str(global_cert),
+                "ssl_keyfile": str(global_key),
+                "ssl_reload_debounce_seconds": 0.03,
+            },
+            "security": {"require_client_cert": False},
+        },
+    )
+    port = _reserve_ipv4_port()
+    policy = modules.config.HttpApiPolicy(
+        host="127.0.0.1",
+        port=port,
+        ssl_certfile=str(certfile) if independent else None,
+        ssl_keyfile=str(keyfile) if independent else None,
+    )
+    app = FastAPI()
+
+    @app.get("/healthz")
+    def health():
+        return {"status": "ok"}
+
+    def request(connection):
+        connection.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        response = bytearray()
+        while b"\r\n\r\n" not in response:
+            chunk = connection.recv(4096)
+            assert chunk
+            response.extend(chunk)
+        headers, body = response.split(b"\r\n\r\n", 1)
+        assert headers.split(b"\r\n", 1)[0].split()[1] == b"200"
+        length = next(
+            int(line.split(b":", 1)[1])
+            for line in headers.split(b"\r\n")[1:]
+            if line.lower().startswith(b"content-length:")
+        )
+        while len(body) < length:
+            chunk = connection.recv(4096)
+            assert chunk
+            body.extend(chunk)
+        assert body == b'{"status":"ok"}'
+
+    runtime = modules.runtime.HttpApiRuntime()
+    runtime.start(app, policy)
+    active = runtime._active
+    try:
+        context = client_context(ca[0])
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5) as raw,
+            context.wrap_socket(raw, server_hostname=hostname) as old,
+        ):
+            assert peer_serial(old) == 1
+            request(old)
+            certfile.write_bytes(second[0])
+            keyfile.write_bytes(second[1])
+
+            def rotated():
+                with (
+                    socket.create_connection(("127.0.0.1", port), timeout=5) as sock,
+                    context.wrap_socket(sock, server_hostname=hostname) as new,
+                ):
+                    request(new)
+                    return peer_serial(new) == 2
+
+            wait_until(rotated)
+            request(old)
+            assert peer_serial(old) == 1
+        assert runtime._active is active
+    finally:
+        runtime.shutdown()
+        runtime.shutdown()
+    assert not active.tls._worker.is_alive()
+    assert not active.tls._observer.is_alive()
+
+
+@pytest.mark.integration
 def test_listener_bind_failure_is_propagated(monkeypatch, http_api_modules, tmp_path):
     modules = http_api_modules
     cert_path, key_path = _write_self_signed_certificate(tmp_path)
@@ -1391,6 +1493,20 @@ def test_listener_bind_failure_is_propagated(monkeypatch, http_api_modules, tmp_
         with pytest.raises(RuntimeError, match="Failed to start"):
             runtime.start(FastAPI(), policy)
 
+    assert runtime._active is None
+    runtime.shutdown()
+
+
+@pytest.mark.unit
+def test_http_server_thread_start_failure_clears_runtime(monkeypatch, http_api_modules):
+    runtime = http_api_modules.runtime.HttpApiRuntime()
+
+    def cannot_start(thread):
+        raise RuntimeError("HTTP server thread could not start")
+
+    monkeypatch.setattr(threading.Thread, "start", cannot_start)
+    with pytest.raises(RuntimeError):
+        runtime.start(FastAPI(), http_api_modules.config.HttpApiPolicy())
     assert runtime._active is None
     runtime.shutdown()
 
