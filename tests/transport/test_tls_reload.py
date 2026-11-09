@@ -10,7 +10,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from loguru import logger
 from watchdog.events import FileClosedNoWriteEvent, FileModifiedEvent, FileOpenedEvent
-from websockets.exceptions import InvalidHandshake
+from websockets.exceptions import ConnectionClosedError, InvalidHandshake
 from websockets.sync.client import connect
 from websockets.sync.server import serve
 
@@ -43,6 +43,9 @@ def websocket_listener(tls, *, monitor=True):
         for message in websocket:
             websocket.send(message)
 
+    # Exercise full handshakes, without post-handshake session tickets racing
+    # the synchronous client's opening WebSocket request.
+    tls.context.num_tickets = 0
     with ExitStack() as resources:
         resources.callback(tls.close)
         if monitor:
@@ -329,15 +332,25 @@ def test_mtls_is_enforced_after_rotation(certificates, tmp_path, monkeypatch):
                 assert peer_serial(new.socket) == 2
                 new.send("authenticated")
                 assert new.recv() == "authenticated"
-            with pytest.raises((ssl.SSLError, OSError, InvalidHandshake)):
-                connect(uri, ssl=client_context(ca[0]))
+            with (
+                pytest.raises(
+                    (ssl.SSLError, OSError, InvalidHandshake, ConnectionClosedError)
+                ),
+                connect(uri, ssl=client_context(ca[0])),
+            ):
+                pytest.fail("A client certificate is required")
             untrusted = issue_certificate(create_ca(), 11, client=True)
             for path, data in zip(client_files, untrusted, strict=True):
                 path.write_bytes(data)
             stranger = client_context(ca[0])
             stranger.load_cert_chain(*client_files)
-            with pytest.raises((ssl.SSLError, OSError, InvalidHandshake)):
-                connect(uri, ssl=stranger)
+            with (
+                pytest.raises(
+                    (ssl.SSLError, OSError, InvalidHandshake, ConnectionClosedError)
+                ),
+                connect(uri, ssl=stranger),
+            ):
+                pytest.fail("An untrusted client certificate must be rejected")
             old.send("still authenticated")
             assert old.recv() == "still authenticated"
 
