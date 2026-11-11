@@ -329,66 +329,74 @@ remains fixed.
 
 ## Configuration
 
-Upload settings are hot-reloaded from `[document.upload]`:
+Upload policies are read from database namespaces on each operation. Changes to
+cleanup intervals are applied by system-schedule reconciliation. The tables below
+show code defaults; manage values with `maintain config options` as described in
+[database configuration](DATABASE_OPTIONS.md).
 
-```toml
-[document.upload]
-start_timeout_seconds = 3600
-max_duration_seconds = 86400
-idle_timeout_seconds = 300
-cleanup_interval_seconds = 60
-max_pending_documents_per_creator = 16
+### `document.upload`
 
-[document.upload.creation_risk_control]
-mode = "enforce"
-refill_period_seconds = 600
-account_capacity = 60
-account_refill_tokens = 300
-ip_capacity = 200
-ip_refill_tokens = 1000
-new_account_seconds = 604800
-pending_elevated_ratio = 0.5
-pending_high_ratio = 0.75
-ip_account_window_seconds = 600
-ip_accounts_elevated = 4
-ip_accounts_high = 10
-denial_window_seconds = 600
-denials_elevated = 1
-denials_high = 3
-elevated_cost = 3
-high_cost = 10
-state_retention_seconds = 86400
-```
+| Setting | Default |
+| --- | --- |
+| `start_timeout_seconds` | `3600` |
+| `max_duration_seconds` | `86400` |
+| `idle_timeout_seconds` | `300` |
+| `cleanup_interval_seconds` | `60` |
+| `max_pending_documents_per_creator` | `16` |
 
-Download risk settings are independently hot-reloaded from
-`[document.download.risk_control]`:
+### `document.upload.creation_risk_control`
 
-```toml
-[document.download.risk_control]
-mode = "observe"
-refill_period_seconds = 600
-issue_account_capacity = 60
-issue_account_refill_tokens = 300
-issue_ip_capacity = 200
-issue_ip_refill_tokens = 1000
-transfer_account_capacity = 60
-transfer_account_refill_tokens = 300
-transfer_ip_capacity = 200
-transfer_ip_refill_tokens = 1000
-task_capacity = 5
-task_refill_tokens = 10
-task_refill_period_seconds = 3600
-new_account_seconds = 604800
-ip_account_window_seconds = 600
-ip_accounts_elevated = 4
-ip_accounts_high = 10
-denial_window_seconds = 600
-denials_elevated = 1
-denials_high = 3
-elevated_cost = 3
-high_cost = 10
-state_retention_seconds = 86400
-```
+| Setting | Default |
+| --- | --- |
+| `mode` | `"enforce"` |
+| `refill_period_seconds` | `600` |
+| `account_capacity` | `60` |
+| `account_refill_tokens` | `300` |
+| `ip_capacity` | `200` |
+| `ip_refill_tokens` | `1000` |
+| `new_account_seconds` | `604800` |
+| `pending_elevated_ratio` | `0.5` |
+| `pending_high_ratio` | `0.75` |
+| `ip_account_window_seconds` | `600` |
+| `ip_accounts_elevated` | `4` |
+| `ip_accounts_high` | `10` |
+| `denial_window_seconds` | `600` |
+| `denials_elevated` | `1` |
+| `denials_high` | `3` |
+| `elevated_cost` | `3` |
+| `high_cost` | `10` |
+| `state_retention_seconds` | `86400` |
+
+Download risk settings use the independent `document.download.risk_control`
+database namespace:
+
+### `document.download.risk_control`
+
+| Setting | Default |
+| --- | --- |
+| `mode` | `"observe"` |
+| `refill_period_seconds` | `600` |
+| `issue_account_capacity` | `60` |
+| `issue_account_refill_tokens` | `300` |
+| `issue_ip_capacity` | `200` |
+| `issue_ip_refill_tokens` | `1000` |
+| `transfer_account_capacity` | `60` |
+| `transfer_account_refill_tokens` | `300` |
+| `transfer_ip_capacity` | `200` |
+| `transfer_ip_refill_tokens` | `1000` |
+| `task_capacity` | `5` |
+| `task_refill_tokens` | `10` |
+| `task_refill_period_seconds` | `3600` |
+| `new_account_seconds` | `604800` |
+| `ip_account_window_seconds` | `600` |
+| `ip_accounts_elevated` | `4` |
+| `ip_accounts_high` | `10` |
+| `denial_window_seconds` | `600` |
+| `denials_elevated` | `1` |
+| `denials_high` | `3` |
+| `elevated_cost` | `3` |
+| `high_cost` | `10` |
+| `state_retention_seconds` | `86400` |
 
 Use shorter start deadlines and lower reservation caps when names are scarce or
 abuse is common. Increase the hard deadline for reliably authenticated users

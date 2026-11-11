@@ -53,8 +53,8 @@ def download_limit_context(monkeypatch, sqlite_engine_factory):
     )
     monkeypatch.setattr(
         download_limits.DocumentDownloadRiskPolicy,
-        "from_config",
-        classmethod(lambda _cls: policy),
+        "from_options",
+        classmethod(lambda _cls, _session: policy),
     )
     return download_limits, models, session_factory, policy
 
@@ -176,8 +176,8 @@ def test_download_observe_mode_records_shadow_denial(
     observe_policy = type(policy)(**{**policy.__dict__, "mode": "observe"})
     monkeypatch.setattr(
         download_limits.DocumentDownloadRiskPolicy,
-        "from_config",
-        classmethod(lambda _cls: observe_policy),
+        "from_options",
+        classmethod(lambda _cls, _session: observe_policy),
     )
 
     with session_factory.begin() as session:

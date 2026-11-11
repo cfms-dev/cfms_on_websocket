@@ -134,7 +134,7 @@ def cleanup_document_creation_risk_state(
     now: float | None = None,
 ) -> RateLimitCleanupCounts:
     current_time = time.time() if now is None else now
-    policy = DocumentCreationRiskPolicy.from_config()
+    policy = DocumentCreationRiskPolicy.from_options(session)
     return cleanup_rate_limit_state(
         session,
         _RISK_NAMESPACE,
@@ -154,8 +154,8 @@ def check_document_creation_limits(
 ) -> CreationLimitDecision:
     if now is None:
         now = time.time()
-    upload_policy = DocumentUploadPolicy.from_config()
-    risk_policy = DocumentCreationRiskPolicy.from_config()
+    upload_policy = DocumentUploadPolicy.from_options(session)
+    risk_policy = DocumentCreationRiskPolicy.from_options(session)
 
     account_bucket = lock_rate_bucket(
         session,

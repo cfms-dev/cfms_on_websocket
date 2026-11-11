@@ -318,8 +318,8 @@ def test_download_limit_denial_releases_claimed_task(
     )
     monkeypatch.setattr(
         download_limits.DocumentDownloadRiskPolicy,
-        "from_config",
-        classmethod(lambda _cls: policy),
+        "from_options",
+        classmethod(lambda _cls, _session: policy),
     )
     task_id, _file_id = _create_file_task(
         file_task_context,

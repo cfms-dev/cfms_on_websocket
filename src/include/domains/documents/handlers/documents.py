@@ -198,7 +198,7 @@ def create_file_task(
 
     now = database_now(session)
     duration = (
-        DocumentUploadPolicy.from_config().start_timeout_seconds
+        DocumentUploadPolicy.from_options(session).start_timeout_seconds
         if transfer_mode == TransferMode.UPLOAD
         else FILE_TASK_DEFAULT_DURATION_SECONDS
     )

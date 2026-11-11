@@ -58,7 +58,7 @@ def cleanup_document_download_risk_state(
     now: float | None = None,
 ) -> RateLimitCleanupCounts:
     current_time = time.time() if now is None else now
-    policy = DocumentDownloadRiskPolicy.from_config()
+    policy = DocumentDownloadRiskPolicy.from_options(session)
     counts = [
         cleanup_rate_limit_state(
             session,
@@ -98,7 +98,7 @@ def _check_download_limits(
     bypass_rate_limit: bool,
     now: float,
 ) -> DownloadLimitDecision:
-    policy = DocumentDownloadRiskPolicy.from_config()
+    policy = DocumentDownloadRiskPolicy.from_options(session)
     active_downloads = (
         _active_download_count(session, now)
         if namespace == _TRANSFER_NAMESPACE

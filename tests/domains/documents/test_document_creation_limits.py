@@ -51,13 +51,13 @@ def creation_limit_context(monkeypatch, sqlite_engine_factory):
     )
     monkeypatch.setattr(
         creation_limits.DocumentUploadPolicy,
-        "from_config",
-        classmethod(lambda _cls: upload_policy),
+        "from_options",
+        classmethod(lambda _cls, _session: upload_policy),
     )
     monkeypatch.setattr(
         creation_limits.DocumentCreationRiskPolicy,
-        "from_config",
-        classmethod(lambda _cls: risk_policy),
+        "from_options",
+        classmethod(lambda _cls, _session: risk_policy),
     )
     return creation_limits, models, session_factory, upload_policy, risk_policy
 
@@ -173,8 +173,8 @@ def test_observe_mode_records_would_block_without_rate_denial(
     observe_policy = type(risk_policy)(**{**risk_policy.__dict__, "mode": "observe"})
     monkeypatch.setattr(
         creation_limits.DocumentCreationRiskPolicy,
-        "from_config",
-        classmethod(lambda _cls: observe_policy),
+        "from_options",
+        classmethod(lambda _cls, _session: observe_policy),
     )
 
     with session_factory.begin() as session:
@@ -331,8 +331,8 @@ def test_reduced_capacity_caps_existing_balance(creation_limit_context, monkeypa
     )
     monkeypatch.setattr(
         creation_limits.DocumentCreationRiskPolicy,
-        "from_config",
-        classmethod(lambda _cls: smaller_policy),
+        "from_options",
+        classmethod(lambda _cls, _session: smaller_policy),
     )
 
     with session_factory.begin() as session:

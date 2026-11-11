@@ -269,7 +269,7 @@ def claim_file_task(
     }
 
     if is_upload:
-        policy = DocumentUploadPolicy.from_config()
+        policy = DocumentUploadPolicy.from_options(session)
 
         initial_window = (
             task.end_time is not None

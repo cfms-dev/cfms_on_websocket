@@ -362,12 +362,15 @@ class ConnectionHandler:
         cancelled: threading.Event,
         limit_decision: DownloadLimitDecision,
     ) -> None:
+        with Session() as session:
+            policy = DocumentUploadPolicy.from_options(session)
         prepared = self._prepare_download_transfer(
             claimed,
             offset,
             max_chunk_size,
             cancelled,
             limit_decision,
+            policy.idle_timeout_seconds,
         )
         if prepared is None:
             return
@@ -379,6 +382,7 @@ class ConnectionHandler:
             file_size,
             chunk_size,
             cancelled,
+            policy.idle_timeout_seconds,
         ):
             return
 
@@ -409,6 +413,7 @@ class ConnectionHandler:
         max_chunk_size: int,
         cancelled: threading.Event,
         limit_decision: DownloadLimitDecision,
+        idle_timeout_seconds: int,
     ) -> tuple[int, int] | None:
         task_id = claimed.task_id
         file_id = claimed.file_id
@@ -502,7 +507,7 @@ class ConnectionHandler:
         received_response = self._recv_file_task_frame(
             task_id,
             cancelled,
-            DocumentUploadPolicy.from_config().idle_timeout_seconds,
+            idle_timeout_seconds,
         )
         if received_response.data != b"ready":
             self.logger.error(
@@ -523,6 +528,7 @@ class ConnectionHandler:
         file_size: int,
         chunk_size: int,
         cancelled: threading.Event,
+        idle_timeout_seconds: int,
     ) -> bool:
         task_id = claimed.task_id
         if file_size == 0:
@@ -540,7 +546,7 @@ class ConnectionHandler:
             received_response = self._recv_file_task_frame(
                 task_id,
                 cancelled,
-                DocumentUploadPolicy.from_config().idle_timeout_seconds,
+                idle_timeout_seconds,
             )
             if received_response.data != b"complete":
                 self.conclude_request(400, {}, "Client did not confirm file completion")
@@ -631,7 +637,7 @@ class ConnectionHandler:
             received_response = self._recv_file_task_frame(
                 task_id,
                 cancelled,
-                DocumentUploadPolicy.from_config().idle_timeout_seconds,
+                idle_timeout_seconds,
             )
             if received_response.data != b"complete":
                 self.conclude_request(400, {}, "Client did not confirm file completion")
@@ -925,7 +931,8 @@ class ConnectionHandler:
         task_id = claimed.task_id
         file_path = claimed.file_path
         storage = ProviderManager().storage
-        policy = DocumentUploadPolicy.from_config()
+        with Session() as session:
+            policy = DocumentUploadPolicy.from_options(session)
         initial_offset = upload.offset
         hasher = hashlib.sha256()
         received_size = initial_offset
