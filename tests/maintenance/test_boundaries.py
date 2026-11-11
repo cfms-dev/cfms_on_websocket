@@ -32,6 +32,7 @@ COMMANDS = {
         "enable",
         "disable",
         "uninstall",
+        "purge-data",
     ),
 }
 

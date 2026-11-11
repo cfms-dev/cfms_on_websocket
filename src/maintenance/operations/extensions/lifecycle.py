@@ -1,6 +1,7 @@
 import os
 import secrets
 import shutil
+from contextlib import nullcontext
 lazy from pathlib import Path
 
 from packaging.version import InvalidVersion
@@ -12,6 +13,7 @@ from include.extensions.manager import (
     ExtensionLoadError,
     resolve_extension_selection,
 )
+from include.runtime_lock import RuntimeLockError, server_runtime_lock
 from maintenance.operations.config import write_config_atomically
 from maintenance.operations.exceptions import MaintenanceOperationError
 from maintenance.operations.extensions.catalog import (
@@ -21,6 +23,7 @@ from maintenance.operations.extensions.catalog import (
     _read_config,
     _record,
 )
+from maintenance.operations.extensions.data import _purge_extension_data
 from maintenance.operations.extensions.models import ExtensionChangeResult
 from maintenance.operations.extensions.packages import _extract_package
 from maintenance.operations.extensions.selection import (
@@ -264,8 +267,24 @@ def disable_extension(identifier: str, *, write: bool = False) -> ExtensionChang
 
 
 def uninstall_extension(
-    identifier: str, *, write: bool = False
+    identifier: str, *, write: bool = False, purge_data: bool = False
 ) -> ExtensionChangeResult:
+    workdir, _ = _extension_root(mutating=True)
+    context = server_runtime_lock(workdir) if purge_data else nullcontext()
+    try:
+        with context:
+            return _uninstall_extension(identifier, write=write, purge_data=purge_data)
+    except RuntimeLockError as exc:
+        raise MaintenanceOperationError(str(exc)) from exc
+
+
+def _uninstall_extension(
+    identifier: str, *, write: bool, purge_data: bool
+) -> ExtensionChangeResult:
+    if identifier in ("core", "builtin"):
+        raise MaintenanceOperationError(
+            f"The {identifier!r} extension cannot be uninstalled"
+        )
     workdir, root = _extension_root(mutating=True)
     discovered = _discover(root)
     extension = discovered.get(identifier)
@@ -291,6 +310,22 @@ def uninstall_extension(
         rendered = _render_enabled_config(document, candidate_enabled)
     record = _record(extension, discovered, set(enabled))
     backup_path = None
+    data_purge = None
+    if purge_data:
+        if write and rendered != current_source:
+            backup_path = write_config_atomically(config_path, current_source, rendered)
+        try:
+            data_purge = _purge_extension_data(
+                identifier, options_only=False, write=write, allow_enabled_preview=True
+            )
+        except MaintenanceOperationError as exc:
+            if write and removed:
+                raise MaintenanceOperationError(
+                    f"Extension {identifier!r} and its enabled dependents were disabled; "
+                    "data cleanup failed and code was preserved. Retry uninstall "
+                    "--purge-data after fixing the cleanup failure"
+                ) from exc
+            raise
     if write:
         rollback = root / (
             f".cfms-extension-rollback-{identifier}-{secrets.token_hex(8)}"
@@ -298,7 +333,7 @@ def uninstall_extension(
         config_applied = False
         try:
             os.replace(extension.directory, rollback)
-            if rendered != current_source:
+            if not purge_data and rendered != current_source:
                 backup_path = write_config_atomically(
                     config_path, current_source, rendered
                 )
@@ -316,6 +351,12 @@ def uninstall_extension(
                 ) from exc
             raise MaintenanceOperationError(
                 f"Unable to uninstall extension {identifier!r}: {exc}"
+                + (
+                    "; data purge already committed; extension remains disabled "
+                    "and uninstall may be retried"
+                    if data_purge is not None
+                    else ""
+                )
             ) from exc
         try:
             shutil.rmtree(rollback)
@@ -334,4 +375,5 @@ def uninstall_extension(
         enabled_removed=removed,
         config_backup_path=backup_path,
         changed=True,
+        data_purge=data_purge,
     )

@@ -70,6 +70,9 @@ def _print_extension_change(result: operations.ExtensionChangeResult) -> None:
     table.add_row("Enable", ", ".join(result.enabled_added) or "-")
     table.add_row("Disable", ", ".join(result.enabled_removed) or "-")
     table.add_row("Changes required", "Yes" if result.changed else "No")
+    if result.data_purge is not None:
+        table.add_row("Purge options", str(result.data_purge.option_entries))
+        table.add_row("Purge system states", str(result.data_purge.state_entries))
     console.print(table)
     if result.package_path is not None:
         console.print(
@@ -290,20 +293,87 @@ def uninstall_extension(
         bool,
         typer.Option("--yes", help="Uninstall without interactive confirmation."),
     ] = False,
+    purge_data: Annotated[
+        bool,
+        typer.Option(
+            "--purge-data",
+            help="Disable linked extensions and purge target data before removing code; stop the server first.",
+        ),
+    ] = False,
 ) -> None:
-    """Remove extension code while preserving its configuration and runtime state."""
-    preview = _run(lambda: operations.uninstall_extension(identifier, write=False))
+    """Remove extension code; preserve its data unless --purge-data is supplied."""
+    preview = _run(
+        lambda: operations.uninstall_extension(
+            identifier, write=False, purge_data=purge_data
+        )
+    )
     _print_extension_change(preview)
-    _confirm_or_abort("Uninstall this extension and apply linked disables?", yes)
+    _confirm_or_abort(
+        "Purge extension data and uninstall its code?"
+        if purge_data
+        else "Uninstall this extension and apply linked disables?",
+        yes,
+    )
     result = _run(
-        lambda: operations.uninstall_extension(identifier, write=True),
+        lambda: operations.uninstall_extension(
+            identifier, write=True, purge_data=purge_data
+        ),
         status="Uninstalling extension...",
     )
     _print_success(
         _extension_success_message(
-            f"Uninstalled {identifier!r}; extension configuration and runtime "
-            "state were preserved.",
+            (
+                f"Uninstalled {identifier!r}; database options and extension-owned "
+                "system states were purged."
+                if purge_data
+                else f"Uninstalled {identifier!r}; extension configuration and runtime "
+                "state were preserved."
+            ),
             result,
             restart=True,
         )
+    )
+
+
+@app.command("purge-data")
+def purge_extension_data(
+    identifier: Annotated[str, typer.Argument(help="Disabled extension identifier.")],
+    options_only: Annotated[
+        bool,
+        typer.Option(
+            "--options-only",
+            help="Delete owner options and system states without importing extension code.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Purge without interactive confirmation."),
+    ] = False,
+) -> None:
+    """Purge one disabled extension's persistent data while the server is stopped."""
+    preview = _run(
+        lambda: operations.purge_extension_data(
+            identifier, options_only=options_only, write=False
+        )
+    )
+    table = Table(title="Extension Data Purge", show_header=False)
+    table.add_column("Field", style="cyan", no_wrap=True)
+    table.add_column("Value")
+    table.add_row("Owner", identifier)
+    table.add_row("Options", str(preview.option_entries))
+    table.add_row("System states", str(preview.state_entries))
+    table.add_row(
+        "Extension hook", "Skipped" if options_only else "Run on confirmation"
+    )
+    console.print(table)
+    _confirm_or_abort("Permanently purge this extension's selected database data?", yes)
+    result = _run(
+        lambda: operations.purge_extension_data(
+            identifier, options_only=options_only, write=True
+        ),
+        status="Purging extension data...",
+    )
+    _print_success(
+        f"Purged {result.option_entries} option rows and {result.state_entries} "
+        f"system state rows owned by {identifier!r}; extension code was preserved."
     )

@@ -29,6 +29,15 @@ class ExtensionPackageInspection:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtensionDataPurgeResult:
+    identifier: str
+    options_only: bool
+    option_entries: int
+    state_entries: int
+    applied: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ExtensionChangeResult:
     action: str
     extension: ExtensionRecord
@@ -38,3 +47,4 @@ class ExtensionChangeResult:
     enabled_removed: tuple[str, ...]
     config_backup_path: Path | None
     changed: bool
+    data_purge: ExtensionDataPurgeResult | None = None

@@ -128,7 +128,12 @@ def test_core_scheduling_wraps_extension_lifecycle(monkeypatch, protected_test_c
         ext_on_startup=lambda *, server: events.append(("extensions_start", server)),
         ext_on_shutdown=lambda: events.append("extensions_shutdown"),
     )
-    monkeypatch.setattr(server_main, "pm", SimpleNamespace(hook=hook))
+    monkeypatch.setattr(
+        server_main,
+        "start_extensions",
+        lambda server: hook.ext_on_startup(server=server),
+    )
+    monkeypatch.setattr(server_main, "shutdown_extensions", hook.ext_on_shutdown)
     monkeypatch.setattr(
         server_main,
         "ProviderManager",
@@ -169,7 +174,12 @@ def test_core_lifecycle_cleans_up_when_scheduling_start_fails(
         ext_on_startup=lambda *, server: events.append("extensions_start"),
         ext_on_shutdown=lambda: events.append("extensions_shutdown"),
     )
-    monkeypatch.setattr(server_main, "pm", SimpleNamespace(hook=hook))
+    monkeypatch.setattr(
+        server_main,
+        "start_extensions",
+        lambda server: hook.ext_on_startup(server=server),
+    )
+    monkeypatch.setattr(server_main, "shutdown_extensions", hook.ext_on_shutdown)
     monkeypatch.setattr(
         server_main,
         "ProviderManager",

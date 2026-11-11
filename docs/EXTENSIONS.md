@@ -165,6 +165,8 @@ maintain extension upgrade example_extension.zip --sha256 <digest>
 maintain extension enable example_extension
 maintain extension disable example_extension
 maintain extension uninstall example_extension
+maintain extension purge-data example_extension
+maintain extension uninstall example_extension --purge-data
 ```
 
 Relative extension package paths are resolved from the directory where
@@ -174,13 +176,41 @@ Install leaves a new extension disabled so that its configuration and Python
 dependencies can be prepared first. Enable adds installed transitive dependencies
 after showing the complete change; disable and uninstall likewise show the enabled
 dependents that must be disabled. Mutating commands require confirmation unless
-`--yes` is supplied. They never install Python packages, detect the server process,
-or restart it. Restart a running server after activation, upgrade, disable, or
-uninstall changes.
+`--yes` is supplied. They never install Python packages or restart the server.
+Restart a running server after activation, upgrade, disable, or ordinary uninstall
+changes. Explicit data cleanup requires the server to be stopped and acquires the
+same runtime-directory lock as server startup.
 
 Uninstall removes extension code and its entry from `extensions.enabled`, while
 preserving `extensions.<identifier>` configuration and persistent system state.
 The `builtin` extension cannot be installed, upgraded, disabled, or uninstalled.
+
+`purge-data` requires a disabled target. After confirmation it temporarily loads
+only the target and its declared dependency closure, invokes only the target's
+`ext_purge_data(session)`, and deletes database options and system-state rows
+whose owner exactly matches the target identifier. The hook, deletions, and audit
+entry share one database transaction. A failed load or hook leaves the database
+and extension code intact. Dependencies are available for imports and hook
+registration but are neither activated nor purged. Previewing cleanup never
+executes extension code.
+
+`purge-data --options-only` skips extension code and removes only that owner's
+rows from the core-managed options and system-state tables, recording the
+operation in the same transaction. It can clean up orphaned rows after uninstall
+or recover when extension code or dependencies are broken. It does not perform
+extension-specific cleanup callbacks. Neither mode permits `core` or `builtin`.
+Packaged optional extensions may purge their data while disabled, although their
+code must still be upgraded or removed with the server release.
+
+`uninstall --purge-data` requires a stopped server. It first disables the target
+and enabled dependents, then purges only target data while its code is still
+available, and finally removes code through the existing file-operation rollback
+path. These are distinct stages: if cleanup fails, the disabled state and code
+are retained for retry; if code removal fails afterward, the committed data purge
+is retained and uninstall can be retried. Normal disable and uninstall do not load
+extension code or invoke a cleanup hook, so a broken extension can still be
+disabled. Legacy TOML configuration is retained by uninstall and data cleanup.
+
 During a server upgrade, operator-installed extensions are copied into the new
 release before activation. A downgrade instead restores the selected release's
 stored extension snapshot and never copies extensions backward from the current
@@ -218,10 +248,88 @@ Startup also fails when the extension catalog is invalid, an enabled identifier
 is not installed, or an enabled extension cannot be imported. This prevents the
 server from silently running without configured capabilities.
 
-Extensions may implement `ext_validate_config(config)` to validate their own
-configuration. The hook runs when an extension is loaded and whenever the global
-configuration is reloaded. It should raise `ConfigValidationError` for invalid
-values; a failed reload leaves the previous configuration active.
+Extensions may implement `ext_validate_config(config)` to validate deployment
+configuration when loaded. TOML settings are startup snapshots; changes require
+a restart and do not invoke reload hooks.
+
+## Database options and data preparation
+
+Settings are identified by `(namespace, option_key)`. Their declaring owner is
+recorded separately for maintenance and explicit data cleanup. Namespaces should
+follow business responsibilities rather than plugin identifiers; one plugin may
+declare several namespaces. Single-party management is a convention, not a new
+ownership/locking subsystem. Duplicate setting identities are rejected.
+
+An optional top-level manifest field locates declarations for maintenance writes:
+
+```toml
+manifest_version = 2
+option_namespaces = ["security.example"]
+```
+
+```python
+from pydantic import PositiveInt
+from include.config.options import OptionDefinition, read_options
+from include.extensions.manager import hookimpl
+
+THRESHOLD = OptionDefinition("threshold", 1, PositiveInt, 10)
+
+
+@hookimpl
+def ext_register_options() -> dict[str, tuple["OptionDefinition[int]", ...]]:
+    return {"security.example": (THRESHOLD,)}
+
+
+@hookimpl
+def ext_validate_options(namespace: str, values: dict) -> None:
+    # Validate relationships between settings here when needed.
+    pass
+```
+
+`read_option(session, namespace, definition)` returns a detached typed value with
+schema version, revision and timestamp. `read_options(session, namespace)` reads
+a namespace in one query. Strings and scalar values use tagged text; lists and
+objects use JSON. Missing rows use code defaults with revision zero; unsupported
+schemas fail explicitly. Read once per operation and pass the resolved policy
+through loops and nested operations.
+
+`write_options(session, namespace, values, expected_revisions=...)` validates the
+resulting namespace and writes only named keys. It checks target revisions and a
+shared namespace revision under `system_states/core/options_revision.<namespace>`.
+The caller owns its transaction; conflicts require rollback and a new transaction.
+Writes and their value-free audit entries commit together. Validators must not
+access the database or mutate their inputs.
+
+Registration hooks declare types and defaults without database access or service
+startup. In dependency order, the manager inserts missing defaults, runs
+`ext_prepare_data(session)`, validates the resulting options and commits one
+transaction per extension. Preparation must be idempotent. Hooks must not commit,
+roll back, close the supplied session, perform DDL or introduce external side
+effects. Existing extension data entrypoints still declare owned tables; options
+hooks do not replace that facility.
+
+Startup follows dependency order, and shutdown attempts all started extensions in
+reverse order, including partially failed startups. Targeted preparation/purge
+hooks use canonical function names. Disabling or uninstalling preserves data by
+default; explicit purge invokes only the target's hook and deletes its owned
+options/system states in the same audited transaction. Purge must be idempotent.
+Unknown or removed owners remain readable without importing their code.
+
+```text
+maintain config options get server name
+maintain config options get security.brute_force_lockdown failure_threshold
+maintain config options set-many security.brute_force_lockdown changes.json
+maintain config options reset security.brute_force_lockdown failure_threshold --expected-revision 2
+```
+
+`set-many` accepts `{key: {"value": ..., "expected_revision": ...}}`. Related
+settings can change atomically; unmentioned keys retain their revisions. Installed
+disabled extension declarations are temporarily loaded for writes without
+handlers, providers, data preparation or startup.
+
+Legacy business fields require `maintain config migrate-options` before startup.
+See [database configuration](DATABASE_OPTIONS.md) for the complete migration list,
+effective times and upgrade sequence.
 
 ## Request handlers
 
@@ -347,9 +455,13 @@ request values, credentials, or other secrets into validation errors.
 
 Extensions that own background services may implement `ext_on_startup()` and
 `ext_on_shutdown()`. Startup runs after the database, providers, and request
-handlers are ready. Shutdown runs whenever the serving loop exits, including
-startup failures, and implementations must be idempotent. The startup hook may
-accept the bound `server` when it needs access to the WebSocket server itself.
+handlers are ready and starts dependencies before their consumers. Shutdown runs
+in reverse order whenever the serving loop exits, including startup failures:
+every attempted startup receives a shutdown attempt, including the target whose
+startup failed. One shutdown failure does not prevent the remaining attempts;
+failures are reported together with their original exceptions. Shutdown must be
+idempotent and preserves database options and persistent data. The startup hook
+may accept the bound `server` when it needs access to the WebSocket server itself.
 
 Non-empty uploads expose three ordered extension points. The
 `ext_before_file_upload_finalize(session, id, path, sha256)` hook runs inside the
@@ -483,7 +595,8 @@ whether to retry. Payload schema versions belong to the owner: extensions must
 explicitly migrate supported older versions and must not overwrite an unknown
 newer version.
 
-Disabling or removing an extension does not delete its rows. Runtime state is
+Ordinary disable and uninstall do not delete state rows. Explicit full
+`purge-data` removes only rows owned by its target. Runtime state is
 excluded from logical backups and must remain safely reconstructible. Do not
 store secrets, configuration, business records, high-frequency counters, large
 payloads, task queues, or data that needs field indexes, foreign keys, or
@@ -498,14 +611,18 @@ burst of failed local password or TOTP checks into the existing lockdown mode:
 ```toml
 [extensions]
 enabled = ["brute_force_lockdown"]
-
-[extensions.brute_force_lockdown]
-window_seconds = 600
-failure_threshold = 50
-distinct_account_threshold = 10
-distinct_ip_threshold = 10
-reason = "Automatic security lockdown: suspected credential-guessing attack detected."
 ```
+
+Its owner is `brute_force_lockdown`, with separate settings for `window_seconds`,
+`failure_threshold`, `distinct_account_threshold`, `distinct_ip_threshold`, and
+`reason`. The code defaults are a 600-second window, 50 failures, 10 distinct
+accounts, 10 distinct IP addresses, and a generic public reason. Inspect the
+current keys with `maintain config options list --namespace security.brute_force_lockdown`;
+read an individual value with
+`maintain config options get security.brute_force_lockdown failure_threshold`. Update
+related thresholds atomically with `set-many` as described above. Disabling or
+purging the extension never clears existing core lockdown state or historical
+audit entries.
 
 The extension counts only HTTP-style `401` results from the built-in `core.auth.login`
 action that target existing accounts. Successful authentication, requests for a
@@ -606,14 +723,12 @@ issuer = "https://issuer.example"
 client_id = "cfms-client"
 client_secret = ""
 redirect_uri = "https://client.example/callback"
-username_claim = "preferred_username"
-auto_provision = false
-default_groups = ["user"]
 ```
 
-Configurations from older releases can be migrated from `[sso.oidc]` to
-`[extensions.oidc_sso]` with `maintain config sync-template`. If both tables are
-present, values already stored under `[extensions.oidc_sso]` take precedence.
+User mapping and provisioning rules live in the `identity.oidc` database
+namespace. Run `maintain config migrate-options` for legacy business settings,
+then `maintain config sync-template` for deployment settings. Existing
+`extensions.oidc_sso` values take precedence over their older `sso.oidc` sources.
 
 ## Authentication methods (protocol 28)
 

@@ -13,9 +13,14 @@ __all__ = [
     "discover_extensions",
     "get_loaded_extension_metadata",
     "load_extensions_from_directory",
+    "maintenance_extension_context",
     "parse_extension_manifest",
     "pm",
+    "prepare_extension_data",
+    "purge_extension_data",
     "resolve_extension_selection",
+    "shutdown_extensions",
+    "start_extensions",
     "validate_extension_config",
 ]
 
@@ -23,10 +28,13 @@ import importlib.util
 import sys
 import tomllib
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from types import ModuleType
 from typing import Annotated, Any, Literal
-lazy from collections.abc import Mapping
+lazy from collections.abc import Generator, Mapping
 
 import pluggy
 from loguru import logger as log
@@ -43,8 +51,21 @@ from pydantic import (
 lazy import websockets.sync.server
 lazy from sqlalchemy.orm import Session as OrmSession
 
+from include.config._policy import OptionNamespace
 from include.config.constants import CORE_VERSION
 from include.config.version import Version
+lazy from include.config.options import (
+    OptionDefinition,
+    acquire_options_revision,
+    ensure_option_defaults,
+    iter_options,
+    read_options,
+    register_options,
+    unregister_options,
+    validate_options,
+)
+lazy from include.config.paths import EXTENSION_ROOT
+lazy from include.database.session import Session
 lazy from include.domains.identity.auth.base import BaseAuthMethodProvider
 lazy from include.extensions.identifiers import ExtensionIdentifier
 lazy from include.scheduling.contracts import ScheduledTaskRegistration
@@ -95,6 +116,8 @@ class ExtensionMetadata(BaseModel):
 
 
 _loaded_extension_metadata: dict[str, ExtensionMetadata] = {}
+_loaded_extension_order: tuple[str, ...] = ()
+_started_extensions: list[str] = []
 
 
 class ExtensionCompatibility(BaseModel):
@@ -162,6 +185,7 @@ class ExtensionManifest(BaseModel):
 
     manifest_version: Literal[2, 3]
     data: ExtensionDataEntrypoint | None = None
+    option_namespaces: tuple[OptionNamespace, ...] = Field(default=(), strict=False)
     extension: ExtensionMetadata
     compatibility: ExtensionCompatibility = Field(
         default_factory=ExtensionCompatibility
@@ -270,6 +294,37 @@ def discover_extensions(extension_dir: str | Path) -> dict[str, DiscoveredExtens
 # ext = extension
 class ServerHookSpecs(ABC):
     """Hook specifications for server extensions."""
+
+    @hookspec
+    @abstractmethod
+    def ext_register_options(self) -> dict[str, tuple["OptionDefinition[Any]", ...]]:
+        """Declare options by namespace; the manager records the declaring owner."""
+
+    @hookspec
+    @abstractmethod
+    def ext_validate_options(self, namespace: str, values: "Mapping[str, Any]") -> None:
+        """Validate the complete normalized options without database side effects."""
+
+    @hookspec
+    @abstractmethod
+    def ext_prepare_data(self, session: "OrmSession") -> None:
+        """Prepare extension data idempotently before background services start.
+
+        Defaults are available through the caller-owned transaction. Do not
+        commit, roll back, close the session, or perform external side effects.
+        """
+
+    @hookspec
+    @abstractmethod
+    def ext_purge_data(self, session: "OrmSession") -> None:
+        """Remove extension-owned data during explicit offline maintenance.
+
+        The manager deletes this owner's options and system states after this
+        hook in the same transaction. Do not commit, roll back, close the session,
+        or change data owned by another extension or the core.
+        Cleanup must be idempotent, including when owned data is already absent,
+        because uninstall retries can follow a committed purge.
+        """
 
     @hookspec
     @abstractmethod
@@ -420,8 +475,11 @@ class ServerHookSpecs(ABC):
 
 def _rollback_extension(ext_name: str) -> None:
     pm.unregister(name=ext_name)
+    unregister_options(ext_name)
     _loaded_extension_metadata.pop(ext_name, None)
-    sys.modules.pop(ext_name, None)
+    for name in tuple(sys.modules):
+        if name == ext_name or name.startswith(f"{ext_name}."):
+            sys.modules.pop(name, None)
 
 
 def _rollback_extensions(extensions: list[DiscoveredExtension]) -> None:
@@ -443,6 +501,25 @@ def _load_extension(extension: DiscoveredExtension) -> None:
         sys.modules[ext_name] = module
         spec.loader.exec_module(module)
         pm.register(module, name=ext_name)
+        declared_namespaces = set()
+        for declared in _extension_hook(ext_name, "ext_register_options")():
+            for namespace, definitions in declared.items():
+                declared_namespaces.add(namespace)
+                validator = _extension_hook(ext_name, "ext_validate_options")
+                register_options(
+                    namespace,
+                    tuple(definitions),
+                    owner=ext_name,
+                    validator=partial(validator, namespace=namespace)
+                    if validator.get_hookimpls()
+                    else None,
+                )
+        if extension.manifest.option_namespaces and declared_namespaces != set(
+            extension.manifest.option_namespaces
+        ):
+            raise ExtensionLoadError(
+                f"Option namespaces differ from manifest for {ext_name!r}"
+            )
         _loaded_extension_metadata[ext_name] = extension.manifest.extension
         registered = True
     except ExtensionLoadError:
@@ -615,6 +692,8 @@ def load_extensions_from_directory(
     config: Any,
 ) -> None:
     """Load the built-in extension and configured extensions in order."""
+    global _loaded_extension_order
+
     discovered = discover_extensions(extension_dir)
     ordered_extensions = resolve_extension_selection(discovered, enabled_identifiers)
 
@@ -639,6 +718,10 @@ def load_extensions_from_directory(
             f"Failed to validate loaded extension configuration: {exc}"
         ) from exc
 
+    _loaded_extension_order = tuple(
+        extension.manifest.extension.identifier for extension in ordered_extensions
+    )
+
     for extension in loaded_extensions:
         metadata = extension.manifest.extension
         if metadata.identifier != "builtin":
@@ -646,6 +729,133 @@ def load_extensions_from_directory(
                 f"Loaded extension: {metadata.name} ({metadata.version}) "
                 f"({metadata.identifier})"
             )
+
+
+def _extension_hook(identifier: str, name: str) -> pluggy.HookCaller:
+    plugin = pm.get_plugin(identifier)
+    if plugin is None:
+        raise ExtensionLoadError(f"Extension {identifier!r} is not registered")
+    caller = pm.subset_hook_caller(name, pm.get_plugins() - {plugin})
+    if any(
+        implementation.plugin is not plugin for implementation in caller.get_hookimpls()
+    ):
+        raise ExtensionLoadError(
+            f"Targeted lifecycle hook {name!r} requires canonical implementation names"
+        )
+    return caller
+
+
+def prepare_extension_data() -> None:
+    """Prepare each loaded owner's data in dependency order and its own transaction."""
+    for identifier in _loaded_extension_order:
+        try:
+            with Session.begin() as session:
+                namespaces = tuple(
+                    dict.fromkeys(
+                        namespace for namespace, _ in iter_options(owner=identifier)
+                    )
+                )
+                for namespace in namespaces:
+                    acquire_options_revision(session, namespace)
+                    ensure_option_defaults(session, namespace)
+                _extension_hook(identifier, "ext_prepare_data")(session=session)
+                session.flush()
+                for namespace in namespaces:
+                    resolved = read_options(session, namespace)
+                    validate_options(
+                        namespace,
+                        {key: option.value for key, option in resolved.items()},
+                    )
+        except Exception as exc:
+            raise ExtensionLoadError(
+                f"Failed to prepare database data for extension {identifier!r}"
+            ) from exc
+
+
+def start_extensions(server: websockets.sync.server.Server) -> None:
+    """Start dependencies first and remember every attempted startup for cleanup."""
+    if _started_extensions:
+        raise ExtensionLoadError("Extension services are already active")
+    for identifier in _loaded_extension_order:
+        _started_extensions.append(identifier)
+        try:
+            _extension_hook(identifier, "ext_on_startup")(server=server)
+        except Exception as exc:
+            raise ExtensionLoadError(
+                f"Failed to start extension {identifier!r}"
+            ) from exc
+
+
+def shutdown_extensions() -> None:
+    """Attempt all started extensions in reverse order, preserving every failure."""
+    errors = []
+    identifiers = tuple(reversed(_started_extensions))
+    _started_extensions.clear()
+    for identifier in identifiers:
+        try:
+            _extension_hook(identifier, "ext_on_shutdown")()
+        except Exception as exc:
+            logger.exception(f"Failed to stop extension {identifier!r}")
+            exc.add_note(f"While stopping extension {identifier!r}")
+            errors.append(exc)
+    if errors:
+        raise ExceptionGroup("Extension shutdown failed", errors)
+
+
+def purge_extension_data(identifier: str, session: "OrmSession") -> None:
+    """Invoke one registered owner's purge hook through the maintenance transaction."""
+    _extension_hook(identifier, "ext_purge_data")(session=session)
+
+
+@contextmanager
+def maintenance_extension_context(identifier: str) -> Generator[ModuleType]:
+    """Temporarily register one target and its dependencies without activating them."""
+    discovered = discover_extensions(EXTENSION_ROOT)
+    selected = []
+    collected = set()
+
+    def collect(current: str) -> None:
+        if current in collected:
+            return
+        extension = discovered.get(current)
+        if extension is None:
+            raise ExtensionLoadError(f"Required extension {current!r} is not installed")
+        collected.add(current)
+        selected.append(current)
+        for dependency in extension.manifest.dependencies.extensions:
+            collect(dependency)
+
+    collect(identifier)
+    ordered = _resolve_extension_load_order(discovered, tuple(selected))
+    for extension in ordered:
+        minimum = extension.manifest.compatibility.minimum_server_version
+        if minimum is not None and CORE_VERSION < minimum:
+            raise ExtensionLoadError(
+                f"Extension {extension.manifest.extension.identifier!r} requires "
+                f"server version {minimum} or newer; current server version is {CORE_VERSION}"
+            )
+
+    loaded = []
+    saved_modules = {}
+    try:
+        for extension in ordered:
+            name = extension.manifest.extension.identifier
+            if pm.has_plugin(name):
+                continue
+            saved_modules.update(
+                (module_name, module)
+                for module_name, module in sys.modules.items()
+                if module_name == name or module_name.startswith(f"{name}.")
+            )
+            _load_extension(extension)
+            loaded.append(extension)
+        plugin = pm.get_plugin(identifier)
+        if plugin is None:
+            raise ExtensionLoadError(f"Extension {identifier!r} is not registered")
+        yield plugin
+    finally:
+        _rollback_extensions(loaded)
+        sys.modules.update(saved_modules)
 
 
 def collect_extension_flags() -> list[str]:

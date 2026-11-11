@@ -32,6 +32,7 @@ from include.config.constants import (
     LOGIN_GUARD_EVENT_CHANNEL,
     ROOT_DIRECTORY_ID,
 )
+from include.config.options import ensure_core_option_defaults
 from include.config.paths import (
     EXECUTABLE_ABSPATH,
     EXTENSION_ROOT,
@@ -71,6 +72,9 @@ from include.extensions.manager import (
     get_loaded_extension_metadata,
     load_extensions_from_directory,
     pm,
+    prepare_extension_data,
+    shutdown_extensions,
+    start_extensions,
 )
 from include.providers.bootstrap import initialize_providers
 from include.providers.manager import ProviderManager
@@ -356,14 +360,14 @@ def prepare_logger():
 @contextmanager
 def _server_lifecycle(server: Server) -> Generator[None]:
     try:
-        pm.hook.ext_on_startup(server=server)
+        start_extensions(server)
         ProviderManager().scheduling.start(collect_scheduled_tasks())
         yield
     finally:
         try:
             ProviderManager().scheduling.shutdown()
         finally:
-            pm.hook.ext_on_shutdown()
+            shutdown_extensions()
 
 
 def _run_server():
@@ -438,6 +442,9 @@ def _run_server():
                 if entry.owner in enabled_owners
             },
         )
+    with Session.begin() as session:
+        ensure_core_option_defaults(session)
+    prepare_extension_data()
 
     # Initialize available request handlers
     prepare_handlers()
