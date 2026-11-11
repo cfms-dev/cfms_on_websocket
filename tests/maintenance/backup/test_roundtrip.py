@@ -77,6 +77,7 @@ def test_backup_header_and_roundtrip_restore(
     assert backup_path.read_bytes().startswith(b"CONF")
     header = backup_context.read_backup_header(backup_path)
     assert header.created_at
+    assert header.format_version == 2
     assert header.encryption == "AES-256-GCM"
     export_tasks = list(export_progress.tasks)
     assert any(
@@ -120,6 +121,7 @@ def test_backup_header_and_roundtrip_restore(
     assert "compiled_access_rule_sets" in result["tables"]
     assert "compiled_access_rules" in result["tables"]
     assert "schedules" in result["tables"]
+    assert "options" in result["tables"]
     assert "document_access_rules" not in result["tables"]
     assert "folder_access_rules" not in result["tables"]
     assert "system_states" not in result["tables"]
