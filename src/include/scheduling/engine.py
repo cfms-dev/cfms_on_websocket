@@ -7,6 +7,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from include.config.validation import SchedulingOptionsPolicy
 from include.database.clock import database_now
 from include.database.models.scheduling import (
     Schedule,
@@ -175,6 +176,7 @@ def enqueue_due_schedules(
     # The shortlist is intentionally advisory. Each candidate is rechecked in its
     # own transaction so concurrent schedule updates cannot enqueue stale work.
     with Session() as session:
+        options = SchedulingOptionsPolicy.from_options(session)
         current_time = database_now(session) if now is None else now
         due_ids = session.scalars(
             select(Schedule.id)
@@ -227,7 +229,7 @@ def enqueue_due_schedules(
                     trigger,
                     due_run_at,
                     current_time,
-                    policy.misfire_grace_seconds,
+                    options.misfire_grace_seconds,
                 )
                 next_run_at = advance.next_run_at
                 if advance.latest_due_at is not None and (

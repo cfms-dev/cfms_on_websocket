@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.orm import sessionmaker
 
+from include.config.options import write_options
 from include.config.validation import SchedulingPolicy
 from include.database.models.scheduling import (
     Schedule,
@@ -1907,7 +1908,14 @@ def test_expired_deleted_execution_is_cancelled_and_releases_schedule(
         assert execution.lease_owner is None
         assert execution.lease_expires_at is None
 
-    retention_policy = SchedulingPolicy(history_retention_days=1)
+    with factory.begin() as session:
+        write_options(
+            session,
+            "scheduling",
+            {"history_retention_days": 1},
+            expected_revisions={"history_retention_days": 0},
+        )
+    retention_policy = SchedulingPolicy()
     assert (
         scheduling_outcomes.purge_execution_history(
             retention_policy, now=160.0 + 86_401
@@ -2246,7 +2254,14 @@ def test_completed_execution_history_is_purged_in_bounded_batches(
             ]
         )
 
-    policy = SchedulingPolicy(history_retention_days=1, claim_batch_size=1)
+    with factory.begin() as session:
+        write_options(
+            session,
+            "scheduling",
+            {"history_retention_days": 1},
+            expected_revisions={"history_retention_days": 0},
+        )
+    policy = SchedulingPolicy(claim_batch_size=1)
     deleted = scheduling_outcomes.purge_execution_history(
         policy,
         now=86_400 + 100.0,

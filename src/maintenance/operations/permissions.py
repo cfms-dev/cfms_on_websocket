@@ -122,7 +122,8 @@ def inspect_expired_permissions(now: float | None = None) -> PermissionPurgeResu
     enter_server_root()
     load_database_models()
 
-    policy = IdentityPermissionRetentionPolicy.from_config()
+    with Session() as policy_session:
+        policy = IdentityPermissionRetentionPolicy.from_options(policy_session)
     reference_time = time.time() if now is None else now
     cutoff = reference_time - policy.retention_days * _SECONDS_PER_DAY
     with Session() as session:
@@ -141,7 +142,8 @@ def purge_expired_permissions(
     enter_server_root()
     load_database_models()
 
-    policy = IdentityPermissionRetentionPolicy.from_config()
+    with Session() as policy_session:
+        policy = IdentityPermissionRetentionPolicy.from_options(policy_session)
     if cutoff is None:
         cutoff = time.time() - policy.retention_days * _SECONDS_PER_DAY
 

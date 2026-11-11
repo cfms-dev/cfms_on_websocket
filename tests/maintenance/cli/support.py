@@ -292,15 +292,6 @@ with Session() as session:
 
 
 def _seed_audit_entries(src_dir: Path, *, batch_size: int = 2) -> None:
-    config_path = src_dir / "config.toml"
-    config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
-    config["maintenance"] = {
-        "audit_retention": {
-            "retention_days": 365,
-            "batch_size": batch_size,
-        }
-    }
-    config_path.write_text(tomlkit.dumps(config), encoding="utf-8")
     _run_python(
         src_dir,
         """
@@ -310,10 +301,12 @@ load_database_models()
 
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
+from include.database.options import create_option
 from include.database.session import Base, Session, engine
 
 Base.metadata.create_all(engine)
 with Session.begin() as session:
+    create_option(session, "maintenance.audit_retention", "batch_size", schema_version=1, value=BATCH_SIZE)
     from uuid import UUID
     user = User(id=UUID("12345678-1234-4234-9234-123456789abc"), username="alice", created_time=1.0)
     session.add(user)
@@ -362,7 +355,7 @@ with Session.begin() as session:
             ),
         ]
     )
-""",
+""".replace("BATCH_SIZE", str(batch_size)),
     )
 
 

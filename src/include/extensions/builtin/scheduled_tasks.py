@@ -43,18 +43,22 @@ def _interval_schedule(identifier: str, seconds: int) -> SystemScheduleDefinitio
 def _upload_cleanup_schedule() -> SystemScheduleDefinition:
     """Follow the configured abandoned-upload cleanup interval."""
 
+    with Session() as session:
+        policy = DocumentUploadPolicy.from_options(session)
     return _interval_schedule(
         "builtin.upload_cleanup",
-        DocumentUploadPolicy.from_config().cleanup_interval_seconds,
+        policy.cleanup_interval_seconds,
     )
 
 
 def _creation_risk_cleanup_schedule() -> SystemScheduleDefinition:
     """Follow the document policy's cleanup interval for creation risk state."""
 
+    with Session() as session:
+        policy = DocumentUploadPolicy.from_options(session)
     return _interval_schedule(
         "builtin.creation_risk_cleanup",
-        DocumentUploadPolicy.from_config().cleanup_interval_seconds,
+        policy.cleanup_interval_seconds,
     )
 
 
@@ -98,8 +102,9 @@ def _run_auth_throttle_cleanup(
 
     with Session() as session:
         current_time = database_now(session)
+        policy = AuthThrottlePolicy.from_options(session)
     result = purge_expired_auth_throttle_records(
-        AuthThrottlePolicy.from_config(),
+        policy,
         now=current_time,
     )
     return ScheduledTaskResult(

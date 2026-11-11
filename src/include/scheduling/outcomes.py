@@ -4,6 +4,7 @@ from typing import cast
 
 from sqlalchemy import CursorResult, delete, select, update
 
+from include.config.validation import SchedulingOptionsPolicy
 from include.database.clock import database_now
 from include.database.models.scheduling import Schedule, ScheduleExecution
 from include.database.session import Session
@@ -81,7 +82,8 @@ def purge_execution_history(
     """Delete one bounded batch of terminal executions past the retention cutoff."""
     with Session() as session, session.begin():
         current_time = database_now(session) if now is None else now
-        cutoff = current_time - policy.history_retention_days * 86_400
+        options = SchedulingOptionsPolicy.from_options(session)
+        cutoff = current_time - options.history_retention_days * 86_400
         execution_ids = tuple(
             session.scalars(
                 select(ScheduleExecution.id)

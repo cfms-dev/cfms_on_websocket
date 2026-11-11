@@ -46,7 +46,8 @@ def cleanup_expired_permission_entries(
 
 
 def _permission_cleanup_schedule() -> SystemScheduleDefinition:
-    policy = IdentityPermissionRetentionPolicy.from_config()
+    with Session() as session:
+        policy = IdentityPermissionRetentionPolicy.from_options(session)
     return SystemScheduleDefinition(
         id="builtin.permission_cleanup",
         payload={},
@@ -59,9 +60,9 @@ def run_scheduled_permission_cleanup(
     _context: ScheduledTaskContext,
     _payload: _PermissionCleanupPayload,
 ) -> ScheduledTaskResult:
-    result = cleanup_expired_permission_entries(
-        IdentityPermissionRetentionPolicy.from_config()
-    )
+    with Session() as session:
+        policy = IdentityPermissionRetentionPolicy.from_options(session)
+    result = cleanup_expired_permission_entries(policy)
     return ScheduledTaskResult(
         data={
             "user_entries": result.user_entries,

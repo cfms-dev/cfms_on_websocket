@@ -540,8 +540,6 @@ class SchedulingPolicy(_ConfigPolicy):
     execution_lease_seconds: PositiveInt = 60
     lease_refresh_seconds: PositiveInt = 20
     shutdown_grace_seconds: PositiveInt = 30
-    misfire_grace_seconds: PositiveInt = 300
-    history_retention_days: PositiveInt = 90
     claim_batch_size: PositiveInt = 100
     redis_namespace: str | None = None
 

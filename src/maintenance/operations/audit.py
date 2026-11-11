@@ -89,7 +89,8 @@ def create_audit_selection(
                 "--before is outside the supported range."
             ) from exc
     else:
-        policy = AuditRetentionPolicy.from_config()
+        with Session() as policy_session:
+            policy = AuditRetentionPolicy.from_options(policy_session)
         reference_time = time.time() if now is None else now
         cutoff = reference_time - policy.retention_days * _SECONDS_PER_DAY
 
@@ -155,7 +156,8 @@ def export_audit_entries(
     enter_server_root()
     load_database_models()
 
-    policy = AuditRetentionPolicy.from_config()
+    with Session() as policy_session:
+        policy = AuditRetentionPolicy.from_options(policy_session)
     table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     output = Path(output_path)
     if output.exists():
@@ -233,7 +235,8 @@ def purge_audit_entries(
             f"nothing was deleted and the archive remains at {export_result.output_path}."
         )
 
-    policy = AuditRetentionPolicy.from_config()
+    with Session() as policy_session:
+        policy = AuditRetentionPolicy.from_options(policy_session)
     table = AuditEntry.metadata.tables[AuditEntry.__tablename__]
     deleted_count = 0
     pending_ids: list[str] = []

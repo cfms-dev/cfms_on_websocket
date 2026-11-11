@@ -14,8 +14,10 @@ from include.scheduling import tasks
 def test_permission_cleanup_is_registered_as_a_system_interval_task(monkeypatch):
     monkeypatch.setattr(
         permission_cleanup.IdentityPermissionRetentionPolicy,
-        "from_config",
-        classmethod(lambda _cls: SimpleNamespace(cleanup_interval_seconds=180)),
+        "from_options",
+        classmethod(
+            lambda _cls, _session: SimpleNamespace(cleanup_interval_seconds=180)
+        ),
     )
     registration = permission_cleanup.permission_cleanup_task
 
@@ -53,8 +55,8 @@ def test_permission_cleanup_task_reports_counts_and_audit_policy(
     policy = object()
     monkeypatch.setattr(
         permission_cleanup.IdentityPermissionRetentionPolicy,
-        "from_config",
-        classmethod(lambda _cls: policy),
+        "from_options",
+        classmethod(lambda _cls, _session: policy),
     )
 
     def cleanup(received_policy):
@@ -85,8 +87,10 @@ def test_permission_cleanup_task_reports_counts_and_audit_policy(
 def test_builtin_system_task_interval_follows_policy(monkeypatch, task_name, seconds):
     monkeypatch.setattr(
         scheduled_tasks.DocumentUploadPolicy,
-        "from_config",
-        classmethod(lambda _cls: SimpleNamespace(cleanup_interval_seconds=180)),
+        "from_options",
+        classmethod(
+            lambda _cls, _session: SimpleNamespace(cleanup_interval_seconds=180)
+        ),
     )
     registration = next(
         item
@@ -166,8 +170,8 @@ def test_builtin_cleanup_task_reports_its_counts_and_audit_policy(
     if task_name == "builtin.auth_throttle_cleanup":
         monkeypatch.setattr(
             scheduled_tasks.AuthThrottlePolicy,
-            "from_config",
-            classmethod(lambda _cls: policy),
+            "from_options",
+            classmethod(lambda _cls, _session: policy),
         )
 
     def cleanup(*args, **kwargs):

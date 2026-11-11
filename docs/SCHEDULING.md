@@ -234,3 +234,13 @@ updates also require the permission declared by the selected task type. Updates 
 deletes require the current positive `revision` and return 409 for stale or active
 conflicts. Deletion is logical, cancels future occurrences, and does not interrupt a
 task already running.
+
+
+## Runtime settings and business policy
+
+Worker, polling, lease, shutdown, claim-batch and Redis deployment settings remain
+in `config.toml` and require a restart. `misfire_grace_seconds` and
+`history_retention_days` live in the `scheduling` database namespace. Due scans
+read the current misfire policy and history cleanup reads the current retention
+policy; updates apply without restarting. Use `maintain config options` as
+explained in [database configuration](DATABASE_OPTIONS.md).

@@ -35,7 +35,7 @@ effective permissions therefore equal all active direct and group grants minus
 all active direct and group revocations.
 
 The default retention period is 30 days and is configured under
-`identity.permission_retention` in `config.toml`. Cleanup never removes an entry
+the database namespace `identity.permission_retention`. Cleanup never removes an entry
 whose `end_time` is `null`, including permanent revocations.
 
 Operators can preview or run the same cleanup policy explicitly:

@@ -6,13 +6,10 @@ background cleanup worker, or delete other operational state.
 
 ## Retention policy
 
-When `--before` is omitted, audit commands use this configuration:
-
-```toml
-[maintenance.audit_retention]
-retention_days = 365
-batch_size = 500
-```
+When `--before` is omitted, audit commands read the database namespace
+`maintenance.audit_retention`. Code defaults are `retention_days = 365` and
+`batch_size = 500`. Inspect or update them with `maintain config options`; see
+[database configuration](DATABASE_OPTIONS.md).
 
 `retention_days` determines the default cutoff. `batch_size` limits both export
 fetching and the number of archived IDs deleted in one transaction. Both values
