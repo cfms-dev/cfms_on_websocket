@@ -3,6 +3,7 @@ from contextlib import closing
 
 import pytest
 
+from include.domains.identity.default_groups import DEFAULT_GROUP_PERMISSIONS
 from include.runtime_lock import server_runtime_lock
 
 from .support import _create_empty_database, _make_src_dir, _run_maintain
@@ -22,17 +23,17 @@ def default_group_root(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("options", "input_text", "exit_code", "added"),
+    ("options", "input_text", "exit_code", "applied"),
     [
-        pytest.param(["--dry-run"], None, 0, 0, id="preview"),
-        pytest.param(["--dry-run", "--yes"], None, 0, 0, id="preview-with-yes"),
-        pytest.param([], "n\n", 1, 0, id="cancel"),
-        pytest.param([], "y\n", 0, 64, id="confirm"),
-        pytest.param(["--yes"], None, 0, 64, id="yes"),
+        pytest.param(["--dry-run"], None, 0, False, id="preview"),
+        pytest.param(["--dry-run", "--yes"], None, 0, False, id="preview-with-yes"),
+        pytest.param([], "n\n", 1, False, id="cancel"),
+        pytest.param([], "y\n", 0, True, id="confirm"),
+        pytest.param(["--yes"], None, 0, True, id="yes"),
     ],
 )
 def test_sync_defaults_cli_confirmation_and_preview(
-    default_group_root, options, input_text, exit_code, added
+    default_group_root, options, input_text, exit_code, applied
 ):
     result = _run_maintain(
         default_group_root,
@@ -47,26 +48,30 @@ def test_sync_defaults_cli_confirmation_and_preview(
             "SELECT group_name, permission, granted, start_time, end_time "
             "FROM group_permissions ORDER BY group_name, permission"
         ).fetchall()
-        assert len(rows) == added
-        if added:
-            assert [row for row in rows if row[0] == "user"] == [
-                ("user", "configure_auth_methods", 1, 0.0, None),
-                ("user", "search", 1, 0.0, None),
-            ]
-            assert all(row[2:] == (1, 0.0, None) for row in rows)
+        expected = (
+            {
+                (group, permission, 1, 0.0, None)
+                for group, values in DEFAULT_GROUP_PERMISSIONS.items()
+                for permission in values
+            }
+            if applied
+            else set()
+        )
+        assert set(rows) == expected
+        assert len(rows) == len(expected)
 
 
 @pytest.mark.parametrize(
-    ("selection", "expected_groups", "count"),
+    ("selection", "expected_groups"),
     [
-        (["--group", "user"], {"user"}, 2),
-        (["--group", "sysop"], {"sysop"}, 62),
-        (["--group", "user", "--group", "user"], {"user"}, 2),
-        (["--group", "sysop", "--group", "user"], {"sysop", "user"}, 64),
+        (["--group", "user"], {"user"}),
+        (["--group", "sysop"], {"sysop"}),
+        (["--group", "user", "--group", "user"], {"user"}),
+        (["--group", "sysop", "--group", "user"], {"sysop", "user"}),
     ],
 )
 def test_sync_defaults_cli_selection_and_idempotence(
-    default_group_root, selection, expected_groups, count
+    default_group_root, selection, expected_groups
 ):
     arguments = ["permission", "sync-defaults", *selection, "--yes"]
     first = _run_maintain(default_group_root, arguments)
@@ -75,7 +80,9 @@ def test_sync_defaults_cli_selection_and_idempotence(
     assert first.returncode == repeated.returncode == 0
     with closing(sqlite3.connect(default_group_root / "app.db")) as connection:
         rows = connection.execute("SELECT group_name FROM group_permissions").fetchall()
-        assert len(rows) == count
+        assert len(rows) == sum(
+            len(DEFAULT_GROUP_PERMISSIONS[group]) for group in expected_groups
+        )
         assert {group for (group,) in rows} == expected_groups
 
 
@@ -100,7 +107,9 @@ def test_sync_defaults_cli_skips_missing_groups(default_group_root, remaining):
         ).fetchall() == [(name,) for name in remaining]
         assert connection.execute(
             "SELECT COUNT(*) FROM group_permissions"
-        ).fetchone() == (2 if remaining else 0,)
+        ).fetchone() == (
+            sum(len(DEFAULT_GROUP_PERMISSIONS[group]) for group in remaining),
+        )
 
 
 def test_sync_defaults_cli_rejects_unknown_group_before_loading_database(tmp_path):

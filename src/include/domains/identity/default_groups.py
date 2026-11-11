@@ -29,7 +29,6 @@ DEFAULT_GROUP_PERMISSIONS: MappingProxyType[str, tuple[Permissions, ...]] = (
                 Permissions.CREATE_USER,
                 Permissions.DELETE_USER,
                 Permissions.SET_NICKNAME,
-                Permissions.SET_USERNAME,
                 Permissions.SUPER_SET_USERNAME,
                 Permissions.MANAGE_USER_STATUS,
                 Permissions.GET_USER_INFO,
