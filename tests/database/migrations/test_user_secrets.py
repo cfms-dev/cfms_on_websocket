@@ -66,6 +66,7 @@ def test_secret_migration_preserves_data_and_round_trips(
     if extension_tables:
         extra.create_all(engine)
     tables = {**Base.metadata.tables, **OIDCBase.metadata.tables}
+    tables.pop("options")  # Absent at the historical secret-key migration boundary.
     if extension_tables:
         tables.update(extra.tables)
     config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")

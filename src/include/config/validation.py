@@ -142,6 +142,7 @@ def get_enabled_extensions(config: _ConfigSource) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class AuthThrottlePolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "security.auth_throttle"
     _SOURCE = _PolicySource(
         (
             _Section("security", required=True),
@@ -227,6 +228,7 @@ class DatabasePoolPolicy(_ConfigPolicy):
 
 @dataclass(frozen=True)
 class AuditRetentionPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "maintenance.audit_retention"
     _SOURCE = _PolicySource(
         (
             _Section("maintenance"),
@@ -240,6 +242,7 @@ class AuditRetentionPolicy(_ConfigPolicy):
 
 @dataclass(frozen=True)
 class IdentityPermissionRetentionPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "identity.permission_retention"
     _SOURCE = _PolicySource(
         (
             _Section("identity"),
@@ -254,6 +257,7 @@ class IdentityPermissionRetentionPolicy(_ConfigPolicy):
 
 @dataclass(frozen=True)
 class RequestRateControlPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "security.request_rate_control"
     _SOURCE = _PolicySource(
         (
             _Section("security", required=True),
@@ -303,6 +307,7 @@ class RequestRateControlPolicy(_ConfigPolicy):
 
 @dataclass(frozen=True)
 class DocumentUploadPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "document.upload"
     _SOURCE = _PolicySource((_Section("document"), _Section("upload")))
     _RULES = (
         _FieldOrder(
@@ -334,6 +339,7 @@ class DocumentUploadPolicy(_ConfigPolicy):
 
 @dataclass(frozen=True)
 class DocumentCreationRiskPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "document.upload.creation_risk_control"
     _SOURCE = _PolicySource(
         (
             _Section("document"),
@@ -413,6 +419,7 @@ class DocumentCreationRiskPolicy(_ConfigPolicy):
 
 @dataclass(frozen=True)
 class DocumentDownloadRiskPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "document.download.risk_control"
     _SOURCE = _PolicySource(
         (
             _Section("document"),
@@ -557,6 +564,40 @@ class SchedulingPolicy(_ConfigPolicy):
                 "scheduling.redis_namespace must contain 1 to 63 lowercase ASCII "
                 "letters, digits, underscores, or hyphens"
             )
+
+
+@dataclass(frozen=True)
+class SchedulingOptionsPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "scheduling"
+    _SOURCE = _PolicySource((_Section("scheduling"),))
+
+    misfire_grace_seconds: PositiveInt = 300
+    history_retention_days: PositiveInt = 90
+
+
+@dataclass(frozen=True)
+class PasswordPolicy(_ConfigPolicy):
+    _OPTION_NAMESPACE = "security.password"
+    _SOURCE = _PolicySource((_Section("security", required=True),))
+
+    passwd_min_length: PositiveInt = 8
+    passwd_max_length: PositiveInt = 32
+    passwd_rules: list[str] = field(
+        default_factory=lambda: [r"[A-Z]", r"[a-z]", r"[0-9]", r"[!@#$%^&*()]"]
+    )
+    passwd_min_passed_count: NonNegativeInt = 2
+    enable_passwd_force_expiration: bool = True
+    passwd_expire_after_days: PositiveInt = 365
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.passwd_min_length > self.passwd_max_length:
+            raise ConfigValidationError("Minimum password length exceeds maximum")
+        for rule in self.passwd_rules:
+            try:
+                re.compile(rule)
+            except re.PatternError as exc:
+                raise ConfigValidationError("Invalid password rule") from exc
 
 
 @dataclass(frozen=True)

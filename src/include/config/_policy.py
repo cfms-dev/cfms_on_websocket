@@ -2,11 +2,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Protocol, Self
 
-from pydantic import AfterValidator, BeforeValidator, ConfigDict, ValidationError
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    ConfigDict,
+    StringConstraints,
+    ValidationError,
+)
 from pydantic.dataclasses import dataclass as pydantic_dataclass
+lazy from sqlalchemy.orm import Session
 
 from include.types import PositiveInt, TrimmedNonEmptyString
+lazy from include.config.options import read_options
 lazy from include.config.settings import global_config
+
+type OptionNamespace = Annotated[
+    str,
+    StringConstraints(
+        min_length=1, max_length=111, pattern=r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$"
+    ),
+]
 
 
 class ConfigValidationError(ValueError):
@@ -114,6 +129,7 @@ def _format_validation_error(path: str, exc: ValidationError) -> str:
 )
 class _ConfigPolicy:
     _SOURCE: ClassVar[_PolicySource]
+    _OPTION_NAMESPACE: ClassVar[str]
     _RULES: ClassVar[tuple[_PolicyRule, ...]] = ()
 
     @classmethod
@@ -162,6 +178,11 @@ class _ConfigPolicy:
             raise ConfigValidationError(
                 _format_validation_error(section_path, exc)
             ) from exc
+
+    @classmethod
+    def from_options(cls, session: Session) -> Self:
+        values = read_options(session, cls._OPTION_NAMESPACE)
+        return cls(**{key: option.value for key, option in values.items()})
 
     def __post_init__(self) -> None:
         self._validate_rules()

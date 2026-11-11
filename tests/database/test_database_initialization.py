@@ -28,3 +28,21 @@ def test_fresh_database_is_initialized_and_stamped(
             MigrationContext.configure(connection).get_current_revision()
             == scripts.get_current_head()
         )
+
+
+def test_existing_old_database_is_not_modified_before_upgrade(
+    tmp_path: Path, sqlite_engine_factory
+) -> None:
+    engine = sqlite_engine_factory(tmp_path / "old.db")
+    scripts = ScriptDirectory.from_config(Config(EXECUTABLE_ABSPATH / "alembic.ini"))
+    old_head = scripts.get_revision(scripts.get_current_head()).down_revision
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE legacy_data (id INTEGER PRIMARY KEY)")
+        MigrationContext.configure(connection).stamp(scripts, old_head)
+    with pytest.raises(RuntimeError, match="maintain database upgrade"):
+        initialize_database_schema(engine, Base.metadata)
+    with engine.connect() as connection:
+        assert set(inspect(connection).get_table_names()) == {
+            "legacy_data",
+            "alembic_version",
+        }

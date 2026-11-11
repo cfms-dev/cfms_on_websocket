@@ -10,7 +10,9 @@ from sqlalchemy import (
     Double,
     ForeignKey,
     Integer,
+    Text,
 )
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
@@ -76,4 +78,29 @@ class SystemStateEntry(Base):
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[float] = mapped_column(Double, nullable=False)
+
+
+class OptionEntry(Base):
+    __tablename__ = "options"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version > 0", name="ck_options_schema_version_positive"
+        ),
+        CheckConstraint("revision > 0", name="ck_options_revision_positive"),
+        CheckConstraint(
+            "value_type IN ('str', 'int', 'float', 'bool', 'null', 'json')",
+            name="ck_options_value_type",
+        ),
+    )
+
+    namespace: Mapped[str] = mapped_column(VARCHAR(111), primary_key=True)
+    owner: Mapped[str] = mapped_column(VARCHAR(255), nullable=False, index=True)
+    option_key: Mapped[str] = mapped_column(VARCHAR(128), primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    value_type: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+    option_value: Mapped[str] = mapped_column(
+        Text().with_variant(LONGTEXT(), "mysql"), nullable=False
+    )
     updated_at: Mapped[float] = mapped_column(Double, nullable=False)
