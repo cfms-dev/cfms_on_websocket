@@ -18,7 +18,7 @@ async def test_discover_and_manage_user_by_id(authenticated_client, test_user):
 
     assert_success(
         await authenticated_client.send_request(
-            "core.user.rename",
+            "core.user.nickname.set",
             {"user_id": user_id.upper(), "nickname": "Updated nickname"},
         )
     )
@@ -35,10 +35,10 @@ async def test_discover_and_manage_user_by_id(authenticated_client, test_user):
 
     entries = assert_success(
         await authenticated_client.view_audit_logs(
-            filters=["core.user.rename", "core.user.create"]
+            filters=["core.user.nickname.set", "core.user.create"]
         )
     )["items"]
-    for action in ("core.user.rename", "core.user.create"):
+    for action in ("core.user.nickname.set", "core.user.create"):
         entry = next(
             item
             for item in entries
@@ -77,7 +77,8 @@ async def test_stale_id_cannot_manage_same_named_replacement(
     )
     assert_error(
         await authenticated_client.send_request(
-            "core.user.rename", {"user_id": old["user_id"], "nickname": "Wrong account"}
+            "core.user.nickname.set",
+            {"user_id": old["user_id"], "nickname": "Wrong account"},
         ),
         400,
     )

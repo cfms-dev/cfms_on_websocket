@@ -8,6 +8,7 @@ DEFAULT_GROUP_PERMISSIONS: MappingProxyType[str, tuple[Permissions, ...]] = (
             "user": (
                 Permissions.CONFIGURE_AUTH_METHODS,
                 Permissions.SEARCH,
+                Permissions.SET_USERNAME,
             ),
             "sysop": (
                 Permissions.MOVE,
@@ -27,7 +28,9 @@ DEFAULT_GROUP_PERMISSIONS: MappingProxyType[str, tuple[Permissions, ...]] = (
                 Permissions.MANAGE_SCHEDULES,
                 Permissions.CREATE_USER,
                 Permissions.DELETE_USER,
-                Permissions.RENAME_USER,
+                Permissions.SET_NICKNAME,
+                Permissions.SET_USERNAME,
+                Permissions.SUPER_SET_USERNAME,
                 Permissions.MANAGE_USER_STATUS,
                 Permissions.GET_USER_INFO,
                 Permissions.SET_USER_PERMISSIONS,
@@ -70,7 +73,7 @@ DEFAULT_GROUP_PERMISSIONS: MappingProxyType[str, tuple[Permissions, ...]] = (
                 Permissions.PURGE,
                 Permissions.RESTORE,
                 Permissions.LIST_DELETED_ITEMS,
-                Permissions.SUPER_RENAME_USER,
+                Permissions.SUPER_SET_NICKNAME,
                 Permissions.SET_USER_AVATAR,
             ),
         }

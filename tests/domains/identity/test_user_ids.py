@@ -76,7 +76,7 @@ def test_management_id_survives_database_username_change(identity_session, monke
         username="admin",
         rights=[
             UserPermission(
-                permission="super_rename_user",
+                permission="super_set_nickname",
                 granted=True,
                 start_time=0,
             )
@@ -96,9 +96,9 @@ def test_management_id_survives_database_username_change(identity_session, monke
         conclude_request=lambda **response: responses.append(response),
     )
 
-    result = users.RequestRenameUserHandler().handle(
+    result = users.RequestSetNicknameHandler().handle(
         handler,
-        users.RequestRenameUserHandler.request_model.model_validate(handler.data),
+        users.RequestSetNicknameHandler.request_model.model_validate(handler.data),
     )
 
     assert responses[0]["code"] == 200

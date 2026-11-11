@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 lazy from sqlalchemy.orm import Session
 
 from include.config.constants import ROOT_DIRECTORY_ID
+from include.database.errors import is_unique_constraint_violation
 from include.database.models.documents import Document, EntityStatus, Folder, Node
 from include.domains.access.authorization.evaluation import check_access_requirements
 from include.messages import Messages as smsg
@@ -22,30 +23,13 @@ class NodeNameConflictError(RuntimeError):
 
 
 def is_node_name_conflict(exc: IntegrityError) -> bool:
-    original = exc.orig
-    message = str(original)
-    lower_message = message.lower()
-    if NODE_NAME_UNIQUE_CONSTRAINT in lower_message:
-        return True
-
-    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
-    diagnostic = getattr(original, "diag", None)
-    if (
-        sqlstate == "23505"
-        and getattr(diagnostic, "constraint_name", None) == NODE_NAME_UNIQUE_CONSTRAINT
-    ):
-        return True
-
-    error_args = getattr(original, "args", ())
-    if error_args and error_args[0] == 1062:
-        return NODE_NAME_UNIQUE_CONSTRAINT in lower_message
-
-    sqlite_error_name = getattr(original, "sqlite_errorname", "")
-    return sqlite_error_name in {"SQLITE_CONSTRAINT", "SQLITE_CONSTRAINT_UNIQUE"} and (
-        "nodes.parent_id, nodes.active_name" in lower_message
-        or "nodes.active_name, nodes.parent_id" in lower_message
-        or "nodes.active_parent_id, nodes.name" in lower_message
-        or "nodes.name, nodes.active_parent_id" in lower_message
+    return is_unique_constraint_violation(
+        exc,
+        constraint_name=NODE_NAME_UNIQUE_CONSTRAINT,
+        sqlite_column_sets=(
+            ("nodes.parent_id", "nodes.active_name"),
+            ("nodes.active_parent_id", "nodes.name"),
+        ),
     )
 
 

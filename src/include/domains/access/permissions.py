@@ -44,7 +44,8 @@ class Permissions(StrEnum):
     # User management
     CREATE_USER = "create_user"
     DELETE_USER = "delete_user"
-    RENAME_USER = "rename_user"
+    SET_NICKNAME = "set_nickname"
+    SET_USERNAME = "set_username"
     MANAGE_USER_STATUS = "manage_user_status"
     GET_USER_INFO = "get_user_info"
     LIST_USERS = "list_users"
@@ -54,7 +55,8 @@ class Permissions(StrEnum):
     SET_USER_PERMISSIONS = "set_user_permissions"
     SET_USER_AVATAR = "set_user_avatar"
 
-    SUPER_RENAME_USER = "super_rename_user"
+    SUPER_SET_NICKNAME = "super_set_nickname"
+    SUPER_SET_USERNAME = "super_set_username"
 
     # Group management
     CREATE_GROUP = "create_group"

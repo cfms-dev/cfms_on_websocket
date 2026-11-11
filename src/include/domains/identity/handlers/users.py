@@ -9,9 +9,10 @@ __all__ = [
     "RequestListUserBlocksHandler",
     "RequestListUsersHandler",
     "RequestManageUserStatusHandler",
-    "RequestRenameUserHandler",
+    "RequestSetNicknameHandler",
     "RequestSetPasswdHandler",
     "RequestSetUserAvatarHandler",
+    "RequestSetUsernameHandler",
     "RequestUnblockUserHandler",
     "RequestUpdateUserBlockHandler",
 ]
@@ -22,10 +23,12 @@ from typing import Annotated, Literal, Self
 import filetype
 from pydantic import Field, model_validator
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from include.config.constants import AVAILABLE_BLOCK_TYPES
 from include.config.settings import global_config
+from include.database.errors import is_unique_constraint_violation
 from include.database.models.access import (
     UserBlockEntry,
     UserBlockSubEntry,
@@ -113,8 +116,12 @@ class _GetUserInfoRequest(RequestDataModel):
         return self
 
 
-class _RenameUserRequest(_UserIDRequest):
+class _SetNicknameRequest(_UserIDRequest):
     nickname: str | None = None
+
+
+class _SetUsernameRequest(_UserIDRequest):
+    username: RequestUsername
 
 
 class _BlockTarget(RequestDataModel):
@@ -421,8 +428,8 @@ class RequestDeleteUserHandler(RequestHandler[_UserIDRequest]):
         )
 
 
-class RequestRenameUserHandler(RequestHandler[_RenameUserRequest]):
-    request_model = _RenameUserRequest
+class RequestSetNicknameHandler(RequestHandler[_SetNicknameRequest]):
+    request_model = _SetNicknameRequest
     requires_auth = True
     rate_limit_cost = 5
 
@@ -437,8 +444,8 @@ class RequestRenameUserHandler(RequestHandler[_RenameUserRequest]):
             permissions = this_user.all_permissions
             is_renaming_self = target_user_id == this_user.id
 
-            has_permission = Permissions.SUPER_RENAME_USER in permissions or (
-                is_renaming_self and Permissions.RENAME_USER in permissions
+            has_permission = Permissions.SUPER_SET_NICKNAME in permissions or (
+                is_renaming_self and Permissions.SET_NICKNAME in permissions
             )
 
             if not has_permission:
@@ -491,6 +498,60 @@ class RequestRenameUserHandler(RequestHandler[_RenameUserRequest]):
             data=audit_data,
             user_id=handler.user_id,
         )
+
+
+class RequestSetUsernameHandler(RequestHandler[_SetUsernameRequest]):
+    request_model = _SetUsernameRequest
+    requires_auth = True
+    required_token_purpose = TokenPurpose.ESCALATION
+    rate_limit_cost = 5
+
+    def handle(self, handler, request):
+        target_user_id = request.user_id
+        audit_data = {}
+
+        def respond(code: int, message: str) -> Result:
+            handler.conclude_request(code=code, data={}, message=message)
+            return Result(
+                code=code,
+                target=str(target_user_id),
+                data=audit_data or None,
+                user_id=handler.user_id,
+            )
+
+        with Session() as session:
+            operator = User.get_existing(session, handler.user_id)
+            permissions = operator.all_permissions
+            if not (
+                Permissions.SUPER_SET_USERNAME in permissions
+                or (
+                    target_user_id == operator.id
+                    and Permissions.SET_USERNAME in permissions
+                )
+            ):
+                return respond(403, "Permission denied")
+
+            user = session.get(User, target_user_id)
+            if user is None:
+                return respond(404, "User does not exist")
+
+            audit_data.update(
+                target_username=user.username, new_username=request.username
+            )
+            user.username = request.username
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                if not is_unique_constraint_violation(
+                    exc,
+                    constraint_name="ix_users_username",
+                    sqlite_column_sets=(("users.username",),),
+                ):
+                    raise
+                return respond(400, "Username already exists")
+
+        return respond(200, "Username updated successfully")
 
 
 class RequestBlockUserHandler(RequestHandler[_BlockUserRequest]):

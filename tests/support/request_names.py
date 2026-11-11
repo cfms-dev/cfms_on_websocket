@@ -1,4 +1,4 @@
-"""Independent protocol 29 request-name and handler contract."""
+"""Independent protocol 30 request-name and handler contract."""
 
 REQUEST_RENAMES = (
     (
@@ -288,8 +288,8 @@ REQUEST_RENAMES = (
     ),
     (
         "rename_user",
-        "core.user.rename",
-        "include.domains.identity.handlers.users.RequestRenameUserHandler",
+        "core.user.nickname.set",
+        "include.domains.identity.handlers.users.RequestSetNicknameHandler",
     ),
     (
         "get_user_info",

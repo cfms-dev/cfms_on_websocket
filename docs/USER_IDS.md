@@ -40,7 +40,8 @@ strings in `creator` and `last_modified_by`. HTTP extensions use
 ## Protocol 28 user management
 
 Protocol 29 keeps these UUID selectors and changes the request names as listed in
-the [request-name migration guide](PROTOCOL_29_MIGRATION.md).
+the [request-name migration guide](PROTOCOL_29_MIGRATION.md). Protocol 30 separates
+[username and nickname updates](PROTOCOL_30_MIGRATION.md).
 
 Protocol 28 makes user management selectors UUID-based. Discover an account with
 `core.user.list` or `core.user.info.get`, then use its `user_id` for subsequent operations.
@@ -73,13 +74,16 @@ After reading `response.data.user_id`, use that UUID:
 
 | Actions | Account selector |
 | --- | --- |
-| `core.user.delete`, `core.user.rename`, `core.user.block.create`, `core.user.block.list` | Required `user_id` |
+| `core.user.delete`, `core.user.username.set`, `core.user.nickname.set`, `core.user.block.create`, `core.user.block.list` | Required `user_id` |
 | `core.user.avatar.get`, `core.user.avatar.set`, `core.user.group.change`, `core.user.permission.change`, `core.user.status.set` | Required `user_id` |
 | `core.user.authentication.totp.delete`, `core.user.authentication.totp.status.get`, `core.user.key.upload`, `core.user.key.list` | Optional `user_id`; omitted means the authenticated account |
 | `core.access.entry.grant` with `entity_type = "user"` | User UUID in `entity_identifier` |
 | `core.access.entry.list` with `object_type = "user"` | User UUID in `object_identifier` |
 
-`core.user.rename` changes only the nickname. `core.user.status.set` returns `user_id`,
+`core.user.nickname.set` changes only the nickname. `core.user.username.set` changes
+only the username, requires an ESCALATION token and `set_username` for oneself or
+`super_set_username` for any account, and preserves UUIDs and existing tokens.
+`core.user.status.set` returns `user_id`,
 `username`, `status`, and `reason`. Block creation, update, and listing include
 the owner's `user_id`. `core.user.block.delete` and `core.user.block.update` keep `block_id`;
 key-specific actions keep their key ID; `core.access.entry.revoke` keeps `entry_id`.

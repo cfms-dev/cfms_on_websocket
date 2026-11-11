@@ -146,8 +146,11 @@ def test_sync_preserves_existing_records_and_other_identity_state(
 
     preview = permissions.inspect_default_group_permissions(["user"])
     assert preview.existing_permissions == {("user", "search")}
-    assert preview.missing_permissions == {("user", "configure_auth_methods")}
-    assert permissions.sync_default_group_permissions(preview) == 1
+    assert preview.missing_permissions == {
+        ("user", "configure_auth_methods"),
+        ("user", "set_username"),
+    }
+    assert permissions.sync_default_group_permissions(preview) == 2
 
     with permission_sessions() as session:
         assert [
@@ -164,7 +167,7 @@ def test_sync_preserves_existing_records_and_other_identity_state(
             ).all()
             == original_permissions
         )
-        assert len(session.scalars(select(UserGroupPermission)).all()) == copies + 3
+        assert len(session.scalars(select(UserGroupPermission)).all()) == copies + 4
 
 
 @pytest.mark.parametrize("change", ["permission", "missing-group", "same-count"])
@@ -216,7 +219,7 @@ def test_sync_rolls_back_all_inserts_and_releases_lock_on_failure(
     with server_runtime_lock(tmp_path), permission_sessions.begin() as session:
         assert session.scalars(select(UserGroupPermission)).all() == []
         session.connection().exec_driver_sql("DROP TRIGGER reject_search")
-    assert permissions.sync_default_group_permissions(preview) == 2
+    assert permissions.sync_default_group_permissions(preview) == 3
 
 
 def test_preview_works_while_runtime_lock_blocks_writes(permission_sessions, tmp_path):
@@ -224,11 +227,11 @@ def test_preview_works_while_runtime_lock_blocks_writes(permission_sessions, tmp
         session.add(UserGroup(group_name="user"))
     with server_runtime_lock(tmp_path):
         preview = permissions.inspect_default_group_permissions(["user"])
-        assert len(preview.missing_permissions) == 2
+        assert len(preview.missing_permissions) == 3
         with pytest.raises(MaintenanceOperationError):
             permissions.sync_default_group_permissions(preview)
         assert permissions.inspect_default_group_permissions(["user"]) == preview
-    assert permissions.sync_default_group_permissions(preview) == 2
+    assert permissions.sync_default_group_permissions(preview) == 3
 
 
 def test_unfinished_deployment_blocks_writes(permission_sessions, tmp_path):

@@ -14,7 +14,7 @@ class TestUserOperations:
     @pytest.mark.asyncio
     async def test_rename_user_requires_authentication(self, unauthenticated_client):
         response = await unauthenticated_client.send_request(
-            "core.user.rename",
+            "core.user.nickname.set",
             {
                 "user_id": "00000000-0000-4000-8000-000000000001",
                 "nickname": "unauthorized",

@@ -65,7 +65,8 @@ EXPECTED_CORE_ACTION_COSTS = {
     "core.user.list": 3,
     "core.user.create": 5,
     "core.user.delete": 5,
-    "core.user.rename": 5,
+    "core.user.nickname.set": 5,
+    "core.user.username.set": 5,
     "core.user.info.get": 2,
     "core.user.avatar.get": 3,
     "core.user.avatar.set": 3,
@@ -169,7 +170,7 @@ def test_all_known_costs_fit_default_request_buckets():
         *EXPECTED_EXTRA_HANDLER_COSTS.values(),
     )
 
-    assert len(all_costs) == 92
+    assert len(all_costs) == 93
     assert set(all_costs) == {1, 2, 3, 5, 10, 20}
     assert all(0 < cost <= capacity for cost in all_costs)
 

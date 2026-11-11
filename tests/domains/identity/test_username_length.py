@@ -23,6 +23,7 @@ from include.domains.identity.auth.providers.password import PasswordCredentialS
 from include.domains.identity.auth.providers.publickey import PublicKeyLoginRequest
 from include.domains.identity.handlers.users import (
     RequestCreateUserHandler,
+    RequestSetUsernameHandler,
 )
 from pydantic import ValidationError
 
@@ -30,6 +31,7 @@ assert EXECUTABLE_ABSPATH == Path.cwd()
 
 handler_payloads = (
     (RequestCreateUserHandler, {"username": "u", "password": "secret"}),
+    (RequestSetUsernameHandler, {"user_id": "aabbccdd-0000-4000-8000-000000000001", "username": "u"}),
 )
 for handler_type, payload in handler_payloads:
     handler_type.request_model.model_validate(

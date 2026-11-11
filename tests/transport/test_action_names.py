@@ -7,7 +7,7 @@ from tests.support.request_names import REQUEST_RENAMES
 
 @pytest.mark.unit
 @pytest.mark.parametrize("debug", [False, True])
-def test_request_registry_matches_protocol_29(
+def test_request_registry_matches_protocol_30(
     monkeypatch, protected_test_config, debug
 ):
     monkeypatch.chdir(protected_test_config.src_dir)
@@ -17,7 +17,7 @@ def test_request_registry_matches_protocol_29(
     from include.extensions.oidc_sso import _extension as oidc
 
     core_handlers = dict(server_main.available_functions)
-    assert len(core_handlers) == 86
+    assert len(core_handlers) == 87
     monkeypatch.setattr(server_main, "available_functions", core_handlers)
     monkeypatch.setattr(
         server_main, "whitelisted_functions", list(server_main.whitelisted_functions)
@@ -51,8 +51,11 @@ def test_request_registry_matches_protocol_29(
         action: f"{handler.__module__}.{handler.__qualname__}"
         for action, handler in core_handlers.items()
     }
-    assert PROTOCOL_VERSION == 29
+    assert PROTOCOL_VERSION == 30
     assert len(REQUEST_RENAMES) == len({new for _, new, _ in REQUEST_RENAMES}) == 92
+    expected["core.user.username.set"] = (
+        "include.domains.identity.handlers.users.RequestSetUsernameHandler"
+    )
     assert actual == expected
     assert set(core_handlers).isdisjoint(old for old, _, _ in REQUEST_RENAMES)
     assert set(server_main.whitelisted_functions) == {
@@ -71,7 +74,9 @@ def test_request_registry_matches_protocol_29(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-@pytest.mark.parametrize("old_action", [old for old, _, _ in REQUEST_RENAMES])
+@pytest.mark.parametrize(
+    "old_action", [old for old, _, _ in REQUEST_RENAMES] + ["core.user.rename"]
+)
 async def test_old_request_names_are_rejected_and_connection_remains_usable(
     client, old_action
 ):
@@ -82,4 +87,4 @@ async def test_old_request_names_are_rejected_and_connection_remains_usable(
         "core.server.info.get", {}, include_auth=False
     )
     assert following["code"] == 200
-    assert following["data"]["protocol_version"] == 29
+    assert following["data"]["protocol_version"] == 30

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from include.database.models.auth import (
     UserAuthPolicy,
@@ -326,8 +327,9 @@ def test_backup_with_nodes_and_legacy_subtype_names_is_upgraded(
     }
 
 
-def test_legacy_backup_rejects_active_cross_type_duplicate(
-    backup_context, tmp_path, database_factory
+@pytest.mark.parametrize("legacy", [False, True], ids=["current", "legacy"])
+def test_backup_rejects_active_cross_type_duplicate(
+    backup_context, tmp_path, database_factory, legacy
 ):
     from maintenance.backup.archive import _validate_manifest
     from maintenance.backup.format import BACKUP_FORMAT_VERSION
@@ -353,6 +355,37 @@ def test_legacy_backup_rejects_active_cross_type_duplicate(
             }
         ],
     }
+    if not legacy:
+        rows_by_table["nodes"] = [
+            {
+                "id": "/",
+                "type": "directory",
+                "name": "/",
+                "parent_id": None,
+                "status": 0,
+                "inherit": True,
+            },
+            {
+                "id": "folder",
+                "type": "directory",
+                "name": "Same",
+                "parent_id": "/",
+                "status": 0,
+                "inherit": True,
+            },
+            {
+                "id": "document",
+                "type": "document",
+                "name": "Same",
+                "parent_id": "/",
+                "status": 0,
+                "inherit": True,
+            },
+        ]
+        for row in rows_by_table["folders"]:
+            del row["name"], row["parent_id"]
+        for row in rows_by_table["documents"]:
+            del row["title"], row["folder_id"]
     for table_name, rows in rows_by_table.items():
         _write_jsonl(tables_dir / f"{table_name}.jsonl", rows)
     manifest = {
@@ -367,8 +400,14 @@ def test_legacy_backup_rejects_active_cross_type_duplicate(
     }
 
     _validate_manifest(manifest)
-    with pytest.raises(
-        backup_context.BackupFormatError,
-        match="document:document.*parent '/'.*name 'Same'",
-    ):
+    with pytest.raises(backup_context.BackupFormatError) as caught:
         _restore_database(extract_dir, manifest, target_session)
+    assert isinstance(caught.value.__cause__, IntegrityError)
+    with target_session() as session:
+        for table_name in ("nodes", "folders", "documents"):
+            assert (
+                session.scalar(
+                    select(func.count()).select_from(base.metadata.tables[table_name])
+                )
+                == 0
+            )

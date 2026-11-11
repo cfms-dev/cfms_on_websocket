@@ -16,28 +16,46 @@ def _integrity_error(original: Exception) -> IntegrityError:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "original",
+    ("columns", "expected"),
     [
-        _OriginalError("UNIQUE constraint failed: nodes.parent_id, nodes.active_name"),
-        _OriginalError("UNIQUE constraint failed: nodes.active_parent_id, nodes.name"),
-        _OriginalError("Duplicate entry for key 'uq_nodes_active_parent_name'"),
-        SimpleNamespace(
-            sqlstate="23505",
-            diag=SimpleNamespace(constraint_name="uq_nodes_active_parent_name"),
-        ),
+        ("nodes.parent_id, nodes.active_name", True),
+        ("nodes.active_parent_id, nodes.name", True),
+        ("nodes.id", False),
+        ("nodes.parent_id, nodes.name", False),
     ],
 )
-def test_node_name_conflict_is_recognized_across_dialects(original) -> None:
+def test_node_name_conflict_matches_current_and_legacy_columns(
+    columns, expected
+) -> None:
     from include.domains.documents.commands.name_conflicts import (
         is_node_name_conflict,
     )
 
-    if isinstance(original, _OriginalError) and "UNIQUE constraint" in str(original):
-        original.sqlite_errorname = "SQLITE_CONSTRAINT_UNIQUE"
-    if isinstance(original, _OriginalError) and "Duplicate entry" in str(original):
-        original.args = (1062, str(original))
+    original = _OriginalError(f"UNIQUE constraint failed: {columns}")
+    original.sqlite_errorname = "SQLITE_CONSTRAINT_UNIQUE"
 
-    assert is_node_name_conflict(_integrity_error(original))
+    assert is_node_name_conflict(_integrity_error(original)) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("code", "constraint", "expected"),
+    [
+        ("23505", "uq_nodes_active_parent_name", True),
+        ("23505", "other_constraint", False),
+        ("23503", "uq_nodes_active_parent_name", False),
+    ],
+)
+def test_node_name_conflict_matches_only_its_named_constraint(
+    code, constraint, expected
+):
+    from include.domains.documents.commands.name_conflicts import is_node_name_conflict
+
+    original = SimpleNamespace(
+        pgcode=code, diag=SimpleNamespace(constraint_name=constraint)
+    )
+
+    assert is_node_name_conflict(_integrity_error(original)) is expected
 
 
 @pytest.mark.unit
@@ -70,23 +88,32 @@ def test_name_mutation_rolls_back_and_translates_name_conflict() -> None:
     )
     original.sqlite_errorname = "SQLITE_CONSTRAINT_UNIQUE"
 
+    error = _integrity_error(original)
     with (
         pytest.raises(NodeNameConflictError) as caught,
         node_name_mutation(session, "parent", "report"),
     ):
-        raise _integrity_error(original)
+        raise error
 
     assert session.rollback_calls == 1
     assert caught.value.parent_id == "parent"
     assert caught.value.name == "report"
+    assert caught.value.__cause__ is error
 
 
 @pytest.mark.unit
-def test_name_mutation_does_not_hide_other_integrity_errors() -> None:
+@pytest.mark.parametrize(
+    "message",
+    [
+        "NOT NULL constraint failed",
+        "CHECK constraint failed: uq_nodes_active_parent_name",
+    ],
+)
+def test_name_mutation_does_not_hide_other_integrity_errors(message) -> None:
     from include.domains.documents.commands.name_conflicts import node_name_mutation
 
     session = SimpleNamespace(rollback=lambda: None)
-    error = _integrity_error(_OriginalError("NOT NULL constraint failed"))
+    error = _integrity_error(_OriginalError(message))
 
     with (
         pytest.raises(IntegrityError) as caught,

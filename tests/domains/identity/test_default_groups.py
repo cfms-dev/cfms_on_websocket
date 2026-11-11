@@ -11,7 +11,7 @@ def test_default_group_permissions_preserve_the_explicit_seed_contract():
     assert {
         group: set(values) for group, values in DEFAULT_GROUP_PERMISSIONS.items()
     } == {
-        "user": {"configure_auth_methods", "search"},
+        "user": {"configure_auth_methods", "search", "set_username"},
         "sysop": {
             "move",
             "shutdown",
@@ -30,7 +30,9 @@ def test_default_group_permissions_preserve_the_explicit_seed_contract():
             "manage_schedules",
             "create_user",
             "delete_user",
-            "rename_user",
+            "set_nickname",
+            "set_username",
+            "super_set_username",
             "manage_user_status",
             "get_user_info",
             "set_user_permissions",
@@ -73,12 +75,12 @@ def test_default_group_permissions_preserve_the_explicit_seed_contract():
             "purge",
             "restore",
             "list_deleted_items",
-            "super_rename_user",
+            "super_set_nickname",
             "set_user_avatar",
         },
     }
-    assert len(DEFAULT_GROUP_PERMISSIONS["user"]) == 2
-    assert len(DEFAULT_GROUP_PERMISSIONS["sysop"]) == 62
+    assert len(DEFAULT_GROUP_PERMISSIONS["user"]) == 3
+    assert len(DEFAULT_GROUP_PERMISSIONS["sysop"]) == 64
 
 
 @pytest.mark.integration
@@ -100,7 +102,7 @@ def test_fresh_server_seeds_default_groups_with_original_time_defaults(
         for group, values in DEFAULT_GROUP_PERMISSIONS.items()
         for permission in values
     }
-    assert len(rows) == 64
+    assert len(rows) == 67
     assert all(
         granted == 1 and start > 0.0 and end is None
         for _, _, granted, start, end in rows

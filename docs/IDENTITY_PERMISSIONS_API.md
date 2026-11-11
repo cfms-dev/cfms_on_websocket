@@ -1,5 +1,9 @@
 # Identity permissions API
 
+Protocol 30 introduces independent username and nickname permissions. See the
+[username and nickname migration guide](PROTOCOL_30_MIGRATION.md) for action names,
+elevated-token requirements, permission renaming, and the new default grants.
+
 Protocol version 24 replaces identity permission string lists with structured
 grant and revocation entries. This is a breaking protocol change: protocol 23
 clients and protocol 24 servers cannot mix during a rolling deployment.

@@ -16,7 +16,7 @@ from include.domains.identity.handlers.users import (
     RequestGetUserInfoHandler,
     RequestListUserBlocksHandler,
     RequestManageUserStatusHandler,
-    RequestRenameUserHandler,
+    RequestSetNicknameHandler,
     RequestSetPasswdHandler,
     RequestSetUserAvatarHandler,
 )
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.unit
 USER_ID = "aabbccdd-0000-4000-8000-000000000001"
 USER_REQUESTS = [
     (RequestDeleteUserHandler, {}),
-    (RequestRenameUserHandler, {"nickname": "New nickname"}),
+    (RequestSetNicknameHandler, {"nickname": "New nickname"}),
     (RequestBlockUserHandler, {"target": {"type": "all"}, "block_types": ["read"]}),
     (RequestListUserBlocksHandler, {}),
     (RequestGetUserAvatarHandler, {}),

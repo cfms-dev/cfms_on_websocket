@@ -14,8 +14,11 @@ verification.
 
 ## Quick Start
 
-CFMS requires Python 3.14 or newer and [uv](https://docs.astral.sh/uv/). SQLite
-is used by default, so no separate database service is required.
+Prerequisites:
+
+- **Python**: 3.15 or newer
+- **Package Manager**: [uv](https://docs.astral.sh/uv/) is recommended (compatible with any standard Python package manager)
+- **Database**: SQLite is used by default—no external database setup is required.
 
 > [!IMPORTANT]
 > Differences in implementation and configuration across various database engines 
@@ -50,10 +53,6 @@ Distributed scheduling also requires `--extra ext-scheduling-cluster`. See the
 
 ## Maintenance
 
-WSS and HTTP API certificates reload automatically when their files change.
-See [TLS certificate reload](docs/TLS_CERTIFICATE_RELOAD.md) for renewal,
-configuration and rollback instructions.
-
 The `maintain` command covers release-bundle deployment, configuration updates,
 database migrations, permission records, audit logs, and extensions:
 
@@ -82,20 +81,14 @@ every provider and extension import.
 
 See [tests/README.md](tests/README.md) for test-suite details.
 
-AI-generated contributions are accepted. Changes to core logic under
-`src/include` require human review; tests and maintenance tools are evaluated by
-their externally observable correctness.
-
-## Migrating from Older Protocol Versions
-
-Protocol 29 introduces namespaced requests and separates TOTP credentials from
-MFA policy configuration. See the [migration guide](docs/PROTOCOL_29_MIGRATION.md)
-for the complete request mapping and required client/configuration changes.
-
 ## Contributing and Security
 
 Bug reports, improvement proposals, and testing contributions are welcome through
 [GitHub Issues](https://github.com/cfms-dev/cfms_on_websocket/issues). Please
 follow [SECURITY.md](SECURITY.md) when reporting a vulnerability.
+
+AI-generated contributions are accepted. Changes to core logic under
+`src/include` require human review; tests and maintenance tools are evaluated by
+their externally observable correctness.
 
 [documentation]: https://cfms-server-doc.readthedocs.io/zh_CN/latest
