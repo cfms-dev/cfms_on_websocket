@@ -5,6 +5,7 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 
+from include.database.models.operations import OptionEntry
 from maintenance.operations.deployment import (
     database as deployment_database,
 )
@@ -27,6 +28,59 @@ def test_database_upgrade_rejects_unversioned_database_without_stamping(
     try:
         with engine.connect() as connection:
             assert MigrationContext.configure(connection).get_current_revision() is None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "downgrade", ["_preflight_downgrade_database", "_downgrade_database"]
+)
+def test_database_downgrade_preserves_options_before_crossing_migration(
+    tmp_path: Path, downgrade: str
+) -> None:
+    project_root, source, target, source_head, target_revision = (
+        _prepare_database_releases(tmp_path)
+    )
+    target_versions = target.root / "src" / "alembic" / "versions"
+    (target_versions / f"{target_revision}.py").unlink()
+    (target_versions / "16c86712512a_add_namespaced_persistent_options.py").unlink()
+    source_scripts = ScriptDirectory(str(source.root / "src" / "alembic"))
+    engine = deployment_database._database_engine(project_root)
+    try:
+        with engine.begin() as connection:
+            OptionEntry.__table__.create(connection)
+            connection.execute(
+                OptionEntry.__table__.insert().values(
+                    namespace="retired.settings",
+                    owner="removed_extension",
+                    option_key="preserve",
+                    schema_version=3,
+                    revision=7,
+                    value_type="bool",
+                    option_value="1",
+                    updated_at=1.0,
+                )
+            )
+            MigrationContext.configure(connection).stamp(source_scripts, source_head)
+    finally:
+        engine.dispose()
+
+    with pytest.raises(MaintenanceOperationError, match="persistent configuration"):
+        getattr(deployment_database, downgrade)(project_root, source, target)
+
+    engine = deployment_database._database_engine(project_root)
+    try:
+        with engine.connect() as connection:
+            assert (
+                MigrationContext.configure(connection).get_current_revision()
+                == source_head
+            )
+            preserved = connection.execute(OptionEntry.__table__.select()).one()
+            assert preserved.option_key == "preserve"
+            assert preserved.schema_version == 3
+            assert preserved.revision == 7
+            assert preserved.value_type == "bool"
+            assert preserved.option_value == "1"
     finally:
         engine.dispose()
 

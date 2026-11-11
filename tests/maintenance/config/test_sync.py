@@ -85,8 +85,8 @@ def test_sync_adds_template_settings_and_preserves_operator_values_and_comments(
 ):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     del current["server"]["trusted_proxy_networks"]
-    current["server"]["name"] = tomlkit.string("Operator Server")
-    current["server"]["name"].comment("operator choice")
+    current["server"]["host"] = tomlkit.string("Operator Server")
+    current["server"]["host"].comment("operator choice")
     current["server"]["local_setting"] = "keep-me"
     current["server"]["secret_key"] = "sensitive-value"
     src_dir = config_runtime(current)
@@ -98,14 +98,14 @@ def test_sync_adds_template_settings_and_preserves_operator_values_and_comments(
 
     assert result.backup_path is not None
     assert result.backup_path.read_text(encoding="utf-8") == original_source
-    assert synchronized["server"]["name"] == "Operator Server"
+    assert synchronized["server"]["host"] == "Operator Server"
     assert synchronized["server"]["local_setting"] == "keep-me"
     assert synchronized["server"]["secret_key"] == "sensitive-value"
     assert synchronized["server"]["trusted_proxy_networks"] == [
         "127.0.0.1/32",
         "::1/128",
     ]
-    assert 'name = "Operator Server" # operator choice' in synchronized_source
+    assert 'host = "Operator Server" # operator choice' in synchronized_source
 
 
 def test_sync_is_idempotent_and_does_not_create_a_second_backup(config_runtime):
@@ -192,87 +192,22 @@ def test_atomic_config_write_refuses_to_overwrite_same_timestamp_backup(
     assert config_path.read_bytes() == b"second\n"
 
 
-def test_sync_applies_all_known_legacy_migrations(config_runtime):
-    current = tomlkit.parse(_SAMPLE_SOURCE)
-    current["database"]["db_name"] = "legacy_database"
-    del current["database"]["name"]
-    _move_oidc_config_to_legacy_section(current, enabled=True)
-    current["sso"]["oidc"]["issuer"] = "https://issuer.example"
-    current["sso"]["oidc"]["client_id"] = "legacy-client"
-    current["sso"]["oidc"]["client_secret"] = "legacy-secret"
-    current["sso"]["oidc"]["redirect_uri"] = "https://client.example/callback"
-    current["extensions"]["enabled"] = []
-    current["document"]["allow_name_duplicate"] = True
-    upload = current["document"]["upload"]
-    del upload["creation_risk_control"]
-    upload["creation_rate_window_seconds"] = 300
-    upload["creation_rate_per_user"] = 50
-    upload["creation_rate_per_ip"] = 125
-    current["security"]["passwd_must_contain"] = [["A", "B"], "01"]
-    del current["security"]["passwd_rules"]
-    del current["security"]["passwd_min_passed_count"]
-    src_dir = config_runtime(current)
-
-    result = sync_config_template()
-    synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
-
-    assert len(result.migrations) == 4
-    assert "document.allow_name_duplicate" in result.removed_paths
-    assert synchronized["database"]["name"] == "legacy_database"
-    assert "db_name" not in synchronized["database"]
-    assert synchronized["extensions"]["enabled"] == ["oidc_sso"]
-    assert synchronized["extensions"]["oidc_sso"]["issuer"] == (
-        "https://issuer.example"
-    )
-    assert synchronized["extensions"]["oidc_sso"]["client_id"] == "legacy-client"
-    assert synchronized["extensions"]["oidc_sso"]["client_secret"] == ("legacy-secret")
-    assert "sso" not in synchronized
-    risk_control = synchronized["document"]["upload"]["creation_risk_control"]
-    assert risk_control["refill_period_seconds"] == 300
-    assert risk_control["account_refill_tokens"] == 50
-    assert risk_control["account_capacity"] == 10
-    assert risk_control["ip_refill_tokens"] == 125
-    assert risk_control["ip_capacity"] == 25
-    assert synchronized["security"]["passwd_rules"] == ["(?:A|B)", "(?:0|1)"]
-    assert synchronized["security"]["passwd_min_passed_count"] == 2
-    assert "passwd_must_contain" not in synchronized["security"]
-    assert "allow_name_duplicate" not in synchronized["document"]
-
-
-def test_sync_keeps_new_targets_and_warns_for_unconvertible_values(
-    config_runtime,
+@pytest.mark.parametrize("legacy_path", ["password", "creation", "oidc"])
+def test_sync_preserves_legacy_business_values_for_explicit_migration(
+    config_runtime, legacy_path
 ):
     current = tomlkit.parse(_SAMPLE_SOURCE)
-    current["database"]["db_name"] = "legacy_database"
-    current["database"]["name"] = "current_database"
-    _move_oidc_config_to_legacy_section(current, enabled="true")
-    current["sso"]["oidc"]["issuer"] = "https://legacy.example"
-    current["sso"]["oidc"]["client_id"] = "legacy-client"
-    current["extensions"]["oidc_sso"] = {"issuer": "https://new.example"}
-    current["security"]["passwd_must_contain"] = [["AB"]]
-    current["document"]["upload"]["creation_rate_per_user"] = 0
+    if legacy_path == "password":
+        current["security"]["passwd_must_contain"] = [["A", "B"], "01"]
+    elif legacy_path == "creation":
+        current["document"] = {"upload": {"creation_rate_per_user": 50}}
+    else:
+        current["sso"] = {"oidc": {"auto_provision": True}}
     src_dir = config_runtime(current)
-
-    result = sync_config_template()
-    synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
-
-    assert synchronized["database"]["name"] == "current_database"
-    assert synchronized["extensions"]["enabled"] == []
-    assert synchronized["extensions"]["oidc_sso"]["issuer"] == ("https://new.example")
-    assert synchronized["extensions"]["oidc_sso"]["client_id"] == "legacy-client"
-    assert "sso" not in synchronized
-    assert (
-        synchronized["security"]["passwd_rules"] == current["security"]["passwd_rules"]
-    )
-    assert (
-        synchronized["document"]["upload"]["creation_risk_control"][
-            "account_refill_tokens"
-        ]
-        == current["document"]["upload"]["creation_risk_control"][
-            "account_refill_tokens"
-        ]
-    )
-    assert len(result.warnings) == 3
+    original = (src_dir / "config.toml").read_bytes()
+    with pytest.raises(MaintenanceOperationError):
+        sync_config_template()
+    assert (src_dir / "config.toml").read_bytes() == original
 
 
 def test_sync_preserves_other_settings_beside_legacy_oidc(config_runtime):
