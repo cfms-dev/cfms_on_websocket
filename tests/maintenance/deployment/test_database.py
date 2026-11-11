@@ -41,9 +41,16 @@ def test_database_downgrade_preserves_options_before_crossing_migration(
     project_root, source, target, source_head, target_revision = (
         _prepare_database_releases(tmp_path)
     )
-    target_versions = target.root / "src" / "alembic" / "versions"
-    (target_versions / f"{target_revision}.py").unlink()
-    (target_versions / "16c86712512a_add_namespaced_persistent_options.py").unlink()
+    target_scripts = ScriptDirectory(str(target.root / "src" / "alembic"))
+    options_revision = target_scripts.get_revision("16c86712512a")
+    for revision in target_scripts.iterate_revisions(
+        target_revision, options_revision.down_revision
+    ):
+        Path(revision.path).unlink()
+    assert (
+        ScriptDirectory(str(target.root / "src" / "alembic")).get_current_head()
+        == options_revision.down_revision
+    )
     source_scripts = ScriptDirectory(str(source.root / "src" / "alembic"))
     engine = deployment_database._database_engine(project_root)
     try:
