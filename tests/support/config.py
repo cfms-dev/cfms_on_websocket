@@ -1,4 +1,5 @@
 import os
+import secrets
 import shutil
 import socket
 from collections.abc import Generator
@@ -78,11 +79,11 @@ def write_test_config(
 
     config = parse(base_content)
     config["debug"] = debug
+    config["server"]["secret_key"] = secrets.token_hex(32)
+    config["security"]["pepper"] = secrets.token_hex(32)
     config["server"]["host"] = "::1"
     config["server"]["port"] = port
     config["server"]["dualstack_ipv6"] = False
-    config["security"]["enable_passwd_force_expiration"] = False
-    config["security"]["require_passwd_enforcement_changes"] = False
     config["security"]["require_client_cert"] = False
     config["database"]["type"] = "sqlite"
     config["database"]["file"] = "app.db"

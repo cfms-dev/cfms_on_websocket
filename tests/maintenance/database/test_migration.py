@@ -285,7 +285,10 @@ def test_target_config_is_validated_and_can_be_activated(tmp_path) -> None:
     activated = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     assert activated["database"]["type"] == "sqlite"
     assert activated["database"]["file"] == "migrated.db"
-    assert activated["server"]["name"] == "CFMS WebSocket Server"
+    assert "name" not in activated["server"]
+    assert (
+        activated["server"]["host"] == tomlkit.parse(current_source)["server"]["host"]
+    )
     assert backup_path.read_text(encoding="utf-8") == current_source
 
 

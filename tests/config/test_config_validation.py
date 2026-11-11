@@ -1,6 +1,6 @@
 import subprocess
 import sys
-from textwrap import dedent, indent
+from textwrap import dedent
 from types import SimpleNamespace
 
 import pytest
@@ -116,10 +116,7 @@ def config_lifecycle(tmp_path):
             "paths.EXECUTABLE_ABSPATH = config_path.parent\n"
             "from include.config.settings import GlobalConfig, global_config\n"
             "config = GlobalConfig(str(config_path))\n"
-            "assert config is global_config\n"
-            "config.stop()\n"
-            "try:\n" + indent(dedent(code).strip(), "    ") + "\nfinally:\n"
-            "    config.stop()\n"
+            "assert config is global_config\n" + dedent(code).strip() + "\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", script, str(config_path)],
@@ -272,7 +269,7 @@ def test_auth_throttle_values_are_validated():
     config["security"]["auth_throttle"] = {"ip_failure_threshold": 0}
 
     with pytest.raises(ConfigValidationError) as error:
-        validate_config(config)
+        AuthThrottlePolicy.from_config(config)
 
     assert "security.auth_throttle.ip_failure_threshold" in str(error.value)
 
@@ -286,7 +283,7 @@ def test_auth_throttle_delay_range_is_validated():
     }
 
     with pytest.raises(ConfigValidationError, match="must not exceed"):
-        validate_config(config)
+        AuthThrottlePolicy.from_config(config)
 
 
 @pytest.mark.unit
@@ -435,7 +432,7 @@ def test_audit_retention_rejects_invalid_values(setting, value):
     config["maintenance"] = {"audit_retention": {setting: value}}
 
     with pytest.raises(ConfigValidationError) as error:
-        validate_config(config)
+        AuditRetentionPolicy.from_config(config)
 
     assert f"maintenance.audit_retention.{setting}" in str(error.value)
 
@@ -454,7 +451,7 @@ def test_identity_permission_retention_rejects_invalid_values(setting, value):
     config["identity"] = {"permission_retention": {setting: value}}
 
     with pytest.raises(ConfigValidationError) as error:
-        validate_config(config)
+        IdentityPermissionRetentionPolicy.from_config(config)
 
     assert f"identity.permission_retention.{setting}" in str(error.value)
 
@@ -483,7 +480,7 @@ def test_request_rate_control_values_are_validated(setting, value, expected_frag
     config["security"]["request_rate_control"] = {setting: value}
 
     with pytest.raises(ConfigValidationError) as error:
-        validate_config(config)
+        RequestRateControlPolicy.from_config(config)
 
     assert expected_fragment in str(error.value)
 
@@ -903,7 +900,7 @@ def test_download_risk_policy_validates_settings(setting, value, expected_fragme
     config["document"] = {"download": {"risk_control": {setting: value}}}
 
     with pytest.raises(ConfigValidationError) as error:
-        validate_config(config)
+        DocumentDownloadRiskPolicy.from_config(config)
 
     assert expected_fragment in str(error.value)
 
@@ -935,7 +932,7 @@ def test_creation_risk_policy_validates_settings(setting, value, expected_fragme
     config["document"] = {"upload": {"creation_risk_control": {setting: value}}}
 
     with pytest.raises(ConfigValidationError) as error:
-        validate_config(config)
+        DocumentCreationRiskPolicy.from_config(config)
 
     assert expected_fragment in str(error.value)
 
@@ -955,7 +952,7 @@ def test_document_upload_policy_rejects_invalid_values(upload):
     config["document"] = {"upload": upload}
 
     with pytest.raises(ConfigValidationError, match="document.upload"):
-        validate_config(config)
+        DocumentUploadPolicy.from_config(config)
 
 
 @pytest.mark.unit
@@ -966,9 +963,9 @@ def test_empty_pepper_warning_is_centralized():
     assert "`pepper`" in get_config_warnings(config)[0]
 
 
-@pytest.mark.integration
+@pytest.mark.component
 @pytest.mark.parametrize("invalid_source", ["[server", "invalid-cidr"])
-def test_invalid_reload_keeps_previous_configuration(config_lifecycle, invalid_source):
+def test_file_changes_require_restart(config_lifecycle, invalid_source):
     config_lifecycle.run_check(
         f"""
         valid_source = config_path.read_text(encoding="utf-8")
@@ -977,19 +974,12 @@ def test_invalid_reload_keeps_previous_configuration(config_lifecycle, invalid_s
         if invalid_source == "invalid-cidr":
             invalid_source = valid_source.replace("127.0.0.1/32", "not-a-cidr")
         config_path.write_text(invalid_source, encoding="utf-8")
-
-        assert config.reload() is False
         assert dict(config) == previous
+        config_path.write_text(valid_source.replace("port = 8765", "port = 9000"), encoding="utf-8")
         assert config["server"]["port"] == 8765
-
-        config_path.write_text(
-            valid_source.replace("port = 8765", "port = 9000"), encoding="utf-8"
-        )
-        assert config.reload() is True
-        assert config["server"]["port"] == 9000
-        assert config["security"]["pepper"] == "existing-pepper"
         """
     )
+    config_lifecycle.run_check('assert config["server"]["port"] == 9000')
 
 
 @pytest.mark.integration
@@ -1005,15 +995,16 @@ def test_secret_initialization_uses_config_directory_sentinel(
         f"""
         from tomlkit import parse
 
+        config.initialize_secrets()
         document = parse(config_path.read_text(encoding="utf-8"))
         if {sentinel_in_config_directory!r}:
             assert document["server"]["secret_key"] == "existing-secret"
             assert document["security"]["pepper"] == "existing-pepper"
         else:
             assert document["server"]["secret_key"]
-            assert document["server"]["secret_key"] != "existing-secret"
+            assert document["server"]["secret_key"] == "existing-secret"
             assert document["security"]["pepper"]
-            assert document["security"]["pepper"] != "existing-pepper"
+            assert document["security"]["pepper"] == "existing-pepper"
         assert config["server"]["secret_key"] == document["server"]["secret_key"]
         assert config["security"]["pepper"] == document["security"]["pepper"]
         """

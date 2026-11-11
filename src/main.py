@@ -373,6 +373,10 @@ def _server_lifecycle(server: Server) -> Generator[None]:
 def _run_server():
     prepare_logger()
 
+    global_config.require_migrated_options()
+    initialize_database_schema(engine, Base.metadata)
+    global_config.initialize_secrets()
+
     if not os.path.exists(EXECUTABLE_ABSPATH / "init"):
         logger.info("Database not initialized, initializing now...")
         server_init()
@@ -458,34 +462,29 @@ def _run_server():
         host, global_config["server"]["dualstack_ipv6"]
     )
 
-    try:
-        with (
-            tls,
-            serve(
-                handle_connection,
-                host,
-                port,
-                ssl=tls.context,
-                family=socket_family,
-                dualstack_ipv6=dualstack_ipv6,
-                process_request=global_process_request,
-            ) as server,
-        ):
-            bound_address = server.socket.getsockname()
-            bound_host = bound_address[0]
-            display_host = (
-                f"[{bound_host}]"
-                if server.socket.family == socket.AF_INET6
-                else bound_host
+    with (
+        tls,
+        serve(
+            handle_connection,
+            host,
+            port,
+            ssl=tls.context,
+            family=socket_family,
+            dualstack_ipv6=dualstack_ipv6,
+            process_request=global_process_request,
+        ) as server,
+    ):
+        bound_address = server.socket.getsockname()
+        bound_host = bound_address[0]
+        display_host = (
+            f"[{bound_host}]" if server.socket.family == socket.AF_INET6 else bound_host
+        )
+        with _server_lifecycle(server):
+            logger.info(
+                "CFMS WebSocket server started at "
+                f"wss://{display_host}:{bound_address[1]}"
             )
-            with _server_lifecycle(server):
-                logger.info(
-                    "CFMS WebSocket server started at "
-                    f"wss://{display_host}:{bound_address[1]}"
-                )
-                server.serve_forever()
-    finally:
-        global_config.stop()
+            server.serve_forever()
 
 
 def main():

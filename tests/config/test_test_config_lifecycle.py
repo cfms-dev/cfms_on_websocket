@@ -114,6 +114,9 @@ def test_write_test_config_can_disable_debug_for_load_tests(tmp_path):
 
     config = parse(settings.config_path.read_text(encoding="utf-8"))
     assert config["debug"] is False
+    assert len(config["server"]["secret_key"]) == 64
+    assert len(config["security"]["pepper"]) == 64
+    assert "enable_passwd_force_expiration" not in config["security"]
 
 
 def test_managed_test_config_restores_existing_config_exactly(tmp_path):

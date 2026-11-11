@@ -1,9 +1,10 @@
+# Deployment settings are read at startup; changes require a restart.
+# Business policies: see docs/DATABASE_OPTIONS.md and `maintain config options`.
 # Enable debug mode for verbose logging and additional debugging features
 debug = false
 
 [server]
-# Name of the server
-name = "CFMS WebSocket Server"
+# Display name is managed with `maintain config options`, under core/server.
 # Host address to bind the server to
 host = "localhost"
 # Port to listen on
@@ -43,26 +44,7 @@ busy_retry_after_seconds = 1
 [security]
 # Pepper used for password hashing
 pepper = ""
-# Minimum required length for passwords
-passwd_min_length = 8
-# Maximum allowed length for passwords
-passwd_max_length = 32
-# Enable forced password expiration policy
-enable_passwd_force_expiration = true
-# Enable mandatory password changes for non-compliant passwords.
-# Users with passwords that do not meet the security requirements will be forced to change them upon logging in.
-require_passwd_enforcement_changes = true
-# Number of days after which a password expires
-passwd_expire_after_days = 365
-# The regular expression rules that the password should conform to.
-passwd_rules = [
-    '[A-Z]',        # Capital letters
-    '[a-z]',        # Lowercase letters
-    '[0-9]',        # Digits
-    '[!@#$%^&*()]'  # Special characters
-]
-# The minimum number of rules that a password should conform to when matching `passwd_rules`.
-passwd_min_passed_count = 2
+# Password and risk policies are managed with `maintain config options`.
 
 # Whether to require clients to provide a certificate for authentication.
 # If enabled, the server will verify if the client certificate is trusted.
@@ -72,55 +54,6 @@ require_client_cert = false
 # Must point to a directory, and certificates within must follow OpenSSL naming conventions.
 # Only takes effect when require_client_cert is true.
 client_cert_ca_path = "./content/ssl/client/"
-
-[security.auth_throttle]
-# Failed authentication throttling. Missing settings use these defaults.
-enabled = true
-account_failure_threshold = 5
-account_base_delay_seconds = 30
-account_max_delay_seconds = 3600
-account_reset_seconds = 86400
-account_ip_failure_threshold = 5
-account_ip_window_seconds = 900
-account_ip_block_seconds = 900
-ip_failure_threshold = 60
-ip_window_seconds = 600
-ip_block_seconds = 900
-record_retention_days = 7
-
-[security.request_rate_control]
-# Start in observation mode, then calibrate with production telemetry before
-# switching to "enforce". "disabled" skips token-bucket accounting.
-mode = "observe"
-connection_capacity = 20
-connection_refill_tokens = 60
-connection_refill_period_seconds = 60
-request_refill_period_seconds = 60
-account_capacity = 120
-account_refill_tokens = 120
-ip_capacity = 600
-ip_refill_tokens = 600
-state_retention_seconds = 600
-
-[security.request_rate_control.action_costs]
-# Optional positive integer costs keyed by request action. Unlisted actions use
-# calibrated handler defaults in the 1, 2, 3, 5, 10, and 20 cost tiers. Values
-# here override those defaults. See docs/REQUEST_RATE_CONTROL.md for the matrix.
-# Quote namespaced action keys, for example: "core.search.query" = 4
-
-[identity.permission_retention]
-# Expired direct-user and group permission entries remain visible for this many days.
-retention_days = 30
-# Run one bounded background cleanup pass at this interval.
-cleanup_interval_seconds = 3600
-# Maximum entries removed from each permission table per background pass.
-batch_size = 500
-
-[maintenance.audit_retention]
-# Default age threshold used by manual audit maintenance commands.
-retention_days = 365
-# Maximum archived audit entries deleted in each transaction.
-batch_size = 500
 
 [scheduling]
 # Runtime settings for the always-on scheduling core.
@@ -133,80 +66,7 @@ poll_interval_seconds = 1.0
 execution_lease_seconds = 60
 lease_refresh_seconds = 20
 shutdown_grace_seconds = 30
-misfire_grace_seconds = 300
-history_retention_days = 90
 claim_batch_size = 100
-
-[access]
-# Enable recursive access checks.
-# When enabled, access rules will be checked for the requested object itself, 
-# as well as all parent directories up to the root.
-# This may cause significant performance issues if the hierarchy is too deep. 
-# Alternatively, you can disable this and ensure access rules are set correctly on every directory.
-enable_access_recursive_check = true
-
-[document.upload]
-# Time allowed to begin an upload after its task is created.
-start_timeout_seconds = 3600
-# Hard deadline applied after an upload starts.
-max_duration_seconds = 86400
-# Abort an upload when no frame arrives within this interval.
-idle_timeout_seconds = 300
-# Interval for the hidden abandoned-upload and creation-risk cleanup schedules.
-cleanup_interval_seconds = 60
-# Maximum number of empty, not-yet-uploaded documents per creator.
-max_pending_documents_per_creator = 16
-
-[document.upload.creation_risk_control]
-# Adaptive document-creation risk control. Use "observe" to log decisions without
-# enforcing rate denials. Pending-document limits are always enforced.
-mode = "enforce"
-refill_period_seconds = 600
-account_capacity = 60
-account_refill_tokens = 300
-ip_capacity = 200
-ip_refill_tokens = 1000
-new_account_seconds = 604800
-pending_elevated_ratio = 0.5
-pending_high_ratio = 0.75
-ip_account_window_seconds = 600
-ip_accounts_elevated = 4
-ip_accounts_high = 10
-denial_window_seconds = 600
-denials_elevated = 1
-denials_high = 3
-elevated_cost = 3
-high_cost = 10
-state_retention_seconds = 86400
-
-[document.download.risk_control]
-# Download limits start in observation mode. Shadow decisions are logged but do
-# not reject task issuance or transfer starts until mode is changed to "enforce".
-mode = "observe"
-refill_period_seconds = 600
-issue_account_capacity = 60
-issue_account_refill_tokens = 300
-issue_ip_capacity = 200
-issue_ip_refill_tokens = 1000
-transfer_account_capacity = 60
-transfer_account_refill_tokens = 300
-transfer_ip_capacity = 200
-transfer_ip_refill_tokens = 1000
-# A single bearer task may start five times immediately and refills ten starts
-# over its one-hour lifetime.
-task_capacity = 5
-task_refill_tokens = 10
-task_refill_period_seconds = 3600
-new_account_seconds = 604800
-ip_account_window_seconds = 600
-ip_accounts_elevated = 4
-ip_accounts_high = 10
-denial_window_seconds = 600
-denials_elevated = 1
-denials_high = 3
-elevated_cost = 3
-high_cost = 10
-state_retention_seconds = 86400
 
 [database]
 # Database type to use ("sqlite", "mysql", or "postgresql")
@@ -278,14 +138,8 @@ max_pool_connections = 64
 # Add "scheduled_lockdown" to schedule lockdown transitions or windows.
 enabled = []
 
-# Automatically enter lockdown after a service-wide burst of failed local
-# password or TOTP authentication attempts.
-[extensions.brute_force_lockdown]
-window_seconds = 600
-failure_threshold = 50
-distinct_account_threshold = 10
-distinct_ip_threshold = 10
-reason = "Automatic security lockdown: suspected credential-guessing attack detected."
+# Brute-force lockdown policy is managed with `maintain config options`, under
+# security.brute_force_lockdown; enable the extension above to use the detector.
 
 # Optional HTTPS API framework for extension-owned APIRouter registrations.
 # Install with `uv sync --extra ext-http-api` and add "http_api" to enabled.
@@ -315,9 +169,4 @@ client_id = ""
 client_secret = ""
 # Redirect URI registered with the provider and used by the client.
 redirect_uri = ""
-# Claim used to map the external identity to a CFMS username.
-username_claim = "preferred_username"
-# Automatically create local users when the mapped username does not exist.
-auto_provision = false
-# Groups assigned to auto-provisioned users.
-default_groups = ["user"]
+# User mapping and auto-provisioning are managed in the identity.oidc database namespace.

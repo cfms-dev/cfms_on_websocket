@@ -63,6 +63,8 @@ uv run maintain --help
 More detailed guides are available for
 [extensions](docs/EXTENSIONS.md),
 [default group permission synchronization](docs/IDENTITY_PERMISSIONS_API.md#restoring-default-group-permission-records),
+[database configuration](docs/DATABASE_OPTIONS.md),
+[logical backups](docs/BACKUPS.md),
 [audit log queries](docs/AUDIT_LOG_API.md), and
 [audit log maintenance](docs/AUDIT_LOG_MAINTENANCE.md).
 

@@ -1,0 +1,1 @@
+Add namespaced, typed database business settings with transactional revisions, explicit TOML migration, extension lifecycle support, maintenance commands and version 2 logical backups. Deployment TOML changes now require a restart; certificate file reload remains supported.

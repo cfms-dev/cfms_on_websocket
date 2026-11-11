@@ -1,16 +1,4 @@
-"""include/conf_loader.py
-
-This module loads the global configuration from a TOML file and exposes it
-as a thread-safe, dict-like singleton that automatically reloads when the
-config file changes on disk.
-
-All parsing and writing is done through ``tomlkit`` so that comments and
-formatting are preserved across reloads and write-backs.
-
-The watchdog observer monitors the *directory* containing the config file
-rather than the file itself, so that atomic replacements (write-to-temp +
-rename, or symlink updates) are detected reliably.
-"""
+"""Validated deployment settings, captured at startup without file monitoring."""
 
 import pathlib
 import secrets
@@ -18,82 +6,17 @@ import threading
 from collections.abc import Iterator, Mapping
 from typing import Any, Final
 
-from loguru import logger
 from tomlkit import TOMLDocument, dumps, parse
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
-lazy from watchdog.observers.api import BaseObserver
 
+from include.config.legacy_options import legacy_option_paths
 from include.config.paths import EXECUTABLE_ABSPATH
 from include.config.validation import ConfigValidationError, parse_config_document
 
 __all__ = ["global_config"]
 
 
-class _ConfigEventHandler(FileSystemEventHandler):
-    """Watchdog handler that triggers a config reload when the target config
-    file (or a symlink to it) changes in the watched directory.
-
-    The directory is watched rather than the file itself so that atomic
-    symlink swaps are picked up, but events are filtered to only react to
-    changes that affect the config file."""
-
-    def __init__(self, config: GlobalConfig, target_path: pathlib.Path):
-        self._config = config
-        self._target = target_path.resolve()
-        self._debounce_timer: threading.Timer | None = None
-        self._debounce_sec = 0.5
-
-    @staticmethod
-    def _resolve_path(path_str: str) -> pathlib.Path | None:
-        """Resolve *path_str* to a ``pathlib.Path``, returning ``None`` on
-        any error so that callers can safely inspect arbitrary event paths."""
-        try:
-            return pathlib.Path(path_str).resolve()
-        except OSError:
-            return None
-
-    def _is_target(self, event) -> bool:
-        return self._resolve_path(event.src_path) == self._target
-
-    def _schedule_reload(self):
-        if self._debounce_timer:
-            self._debounce_timer.cancel()
-        self._debounce_timer = threading.Timer(self._debounce_sec, self._config.reload)
-        self._debounce_timer.daemon = True
-        self._debounce_timer.start()
-
-    def on_modified(self, event):
-        if event.is_directory or not self._is_target(event):
-            return
-        self._schedule_reload()
-
-    def on_created(self, event):
-        if event.is_directory or not self._is_target(event):
-            return
-        self._schedule_reload()
-
-    def on_moved(self, event):
-        if event.is_directory:
-            return
-        # Check both src_path (file moved away from the target) and
-        # dest_path (another file moved *onto* the target, e.g. atomic
-        # write-via-rename).  ``dest_path`` only exists on move events
-        # so we guard with getattr.
-        src_match = self._is_target(event)
-        dest_match = self._resolve_path(getattr(event, "dest_path", "")) == self._target
-        if not src_match and not dest_match:
-            return
-        self._schedule_reload()
-
-
 class GlobalConfig(Mapping[str, Any]):
-    """Thread-safe global configuration backed by a TOML file.
-
-    Watches the config file's *directory* so that atomic write patterns
-    (write-to-temp + rename, symlink swaps) are picked up.  Supports
-    dict-like read access for backward compatibility.
-    """
+    """Validated startup configuration. File changes require a restart."""
 
     _initialized = False
 
@@ -109,17 +32,14 @@ class GlobalConfig(Mapping[str, Any]):
         self._config_path = pathlib.Path(config_path).resolve()
         self._data: TOMLDocument
         self._lock = threading.Lock()
-        self._observer: BaseObserver | None = None
 
-        self._init_secrets()
         self._load()
-        self._start_watching()
 
         self._initialized = True
 
     # -- first-run initialization ------------------------------------------
 
-    def _init_secrets(self):
+    def initialize_secrets(self) -> None:
         """Generate ``secret_key`` and ``pepper`` on first run.
 
         Uses ``tomlkit`` to preserve comments and formatting when writing
@@ -137,11 +57,26 @@ class GlobalConfig(Mapping[str, Any]):
         with open(self._config_path, encoding="utf-8") as f:
             toml_doc = parse(f.read())
 
-        toml_doc["server"]["secret_key"] = secrets.token_hex(32)
-        toml_doc["security"]["pepper"] = secrets.token_hex(32)
+        changed = False
+        for section, key in (("server", "secret_key"), ("security", "pepper")):
+            if not toml_doc[section][key]:
+                toml_doc[section][key] = secrets.token_hex(32)
+                changed = True
+        if not changed:
+            return
 
         with open(self._config_path, "w", encoding="utf-8") as f:
             f.write(dumps(toml_doc))
+
+        self._load()
+
+    def require_migrated_options(self) -> None:
+        if self._legacy_option_paths:
+            raise ConfigValidationError(
+                "Database-backed settings remain in config.toml: "
+                + ", ".join(self._legacy_option_paths)
+                + ". Run 'maintain config migrate-options' before starting the server."
+            )
 
     # -- loading ----------------------------------------------------------
 
@@ -151,40 +86,7 @@ class GlobalConfig(Mapping[str, Any]):
 
         with self._lock:
             self._data = new_data
-
-        if self._initialized:
-            logger.info(f"Configuration reloaded from {self._config_path}")
-
-    # -- watchdog ---------------------------------------------------------
-
-    def _start_watching(self):
-        watch_dir = str(self._config_path.parent)
-        observer = Observer()
-        observer.schedule(
-            _ConfigEventHandler(self, self._config_path),
-            watch_dir,
-            recursive=False,
-        )
-        observer.daemon = True
-        observer.start()
-        self._observer = observer
-
-    def reload(self) -> bool:
-        """Force an immediate reload (also called by the watchdog handler)."""
-        try:
-            self._load()
-        except ConfigValidationError as exc:
-            logger.error(
-                f"Configuration reload rejected; keeping the previous values: {exc}"
-            )
-            return False
-        return True
-
-    def stop(self):
-        """Stop the watchdog observer (e.g. during graceful shutdown)."""
-        if self._observer:
-            self._observer.stop()
-            self._observer.join()
+            self._legacy_option_paths = legacy_option_paths(new_data)
 
     # -- dict-like access (thread-safe reads) -----------------------------
 

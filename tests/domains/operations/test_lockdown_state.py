@@ -910,7 +910,6 @@ if sys.argv[1] == "enable":
 elif sys.argv[1] == "disable":
     apply_lockdown(False)
 print(orjson.dumps(lockdown_state_manager.get_state().as_response_data()).decode())
-global_config.stop()
 """
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(source_dir)

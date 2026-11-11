@@ -23,14 +23,9 @@ _TEST_SERVER_SETTINGS = pytest.StashKey[ServerTestSettings]()
 
 
 def _close_imported_runtime() -> None:
-    settings_module = sys.modules.get("include.config.settings")
     database_module = sys.modules.get("include.database.session")
-    try:
-        if settings_module is not None:
-            settings_module.global_config.stop()
-    finally:
-        if database_module is not None:
-            database_module.engine.dispose()
+    if database_module is not None:
+        database_module.engine.dispose()
 
 
 def pytest_plugin_registered(plugin: object) -> None:
