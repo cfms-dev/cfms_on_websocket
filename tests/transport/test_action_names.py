@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from include.config.validation import RequestRateControlPolicy
 from tests.support.request_names import REQUEST_RENAMES
 
 
@@ -23,6 +24,11 @@ def test_request_registry_matches_protocol_30(
         server_main, "whitelisted_functions", list(server_main.whitelisted_functions)
     )
     monkeypatch.setattr(server_main, "global_config", {"debug": debug})
+    monkeypatch.setattr(
+        RequestRateControlPolicy,
+        "from_options",
+        classmethod(lambda cls, _session: cls()),
+    )
     monkeypatch.setattr(
         server_main,
         "pm",

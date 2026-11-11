@@ -13,6 +13,7 @@ import include.database.models  # noqa: F401
 from include.config.validation import SchedulingPolicy
 from include.database.clock import database_now
 from include.database.models.identity import User
+from include.database.models.operations import OptionEntry
 from include.database.models.scheduling import (
     Schedule,
     ScheduleExecution,
@@ -51,6 +52,7 @@ def shared_database(request):
         )
         tables = (
             users,
+            OptionEntry.__table__,
             SchedulingRuntimeState.__table__,
             Schedule.__table__,
             ScheduleExecution.__table__,
