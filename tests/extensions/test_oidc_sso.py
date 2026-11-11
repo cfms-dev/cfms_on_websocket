@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 import include.database.models  # noqa: F401
+from include.config.options import register_options, unregister_options, write_options
 from include.database.models import identity as identity_models
 from include.database.models.auth import (
     UserPasswordCredential,
@@ -53,7 +54,12 @@ class _Connection:
 
 
 @pytest.fixture
-def oidc_context(monkeypatch):
+def oidc_context(monkeypatch, sqlite_engine_factory):
+    database = sqlite_engine_factory()
+    Base.metadata.create_all(database)
+    sessions = sessionmaker(bind=database)
+    monkeypatch.setattr(extension, "Session", sessions)
+    register_options("identity.oidc", extension.POLICY_OPTIONS, owner="oidc_sso")
     config = {
         "extensions": {
             "oidc_sso": {
@@ -87,7 +93,8 @@ def oidc_context(monkeypatch):
     monkeypatch.setattr(extension.requests, "get", discovery)
     monkeypatch.setattr(extension, "time", fixed_time)
     monkeypatch.setattr(memory, "time", fixed_time)
-    return SimpleNamespace(
+    yield SimpleNamespace(
+        sessions=sessions,
         config=config,
         metadata=metadata,
         discovery=discovery,
@@ -95,11 +102,13 @@ def oidc_context(monkeypatch):
         clock=clock,
     )
 
+    unregister_options("oidc_sso")
+
 
 @pytest.mark.parametrize(
     "requested_redirect", [None, "https://client.example/callback"]
 )
-@pytest.mark.unit
+@pytest.mark.component
 def test_oidc_start_uses_extension_namespace_and_persists_pkce_state(
     oidc_context, requested_redirect
 ):
@@ -161,7 +170,7 @@ def test_oidc_start_uses_extension_namespace_and_persists_pkce_state(
 
 
 @pytest.mark.parametrize("missing", ["issuer", "client_id", "redirect_uri"])
-@pytest.mark.unit
+@pytest.mark.component
 def test_oidc_start_rejects_missing_configuration_before_http(oidc_context, missing):
     del oidc_context.config["extensions"]["oidc_sso"][missing]
     connection = _Connection({})
@@ -179,7 +188,7 @@ def test_oidc_start_rejects_missing_configuration_before_http(oidc_context, miss
 
 
 @pytest.mark.parametrize("ttl", [0, -1])
-@pytest.mark.unit
+@pytest.mark.component
 def test_oidc_start_rejects_nonpositive_state_ttl(oidc_context, ttl):
     oidc_context.config["extensions"]["oidc_sso"]["state_ttl_seconds"] = ttl
     connection = _Connection({})
@@ -196,7 +205,7 @@ def test_oidc_start_rejects_nonpositive_state_ttl(oidc_context, ttl):
     oidc_context.discovery.assert_not_called()
 
 
-@pytest.mark.unit
+@pytest.mark.component
 def test_oidc_start_rejects_redirect_uri_override(oidc_context):
     connection = _Connection({"redirect_uri": "https://other.example/callback"})
 
@@ -212,7 +221,7 @@ def test_oidc_start_rejects_redirect_uri_override(oidc_context):
     oidc_context.discovery.assert_not_called()
 
 
-@pytest.mark.unit
+@pytest.mark.component
 def test_oidc_start_rejects_discovery_issuer_mismatch(oidc_context):
     oidc_context.metadata["issuer"] = "https://other.example"
     connection = _Connection({})
@@ -692,7 +701,13 @@ def test_oidc_callback_rejects_unknown_user_when_provisioning_is_disabled(
 @pytest.mark.parametrize("username", [None, "", 42])
 def test_oidc_callback_rejects_invalid_username_claim(oidc_callback_context, username):
     context = oidc_callback_context
-    context.config["extensions"]["oidc_sso"]["auto_provision"] = True
+    with context.sessions.begin() as session:
+        write_options(
+            session,
+            "identity.oidc",
+            {"auto_provision": True},
+            expected_revisions={"auto_provision": 0},
+        )
     context.claims["sub"] = "unbound-subject"
     if username is None:
         del context.claims["preferred_username"]
@@ -722,7 +737,13 @@ def test_oidc_callback_provisions_user_with_configured_group_and_commits_login(
     oidc_callback_context,
 ):
     context = oidc_callback_context
-    context.config["extensions"]["oidc_sso"]["auto_provision"] = True
+    with context.sessions.begin() as session:
+        write_options(
+            session,
+            "identity.oidc",
+            {"auto_provision": True},
+            expected_revisions={"auto_provision": 0},
+        )
     context.claims.update(
         preferred_username="new-user", sub="new-subject", name="New User"
     )
@@ -761,7 +782,13 @@ def test_oidc_callback_does_not_provision_user_when_default_group_is_missing(
     oidc_callback_context,
 ):
     context = oidc_callback_context
-    context.config["extensions"]["oidc_sso"]["auto_provision"] = True
+    with context.sessions.begin() as session:
+        write_options(
+            session,
+            "identity.oidc",
+            {"auto_provision": True},
+            expected_revisions={"auto_provision": 0},
+        )
     context.claims["preferred_username"] = "new-user"
     context.claims["sub"] = "new-subject"
     connection = _Connection(context.request_data)
@@ -818,7 +845,13 @@ def test_oidc_unknown_subject_cannot_claim_existing_username(
     oidc_callback_context, auto_provision
 ):
     context = oidc_callback_context
-    context.config["extensions"]["oidc_sso"]["auto_provision"] = auto_provision
+    with context.sessions.begin() as session:
+        write_options(
+            session,
+            "identity.oidc",
+            {"auto_provision": auto_provision},
+            expected_revisions={"auto_provision": 0},
+        )
     context.claims["sub"] = "unbound-subject"
     connection = _Connection(context.request_data)
     assert (

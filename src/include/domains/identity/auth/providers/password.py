@@ -4,6 +4,7 @@ from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from include.config.validation import PasswordPolicy
 from include.database.models.auth import UserPasswordCredential
 from include.database.models.identity import User
 from include.database.session import Session as DatabaseSession
@@ -125,7 +126,9 @@ class PasswordAuthProvider(BaseAuthMethodProvider):
 
         assert credential is not None
 
-        assessment = assess_password(credential, password)
+        assessment = assess_password(
+            credential, password, PasswordPolicy.from_options(session)
+        )
         credential.rehash_if_needed(password)
 
         return AuthVerificationResult(

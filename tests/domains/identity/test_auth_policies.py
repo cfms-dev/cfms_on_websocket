@@ -439,8 +439,8 @@ def test_missing_account_rejects_authentication_without_unbound_throttle_records
     monkeypatch.setattr(login_guard, "Session", auth_sessions)
     monkeypatch.setattr(
         login_guard.AuthThrottlePolicy,
-        "from_config",
-        classmethod(lambda cls: login_guard.AuthThrottlePolicy()),
+        "from_options",
+        classmethod(lambda cls, _session: login_guard.AuthThrottlePolicy()),
     )
     monkeypatch.setattr(
         login_guard.LoginGuard,
@@ -869,7 +869,7 @@ def complete_with_backup(handler, signing_key, backup_code):
 def test_password_change_is_offered_only_after_mfa(
     login_context, auth_sessions, monkeypatch, requirement
 ):
-    from include.config.settings import global_config
+    from include.config.options import write_options
 
     user_id, _, codes, signing_key = login_context
     with auth_sessions.begin() as session:
@@ -879,10 +879,16 @@ def test_password_change_is_offered_only_after_mfa(
             credential.passwd_last_modified = 0
         elif requirement == "expired":
             credential.passwd_last_modified = 1
-    cfg = global_config["security"]
-    monkeypatch.setitem(cfg, "enable_passwd_force_expiration", requirement == "expired")
-    if requirement == "rules":
-        monkeypatch.setitem(cfg, "passwd_min_length", 30)
+    with auth_sessions.begin() as session:
+        values = {"enable_passwd_force_expiration": requirement == "expired"}
+        if requirement == "rules":
+            values["passwd_min_length"] = 30
+        write_options(
+            session,
+            "security.password",
+            values,
+            expected_revisions=dict.fromkeys(values, 0),
+        )
     handler = password_login()
     assert (
         auth.RequestLoginHandler()
@@ -925,7 +931,7 @@ def test_password_change_is_offered_only_after_mfa(
 def test_mfa_rejects_lost_or_changed_password_state(
     login_context, auth_sessions, monkeypatch, change
 ):
-    from include.config.settings import global_config
+    from include.config.options import read_options, write_options
     from include.domains.identity import sessions
 
     user_id, _, codes, signing_key = login_context
@@ -944,8 +950,14 @@ def test_mfa_rejects_lost_or_changed_password_state(
             f"auth:password:{token.auth_context.attempt_id}"
         )
     elif change == "rules":
-        cfg = global_config["security"]
-        monkeypatch.setitem(cfg, "passwd_min_length", cfg["passwd_min_length"] + 1)
+        with auth_sessions.begin() as session:
+            option = read_options(session, "security.password")["passwd_min_length"]
+            write_options(
+                session,
+                "security.password",
+                {"passwd_min_length": option.value + 1},
+                expected_revisions={"passwd_min_length": option.revision},
+            )
     else:
         with auth_sessions.begin() as session:
             session.get(User, user_id).secret_key = "changed" * 10
@@ -1133,8 +1145,8 @@ def test_login_failures_do_not_disclose_account_or_method_availability(
     monkeypatch.setattr(login_guard, "Session", auth_sessions)
     monkeypatch.setattr(
         login_guard.AuthThrottlePolicy,
-        "from_config",
-        classmethod(lambda cls: login_guard.AuthThrottlePolicy()),
+        "from_options",
+        classmethod(lambda cls, _session: login_guard.AuthThrottlePolicy()),
     )
     monkeypatch.setattr(
         login_guard.LoginGuard,
@@ -1590,8 +1602,8 @@ def test_public_key_dialog_rejects_invalid_or_stale_proofs(
         )
         monkeypatch.setattr(
             request_rate_control.RequestRateControlPolicy,
-            "from_config",
-            classmethod(lambda cls: policy),
+            "from_options",
+            classmethod(lambda cls, _session: policy),
         )
         monkeypatch.setattr(
             request_rate_control,

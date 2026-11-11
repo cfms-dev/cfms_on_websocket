@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from include.config.options import OptionDefinition, read_options
 from include.config.settings import global_config
 from include.database.models.identity import User, UserGroup, UserMembership
 from include.database.session import Session
@@ -55,8 +56,8 @@ from include.transport.request_handler import (
     RequestHandler,
     Result,
 )
+from include.types import NonEmptyString
 lazy from include.transport.connection import ConnectionHandler
-lazy from include.types import NonEmptyString
 
 logger = log.bind(name="oidc_sso")
 
@@ -81,7 +82,7 @@ def _as_plain(value: Any) -> Any:
     return value
 
 
-def _get_oidc_config() -> dict[str, Any]:
+def _get_oidc_deployment_config() -> dict[str, Any]:
     extensions_cfg = _as_plain(global_config.get("extensions", {})) or {}
     oidc_cfg = _as_plain(extensions_cfg.get("oidc_sso", {})) or {}
 
@@ -94,13 +95,30 @@ def _get_oidc_config() -> dict[str, Any]:
         "client_id": client_id,
         "client_secret": str(oidc_cfg.get("client_secret", "")),
         "redirect_uri": redirect_uri,
-        "username_claim": str(oidc_cfg.get("username_claim", "preferred_username")),
-        "auto_provision": bool(oidc_cfg.get("auto_provision", False)),
-        "default_groups": list(oidc_cfg.get("default_groups", ["user"])),
         "state_ttl_seconds": int(
             oidc_cfg.get("state_ttl_seconds", DEFAULT_STATE_TTL_SECONDS)
         ),
         "scope": str(oidc_cfg.get("scope", DEFAULT_SCOPE)),
+    }
+
+
+POLICY_OPTIONS = (
+    OptionDefinition("username_claim", 1, NonEmptyString, "preferred_username"),
+    OptionDefinition("auto_provision", 1, bool, False),
+    OptionDefinition("default_groups", 1, list[NonEmptyString], ["user"]),
+)
+
+
+@hookimpl
+def ext_register_options() -> dict[str, tuple["OptionDefinition[Any]", ...]]:
+    return {"identity.oidc": POLICY_OPTIONS}
+
+
+def _get_oidc_config() -> dict[str, Any]:
+    with Session() as session:
+        options = read_options(session, "identity.oidc", POLICY_OPTIONS)
+    return _get_oidc_deployment_config() | {
+        key: option.value for key, option in options.items()
     }
 
 
@@ -393,7 +411,7 @@ class OIDCAuthProvider(BaseAuthMethodProvider):
             raise AuthenticationFailure(401, "Invalid credentials") from exc
 
     def list_credentials(self, session, user: User) -> list[RegisteredCredential]:
-        issuer = _get_oidc_config()["issuer"]
+        issuer = _get_oidc_deployment_config()["issuer"]
         return [
             RegisteredCredential(
                 method=self.method_id,
@@ -418,7 +436,7 @@ class OIDCAuthProvider(BaseAuthMethodProvider):
         if (
             credential is None
             or credential.user_id != user.id
-            or identity.issuer != _get_oidc_config()["issuer"]
+            or identity.issuer != _get_oidc_deployment_config()["issuer"]
         ):
             return AuthVerificationResult(
                 success=False, error_message="Invalid credentials"

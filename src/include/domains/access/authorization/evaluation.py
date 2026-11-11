@@ -6,7 +6,7 @@ from sqlalchemy.orm.session import object_session
 lazy from sqlalchemy.orm import Session
 
 from include.config.constants import AVAILABLE_ACCESS_TYPES
-from include.config.settings import global_config
+from include.config.options import CORE_OPTIONS, read_option
 from include.database.models.documents import Document, Folder
 from include.domains.access.authorization.compiled_rules import (
     CompiledRuleMap,
@@ -39,7 +39,7 @@ def check_access_requirements(
     recursive: bool | None = None,
 ) -> bool:
     if recursive is None:
-        recursive = global_config["access"]["enable_access_recursive_check"]
+        recursive = read_option(session, "access", CORE_OPTIONS["access"][0]).value
 
     assert recursive is not None, "Recursive check must be explicitly set or configured"
 

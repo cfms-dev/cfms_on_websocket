@@ -27,7 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from include.config.constants import AVAILABLE_BLOCK_TYPES
-from include.config.settings import global_config
+from include.config.validation import PasswordPolicy
 from include.database.errors import is_unique_constraint_violation
 from include.database.models.access import (
     UserBlockEntry,
@@ -1335,12 +1335,13 @@ class RequestSetPasswdHandler(RequestHandler[_SetPasswordRequest]):
 
             try:
                 if not bypass_passwd_requirements:
+                    policy = PasswordPolicy.from_options(session)
                     check_passwd_requirements(
                         request.new_passwd,
-                        global_config["security"]["passwd_min_length"],
-                        global_config["security"]["passwd_max_length"],
-                        global_config["security"]["passwd_rules"],
-                        global_config["security"]["passwd_min_passed_count"],
+                        policy.passwd_min_length,
+                        policy.passwd_max_length,
+                        policy.passwd_rules,
+                        policy.passwd_min_passed_count,
                     )
             except InvalidPasswordLengthError as exc:
                 return respond(

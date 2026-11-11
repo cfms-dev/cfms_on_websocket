@@ -1,10 +1,11 @@
 import hashlib
 import time
+from dataclasses import asdict
 
 import orjson
 from sqlalchemy.orm import Session
 
-from include.config.settings import global_config
+from include.config.validation import PasswordPolicy
 from include.database.models.auth import UserPasswordCredential
 from include.database.models.identity import User
 from include.domains.identity.auth.types import (
@@ -16,45 +17,30 @@ from include.domains.identity.validators.passwords import check_passwd_requireme
 from include.providers.manager import ProviderManager
 
 
-def password_policy_digest() -> str:
-    cfg = global_config["security"]
+def password_policy_digest(policy: PasswordPolicy) -> str:
     return hashlib.sha256(
-        orjson.dumps(
-            {
-                key: cfg[key]
-                for key in (
-                    "passwd_min_length",
-                    "passwd_max_length",
-                    "passwd_rules",
-                    "passwd_min_passed_count",
-                    "enable_passwd_force_expiration",
-                    "passwd_expire_after_days",
-                )
-            },
-            option=orjson.OPT_SORT_KEYS,
-        )
+        orjson.dumps(asdict(policy), option=orjson.OPT_SORT_KEYS)
     ).hexdigest()
 
 
 def assess_password(
-    credential: UserPasswordCredential, password: str
+    credential: UserPasswordCredential, password: str, policy: PasswordPolicy
 ) -> PasswordAssessment:
-    cfg = global_config["security"]
     satisfied = True
     try:
         check_passwd_requirements(
             password,
-            cfg["passwd_min_length"],
-            cfg["passwd_max_length"],
-            cfg["passwd_rules"],
-            cfg["passwd_min_passed_count"],
+            policy.passwd_min_length,
+            policy.passwd_max_length,
+            policy.passwd_rules,
+            policy.passwd_min_passed_count,
         )
     except ValueError:
         satisfied = False
     return PasswordAssessment(
         credential_id=credential.credential_id,
         modified_at=credential.passwd_last_modified,
-        policy_digest=password_policy_digest(),
+        policy_digest=password_policy_digest(policy),
         rules_satisfied=satisfied,
     )
 
@@ -75,24 +61,24 @@ def password_change_requirement(
                 "Authentication state expired; restart login"
             )
         assessment = PasswordAssessment.model_validate_json(stored)
+    policy = PasswordPolicy.from_options(session)
     credential = session.get(UserPasswordCredential, user.id)
     if (
         credential is None
         or assessment.credential_id not in password_ids
         or credential.credential_id != assessment.credential_id
         or credential.passwd_last_modified != assessment.modified_at
-        or assessment.policy_digest != password_policy_digest()
+        or assessment.policy_digest != password_policy_digest(policy)
     ):
         raise InvalidAuthenticationAttempt(
             "Password or password policy changed; restart login"
         )
     if not assessment.rules_satisfied:
         return 4001
-    cfg = global_config["security"]
     if credential.passwd_last_modified == 0 or (
-        cfg["enable_passwd_force_expiration"]
+        policy.enable_passwd_force_expiration
         and time.time() - credential.passwd_last_modified
-        > 86400 * cfg["passwd_expire_after_days"]
+        > 86400 * policy.passwd_expire_after_days
     ):
         return 4002
     return None

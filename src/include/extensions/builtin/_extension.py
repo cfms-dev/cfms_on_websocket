@@ -8,6 +8,7 @@ lazy from sqlalchemy.orm import Session as OrmSession
 lazy from websockets.sync.server import Server
 
 from include.config.constants import CORE_VERSION, PROTOCOL_VERSION
+from include.config.options import SERVER_NAME_OPTION, read_option
 from include.config.settings import global_config
 from include.database.models.identity import User
 from include.database.session import Session, engine
@@ -80,9 +81,11 @@ class RequestServerInfoHandler(RequestHandler[EmptyRequestDataModel]):
 
     def handle(self, handler, request):
         lockdown_state = lockdown_state_manager.get_state()
+        with Session() as session:
+            server_name = read_option(session, "server", SERVER_NAME_OPTION).value
 
         server_info = {
-            "server_name": global_config["server"]["name"],
+            "server_name": server_name,
             "protocol_version": PROTOCOL_VERSION,
             "lockdown": lockdown_state.enabled,
             "lockdown_reason": lockdown_state.reason,
@@ -104,6 +107,7 @@ class RequestDiagnosticsHandler(RequestHandler[EmptyRequestDataModel]):
             if Permissions.DIAGNOSTICS not in user.all_permissions:
                 handler.conclude_request(403, {}, smsg.PERMISSION_DENIED)
                 return Result(code=403, target=None, user_id=handler.user_id)
+            server_name = read_option(session, "server", SERVER_NAME_OPTION).value
 
         lockdown_state = lockdown_state_manager.get_state()
         provider_config = global_config["provider"]
@@ -111,7 +115,7 @@ class RequestDiagnosticsHandler(RequestHandler[EmptyRequestDataModel]):
         diagnostics = {
             "schema_version": 1,
             "server": {
-                "server_name": global_config["server"]["name"],
+                "server_name": server_name,
                 "core_version": CORE_VERSION.original,
                 "protocol_version": PROTOCOL_VERSION,
                 "debug_configured": global_config["debug"],
