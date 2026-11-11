@@ -53,13 +53,14 @@ removes a pending credential. Other request and response fields remain unchanged
 
 ## Configuration, cursors and history
 
-TOML action-cost keys containing dots must be quoted:
+The `security.request_rate_control/action_costs` database option is a JSON map:
 
-```toml
-[security.request_rate_control.action_costs]
-"core.search.query" = 4
-"core.document.upload" = 8
+```json
+{"core.search.query": 4, "core.document.upload": 8}
 ```
+
+Migrate legacy TOML policy fields using `maintain config migrate-options`, then
+manage the option with the maintenance CLI and its current revision.
 
 Rename existing overrides explicitly. Old keys are unknown actions and continue to
 produce the existing startup warning; there is no automatic conversion.

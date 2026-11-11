@@ -1,5 +1,6 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from threading import Barrier
 from types import SimpleNamespace
 
@@ -14,7 +15,8 @@ from include.config.constants import (
     FILE_TASK_EVENT_CHANNEL,
     GLOBAL_BROADCAST_EVENT_CHANNEL,
 )
-from include.config.validation import ConfigValidationError, SchedulingPolicy
+from include.config.options import register_options, unregister_options, write_options
+from include.config.validation import SchedulingPolicy
 from include.database import system_states
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import User
@@ -50,19 +52,12 @@ def _config(**overrides):
         "reason": extension.DEFAULT_REASON,
     }
     settings.update(overrides)
-    return {
-        "extensions": {
-            "enabled": ["brute_force_lockdown"],
-            "brute_force_lockdown": settings,
-        }
-    }
+    return settings
 
 
 @pytest.mark.unit
 def test_policy_uses_defaults_when_extension_table_is_missing():
-    policy = extension.BruteForceLockdownPolicy.from_config(
-        {"extensions": {"enabled": ["brute_force_lockdown"]}}
-    )
+    policy = extension.BruteForceLockdownPolicy()
 
     assert policy == extension.BruteForceLockdownPolicy()
 
@@ -81,18 +76,18 @@ def test_policy_uses_defaults_when_extension_table_is_missing():
     ],
 )
 def test_policy_rejects_invalid_values(overrides, field):
-    with pytest.raises(ConfigValidationError) as error:
-        extension.BruteForceLockdownPolicy.from_config(_config(**overrides))
-
-    message = str(error.value)
-    assert "extensions.brute_force_lockdown" in message
-    assert field in message
+    with pytest.raises(ValidationError) as error:
+        extension.BruteForceLockdownPolicy(**_config(**overrides))
+    assert any(
+        item["loc"] == (field,) or (item["loc"] == () and item["type"] == "value_error")
+        for item in error.value.errors()
+    )
 
 
 @pytest.mark.unit
 def test_policy_normalizes_configured_reason():
-    policy = extension.BruteForceLockdownPolicy.from_config(
-        _config(reason="  Automatic maintenance  ")
+    policy = extension.BruteForceLockdownPolicy(
+        **_config(reason="  Automatic maintenance  ")
     )
 
     assert policy.reason == "Automatic maintenance"
@@ -119,17 +114,6 @@ def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
     for module in (lockdown_commands, lockdown_state):
         monkeypatch.setattr(module, "database_now", lambda _session: clock.now)
     monkeypatch.setattr(extension, "_STARTED_AT", 0.0)
-    monkeypatch.setattr(
-        extension,
-        "global_config",
-        _config(
-            window_seconds=100,
-            failure_threshold=3,
-            distinct_account_threshold=2,
-            distinct_ip_threshold=3,
-        ),
-    )
-
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine)
     for module in (extension, lockdown_commands, lockdown_state, audit):
@@ -150,8 +134,28 @@ def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
             ),
         )
 
+    register_options(
+        "security.brute_force_lockdown",
+        extension.POLICY_OPTIONS,
+        partial(
+            extension.ext_validate_options, namespace="security.brute_force_lockdown"
+        ),
+        owner="brute_force_lockdown",
+    )
     try:
         with sessions.begin() as session:
+            values = _config(
+                window_seconds=100,
+                failure_threshold=3,
+                distinct_account_threshold=2,
+                distinct_ip_threshold=3,
+            )
+            write_options(
+                session,
+                "security.brute_force_lockdown",
+                values,
+                expected_revisions=dict.fromkeys(values, 0),
+            )
             session.add_all(
                 User(
                     username=username,
@@ -162,6 +166,7 @@ def detector_context(monkeypatch, tmp_path, sqlite_engine_factory):
         yield SimpleNamespace(sessions=sessions, clock=clock, events=events)
     finally:
         scheduling.shutdown()
+        unregister_options("brute_force_lockdown")
 
 
 def _audit_failure(session, username, ip_address, logged_time):

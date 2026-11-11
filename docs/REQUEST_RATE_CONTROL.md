@@ -55,25 +55,25 @@ max_pending_streams_per_connection = 16
 busy_retry_after_seconds = 1
 ```
 
-Token-bucket quotas can be disabled, observed, or enforced:
+Token-bucket quotas use the `security.request_rate_control` database namespace.
+`mode` supports `disabled`, `observe` and `enforce`; its default is `observe`.
+Inspect the complete policy with:
 
-```toml
-[security.request_rate_control]
-mode = "observe" # "disabled", "observe", or "enforce"
-connection_capacity = 20
-connection_refill_tokens = 60
-connection_refill_period_seconds = 60
-request_refill_period_seconds = 60
-account_capacity = 120
-account_refill_tokens = 120
-ip_capacity = 600
-ip_refill_tokens = 600
-state_retention_seconds = 600
-
-[security.request_rate_control.action_costs]
-"core.search.query" = 4
-"core.document.upload" = 8
+```console
+maintain config options list --namespace security.request_rate_control
 ```
+
+`action_costs` is one JSON-object option, for example:
+
+```json
+{"core.search.query": 4, "core.document.upload": 8}
+```
+
+Set values with the maintenance CLI and the revision from the latest read; use
+`set-many` for related capacity and cost changes. See
+[database configuration](DATABASE_OPTIONS.md). Policy updates apply to subsequent
+operations without restarting. Deployment admission ceilings remain in TOML and
+require a restart.
 
 Each handler declares a positive integer `rate_limit_cost`, defaulting to one.
 Configuration overrides are checked at startup, including handlers registered by

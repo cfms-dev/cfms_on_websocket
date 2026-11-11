@@ -1,8 +1,10 @@
 from http import HTTPStatus
 
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from websockets import Headers, Request, Response
 lazy from websockets.sync.server import ServerConnection
 
+from include.config.validation import AdmissionControlPolicy
 from include.domains.security.guards.login import LoginGuard
 from include.domains.security.guards.request_rate_control import (
     check_connection_attempt,
@@ -25,7 +27,20 @@ def global_process_request(
             body=b"IP address is not permitted.",
         )
 
-    rate_decision = check_connection_attempt(ip)
+    try:
+        rate_decision = check_connection_attempt(ip)
+    except SQLAlchemyTimeoutError:
+        headers = Headers()
+        headers["Content-Type"] = "text/plain"
+        headers["Retry-After"] = str(
+            AdmissionControlPolicy.from_config().busy_retry_after_seconds
+        )
+        return Response(
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+            reason_phrase="Service Unavailable",
+            headers=headers,
+            body=b"Database capacity is busy.",
+        )
     if not rate_decision.allowed:
         response_headers = Headers()
         response_headers["Content-Type"] = "text/plain"

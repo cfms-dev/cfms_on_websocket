@@ -55,8 +55,8 @@ def guard_context(monkeypatch, tmp_path, sqlite_engine_factory):
     monkeypatch.setattr(login, "log_audit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         login.AuthThrottlePolicy,
-        "from_config",
-        classmethod(lambda _cls: policy),
+        "from_options",
+        classmethod(lambda _cls, _session: policy),
     )
     provider = SimpleNamespace(caching=MemoryCachingProvider())
     monkeypatch.setattr(login, "ProviderManager", lambda: provider)

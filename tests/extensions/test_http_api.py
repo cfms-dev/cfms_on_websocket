@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, Depends, FastAPI, Request
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from starlette import convertors as starlette_convertors
 
 from include.domains.access.permissions import Permissions
@@ -1685,3 +1686,27 @@ def test_startup_timeout_requests_shutdown_and_cleans_thread(
         runtime.start(FastAPI(), policy)
 
     assert runtime._active is None
+
+
+@pytest.mark.component
+@pytest.mark.asyncio
+async def test_rate_policy_pool_timeout_returns_503(monkeypatch, http_api_modules):
+    security = http_api_modules.security
+    app = FastAPI()
+    app.dependency_overrides[security.get_optional_http_principal] = lambda: None
+
+    def exhausted(*_args, **_kwargs):
+        raise SQLAlchemyTimeoutError()
+
+    monkeypatch.setattr(security, "check_request_rate", exhausted)
+
+    @app.get(
+        "/limited", dependencies=[Depends(security.http_rate_limit("consumer", "list"))]
+    )
+    def limited():
+        return {"executed": True}
+
+    async with _http_client(app) as client:
+        response = await client.get("/limited")
+    assert response.status_code == 503
+    assert int(response.headers["Retry-After"]) > 0

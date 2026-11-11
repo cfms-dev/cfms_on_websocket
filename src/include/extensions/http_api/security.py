@@ -16,9 +16,10 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger as log
 from pydantic import TypeAdapter, ValidationError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from include.config.settings import global_config
-from include.config.validation import get_trusted_proxy_networks
+from include.config.validation import AdmissionControlPolicy, get_trusted_proxy_networks
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
@@ -146,16 +147,27 @@ def http_rate_limit(
             Depends(get_optional_http_principal),
         ],
     ) -> None:
-        decision = check_request_rate(
-            action,
-            cost,
-            get_http_client_address(request),
-            user_id=principal.user_id if principal else None,
-            bypass=(
-                principal is not None
-                and Permissions.BYPASS_REQUEST_RATE_LIMIT in principal.permissions
-            ),
-        )
+        try:
+            decision = check_request_rate(
+                action,
+                cost,
+                get_http_client_address(request),
+                user_id=principal.user_id if principal else None,
+                bypass=(
+                    principal is not None
+                    and Permissions.BYPASS_REQUEST_RATE_LIMIT in principal.permissions
+                ),
+            )
+        except SQLAlchemyTimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database capacity is busy",
+                headers={
+                    "Retry-After": str(
+                        AdmissionControlPolicy.from_config().busy_retry_after_seconds
+                    )
+                },
+            ) from exc
         if not decision.allowed:
             retry_after = max(1, decision.retry_after_seconds)
             raise HTTPException(

@@ -196,7 +196,8 @@ class LoginGuard:
         if not subnet.allowed:
             return subnet
 
-        policy = AuthThrottlePolicy.from_config()
+        with Session() as policy_session:
+            policy = AuthThrottlePolicy.from_options(policy_session)
         if not policy.enabled:
             return ThrottleDecision(True)
 
@@ -330,14 +331,13 @@ class LoginGuard:
         username: str,
         factor: AuthFactor | str = AuthFactor.PASSWORD,
     ) -> ThrottleDecision:
-        policy = AuthThrottlePolicy.from_config()
-        if not policy.enabled:
-            return ThrottleDecision(True)
-
         factor_val = factor.value if isinstance(factor, AuthFactor) else str(factor)
         now = time.time()
         locked: list[tuple[ThrottleScope, tuple[str, ...], float]] = []
         with cls._write_lock, Session.begin() as session:
+            policy = AuthThrottlePolicy.from_options(session)
+            if not policy.enabled:
+                return ThrottleDecision(True)
             ip_record = cls._get_or_create(
                 session,
                 TrafficThrottle,

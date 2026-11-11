@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 def _use_policy(monkeypatch, guard, policy):
     monkeypatch.setattr(
         guard.RequestRateControlPolicy,
-        "from_config",
+        "from_options",
         classmethod(lambda cls, config=None: policy),
     )
 

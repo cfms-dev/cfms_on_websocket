@@ -16,6 +16,7 @@ from loguru import logger as log
 
 from include.config.settings import global_config
 from include.config.validation import RequestRateControlPolicy
+from include.database.session import Session
 from include.providers.base import RateLimitCharge
 from include.providers.manager import ProviderManager
 
@@ -97,7 +98,8 @@ def _evaluate(
 
 
 def check_connection_attempt(ip_address: str) -> RequestRateControlDecision:
-    policy = RequestRateControlPolicy.from_config()
+    with Session() as session:
+        policy = RequestRateControlPolicy.from_options(session)
     return _evaluate(
         (
             RateLimitCharge(
@@ -126,7 +128,8 @@ def check_request_rate(
 ) -> RequestRateControlDecision:
     if bypass:
         return RequestRateControlDecision(True)
-    policy = RequestRateControlPolicy.from_config()
+    with Session() as session:
+        policy = RequestRateControlPolicy.from_options(session)
     cost = policy.cost_for(action, handler_cost)
     charges = [
         RateLimitCharge(
@@ -161,7 +164,8 @@ def check_request_rate(
 def validate_handler_rate_limit_costs(
     handlers: dict[str, type],
 ) -> tuple[str, ...]:
-    policy = RequestRateControlPolicy.from_config()
+    with Session() as session:
+        policy = RequestRateControlPolicy.from_options(session)
     maximum_cost = min(policy.account_capacity, policy.ip_capacity)
     for action, handler in handlers.items():
         cost = handler.rate_limit_cost

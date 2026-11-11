@@ -185,8 +185,8 @@ def test_handler_cost_validation_rejects_invalid_declared_cost_even_when_overrid
     policy = RequestRateControlPolicy(action_costs=(("custom_action", 1),))
     monkeypatch.setattr(
         request_rate_control.RequestRateControlPolicy,
-        "from_config",
-        classmethod(lambda cls: policy),
+        "from_options",
+        classmethod(lambda cls, _session: policy),
     )
     handler = type("CustomHandler", (), {"rate_limit_cost": declared_cost})
 
@@ -205,8 +205,8 @@ def test_handler_cost_validation_reports_configured_unknown_actions(monkeypatch)
     )
     monkeypatch.setattr(
         request_rate_control.RequestRateControlPolicy,
-        "from_config",
-        classmethod(lambda cls: policy),
+        "from_options",
+        classmethod(lambda cls, _session: policy),
     )
     handler = type("CustomHandler", (), {"rate_limit_cost": 1})
 
@@ -223,8 +223,8 @@ def test_legacy_cost_override_does_not_configure_namespaced_action(monkeypatch):
     policy = RequestRateControlPolicy(action_costs=(("search", 9),))
     monkeypatch.setattr(
         request_rate_control.RequestRateControlPolicy,
-        "from_config",
-        classmethod(lambda cls: policy),
+        "from_options",
+        classmethod(lambda cls, _session: policy),
     )
     assert request_rate_control.validate_handler_rate_limit_costs(
         available_functions
