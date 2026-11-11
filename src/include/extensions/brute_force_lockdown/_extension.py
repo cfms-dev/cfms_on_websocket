@@ -14,7 +14,7 @@ from pydantic.dataclasses import dataclass as pydantic_dataclass
 from sqlalchemy import distinct, func, select
 lazy from sqlalchemy.orm import Session as OrmSession
 
-from include.config.options import OptionDefinition, read_options
+from include.config.options import OptionDefinition, SettingMetadata, read_options
 from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.session import Session
@@ -96,11 +96,56 @@ class FailureWindowStats:
 
 
 POLICY_OPTIONS = (
-    OptionDefinition("window_seconds", 1, PositiveInt, 600),
-    OptionDefinition("failure_threshold", 1, PositiveInt, 50),
-    OptionDefinition("distinct_account_threshold", 1, PositiveInt, 10),
-    OptionDefinition("distinct_ip_threshold", 1, PositiveInt, 10),
-    OptionDefinition("reason", 1, _ConfiguredLockdownReason, DEFAULT_REASON),
+    OptionDefinition(
+        "window_seconds",
+        1,
+        PositiveInt,
+        600,
+        setting=SettingMetadata(
+            "Detection window",
+            "Seconds over which failed sign-ins are counted. Applies to subsequent detection decisions.",
+        ),
+    ),
+    OptionDefinition(
+        "failure_threshold",
+        1,
+        PositiveInt,
+        50,
+        setting=SettingMetadata(
+            "Failure threshold",
+            "Failures required before automatic lockdown; must cover both distinct-account and distinct-IP thresholds. Applies to subsequent detection decisions.",
+        ),
+    ),
+    OptionDefinition(
+        "distinct_account_threshold",
+        1,
+        PositiveInt,
+        10,
+        setting=SettingMetadata(
+            "Distinct account threshold",
+            "Distinct accounts required for automatic lockdown; must not exceed failure_threshold. Applies to subsequent detection decisions.",
+        ),
+    ),
+    OptionDefinition(
+        "distinct_ip_threshold",
+        1,
+        PositiveInt,
+        10,
+        setting=SettingMetadata(
+            "Distinct IP threshold",
+            "Distinct IP addresses required for automatic lockdown; must not exceed failure_threshold. Applies to subsequent detection decisions.",
+        ),
+    ),
+    OptionDefinition(
+        "reason",
+        1,
+        _ConfiguredLockdownReason,
+        DEFAULT_REASON,
+        setting=SettingMetadata(
+            "Automatic lockdown reason",
+            "Nonblank reason attached to subsequent automatic lockdowns. An existing lockdown reason is not rewritten.",
+        ),
+    ),
 )
 
 

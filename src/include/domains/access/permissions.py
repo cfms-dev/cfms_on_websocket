@@ -37,6 +37,8 @@ class Permissions(StrEnum):
     tasks that have not been assigned to other specific permissions.
     """
     DEBUGGING = "debugging"
+    VIEW_SETTINGS = "view_settings"
+    MANAGE_SETTINGS = "manage_settings"
     DIAGNOSTICS = "diagnostics"
     VIEW_SCHEDULES = "view_schedules"
     MANAGE_SCHEDULES = "manage_schedules"

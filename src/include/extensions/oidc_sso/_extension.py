@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from include.config.options import OptionDefinition, read_options
+from include.config.options import OptionDefinition, SettingMetadata, read_options
 from include.config.settings import global_config
 from include.database.models.identity import User, UserGroup, UserMembership
 from include.database.session import Session
@@ -103,9 +103,36 @@ def _get_oidc_deployment_config() -> dict[str, Any]:
 
 
 POLICY_OPTIONS = (
-    OptionDefinition("username_claim", 1, NonEmptyString, "preferred_username"),
-    OptionDefinition("auto_provision", 1, bool, False),
-    OptionDefinition("default_groups", 1, list[NonEmptyString], ["user"]),
+    OptionDefinition(
+        "username_claim",
+        1,
+        NonEmptyString,
+        "preferred_username",
+        setting=SettingMetadata(
+            "Username claim",
+            "OIDC claim used as the local username for subsequent sign-ins. Existing usernames are not rewritten.",
+        ),
+    ),
+    OptionDefinition(
+        "auto_provision",
+        1,
+        bool,
+        False,
+        setting=SettingMetadata(
+            "Automatically provision accounts",
+            "Allow subsequent OIDC sign-ins to create local accounts when no matching identity exists.",
+        ),
+    ),
+    OptionDefinition(
+        "default_groups",
+        1,
+        list[NonEmptyString],
+        ["user"],
+        setting=SettingMetadata(
+            "Default account groups",
+            "Group names assigned to subsequently provisioned OIDC accounts. Existing memberships are preserved; replace the whole array to change it.",
+        ),
+    ),
 )
 
 

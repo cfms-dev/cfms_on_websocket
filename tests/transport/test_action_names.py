@@ -18,7 +18,7 @@ def test_request_registry_matches_protocol_30(
     from include.extensions.oidc_sso import _extension as oidc
 
     core_handlers = dict(server_main.available_functions)
-    assert len(core_handlers) == 87
+    assert len(core_handlers) == 90
     monkeypatch.setattr(server_main, "available_functions", core_handlers)
     monkeypatch.setattr(
         server_main, "whitelisted_functions", list(server_main.whitelisted_functions)
@@ -61,6 +61,13 @@ def test_request_registry_matches_protocol_30(
     assert len(REQUEST_RENAMES) == len({new for _, new, _ in REQUEST_RENAMES}) == 92
     expected["core.user.username.set"] = (
         "include.domains.identity.handlers.users.RequestSetUsernameHandler"
+    )
+    expected.update(
+        {
+            "core.setting.list": "include.domains.operations.handlers.settings.RequestListSettingsHandler",
+            "core.setting.get": "include.domains.operations.handlers.settings.RequestGetSettingsHandler",
+            "core.setting.update": "include.domains.operations.handlers.settings.RequestUpdateSettingsHandler",
+        }
     )
     assert actual == expected
     assert set(core_handlers).isdisjoint(old for old, _, _ in REQUEST_RENAMES)

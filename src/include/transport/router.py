@@ -106,6 +106,11 @@ from include.domains.keyrings.handlers.keyrings import (
     RequestUploadUserKeyHandler,
 )
 from include.domains.operations.commands.audit import log_audit
+from include.domains.operations.handlers.settings import (
+    RequestGetSettingsHandler,
+    RequestListSettingsHandler,
+    RequestUpdateSettingsHandler,
+)
 from include.domains.operations.handlers.system import (
     RequestLockdownHandler,
     RequestViewAuditLogsHandler,
@@ -149,6 +154,9 @@ lazy from include.transport.request_handler import RequestHandler, Result
 logger = log.bind(name="connection_handler")
 
 available_functions: dict[str, type[RequestHandler]] = {
+    "core.setting.list": RequestListSettingsHandler,
+    "core.setting.get": RequestGetSettingsHandler,
+    "core.setting.update": RequestUpdateSettingsHandler,
     # Authentication
     "core.auth.login": RequestLoginHandler,
     "core.auth.token.exchange": RequestExchangeTokenHandler,

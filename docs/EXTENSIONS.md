@@ -269,10 +269,19 @@ option_namespaces = ["security.example"]
 
 ```python
 from pydantic import PositiveInt
-from include.config.options import OptionDefinition, read_options
+from include.config.options import OptionDefinition, SettingMetadata, read_options
 from include.extensions.manager import hookimpl
 
-THRESHOLD = OptionDefinition("threshold", 1, PositiveInt, 10)
+THRESHOLD = OptionDefinition(
+    "threshold",
+    1,
+    PositiveInt,
+    10,
+    setting=SettingMetadata(
+        "Failure threshold",
+        "Failures required for detection. Applies to subsequent decisions.",
+    ),
+)
 
 
 @hookimpl
@@ -285,6 +294,11 @@ def ext_validate_options(namespace: str, values: dict) -> None:
     # Validate relationships between settings here when needed.
     pass
 ```
+
+Optional `setting` metadata exposes an option through the authenticated
+[Setting API](SETTING_API.md), with its existing default and generated value
+schema. Omit it to keep an option outside that API. Registration and rollback use
+the existing option lifecycle; no separate settings Hook is needed.
 
 `read_option(session, namespace, definition)` returns a detached typed value with
 schema version, revision and timestamp. `read_options(session, namespace)` reads

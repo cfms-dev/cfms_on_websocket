@@ -23,6 +23,8 @@ DEFAULT_GROUP_PERMISSIONS: MappingProxyType[str, tuple[Permissions, ...]] = (
                 Permissions.DELETE_DIRECTORY,
                 Permissions.RENAME_DIRECTORY,
                 Permissions.MANAGE_SYSTEM,
+                Permissions.VIEW_SETTINGS,
+                Permissions.MANAGE_SETTINGS,
                 Permissions.DIAGNOSTICS,
                 Permissions.VIEW_SCHEDULES,
                 Permissions.MANAGE_SCHEDULES,

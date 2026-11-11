@@ -68,6 +68,39 @@ def extension_data_context(tmp_path, monkeypatch):
 pytestmark = pytest.mark.component
 
 
+def test_setting_metadata_follows_extension_registration_and_rollback(
+    extension_data_context,
+):
+    _, root, _, _ = extension_data_context
+    target = _write_installed_extension(root, "sample_ext")
+    declaration = OPTION_DECLARATION.replace(
+        "import OptionDefinition", "import OptionDefinition, SettingMetadata"
+    ).replace(
+        'OptionDefinition("threshold", 1, int, 7)',
+        'OptionDefinition("threshold", 1, int, 7, setting=SettingMetadata("Threshold", "Applies to subsequent decisions."))',
+    )
+    target.joinpath("_extension.py").write_text(declaration, encoding="utf-8")
+    assert option_config.describe_settings("sample_ext") == []
+    with manager.maintenance_extension_context("sample_ext"):
+        (item,) = option_config.describe_settings("sample_ext")
+        assert item["owner"] == "sample_ext"
+        assert item["default"] == 7
+        assert item["value_schema"] == {"type": "integer"}
+    assert option_config.describe_settings("sample_ext") == []
+    target.joinpath("_extension.py").write_text(
+        declaration
+        + '\n@hookimpl\ndef ext_register_options():\n    return {"sample_ext": (OPTIONS, OPTIONS)}\n',
+        encoding="utf-8",
+    )
+    with (
+        pytest.raises(manager.ExtensionLoadError),
+        manager.maintenance_extension_context("sample_ext"),
+    ):
+        pytest.fail("Duplicate definitions must prevent extension registration")
+    assert option_config.describe_settings("sample_ext") == []
+    assert not manager.pm.has_plugin("sample_ext")
+
+
 def test_maintenance_load_registers_disabled_options_without_validation_or_startup(
     extension_data_context,
 ):

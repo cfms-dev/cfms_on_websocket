@@ -1,0 +1,1 @@
+Add authenticated setting discovery, batched reads and atomic updates with descriptive metadata, JSON Schema, independent view/manage permissions and existing option concurrency protection. Expose core and bundled extension business settings while keeping unregistered options private.

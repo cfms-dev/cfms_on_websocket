@@ -8,6 +8,9 @@ pytestmark = pytest.mark.unit
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 EXPECTED_CORE_ACTION_COSTS = {
+    "core.setting.list": 1,
+    "core.setting.get": 1,
+    "core.setting.update": 3,
     "core.auth.login": 5,
     "core.auth.token.exchange": 2,
     "core.user.authentication.get": 2,
@@ -170,7 +173,7 @@ def test_all_known_costs_fit_default_request_buckets():
         *EXPECTED_EXTRA_HANDLER_COSTS.values(),
     )
 
-    assert len(all_costs) == 93
+    assert len(all_costs) == 96
     assert set(all_costs) == {1, 2, 3, 5, 10, 20}
     assert all(0 < cost <= capacity for cost in all_costs)
 

@@ -7,6 +7,7 @@ from sqlalchemy import select
 lazy from sqlalchemy.orm import Session
 
 from include.config._policy import ConfigValidationError
+from include.config.setting_metadata import CORE_SETTING_METADATA, SettingMetadata
 from include.config.validation import (
     AuditRetentionPolicy,
     AuthThrottlePolicy,
@@ -52,12 +53,17 @@ class OptionConflictError(ConfigValidationError):
     pass
 
 
+class OptionValidationError(ConfigValidationError):
+    """A submitted option value or complete policy is invalid."""
+
+
 @dataclass(frozen=True, slots=True)
 class OptionDefinition[T]:
     option_key: str
     schema_version: int
     annotation: Any
     default: T = field(repr=False)
+    setting: SettingMetadata | None = field(default=None, kw_only=True)
     _adapter: TypeAdapter[T] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -76,12 +82,18 @@ class OptionDefinition[T]:
                 f"{'.'.join(map(str, error['loc']))}: {error['msg']}"
                 for error in exc.errors(include_input=False, include_context=False)
             )
-            raise ConfigValidationError(
+            raise OptionValidationError(
                 f"Invalid option {self.option_key!r}: {errors}"
             ) from None
 
 
-SERVER_NAME_OPTION = OptionDefinition("name", 1, str, "CFMS WebSocket Server")
+SERVER_NAME_OPTION = OptionDefinition(
+    "name",
+    1,
+    str,
+    "CFMS WebSocket Server",
+    setting=CORE_SETTING_METADATA["server"]["name"],
+)
 _option_definitions: dict[tuple[str, str], OptionDefinition[Any]] = {}
 _option_owners: dict[tuple[str, str], str] = {}
 _option_validators: dict[str, OptionValidator] = {}
@@ -160,6 +172,42 @@ def get_option_definition(namespace: str, option_key: str) -> OptionDefinition[A
         ) from exc
 
 
+def describe_settings(namespace: str | None = None) -> list[dict[str, Any]]:
+    return [
+        {
+            "namespace": option_namespace,
+            "option_key": definition.option_key,
+            "owner": _option_owners[option_namespace, definition.option_key],
+            "schema_version": definition.schema_version,
+            "title": definition.setting.title,
+            "description": definition.setting.description,
+            "default": deepcopy(definition.default),
+            "value_schema": TypeAdapter(definition.annotation).json_schema(
+                mode="validation"
+            ),
+        }
+        for option_namespace, definition in sorted(
+            iter_options(namespace), key=lambda item: (item[0], item[1].option_key)
+        )
+        if definition.setting is not None
+    ]
+
+
+def get_setting_definitions(
+    namespace: str, keys: list[str] | None = None
+) -> tuple[OptionDefinition[Any], ...]:
+    definitions = {
+        definition.option_key: definition
+        for _, definition in iter_options(namespace)
+        if definition.setting is not None
+    }
+    if not definitions or (keys is not None and not definitions.keys() >= set(keys)):
+        raise LookupError("Setting not found")
+    return tuple(
+        definitions[key] for key in sorted(definitions if keys is None else keys)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedOption[T]:
     namespace: str
@@ -179,6 +227,16 @@ def _resolve_option[T](
             f"Unsupported option schema for {namespace}/{definition.option_key}: "
             f"{stored.schema_version}; expected {definition.schema_version}"
         )
+    try:
+        value = (
+            deepcopy(definition.default)
+            if stored is None
+            else definition.validate(stored.value)
+        )
+    except OptionValidationError as exc:
+        raise ConfigValidationError(
+            f"Invalid stored option {namespace}/{definition.option_key}"
+        ) from exc
     return ResolvedOption(
         namespace=namespace,
         owner=stored.owner
@@ -187,11 +245,7 @@ def _resolve_option[T](
         option_key=definition.option_key,
         schema_version=definition.schema_version,
         revision=0 if stored is None else stored.revision,
-        value=(
-            deepcopy(definition.default)
-            if stored is None
-            else definition.validate(stored.value)
-        ),
+        value=value,
         updated_at=None if stored is None else stored.updated_at,
     )
 
@@ -262,13 +316,15 @@ def validate_options(
         if validator is not None:
             validator(values=normalized)
     except ValidationError as exc:
-        raise ConfigValidationError(
+        raise OptionValidationError(
             f"Invalid options for {namespace}: "
             + "; ".join(
                 error["msg"]
                 for error in exc.errors(include_input=False, include_context=False)
             )
         ) from None
+    except ConfigValidationError as exc:
+        raise OptionValidationError(str(exc)) from exc
     return normalized
 
 
@@ -459,7 +515,15 @@ CORE_POLICY_TYPES = {
 }
 CORE_OPTIONS = {
     "server": (SERVER_NAME_OPTION,),
-    "access": (OptionDefinition("enable_access_recursive_check", 1, bool, True),),
+    "access": (
+        OptionDefinition(
+            "enable_access_recursive_check",
+            1,
+            bool,
+            True,
+            setting=CORE_SETTING_METADATA["access"]["enable_access_recursive_check"],
+        ),
+    ),
 }
 for _namespace, _policy in CORE_POLICY_TYPES.items():
     _defaults = _policy()
@@ -471,6 +535,7 @@ for _namespace, _policy in CORE_POLICY_TYPES.items():
             dict(getattr(_defaults, item.name))
             if item.name == "action_costs"
             else getattr(_defaults, item.name),
+            setting=CORE_SETTING_METADATA[_namespace][item.name],
         )
         for item in fields(_policy)
     )

@@ -80,6 +80,10 @@ rebuild those development databases.
 
 ## Read and update settings
 
+Authenticated clients can discover setting metadata and read or update selected
+options through the [Setting API](SETTING_API.md), using the same defaults,
+namespace validation and optimistic concurrency described here.
+
 ```powershell
 uv run maintain config options list
 uv run maintain config options list --namespace security.password
