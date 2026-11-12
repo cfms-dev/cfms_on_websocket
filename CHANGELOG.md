@@ -9,9 +9,30 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.13.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.14.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.14.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.14.0) - 2026-11-12
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.13.0...v0.14.0)</small>
+
+This is an interim version that includes several experimental new protocol specifications. Depending on how they perform in production environments, some of these specifications may be adjusted or promoted to a stable state.
+
+### Removed
+
+- Remove the unused `manage_system` permission from the built-in permission catalog and default sysop grants.
+
+### Added
+
+- Add authenticated setting discovery, batched reads and atomic updates with descriptive metadata, JSON Schema, independent view/manage permissions and existing option concurrency protection. Expose core and bundled extension business settings while keeping unregistered options private.
+- Add namespaced, typed database business settings with transactional revisions, explicit TOML migration, extension lifecycle support, maintenance commands and version 2 logical backups. Deployment TOML changes now require a restart; certificate file reload remains supported.
+- Automatically reload WSS and HTTP API server certificates after file updates, retaining existing connections and the previous certificate when a replacement cannot be loaded. Add shared reload controls, filesystem notifications and periodic recovery scans.
+
+### Changed
+
+- Store individual options by namespace and key, with declaring ownership kept separately for maintenance. Scalars use tagged text and structured values use JSON.
+
 
 ## [v0.13.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.13.0) - 2026-10-26
 
