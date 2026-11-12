@@ -32,7 +32,7 @@ def registry():
                 contract_version=2,
                 payload_model=_Payload,
                 execute=lambda _context, _payload: None,
-                required_permission=Permissions.MANAGE_SYSTEM,
+                required_permission=Permissions.APPLY_LOCKDOWN,
             ),
             ScheduledTaskRegistration(
                 name="test.system_cleanup",

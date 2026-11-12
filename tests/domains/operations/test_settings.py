@@ -40,7 +40,7 @@ def setting_context(monkeypatch, tmp_path, sqlite_engine_factory):
             ("admin", (Permissions.VIEW_SETTINGS, Permissions.MANAGE_SETTINGS)),
             ("reader", (Permissions.VIEW_SETTINGS,)),
             ("writer", (Permissions.MANAGE_SETTINGS,)),
-            ("operator", (Permissions.MANAGE_SYSTEM,)),
+            ("operator", (Permissions.DIAGNOSTICS,)),
             ("user", ()),
         ):
             user = User(id=uuid.uuid4(), username=name, created_time=0.0)

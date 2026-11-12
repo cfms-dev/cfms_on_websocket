@@ -232,7 +232,7 @@ def test_due_execution_is_durable_and_completed(monkeypatch, scheduling_sessions
                         audit_success=False,
                     )
                 ),
-                required_permission=Permissions.MANAGE_SYSTEM,
+                required_permission=Permissions.APPLY_LOCKDOWN,
                 max_attempts=1,
             )
         ]
@@ -398,7 +398,7 @@ def test_execution_logs_when_lease_refresh_is_lost(monkeypatch, scheduling_sessi
                 contract_version=1,
                 payload_model=_Payload,
                 execute=execute,
-                required_permission=Permissions.MANAGE_SYSTEM,
+                required_permission=Permissions.APPLY_LOCKDOWN,
                 max_attempts=1,
             )
         ]
@@ -437,7 +437,7 @@ def test_updating_terminal_schedule_reactivates_and_enqueues(
                 contract_version=1,
                 payload_model=_Payload,
                 execute=lambda _context, _payload: None,
-                required_permission=Permissions.MANAGE_SYSTEM,
+                required_permission=Permissions.APPLY_LOCKDOWN,
             )
         ]
     )
@@ -495,7 +495,7 @@ def test_updating_terminal_date_schedule_rejects_recorded_occurrence(
                 contract_version=1,
                 payload_model=_Payload,
                 execute=lambda _context, _payload: None,
-                required_permission=Permissions.MANAGE_SYSTEM,
+                required_permission=Permissions.APPLY_LOCKDOWN,
             )
         ]
     )
@@ -987,7 +987,7 @@ def test_enqueue_rejects_schedule_changed_after_candidate_read(
                 contract_version=1,
                 payload_model=_Payload,
                 execute=lambda _context, _payload: None,
-                required_permission=Permissions.MANAGE_SYSTEM,
+                required_permission=Permissions.APPLY_LOCKDOWN,
             )
         ]
     )
@@ -1664,7 +1664,7 @@ def test_consecutive_lease_recovery_cannot_execute_past_max_attempts(
                 contract_version=1,
                 payload_model=_Payload,
                 execute=lambda context, payload: calls.append((context, payload)),
-                required_permission=Permissions.MANAGE_SYSTEM,
+                required_permission=Permissions.APPLY_LOCKDOWN,
                 max_attempts=1,
             )
         ]

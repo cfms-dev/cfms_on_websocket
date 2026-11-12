@@ -49,7 +49,7 @@ def scheduling_context(monkeypatch, schedule_database):
                     contract_version=1,
                     payload_model=_Payload,
                     execute=lambda _context, _payload: None,
-                    required_permission=Permissions.MANAGE_SYSTEM,
+                    required_permission=Permissions.APPLY_LOCKDOWN,
                 ),
                 ScheduledTaskRegistration(
                     name="test.audit",
@@ -63,7 +63,7 @@ def scheduling_context(monkeypatch, schedule_database):
                     contract_version=1,
                     payload_model=_Payload,
                     execute=lambda _context, _payload: None,
-                    required_permission=Permissions.MANAGE_SYSTEM,
+                    required_permission=Permissions.APPLY_LOCKDOWN,
                     user_schedulable=False,
                 ),
             ]
@@ -125,7 +125,7 @@ def test_read_actions_require_view_schedules(
     "permissions",
     [
         {Permissions.MANAGE_SCHEDULES},
-        {Permissions.MANAGE_SYSTEM},
+        {Permissions.APPLY_LOCKDOWN},
     ],
 )
 def test_create_schedule_requires_management_and_task_permissions(
@@ -158,7 +158,7 @@ def test_create_schedule_requires_management_and_task_permissions(
 @pytest.mark.component
 def test_create_schedule_rejects_system_task_types(monkeypatch, scheduling_context):
     scheduling_context(
-        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+        {Permissions.MANAGE_SCHEDULES, Permissions.APPLY_LOCKDOWN},
     )
     connection = _Connection(
         {
@@ -189,7 +189,7 @@ def test_create_schedule_persists_and_notifies_provider(
     monkeypatch, scheduling_context, padded_input
 ):
     notifications = scheduling_context(
-        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+        {Permissions.MANAGE_SCHEDULES, Permissions.APPLY_LOCKDOWN},
     )
     connection = _Connection(
         {
@@ -225,7 +225,7 @@ def test_create_schedule_rejects_unrepresentable_interval(
     monkeypatch, scheduling_context
 ):
     notifications = scheduling_context(
-        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+        {Permissions.MANAGE_SCHEDULES, Permissions.APPLY_LOCKDOWN},
     )
     connection = _Connection(
         {
@@ -261,7 +261,7 @@ def test_update_schedule_uses_locked_revision_for_task_authorization(
     monkeypatch, tmp_path, scheduling_context, schedule_database
 ):
     notifications = scheduling_context(
-        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+        {Permissions.MANAGE_SCHEDULES, Permissions.APPLY_LOCKDOWN},
     )
     database = schedule_database
     factory = sessionmaker(bind=database, expire_on_commit=False)
@@ -328,7 +328,7 @@ def test_update_schedule_checks_permission_for_locked_current_task(
     monkeypatch, scheduling_context
 ):
     notifications = scheduling_context(
-        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+        {Permissions.MANAGE_SCHEDULES, Permissions.APPLY_LOCKDOWN},
     )
     with handlers.Session() as session, session.begin():
         session.add(
@@ -370,7 +370,7 @@ def test_update_schedule_persists_and_notifies_provider(
     monkeypatch, scheduling_context
 ):
     notifications = scheduling_context(
-        {Permissions.MANAGE_SCHEDULES, Permissions.MANAGE_SYSTEM},
+        {Permissions.MANAGE_SCHEDULES, Permissions.APPLY_LOCKDOWN},
     )
     with handlers.Session() as session, session.begin():
         session.add(
@@ -452,7 +452,7 @@ def test_system_tasks_and_schedules_are_hidden_from_management_api(
     monkeypatch, scheduling_context
 ):
     scheduling_context(
-        {Permissions.VIEW_SCHEDULES, Permissions.MANAGE_SYSTEM},
+        {Permissions.VIEW_SCHEDULES, Permissions.APPLY_LOCKDOWN},
     )
     task_types = _Connection({})
     result = handlers.RequestListScheduledTaskTypesHandler().handle(
@@ -519,7 +519,7 @@ def test_system_schedules_cannot_be_managed(
         {
             Permissions.VIEW_SCHEDULES,
             Permissions.MANAGE_SCHEDULES,
-            Permissions.MANAGE_SYSTEM,
+            Permissions.APPLY_LOCKDOWN,
         },
     )
     with handlers.Session() as session, session.begin():

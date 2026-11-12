@@ -31,7 +31,7 @@ def _registration(name="test.record", version=1):
         contract_version=version,
         payload_model=_Payload,
         execute=lambda _context, _payload: None,
-        required_permission=Permissions.MANAGE_SYSTEM,
+        required_permission=Permissions.APPLY_LOCKDOWN,
     )
 
 
@@ -44,7 +44,7 @@ def test_registration_correlates_payload_model_and_callback():
         contract_version=1,
         payload_model=_Payload,
         execute=execute,
-        required_permission=Permissions.MANAGE_SYSTEM,
+        required_permission=Permissions.APPLY_LOCKDOWN,
     )
 
     assert_type(registration, ScheduledTaskRegistration[_Payload])

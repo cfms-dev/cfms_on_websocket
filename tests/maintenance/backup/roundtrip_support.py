@@ -167,7 +167,7 @@ def _seed_source(base, db_engine, storage_root: Path) -> None:
             insert(tables["group_permissions"]),
             {
                 "group_name": "sysop",
-                "permission": "manage_system",
+                "permission": "manage_settings",
                 "granted": True,
                 "start_time": 0.0,
                 "end_time": None,

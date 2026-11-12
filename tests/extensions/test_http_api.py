@@ -1100,7 +1100,7 @@ async def test_permission_and_rate_limit_dependencies(monkeypatch, http_api_modu
     @app.get("/forbidden")
     def forbidden(
         _principal=Depends(  # noqa: B008 - FastAPI dependency metadata.
-            security.require_http_permissions(Permissions.MANAGE_SYSTEM)  # noqa: B008 - FastAPI permission dependency.
+            security.require_http_permissions(Permissions.DIAGNOSTICS)  # noqa: B008 - FastAPI permission dependency.
         ),
     ):
         return {}

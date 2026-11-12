@@ -31,11 +31,6 @@ class Permissions(StrEnum):
 
     # System and management
     SHUTDOWN = "shutdown"
-    MANAGE_SYSTEM = "manage_system"
-    """
-    A general permission for performing various system management 
-    tasks that have not been assigned to other specific permissions.
-    """
     DEBUGGING = "debugging"
     VIEW_SETTINGS = "view_settings"
     MANAGE_SETTINGS = "manage_settings"
