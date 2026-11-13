@@ -42,6 +42,7 @@ class _ViewAuditLogsRequest(RequestDataModel):
     page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
     cursor: PaginationCursorToken | None = None
     filters: Omittable[list[str]] = REQUEST_UNSET
+    exclude_filters: Omittable[list[str]] = REQUEST_UNSET
 
 
 class RequestLockdownHandler(RequestHandler[_LockdownRequest]):
@@ -92,7 +93,15 @@ class RequestViewAuditLogsHandler(RequestHandler[_ViewAuditLogsRequest]):
         filtered_actions: list[str] = (
             request.filters if request.filters is not REQUEST_UNSET else []
         )
-        filters = {"filters": sorted(filtered_actions)}
+        excluded_actions: list[str] = (
+            request.exclude_filters
+            if request.exclude_filters is not REQUEST_UNSET
+            else []
+        )
+        filters = {
+            "filters": sorted(set(filtered_actions)),
+            "exclude_filters": sorted(set(excluded_actions)),
+        }
         sort = "logged_time_id:desc"
         try:
             decoded_cursor = PaginationCursor.decode(
@@ -116,7 +125,10 @@ class RequestViewAuditLogsHandler(RequestHandler[_ViewAuditLogsRequest]):
                 return Result(code=403, target=None, user_id=handler.user_id)
 
             audit_query = session.query(AuditEntry).filter(
-                AuditEntry.action.in_(filtered_actions) if filtered_actions else true()
+                AuditEntry.action.in_(filtered_actions) if filtered_actions else true(),
+                AuditEntry.action.not_in(excluded_actions)
+                if excluded_actions
+                else true(),
             )
             if last_key is not None:
                 last_logged_time, last_id = last_key

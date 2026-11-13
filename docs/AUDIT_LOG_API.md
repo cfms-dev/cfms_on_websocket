@@ -15,7 +15,8 @@ permission and uses a request-rate cost of 3.
   "data": {
     "page_size": 50,
     "cursor": null,
-    "filters": ["core.auth.login", "core.directory.create"]
+    "filters": ["core.auth.login", "core.directory.create"],
+    "exclude_filters": ["core.audit.entry.list", "core.setting.get"]
   }
 }
 ```
@@ -26,10 +27,11 @@ All fields in `data` are optional:
 | --- | --- | --- |
 | `page_size` | integer | Number of entries to return, from 1 through 128. Defaults to 128. |
 | `cursor` | string or null | Opaque cursor returned by the previous page. |
-| `filters` | array of strings | Exact audit action values combined with OR. An omitted or empty array does not filter by action. |
+| `filters` | array of strings | Exact audit action values combined with OR. An omitted or empty array does not restrict included actions. |
+| `exclude_filters` | array of strings | Excludes exact action values. An omitted or empty array excludes nothing. Exclusion wins when a value appears in both lists. |
 
-An unknown action value is valid and produces an empty page when no stored entry
-matches it. Action values are the strings emitted by the server and its
+Unknown action values are valid. An unknown inclusion produces no matches; an
+unknown exclusion removes nothing. Action values are the strings emitted by the server and its
 extensions; they are not a closed enum.
 
 ## Response data
@@ -57,7 +59,8 @@ extensions; they are not a closed enum.
 Entries are ordered by `logged_time` descending and then `id` descending. The
 cursor expires after one hour and is bound to the action and filter values used
 to create it. Clients must repeat the same `filters` values when requesting the
-next page. The order of those values may differ, but adding or removing a value
+next page, together with the same `exclude_filters`. Ordering and duplicates in
+either list do not affect the cursor, but adding or removing a distinct value
 causes the server to reject the cursor with response code 400.
 
 Since protocol 28, user management actions record the target account UUID in

@@ -8,7 +8,7 @@ from tests.support.request_names import REQUEST_RENAMES
 
 @pytest.mark.unit
 @pytest.mark.parametrize("debug", [False, True])
-def test_request_registry_matches_protocol_30(
+def test_request_registry_matches_protocol_31(
     monkeypatch, protected_test_config, debug
 ):
     monkeypatch.chdir(protected_test_config.src_dir)
@@ -57,7 +57,7 @@ def test_request_registry_matches_protocol_30(
         action: f"{handler.__module__}.{handler.__qualname__}"
         for action, handler in core_handlers.items()
     }
-    assert PROTOCOL_VERSION == 30
+    assert PROTOCOL_VERSION == 31
     assert len(REQUEST_RENAMES) == len({new for _, new, _ in REQUEST_RENAMES}) == 92
     expected["core.user.username.set"] = (
         "include.domains.identity.handlers.users.RequestSetUsernameHandler"
@@ -100,4 +100,4 @@ async def test_old_request_names_are_rejected_and_connection_remains_usable(
         "core.server.info.get", {}, include_auth=False
     )
     assert following["code"] == 200
-    assert following["data"]["protocol_version"] == 30
+    assert following["data"]["protocol_version"] == 31

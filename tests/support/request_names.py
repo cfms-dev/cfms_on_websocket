@@ -1,4 +1,4 @@
-"""Independent protocol 30 request-name and handler contract."""
+"""Independent protocol 31 request-name and handler contract."""
 
 REQUEST_RENAMES = (
     (

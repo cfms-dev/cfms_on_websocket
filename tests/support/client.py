@@ -1655,11 +1655,13 @@ class CFMSTestClient:
         page_size: int | None = None,
         cursor: str | None = None,
         filters: list[str] | None = None,
+        exclude_filters: list[str] | None = None,
     ) -> dict[str, Any]:
         """View system audit logs, optionally filtered by exact action values.
 
         Values in ``filters`` are combined with OR. Omitting the argument or
-        passing an empty list returns entries for every action.
+        passing an empty list does not restrict included actions.
+        ``exclude_filters`` removes matching actions after the inclusion condition.
         """
         data: dict[str, Any] = {}
         if page_size is not None:
@@ -1668,4 +1670,6 @@ class CFMSTestClient:
             data["cursor"] = cursor
         if filters is not None:
             data["filters"] = filters
+        if exclude_filters is not None:
+            data["exclude_filters"] = exclude_filters
         return await self.send_request("core.audit.entry.list", data)
