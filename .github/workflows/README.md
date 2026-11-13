@@ -30,10 +30,15 @@ lightweight required job and conditionally skip only the expensive test jobs.
 7. Verifies rate-limit Lua and scheduler lease behavior against Redis 8.2.10
 8. Runs PostgreSQL scheduler concurrency/atomic initialization and platform smoke checks
 9. Uploads JUnit results and logs as artifacts (retained for 7 days)
+10. Compares each channel against three cached runs of a pinned reference commit,
+    adds a shuffled PR run, and runs daily multi-seed/independent-node checks
+11. Exercises real S3 behavior against disposable SeaweedFS 4.53
 
 ### Configuration:
-- **Timeout**: 10 minutes per main-layer test step; pytest's 120-second watchdog
-  includes individual-case setup and teardown
+- **Timeout**: 30 minutes per main-layer check to allow cold-cache reference
+  calibration; the measured candidate budget is much smaller and determined
+  from its reference median. Pytest's 120-second watchdog includes individual-case
+  setup and teardown
 - **Python version**: Tests run on Python 3.15
 - **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
   9.7 LTS
@@ -50,7 +55,8 @@ the load-tool tests under `tests/stress/` remain ordinary unit/component cases.
 The [test guide](../../tests/README.md) describes fixture ownership, safe local
 execution, criteria for writing tests, and coverage destinations.
 
-Dedicated backend jobs retain their real Redis, MySQL, and PostgreSQL services.
+Dedicated backend jobs retain their real Redis, MySQL, and PostgreSQL services,
+and add a disposable S3 service with test-only credentials.
 Each first verifies its connection environment is nonempty, runs focused paths
 with JUnit XML, and verifies at least one case executed and none skipped. Missing
 configuration, an unavailable service, zero selected tests, and unexpected skips
@@ -82,6 +88,28 @@ uv sync --locked --dev --extra cluster --extra ext-scheduling-cluster
 $env:CFMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
 uv run --locked pytest tests/providers/test_redis_lua_integration.py -q
 ```
+
+### FIRST feedback checks
+
+The local composite action `.github/actions/test-health` uses
+`tools/check_test_health.py` for complete pytest-process timing and JUnit
+validation. The pinned reference lives in `tests/first-baseline-ref.txt`.
+Reference samples are cached by channel, commit, exact Python/platform, runner
+image, lockfile and checker; candidates never replace the reference. An expired
+cache triggers three reference runs, so the first check is intentionally more
+expensive. Later checks execute only the candidate and fail on a clear elapsed
+time regression. See [FIRST checks](../../tests/FIRST.md) for formulas and commands.
+
+Every ordinary run adds one shuffled non-stress suite seeded from the tested
+commit. Scheduled and manually dispatched runs additionally exercise seeds
+1, 17 and 101 with disposable backend services and independent protocol nodes.
+The schedule is 19:00 UTC daily (03:00 Asia/Shanghai the following day).
+Pytest worker/finalizer errors fail checks, and tests are never automatically
+retried to produce a passing result.
+
+The S3 job waits for its dedicated bucket, then checks real read/write, resumed
+multipart completion, abort and cleanup. Missing configuration after explicit
+opt-in is a failure. It does not need AWS account secrets.
 
 ### Viewing Results:
 - Check the "Actions" tab in the GitHub repository

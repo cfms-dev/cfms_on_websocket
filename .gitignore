@@ -34,6 +34,7 @@ coverage.xml
 .hypothesis/
 test_logs/
 test-results/
+.first-baseline/
 
 # Jupyter Notebook
 .ipynb_checkpoints
