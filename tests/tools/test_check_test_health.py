@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+lazy from botocore.exceptions import ClientError
 
 from tools import check_test_health as health
 
@@ -203,3 +204,41 @@ def test_configured_backend_requires_environment_before_running(tmp_path, monkey
         == 1
     )
     assert not (tmp_path / "result.xml").exists()
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_s3_readiness_checks_the_bucket_and_closes_the_client(monkeypatch, ready):
+    pytest.importorskip("botocore")
+    closed = []
+
+    def head_bucket(*, Bucket):
+        assert Bucket == "dedicated"
+        if not ready:
+            raise ClientError({"Error": {"Code": "NoSuchBucket"}}, "HeadBucket")
+
+    client = SimpleNamespace(head_bucket=head_bucket, close=lambda: closed.append(True))
+    monkeypatch.setenv("CFMS_TEST_S3_BUCKET", "dedicated")
+    monkeypatch.setenv("CFMS_TEST_S3_ENDPOINT_URL", "http://127.0.0.1:8333")
+    monkeypatch.setattr(
+        health, "boto3", SimpleNamespace(client=lambda *_args, **_kwargs: client)
+    )
+    if ready:
+        health.wait_for_s3(timeout_seconds=0)
+    else:
+        with pytest.raises(TimeoutError, match="Dedicated S3 bucket") as caught:
+            health.wait_for_s3(timeout_seconds=0)
+        assert isinstance(caught.value.__cause__, ClientError)
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("exit_code", [1, 2, 5])
+def test_main_does_not_retry_or_hide_pytest_failures(tmp_path, monkeypatch, exit_code):
+    calls = []
+
+    def run(*_args):
+        calls.append(True)
+        return exit_code, 1.0
+
+    monkeypatch.setattr(health, "run_pytest", run)
+    assert health.main(["run", "--report", str(tmp_path / "result.xml")]) == exit_code
+    assert calls == [True]

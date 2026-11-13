@@ -13,6 +13,10 @@ import time
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+lazy import boto3
+lazy from botocore.config import Config
+lazy from botocore.exceptions import BotoCoreError, ClientError
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_FILE = PROJECT_ROOT / "tests" / "first-baseline-ref.txt"
 MYSQL_PATHS = (
@@ -142,9 +146,38 @@ def run_pytest(
     return result.returncode, time.perf_counter() - started
 
 
+def wait_for_s3(timeout_seconds: float = 30) -> None:
+    client = boto3.client(
+        "s3",
+        endpoint_url=os.environ["CFMS_TEST_S3_ENDPOINT_URL"],
+        config=Config(
+            connect_timeout=1,
+            read_timeout=2,
+            retries={"total_max_attempts": 1},
+            s3={"addressing_style": "path"},
+        ),
+    )
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while True:
+            try:
+                client.head_bucket(Bucket=os.environ["CFMS_TEST_S3_BUCKET"])
+                return
+            except (BotoCoreError, ClientError) as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "Dedicated S3 bucket did not become ready"
+                    ) from exc
+                time.sleep(0.2)
+    finally:
+        client.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("run", "calibrate", "isolate", "fingerprint"))
+    parser.add_argument(
+        "mode", choices=("run", "calibrate", "isolate", "fingerprint", "wait-s3")
+    )
     parser.add_argument("--profile", choices=PROFILES, default="all")
     parser.add_argument("--root", type=Path, default=PROJECT_ROOT)
     parser.add_argument(
@@ -166,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
     root, report = options.root.resolve(), options.report.resolve()
     reference = REFERENCE_FILE.read_text(encoding="utf-8").strip()
     try:
+        if options.mode == "wait-s3":
+            wait_for_s3()
+            return 0
         for name in BACKEND_ENVIRONMENT.get(options.profile, ()):
             if not os.environ.get(name):
                 raise ValueError(f"{name} is required for {options.profile}")

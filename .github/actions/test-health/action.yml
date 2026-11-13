@@ -1,0 +1,57 @@
+name: Check FIRST test feedback
+description: Compare a test channel with three runs of a pinned reference in the same environment
+inputs:
+  profile:
+    description: Test health profile
+    required: true
+  report:
+    description: Candidate JUnit report path
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Identify baseline environment
+      id: baseline
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+      run: |
+        echo "reference=$(cat tests/first-baseline-ref.txt)" >> "$GITHUB_OUTPUT"
+        echo "fingerprint=$(uv run --locked python tools/check_test_health.py fingerprint)" >> "$GITHUB_OUTPUT"
+        echo "path=test-results/baseline-${PROFILE}.json" >> "$GITHUB_OUTPUT"
+    - name: Restore immutable reference baseline
+      id: cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ steps.baseline.outputs.path }}
+        key: first-v1-${{ inputs.profile }}-${{ steps.baseline.outputs.reference }}-${{ steps.baseline.outputs.fingerprint }}-${{ hashFiles('tools/check_test_health.py') }}
+    - name: Check out reference source
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ steps.baseline.outputs.reference }}
+        path: .first-baseline
+        submodules: recursive
+        persist-credentials: false
+    - name: Measure three clean reference sessions
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        BASELINE: ${{ steps.baseline.outputs.path }}
+      run: |
+        uv run --locked python tools/check_test_health.py calibrate --profile "$PROFILE" --root .first-baseline --report "test-results/reference-${PROFILE}.xml" --baseline "$BASELINE"
+    - name: Save immutable reference baseline
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ steps.baseline.outputs.path }}
+        key: ${{ steps.cache.outputs.cache-primary-key }}
+    - name: Check candidate behavior and elapsed time
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        REPORT: ${{ inputs.report }}
+        BASELINE: ${{ steps.baseline.outputs.path }}
+      run: |
+        uv run --locked python tools/check_test_health.py run --profile "$PROFILE" --report "$REPORT" --baseline "$BASELINE"

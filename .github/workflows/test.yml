@@ -23,6 +23,9 @@ on:
       - ".vscode/**"
       - ".gitignore"
   workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 19 * * *"
 
 env:
   PRIMARY_PYTHON_VERSION: "3.15"
@@ -33,7 +36,7 @@ jobs:
     
     strategy:
       matrix:
-        python-version: &python-versions ["3.15"]
+        python-version: ["3.15"]
     
     steps:
     - uses: actions/checkout@v7
@@ -63,19 +66,33 @@ jobs:
         uv run --locked towncrier check --compare-with "origin/${BASE_REF}"
     
     - name: Run unit tests
-      run: |
-        uv run --locked pytest tests/ -m "unit and not stress" --junitxml=test-results/unit.xml --durations=25
-      timeout-minutes: 10
+      uses: ./.github/actions/test-health
+      with:
+        profile: unit
+        report: test-results/unit.xml
+      timeout-minutes: 30
 
     - name: Run component tests
-      run: |
-        uv run --locked pytest tests/ -m "component and not stress" --junitxml=test-results/component.xml --durations=25
-      timeout-minutes: 10
+      uses: ./.github/actions/test-health
+      with:
+        profile: component
+        report: test-results/component.xml
+      timeout-minutes: 30
 
     - name: Run integration tests
+      uses: ./.github/actions/test-health
+      with:
+        profile: integration
+        report: test-results/integration.xml
+      timeout-minutes: 30
+
+    - name: Run one reproducible shuffled suite
+      env:
+        TEST_COMMIT: ${{ github.sha }}
       run: |
-        uv run --locked pytest tests/ -m "integration and not stress" --junitxml=test-results/integration.xml --durations=25
-      timeout-minutes: 10
+        seed=$(uv run --locked python -c "import os; print(int(os.environ['TEST_COMMIT'][:8], 16))")
+        uv run --locked python tools/check_test_health.py run --profile all --seed "$seed" --report test-results/random.xml
+      timeout-minutes: 15
 
     - name: Verify test configuration cleanup
       if: always()
@@ -131,14 +148,11 @@ jobs:
     - name: Run real Redis provider behavior tests
       env:
         CFMS_TEST_REDIS_URL: "redis://127.0.0.1:6379/0"
-      run: |
-        test -n "$CFMS_TEST_REDIS_URL"
-        uv run --locked pytest tests/providers/test_redis_lua_integration.py -q --junitxml=test-results/redis.xml --durations=25
-      timeout-minutes: 5
-
-    - name: Require executed Redis behavior tests
-      run: |
-        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/redis.xml').findall('.//testcase'); assert cases, 'No Redis tests executed'; assert all(case.find('skipped') is None for case in cases), 'Redis tests unexpectedly skipped'"
+      uses: ./.github/actions/test-health
+      with:
+        profile: redis
+        report: test-results/redis.xml
+      timeout-minutes: 30
 
     - name: Upload Redis test results
       if: always()
@@ -191,14 +205,11 @@ jobs:
     - name: Run MySQL integration tests
       env:
         CFMS_TEST_MYSQL_URL: "mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_migration?charset=utf8mb4"
-      run: |
-        test -n "$CFMS_TEST_MYSQL_URL"
-        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database tests/domains/documents/test_upload_cleanup_mysql.py tests/domains/documents/test_rate_limits_mysql.py tests/maintenance/database/test_mysql.py tests/database/test_system_states_mysql.py tests/domains/operations/test_lockdown_mysql.py -k mysql -q --junitxml=test-results/mysql.xml --durations=25
-      timeout-minutes: 10
-
-    - name: Require executed MySQL integration tests
-      run: |
-        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/mysql.xml').findall('.//testcase'); assert cases, 'No MySQL tests executed'; assert all(case.find('skipped') is None for case in cases), 'MySQL tests unexpectedly skipped'"
+      uses: ./.github/actions/test-health
+      with:
+        profile: mysql-${{ matrix.mysql-version }}
+        report: test-results/mysql.xml
+      timeout-minutes: 30
 
     - name: Upload MySQL test results
       if: always()
@@ -246,14 +257,11 @@ jobs:
     - name: Run PostgreSQL scheduling concurrency tests
       env:
         CFMS_TEST_POSTGRESQL_URL: "postgresql+psycopg2://cfms:cfms-test-password@127.0.0.1:5432/cfms_scheduling"
-      run: |
-        test -n "$CFMS_TEST_POSTGRESQL_URL"
-        uv run --locked pytest tests/scheduling/test_engine_shared_database.py tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database -k postgresql -q --junitxml=test-results/postgresql.xml --durations=25
-      timeout-minutes: 10
-
-    - name: Require executed PostgreSQL concurrency tests
-      run: |
-        uv run --locked python -c "from xml.etree import ElementTree as ET; cases = ET.parse('test-results/postgresql.xml').findall('.//testcase'); assert cases, 'No PostgreSQL tests executed'; assert all(case.find('skipped') is None for case in cases), 'PostgreSQL tests unexpectedly skipped'"
+      uses: ./.github/actions/test-health
+      with:
+        profile: postgresql
+        report: test-results/postgresql.xml
+      timeout-minutes: 30
 
     - name: Upload PostgreSQL test results
       if: always()
@@ -262,6 +270,129 @@ jobs:
         name: postgresql-test-results
         path: test-results/
         retention-days: 7
+
+  s3-provider-behavior:
+    runs-on: ubuntu-26.04
+    services:
+      s3:
+        image: chrislusf/seaweedfs:4.53
+        ports:
+          - 8333:8333
+        env:
+          AWS_ACCESS_KEY_ID: cfms-test
+          AWS_SECRET_ACCESS_KEY: cfms-test-secret
+          S3_BUCKET: cfms-test
+    env:
+      AWS_ACCESS_KEY_ID: cfms-test
+      AWS_SECRET_ACCESS_KEY: cfms-test-secret
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      CFMS_TEST_S3_WRITE: "1"
+      CFMS_TEST_S3_BUCKET: cfms-test
+      CFMS_TEST_S3_ENDPOINT_URL: http://127.0.0.1:8333
+      CFMS_TEST_S3_REGION: us-east-1
+      CFMS_TEST_S3_ADDRESSING_STYLE: path
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked --dev --extra cluster
+      - name: Wait for the dedicated S3 bucket
+        run: |
+          uv run --locked python tools/check_test_health.py wait-s3
+      - name: Check real S3 behavior
+        uses: ./.github/actions/test-health
+        with:
+          profile: s3
+          report: test-results/s3.xml
+        timeout-minutes: 10
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: s3-test-results
+          path: test-results/
+          retention-days: 7
+
+  first-daily:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1, 17, 101]
+    services:
+      redis:
+        image: redis:8.2.10-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=3s --health-retries=10
+      mysql:
+        image: mysql:8.4
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_DATABASE: cfms_test
+          MYSQL_USER: cfms
+          MYSQL_PASSWORD: cfms-test-password
+          MYSQL_ROOT_PASSWORD: cfms-test-password
+        options: --health-cmd="mysqladmin ping -h localhost -pcfms-test-password" --health-interval=10s --health-timeout=5s --health-retries=10
+      postgresql:
+        image: postgres:18
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: cfms_test
+          POSTGRES_USER: cfms
+          POSTGRES_PASSWORD: cfms-test-password
+        options: --health-cmd="pg_isready -U cfms -d cfms_test" --health-interval=10s --health-timeout=5s --health-retries=10
+      s3:
+        image: chrislusf/seaweedfs:4.53
+        ports:
+          - 8333:8333
+        env:
+          AWS_ACCESS_KEY_ID: cfms-test
+          AWS_SECRET_ACCESS_KEY: cfms-test-secret
+          S3_BUCKET: cfms-test
+    env:
+      CFMS_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+      CFMS_TEST_MYSQL_URL: mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_test?charset=utf8mb4
+      CFMS_TEST_POSTGRESQL_URL: postgresql+psycopg2://cfms:cfms-test-password@127.0.0.1:5432/cfms_test
+      AWS_ACCESS_KEY_ID: cfms-test
+      AWS_SECRET_ACCESS_KEY: cfms-test-secret
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      CFMS_TEST_S3_WRITE: "1"
+      CFMS_TEST_S3_BUCKET: cfms-test
+      CFMS_TEST_S3_ENDPOINT_URL: http://127.0.0.1:8333
+      CFMS_TEST_S3_ADDRESSING_STYLE: path
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked --dev --all-extras
+      - run: uv run --locked python tools/check_test_health.py wait-s3
+      - name: Verify shuffled suite with real backends
+        run: uv run --locked python tools/check_test_health.py run --profile all --seed ${{ matrix.seed }} --report test-results/daily.xml
+        timeout-minutes: 20
+      - name: Verify independent protocol cases
+        run: uv run --locked python tools/check_test_health.py isolate --report test-results/isolated.xml
+        timeout-minutes: 10
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: first-daily-${{ matrix.seed }}
+          path: |
+            test-results/
+            test_logs/
+          retention-days: 7
 
   release-bundle-smoke:
     runs-on: ${{ matrix.os }}
