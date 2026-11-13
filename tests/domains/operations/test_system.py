@@ -348,12 +348,10 @@ class TestSystemManagement:
             )
 
     @pytest.mark.asyncio
-    async def test_audit_log_action_filters(self, authenticated_client: CFMSTestClient):
-        assert_success(
-            await authenticated_client.create_directory(
-                f"AuditLogFolder_{time.time_ns()}"
-            )
-        )
+    async def test_audit_log_action_filters(
+        self, authenticated_client: CFMSTestClient, directory_factory
+    ):
+        await directory_factory()
         assert_success(await authenticated_client.diagnostics())
 
         create_entries = assert_success(

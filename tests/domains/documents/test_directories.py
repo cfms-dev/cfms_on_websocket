@@ -119,7 +119,7 @@ class TestDirectoryOperations:
 
     @pytest.mark.asyncio
     async def test_create_directory(
-        self, authenticated_client: CFMSTestClient, directory_factory
+        self, authenticated_client: CFMSTestClient, directory_factory, owned_entities
     ):
         parent = await directory_factory()
 
@@ -128,6 +128,7 @@ class TestDirectoryOperations:
                 "Test Directory", parent_id=parent["folder_id"]
             )
         )
+        owned_entities["directories"].append(data["id"])
 
         info = assert_success(
             await authenticated_client.send_request(
