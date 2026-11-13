@@ -1,1 +1,1 @@
-Improve test isolation and deterministic time coverage, enforce per-layer feedback budgets, and continuously verify shuffled runs and disposable S3 compatibility.
+Improve test isolation and deterministic time coverage, enforce per-layer feedback budgets, run each PR layer once in parallel shuffled jobs, and reserve whole-suite multi-seed and independent-node checks for daily validation while retaining disposable backend compatibility checks.

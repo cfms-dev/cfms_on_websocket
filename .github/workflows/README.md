@@ -24,13 +24,14 @@ lightweight required job and conditionally skip only the expensive test jobs.
 3. Requires a Towncrier fragment on pull requests unless the pull request has
    the `skip-changelog` label
 4. Collects tests against an isolated temporary server tree
-5. Runs unit, component, and integration phases separately with strict markers
+5. Runs unit, component, and integration in parallel jobs, once each in shuffled
+   order, with strict markers and an aggregate `test (3.15)` success gate
 6. Runs focused SQLite-to-MySQL and MySQL-to-SQLite migration tests against
    MySQL 8.4 and 9.7 LTS services
 7. Verifies rate-limit Lua and scheduler lease behavior against Redis 8.2.10
 8. Runs PostgreSQL scheduler concurrency/atomic initialization and platform smoke checks
 9. Uploads JUnit results and logs as artifacts (retained for 7 days)
-10. Enforces explicit whole-process feedback limits, adds a shuffled PR run,
+10. Enforces explicit whole-process feedback limits
     and runs daily multi-seed/independent-node checks
 11. Exercises real S3 behavior against disposable SeaweedFS 4.53
 
@@ -99,10 +100,16 @@ uploads XML and JSON reports, including the limit and check status; a limit
 breach fails even when the tests themselves passed. See
 [FIRST checks](../../tests/FIRST.md) for the limits and commands.
 
-Every ordinary run adds one shuffled non-stress suite seeded from the tested
-commit. Scheduled and manually dispatched runs additionally exercise seeds
-1, 17 and 101 with disposable backend services and independent protocol nodes.
+Every ordinary run tests each layer once using a seed derived from the tested
+commit; it does not repeat the layers as a whole-suite run. Each layer uploads
+its own XML, JSON and logs even after failure. The unit layer checks the PR
+changelog once. The aggregate check rejects failed, cancelled or skipped layers.
+Scheduled and manually dispatched runs replace the ordinary layers with seeds
+1, 17 and 101 for the whole non-stress suite with disposable backend services.
+A separate job runs the eight independent protocol nodes once per workflow.
 The schedule is 19:00 UTC daily (03:00 Asia/Shanghai the following day).
+Scheduled runs use the default branch; manually dispatch the candidate branch
+to validate the daily path before merging.
 Pytest worker/finalizer errors fail checks, and tests are never automatically
 retried to produce a passing result.
 

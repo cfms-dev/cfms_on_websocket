@@ -31,12 +31,15 @@ env:
   PRIMARY_PYTHON_VERSION: "3.15"
 
 jobs:
-  test:
+  test-layer:
+    if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-26.04
     
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.15"]
+        layer: [unit, component, integration]
     
     steps:
     - uses: actions/checkout@v7
@@ -59,31 +62,20 @@ jobs:
         uv sync --locked --dev --all-extras
 
     - name: Check changelog fragment
-      if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
+      if: matrix.layer == 'unit' && github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-changelog')
       env:
         BASE_REF: ${{ github.base_ref }}
       run: |
         uv run --locked towncrier check --compare-with "origin/${BASE_REF}"
     
-    - name: Run unit tests
-      run: uv run --locked python tools/check_test_health.py run --profile "unit" --report test-results/unit.xml
-      timeout-minutes: 10
-
-    - name: Run component tests
-      run: uv run --locked python tools/check_test_health.py run --profile "component" --report test-results/component.xml
-      timeout-minutes: 10
-
-    - name: Run integration tests
-      run: uv run --locked python tools/check_test_health.py run --profile "integration" --report test-results/integration.xml
-      timeout-minutes: 10
-
-    - name: Run one reproducible shuffled suite
+    - name: Run one reproducible test layer
       env:
         TEST_COMMIT: ${{ github.sha }}
+        TEST_LAYER: ${{ matrix.layer }}
       run: |
         seed=$(uv run --locked python -c "import os; print(int(os.environ['TEST_COMMIT'][:8], 16))")
-        uv run --locked python tools/check_test_health.py run --profile all --seed "$seed" --report test-results/random.xml
-      timeout-minutes: 20
+        uv run --locked python tools/check_test_health.py run --profile "$TEST_LAYER" --seed "$seed" --report "test-results/${TEST_LAYER}.xml"
+      timeout-minutes: 10
 
     - name: Verify test configuration cleanup
       if: always()
@@ -97,13 +89,28 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: test-results-py${{ matrix.python-version }}
+        name: test-results-py${{ matrix.python-version }}-${{ matrix.layer }}
         path: |
           .pytest_cache/
           src/content/logs/
           test_logs/
           test-results/
         retention-days: 7
+
+  test:
+    if: always() && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+    needs: test-layer
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        python-version: ["3.15"]
+    steps:
+      - name: Require every test layer to succeed
+        shell: pwsh
+        env:
+          LAYER_RESULT: ${{ needs.test-layer.result }}
+        run: |
+          if ($env:LAYER_RESULT -ne 'success') { exit 1 }
 
   redis-provider-behavior:
     runs-on: ubuntu-26.04
@@ -361,13 +368,42 @@ jobs:
       - name: Verify shuffled suite with real backends
         run: uv run --locked python tools/check_test_health.py run --profile all --seed ${{ matrix.seed }} --report test-results/daily.xml
         timeout-minutes: 20
-      - name: Verify independent protocol cases
-        run: uv run --locked python tools/check_test_health.py isolate --report test-results/isolated.xml
-        timeout-minutes: 10
+      - name: Verify test configuration cleanup
+        if: always()
+        run: |
+          test ! -e src/config.toml
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: first-daily-${{ matrix.seed }}
+          path: |
+            test-results/
+            test_logs/
+          retention-days: 7
+
+  first-independent:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PRIMARY_PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked --dev --all-extras
+      - name: Verify independent protocol cases
+        run: uv run --locked python tools/check_test_health.py isolate --report test-results/isolated.xml
+        timeout-minutes: 10
+      - name: Verify test configuration cleanup
+        if: always()
+        run: |
+          test ! -e src/config.toml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: first-independent
           path: |
             test-results/
             test_logs/

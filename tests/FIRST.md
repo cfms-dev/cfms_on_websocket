@@ -80,10 +80,19 @@ test collection. Security nonces and resource names keep cryptographic entropy;
 assertions must not rely on their bytes. Independent-node checks start a fresh
 pytest/server session for each of eight access, search and TOTP scenarios.
 
-PR CI runs ordinary layers and one shuffled suite seeded from the tested commit.
+PR, push and release-call CI run unit, component and integration in independent
+jobs, each once in shuffled order seeded from the first eight hexadecimal digits
+of the tested commit. The unit job provides its own fast result; the existing
+`test (3.15)` check succeeds only when every layer succeeds. There is no additional
+whole-suite PR run. Each layer uploads separate timing, JUnit and log artifacts.
+pytest-randomly shuffles modules, classes and functions within those groups; this
+is not an arbitrary permutation of all individual nodes.
 Daily at 19:00 UTC (03:00 Asia/Shanghai the following day), and on manual workflow
 dispatch, seeds 1, 17 and 101 run with disposable Redis, MySQL 8.4, PostgreSQL and
-S3 services, followed by independent-node checks. Ordinary backend jobs retain
+S3 services instead of the ordinary layer jobs. A separate job checks the eight
+independent nodes once, without repeating them for each seed. Scheduled workflows
+run on the default branch; use manual dispatch to validate the daily path before
+merging. Ordinary backend jobs retain
 both MySQL 8.4 and 9.7. Each dedicated backend profile requires connection
 configuration, at least one executed case, and zero skips. Optional unconfigured
 backends may still skip during an ordinary local whole-suite run.
