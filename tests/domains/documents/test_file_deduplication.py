@@ -1,4 +1,3 @@
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -389,7 +388,7 @@ def test_expired_lease_can_be_reclaimed_once(deduplication_context):
         )
 
     def claim():
-        return context.module._claim_next_task(now=time.time())
+        return context.module._claim_next_task(now=1000.0)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         claims = list(executor.map(lambda _index: claim(), range(2)))

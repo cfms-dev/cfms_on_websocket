@@ -16,9 +16,8 @@ from tests.support.config import (
     write_test_config,
 )
 
-pytestmark = pytest.mark.component
 
-
+@pytest.mark.integration
 @pytest.mark.parametrize("fail_import", [False, True])
 def test_runtime_is_ready_before_initial_conftest_import_and_cleaned_up(
     tmp_path, fail_import
@@ -81,6 +80,7 @@ def _copy_config_sample(src_dir):
     copyfile(SOURCE_ROOT / "config.toml.sample", src_dir / "config.toml.sample")
 
 
+@pytest.mark.component
 def test_managed_test_config_removes_generated_config_and_restores_environment(
     tmp_path, monkeypatch
 ):
@@ -106,6 +106,7 @@ def test_managed_test_config_removes_generated_config_and_restores_environment(
     assert "CFMS_TEST_USE_SSL" not in os.environ
 
 
+@pytest.mark.component
 def test_write_test_config_can_disable_debug_for_load_tests(tmp_path):
     src_dir = tmp_path / "src"
     _copy_config_sample(src_dir)
@@ -119,6 +120,7 @@ def test_write_test_config_can_disable_debug_for_load_tests(tmp_path):
     assert "enable_passwd_force_expiration" not in config["security"]
 
 
+@pytest.mark.component
 def test_managed_test_config_restores_existing_config_exactly(tmp_path):
     src_dir = tmp_path / "src"
     _copy_config_sample(src_dir)
@@ -132,6 +134,7 @@ def test_managed_test_config_restores_existing_config_exactly(tmp_path):
     assert config_path.read_bytes() == original
 
 
+@pytest.mark.component
 def test_managed_test_config_restores_existing_config_after_body_failure(tmp_path):
     src_dir = tmp_path / "src"
     _copy_config_sample(src_dir)
@@ -149,6 +152,7 @@ def test_managed_test_config_restores_existing_config_after_body_failure(tmp_pat
     assert config_path.read_bytes() == original
 
 
+@pytest.mark.component
 def test_session_runtime_paths_are_isolated_from_development_files(
     protected_test_config,
 ):
@@ -161,6 +165,7 @@ def test_session_runtime_paths_are_isolated_from_development_files(
     assert paths.EXTENSION_ROOT == src_dir / "include" / "extensions"
 
 
+@pytest.mark.component
 def test_isolated_runtime_copies_resources_without_development_state(tmp_path):
     source = tmp_path / "development"
     _copy_config_sample(source)
@@ -203,6 +208,7 @@ def test_isolated_runtime_copies_resources_without_development_state(tmp_path):
         assert (source / relative).read_bytes() == expected
 
 
+@pytest.mark.component
 def test_isolated_runtime_removes_temporary_tree_after_body_failure(monkeypatch):
     monkeypatch.setenv("CFMS_TEST_HOST", "original-host")
 

@@ -24,16 +24,22 @@ lightweight required job and conditionally skip only the expensive test jobs.
 3. Requires a Towncrier fragment on pull requests unless the pull request has
    the `skip-changelog` label
 4. Collects tests against an isolated temporary server tree
-5. Runs unit, component, and integration phases separately with strict markers
+5. Runs unit, component, and integration in parallel jobs, once each in shuffled
+   order, with strict markers and an aggregate `test (3.15)` success gate
 6. Runs focused SQLite-to-MySQL and MySQL-to-SQLite migration tests against
    MySQL 8.4 and 9.7 LTS services
 7. Verifies rate-limit Lua and scheduler lease behavior against Redis 8.2.10
 8. Runs PostgreSQL scheduler concurrency/atomic initialization and platform smoke checks
 9. Uploads JUnit results and logs as artifacts (retained for 7 days)
+10. Enforces explicit whole-process feedback limits
+    and runs daily multi-seed/independent-node checks
+11. Exercises real S3 behavior against disposable SeaweedFS 4.53
 
 ### Configuration:
-- **Timeout**: 10 minutes per main-layer test step; pytest's 120-second watchdog
-  includes individual-case setup and teardown
+- **Timeout**: 10 minutes per main-layer step. The health command enforces a
+  30-second unit limit and 420-second component/integration limits, including
+  process startup and collection. Pytest's 120-second watchdog includes
+  individual-case setup and teardown
 - **Python version**: Tests run on Python 3.15
 - **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
   9.7 LTS
@@ -50,7 +56,8 @@ the load-tool tests under `tests/stress/` remain ordinary unit/component cases.
 The [test guide](../../tests/README.md) describes fixture ownership, safe local
 execution, criteria for writing tests, and coverage destinations.
 
-Dedicated backend jobs retain their real Redis, MySQL, and PostgreSQL services.
+Dedicated backend jobs retain their real Redis, MySQL, and PostgreSQL services,
+and add a disposable S3 service with test-only credentials.
 Each first verifies its connection environment is nonempty, runs focused paths
 with JUnit XML, and verifies at least one case executed and none skipped. Missing
 configuration, an unavailable service, zero selected tests, and unexpected skips
@@ -82,6 +89,33 @@ uv sync --locked --dev --extra cluster --extra ext-scheduling-cluster
 $env:CFMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
 uv run --locked pytest tests/providers/test_redis_lua_integration.py -q
 ```
+
+### FIRST feedback checks
+
+CI invokes `tools/check_test_health.py` directly for complete pytest-process
+timing and JUnit validation. It runs the current checkout once and compares its
+elapsed time with an explicit per-profile limit. Checks have no dependency on
+historical commits, additional checkouts or cached timing samples. Each run
+uploads XML and JSON reports, including the limit and check status; a limit
+breach fails even when the tests themselves passed. See
+[FIRST checks](../../tests/FIRST.md) for the limits and commands.
+
+Every ordinary run tests each layer once using a seed derived from the tested
+commit; it does not repeat the layers as a whole-suite run. Each layer uploads
+its own XML, JSON and logs even after failure. The unit layer checks the PR
+changelog once. The aggregate check rejects failed, cancelled or skipped layers.
+Scheduled and manually dispatched runs replace the ordinary layers with seeds
+1, 17 and 101 for the whole non-stress suite with disposable backend services.
+A separate job runs the eight independent protocol nodes once per workflow.
+The schedule is 19:00 UTC daily (03:00 Asia/Shanghai the following day).
+Scheduled runs use the default branch; manually dispatch the candidate branch
+to validate the daily path before merging.
+Pytest worker/finalizer errors fail checks, and tests are never automatically
+retried to produce a passing result.
+
+The S3 job waits for its dedicated bucket, then checks real read/write, resumed
+multipart completion, abort and cleanup. Missing configuration after explicit
+opt-in is a failure. It does not need AWS account secrets.
 
 ### Viewing Results:
 - Check the "Actions" tab in the GitHub repository

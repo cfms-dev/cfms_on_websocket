@@ -2,7 +2,7 @@
 Tests for access management operations.
 """
 
-import time
+import secrets
 
 import pytest
 
@@ -16,22 +16,26 @@ class TestAccessManagement:
     """Test access grant and revoke operations."""
 
     @pytest.mark.asyncio
-    async def test_grant_and_revoke_access(self, authenticated_client: CFMSTestClient):
+    async def test_grant_and_revoke_access(
+        self, authenticated_client: CFMSTestClient, owned_entities
+    ):
         """Test granting and revoking access to a document."""
         # Create a test user
-        test_username = f"test_user_access_{int(time.time() * 1000)}"
+        test_username = f"test_user_access_{secrets.token_hex(6)}"
         test_password = "TestPassword123!"
 
         user_response = await authenticated_client.create_user(
             username=test_username, password=test_password
         )
         assert user_response["code"] == 200, f"Failed to create user: {user_response}"
+        owned_entities["users"].append(user_response["data"]["user_id"])
 
         # Create a test document
         doc_response = await authenticated_client.create_document(
-            title=f"Test Document {int(time.time() * 1000)}"
+            title=f"Test Document {secrets.token_hex(6)}"
         )
         assert doc_response["code"] == 200, f"Failed to create document: {doc_response}"
+        owned_entities["documents"].append(doc_response["data"]["document_id"])
         document_id = doc_response["data"]["document_id"]
 
         # Grant access to the user for the document
@@ -41,7 +45,7 @@ class TestAccessManagement:
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200, (
             f"Failed to grant access: {grant_response}"
@@ -103,23 +107,25 @@ class TestAccessManagement:
 
     @pytest.mark.asyncio
     async def test_grant_multiple_access_types(
-        self, authenticated_client: CFMSTestClient, user_factory
+        self, authenticated_client: CFMSTestClient, user_factory, owned_entities
     ):
         """Test granting multiple access types and revoking them individually."""
         # Create a test user
-        test_username = f"test_user_multi_{int(time.time() * 1000)}"
+        test_username = f"test_user_multi_{secrets.token_hex(6)}"
         test_password = "TestPassword123!"
 
         user_response = await authenticated_client.create_user(
             username=test_username, password=test_password
         )
         assert user_response["code"] == 200
+        owned_entities["users"].append(user_response["data"]["user_id"])
 
         # Create a test document
         doc_response = await authenticated_client.create_document(
-            title=f"Test Document Multi {int(time.time() * 1000)}"
+            title=f"Test Document Multi {secrets.token_hex(6)}"
         )
         assert doc_response["code"] == 200
+        owned_entities["documents"].append(doc_response["data"]["document_id"])
         document_id = doc_response["data"]["document_id"]
 
         # Grant multiple access types
@@ -129,7 +135,7 @@ class TestAccessManagement:
             target_type="document",
             target_identifier=document_id,
             access_types=["read", "write"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200
 
@@ -190,21 +196,25 @@ class TestAccessManagement:
         await authenticated_client.delete_user(user_response["data"]["user_id"])
 
     @pytest.mark.asyncio
-    async def test_grant_access_to_group(self, authenticated_client: CFMSTestClient):
+    async def test_grant_access_to_group(
+        self, authenticated_client: CFMSTestClient, owned_entities
+    ):
         """Test granting and revoking access for a group."""
         # Create a test group
-        test_group_name = f"test_group_{int(time.time() * 1000)}"
+        test_group_name = f"test_group_{secrets.token_hex(6)}"
 
         group_response = await authenticated_client.create_group(
             group_name=test_group_name
         )
         assert group_response["code"] == 200
+        owned_entities["groups"].append(test_group_name)
 
         # Create a test document
         doc_response = await authenticated_client.create_document(
-            title=f"Test Document Group {int(time.time() * 1000)}"
+            title=f"Test Document Group {secrets.token_hex(6)}"
         )
         assert doc_response["code"] == 200
+        owned_entities["documents"].append(doc_response["data"]["document_id"])
         document_id = doc_response["data"]["document_id"]
 
         # Grant access to the group for the document
@@ -214,7 +224,7 @@ class TestAccessManagement:
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200
 
@@ -248,23 +258,25 @@ class TestAccessManagement:
 
     @pytest.mark.asyncio
     async def test_grant_access_to_directory(
-        self, authenticated_client: CFMSTestClient
+        self, authenticated_client: CFMSTestClient, owned_entities
     ):
         """Test granting and revoking access for a directory."""
         # Create a test user
-        test_username = f"test_user_dir_{int(time.time() * 1000)}"
+        test_username = f"test_user_dir_{secrets.token_hex(6)}"
         test_password = "TestPassword123!"
 
         user_response = await authenticated_client.create_user(
             username=test_username, password=test_password
         )
         assert user_response["code"] == 200
+        owned_entities["users"].append(user_response["data"]["user_id"])
 
         # Create a test directory
         dir_response = await authenticated_client.create_directory(
-            name=f"Test Directory {int(time.time() * 1000)}"
+            name=f"Test Directory {secrets.token_hex(6)}"
         )
         assert dir_response["code"] == 200
+        owned_entities["directories"].append(dir_response["data"]["id"])
         directory_id = dir_response["data"]["id"]
 
         # Grant access to the user for the directory
@@ -274,7 +286,7 @@ class TestAccessManagement:
             target_type="directory",
             target_identifier=directory_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200
 

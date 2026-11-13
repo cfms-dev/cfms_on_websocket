@@ -6,15 +6,14 @@ import pytest
 from include.domains.identity.default_groups import DEFAULT_GROUP_PERMISSIONS
 from include.runtime_lock import server_runtime_lock
 
-from .support import _create_empty_database, _make_src_dir, _run_maintain
+from .support import _make_src_dir, _run_maintain
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def default_group_root(tmp_path):
-    root = _make_src_dir(tmp_path)
-    _create_empty_database(root)
+def default_group_root(empty_database_template, tmp_path):
+    root = _make_src_dir(tmp_path, database_template=empty_database_template)
     with closing(sqlite3.connect(root / "app.db")) as connection, connection:
         connection.executemany(
             "INSERT INTO user_groups (group_name) VALUES (?)", [("user",), ("sysop",)]

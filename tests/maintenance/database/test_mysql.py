@@ -33,13 +33,13 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_unversioned_mysql_schema_is_rejected_without_stamping(
-    backup_context, request
+    backup_context, request, isolated_metadata
 ) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
     request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
     try:
-        backup_context.Base.metadata.create_all(mysql_engine)
+        isolated_metadata.create_all(mysql_engine)
 
         with pytest.raises(DatabaseSchemaError, match="Non-empty unversioned"):
             upgrade_database_schema(mysql_engine, backup_context.Base.metadata)
@@ -51,7 +51,9 @@ def test_unversioned_mysql_schema_is_rejected_without_stamping(
         _clear_mysql_database(mysql_engine)
 
 
-def test_document_lookup_indexes_round_trip_on_mysql(backup_context, request) -> None:
+def test_document_lookup_indexes_round_trip_on_mysql(
+    backup_context, request, isolated_metadata
+) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
     request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
@@ -85,7 +87,7 @@ def test_document_lookup_indexes_round_trip_on_mysql(backup_context, request) ->
         },
     }
     try:
-        backup_context.Base.metadata.create_all(mysql_engine)
+        isolated_metadata.create_all(mysql_engine)
         with mysql_engine.begin() as connection:
             MigrationContext.configure(connection).stamp(scripts, head)
 
@@ -123,7 +125,9 @@ def test_document_lookup_indexes_round_trip_on_mysql(backup_context, request) ->
         _clear_mysql_database(mysql_engine)
 
 
-def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) -> None:
+def test_system_schedule_revision_round_trips_on_mysql(
+    backup_context, request, isolated_metadata
+) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
     request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
@@ -132,7 +136,7 @@ def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) 
     head = scripts.get_current_head()
     assert head is not None
     try:
-        backup_context.Base.metadata.create_all(mysql_engine)
+        isolated_metadata.create_all(mysql_engine)
         with mysql_engine.begin() as connection:
             MigrationContext.configure(connection).stamp(scripts, head)
 
@@ -211,7 +215,9 @@ def test_system_schedule_revision_round_trips_on_mysql(backup_context, request) 
         _clear_mysql_database(mysql_engine)
 
 
-def test_legacy_credentials_round_trip_on_mysql(backup_context, request) -> None:
+def test_legacy_credentials_round_trip_on_mysql(
+    backup_context, request, isolated_metadata
+) -> None:
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
     request.addfinalizer(mysql_engine.dispose)
     _clear_mysql_database(mysql_engine)
@@ -219,7 +225,7 @@ def test_legacy_credentials_round_trip_on_mysql(backup_context, request) -> None
     tables = backup_context.Base.metadata.tables
     owner_id = uuid.uuid4()
     try:
-        backup_context.Base.metadata.create_all(mysql_engine)
+        isolated_metadata.create_all(mysql_engine)
         with mysql_engine.begin() as connection:
             connection.execute(
                 tables["users"].insert(),
@@ -326,6 +332,7 @@ def test_database_migration_round_trip_with_supported_mysql_lts(
     tmp_path,
     direction,
     request,
+    isolated_metadata,
 ) -> None:
     base = backup_context.Base
     mysql_engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
@@ -341,10 +348,10 @@ def test_database_migration_round_trip_with_supported_mysql_lts(
 
     if direction == "sqlite-to-mysql":
         source_engine, target_engine = sqlite_engine, mysql_engine
-        base.metadata.create_all(source_engine)
+        isolated_metadata.create_all(source_engine)
     else:
         source_engine, target_engine = mysql_engine, sqlite_engine
-        base.metadata.create_all(source_engine)
+        isolated_metadata.create_all(source_engine)
 
     storage_root = tmp_path / "storage"
     storage_root.mkdir()

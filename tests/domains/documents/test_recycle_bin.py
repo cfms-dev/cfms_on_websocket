@@ -19,11 +19,12 @@ def _folders(data: dict):
 class TestRecycleBin:
     @pytest.mark.asyncio
     async def test_document_recycle_bin(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self, authenticated_client: CFMSTestClient, document_factory, owned_entities
     ):
         # Create a parent directory
         dir_resp = await authenticated_client.create_directory("RecycleBinFolder")
         folder_id = assert_success(dir_resp)["id"]
+        owned_entities["directories"].append(dir_resp["data"]["id"])
 
         # Create a document inside the folder using factory to ensure it has an active revision
         doc_data = await document_factory("Recycle Bin Test Doc", folder_id=folder_id)
@@ -72,13 +73,14 @@ class TestRecycleBin:
 
     @pytest.mark.asyncio
     async def test_document_restore_conflict_preserves_deleted_document(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self, authenticated_client: CFMSTestClient, document_factory, owned_entities
     ):
         name = f"Restore Conflict {secrets.token_hex(4)}"
         document = await document_factory(name)
         document_id = document["document_id"]
         assert_success(await authenticated_client.delete_document(document_id))
         winner = assert_success(await authenticated_client.create_directory(name))
+        owned_entities["directories"].append(winner["id"])
 
         restore = await authenticated_client.restore_document(document_id)
 
@@ -90,16 +92,20 @@ class TestRecycleBin:
         assert any(item["id"] == document_id for item in _documents(deleted))
 
     @pytest.mark.asyncio
-    async def test_directory_recycle_bin(self, authenticated_client: CFMSTestClient):
+    async def test_directory_recycle_bin(
+        self, authenticated_client: CFMSTestClient, owned_entities
+    ):
         # Create a parent directory
         parent_resp = await authenticated_client.create_directory("ParentForRecycleBin")
         parent_id = assert_success(parent_resp)["id"]
+        owned_entities["directories"].append(parent_resp["data"]["id"])
 
         # Create a child directory
         child_resp = await authenticated_client.create_directory(
             "ChildRecycleBin", parent_id
         )
         child_id = assert_success(child_resp)["id"]
+        owned_entities["directories"].append(child_resp["data"]["id"])
 
         # Soft delete the child directory
         del_resp = await authenticated_client.delete_directory(child_id)
@@ -140,10 +146,11 @@ class TestRecycleBin:
 
     @pytest.mark.asyncio
     async def test_directory_restore_conflict_preserves_deleted_directory(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self, authenticated_client: CFMSTestClient, document_factory, owned_entities
     ):
         name = f"Directory Restore Conflict {secrets.token_hex(4)}"
         directory = assert_success(await authenticated_client.create_directory(name))
+        owned_entities["directories"].append(directory["id"])
         directory_id = directory["id"]
         assert_success(await authenticated_client.delete_directory(directory_id))
         winner = await document_factory(name)
@@ -159,21 +166,24 @@ class TestRecycleBin:
 
     @pytest.mark.asyncio
     async def test_list_deleted_items_with_cursor(
-        self, authenticated_client: CFMSTestClient
+        self, authenticated_client: CFMSTestClient, owned_entities
     ):
         parent_resp = await authenticated_client.create_directory(
             "RecycleBinCursorParent"
         )
         parent_id = assert_success(parent_resp)["id"]
+        owned_entities["directories"].append(parent_resp["data"]["id"])
 
         first_child_resp = await authenticated_client.create_directory(
             "RecycleBinCursorA", parent_id
         )
         first_child_id = assert_success(first_child_resp)["id"]
+        owned_entities["directories"].append(first_child_resp["data"]["id"])
         second_child_resp = await authenticated_client.create_directory(
             "RecycleBinCursorB", parent_id
         )
         second_child_id = assert_success(second_child_resp)["id"]
+        owned_entities["directories"].append(second_child_resp["data"]["id"])
 
         await authenticated_client.delete_directory(first_child_id)
         await authenticated_client.delete_directory(second_child_id)
@@ -203,18 +213,21 @@ class TestRecycleBin:
 
     @pytest.mark.asyncio
     async def test_restore_directory_to_different_parent(
-        self, authenticated_client: CFMSTestClient
+        self, authenticated_client: CFMSTestClient, owned_entities
     ):
         source_resp = await authenticated_client.create_directory("RecycleBinSource")
         source_id = assert_success(source_resp)["id"]
+        owned_entities["directories"].append(source_resp["data"]["id"])
 
         target_resp = await authenticated_client.create_directory("RecycleBinTarget")
         target_id = assert_success(target_resp)["id"]
+        owned_entities["directories"].append(target_resp["data"]["id"])
 
         child_resp = await authenticated_client.create_directory(
             "RecycleBinChild", source_id
         )
         child_id = assert_success(child_resp)["id"]
+        owned_entities["directories"].append(child_resp["data"]["id"])
 
         await authenticated_client.delete_directory(child_id)
 
@@ -237,15 +250,17 @@ class TestRecycleBin:
 
     @pytest.mark.asyncio
     async def test_restore_directory_with_new_name(
-        self, authenticated_client: CFMSTestClient
+        self, authenticated_client: CFMSTestClient, owned_entities
     ):
         parent_resp = await authenticated_client.create_directory("RecycleBinRename")
         parent_id = assert_success(parent_resp)["id"]
+        owned_entities["directories"].append(parent_resp["data"]["id"])
 
         child_resp = await authenticated_client.create_directory(
             "RecycleBinOriginalName", parent_id
         )
         child_id = assert_success(child_resp)["id"]
+        owned_entities["directories"].append(child_resp["data"]["id"])
 
         await authenticated_client.delete_directory(child_id)
 
@@ -274,15 +289,17 @@ class TestRecycleBin:
 
     @pytest.mark.asyncio
     async def test_recycle_bin_already_purged_directory_errors(
-        self, authenticated_client: CFMSTestClient
+        self, authenticated_client: CFMSTestClient, owned_entities
     ):
         parent_resp = await authenticated_client.create_directory("RecycleBinPurge")
         parent_id = assert_success(parent_resp)["id"]
+        owned_entities["directories"].append(parent_resp["data"]["id"])
 
         child_resp = await authenticated_client.create_directory(
             "RecycleBinToPurge", parent_id
         )
         child_id = assert_success(child_resp)["id"]
+        owned_entities["directories"].append(child_resp["data"]["id"])
 
         await authenticated_client.delete_directory(child_id)
         assert_success(await authenticated_client.purge_directory(child_id))

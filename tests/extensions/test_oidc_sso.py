@@ -915,7 +915,7 @@ def test_oidc_binding_does_not_bypass_login_policy(oidc_callback_context):
 
 @pytest.mark.component
 def test_oidc_returns_auth_context_when_local_totp_is_required(
-    oidc_callback_context, monkeypatch
+    oidc_callback_context, monkeypatch, totp_time
 ):
     import pyotp
 

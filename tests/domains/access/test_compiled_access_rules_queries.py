@@ -1,8 +1,9 @@
-import time
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, select
 
+from include.domains.access.authorization import evaluation
 from tests.domains.access.support import _make_access_rule_user, _make_rule_user
 
 pytestmark = pytest.mark.component
@@ -152,7 +153,9 @@ def test_batched_compiled_rules_match_direct_access_checks(access_rule_session):
 
 def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
     access_rule_session,
+    monkeypatch,
 ):
+    monkeypatch.setattr(evaluation, "time", SimpleNamespace(time=lambda: 1000.0))
     models, session = access_rule_session
     from include.domains.access.authorization.evaluation import (
         check_access_requirements,
@@ -172,7 +175,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
 
     block = models.UserBlockEntry(
         user=user,
-        timestamp=time.time(),
+        timestamp=1000.0,
         not_before=0.0,
         not_after=-1,
         target_type="directory",
@@ -196,7 +199,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
         target_identifier=child.id,
         access_type="read",
         start_time=0.0,
-        end_time=time.time() - 1,
+        end_time=999.0,
     )
     session.add(expired_entry)
     session.flush()
@@ -236,7 +239,7 @@ def test_folder_access_context_hides_blocked_parent_but_honors_direct_grant(
 
     block.target_type = "directory"
     block.target_id = parent.id
-    active_entry.end_time = time.time() - 1
+    active_entry.end_time = 999.0
     group = models.UserGroup(group_name="context-group", group_display_name="Context")
     user.groups.append(
         models.UserMembership(

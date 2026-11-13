@@ -1,5 +1,4 @@
 import secrets
-import time
 
 import pytest
 
@@ -73,6 +72,7 @@ class TestDocumentOperations:
         authenticated_client: CFMSTestClient,
         test_document: dict,
         user_factory,
+        client_factory,
     ):
         document_id = test_document["document_id"]
 
@@ -88,63 +88,41 @@ class TestDocumentOperations:
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert_success(grant_response)
 
-        client = CFMSTestClient()
-        await client.connect()
-        try:
-            login_response = await client.login(user["username"], user["password"])
-            assert_success(login_response)
+        client = await client_factory()
+        login_response = await client.login(user["username"], user["password"])
+        assert_success(login_response)
 
-            info_response = await client.get_document_info(document_id)
-            info = assert_success(info_response)
-            assert "metadata" not in info
-        finally:
-            await client.disconnect()
+        info_response = await client.get_document_info(document_id)
+        info = assert_success(info_response)
+        assert "metadata" not in info
 
     @pytest.mark.asyncio
     async def test_set_document_tags_requires_permission(
         self,
         authenticated_client: CFMSTestClient,
         test_document: dict,
-        server_process,
+        user_factory,
+        client_factory,
     ):
-        username = f"metadata_user_{secrets.token_hex(4)}"
-        password = "TestPassword123!"
+        user = await user_factory(nickname="Metadata User")
         document_id = test_document["document_id"]
-
-        response = await authenticated_client.create_user(
-            username=username,
-            password=password,
-            nickname="Metadata User",
+        grant_response = await authenticated_client.grant_access(
+            entity_type="user",
+            entity_identifier=user["user_id"],
+            target_type="document",
+            target_identifier=document_id,
+            access_types=["write"],
+            start_time=0.0,
         )
-        assert_success(response)
-
-        try:
-            grant_response = await authenticated_client.grant_access(
-                entity_type="user",
-                entity_identifier=response["data"]["user_id"],
-                target_type="document",
-                target_identifier=document_id,
-                access_types=["write"],
-                start_time=time.time(),
-            )
-            assert_success(grant_response)
-
-            client = CFMSTestClient()
-            await client.connect()
-            try:
-                login_response = await client.login(username, password)
-                assert_success(login_response)
-
-                set_response = await client.set_document_tags(document_id, ["blocked"])
-                assert_error(set_response, 403)
-            finally:
-                await client.disconnect()
-        finally:
-            await authenticated_client.delete_user(response["data"]["user_id"])
+        assert_success(grant_response)
+        client = await client_factory()
+        assert_success(await client.login(user["username"], user["password"]))
+        set_response = await client.set_document_tags(document_id, ["blocked"])
+        assert_error(set_response, 403)
 
     @pytest.mark.asyncio
     async def test_rename_document(
@@ -233,7 +211,7 @@ class TestDocumentOperations:
 
     @pytest.mark.asyncio
     async def test_shared_namespace_and_soft_delete_release(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self, authenticated_client: CFMSTestClient, document_factory, owned_entities
     ):
         name = f"Shared Namespace {secrets.token_hex(4)}"
         document = await document_factory(name)
@@ -245,6 +223,7 @@ class TestDocumentOperations:
 
         assert_success(await authenticated_client.delete_document(document_id))
         folder = assert_success(await authenticated_client.create_directory(name))
+        owned_entities["directories"].append(folder["id"])
         folder_id = folder["id"]
         assert_success(await authenticated_client.delete_directory(folder_id))
 
@@ -257,21 +236,24 @@ class TestDocumentOperations:
 
     @pytest.mark.asyncio
     async def test_document_rename_and_move_conflicts_use_database_winner(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self, authenticated_client: CFMSTestClient, document_factory, owned_entities
     ):
         suffix = secrets.token_hex(4)
         source = assert_success(
             await authenticated_client.create_directory(f"Move Source {suffix}")
         )
+        owned_entities["directories"].append(source["id"])
         target = assert_success(
             await authenticated_client.create_directory(f"Move Target {suffix}")
         )
+        owned_entities["directories"].append(target["id"])
         title = f"Moving Document {suffix}"
         document = await document_factory(title, folder_id=source["id"])
         document_id = document["document_id"]
         move_winner = assert_success(
             await authenticated_client.create_directory(title, parent_id=target["id"])
         )
+        owned_entities["directories"].append(move_winner["id"])
 
         move_response = await authenticated_client.send_request(
             "core.document.move",
@@ -286,6 +268,7 @@ class TestDocumentOperations:
                 rename_title, parent_id=source["id"]
             )
         )
+        owned_entities["directories"].append(rename_winner["id"])
         rename_response = await authenticated_client.rename_document(
             document_id, rename_title
         )

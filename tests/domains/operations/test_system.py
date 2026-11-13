@@ -180,7 +180,7 @@ class TestSystemManagement:
     async def test_diagnostics_requires_lockdown_bypass(
         self,
         authenticated_client: CFMSTestClient,
-        test_server_settings: ServerTestSettings,
+        client_factory,
         user_factory,
     ):
         user = await user_factory()
@@ -189,12 +189,7 @@ class TestSystemManagement:
                 user["user_id"], [permission_entry("diagnostics")]
             )
         )
-        diagnostics_client = CFMSTestClient(
-            host=test_server_settings.host,
-            port=test_server_settings.port,
-            use_ssl=test_server_settings.use_ssl,
-        )
-        await diagnostics_client.connect()
+        diagnostics_client = await client_factory()
         assert_success(
             await diagnostics_client.login(user["username"], user["password"])
         )
@@ -218,7 +213,6 @@ class TestSystemManagement:
             }
         finally:
             assert_success(await authenticated_client.set_lockdown(False))
-            await diagnostics_client.disconnect()
 
     @pytest.mark.asyncio
     async def test_lockdown_blocks_regular_user_requests(
@@ -290,14 +284,9 @@ class TestSystemManagement:
     async def test_lockdown_broadcast_event(
         self,
         authenticated_client: CFMSTestClient,
-        test_server_settings: ServerTestSettings,
+        client_factory,
     ):
-        event_client = CFMSTestClient(
-            host=test_server_settings.host,
-            port=test_server_settings.port,
-            use_ssl=test_server_settings.use_ssl,
-        )
-        await event_client.connect()
+        event_client = await client_factory()
 
         try:
             lockdown_resp = await authenticated_client.set_lockdown(
@@ -313,7 +302,6 @@ class TestSystemManagement:
         finally:
             unlockdown_resp = await authenticated_client.set_lockdown(False)
             assert_success(unlockdown_resp)
-            await event_client.disconnect()
 
     @pytest.mark.asyncio
     async def test_even_client_initiated_stream_is_rejected(
@@ -348,12 +336,10 @@ class TestSystemManagement:
             )
 
     @pytest.mark.asyncio
-    async def test_audit_log_action_filters(self, authenticated_client: CFMSTestClient):
-        assert_success(
-            await authenticated_client.create_directory(
-                f"AuditLogFolder_{time.time_ns()}"
-            )
-        )
+    async def test_audit_log_action_filters(
+        self, authenticated_client: CFMSTestClient, directory_factory
+    ):
+        await directory_factory()
         assert_success(await authenticated_client.diagnostics())
 
         create_entries = assert_success(

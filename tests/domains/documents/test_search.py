@@ -86,20 +86,25 @@ class TestSearch:
         assert doc3["document_id"] not in doc_ids
 
     @pytest.mark.asyncio
-    async def test_search_directories(self, authenticated_client: CFMSTestClient):
+    async def test_search_directories(
+        self, authenticated_client: CFMSTestClient, owned_entities
+    ):
         # Create some test directories
         dir1_response = await authenticated_client.create_directory(
             "UniqueSearchableFolderOne"
         )
         dir1 = assert_success(dir1_response)
+        owned_entities["directories"].append(dir1_response["data"]["id"])
         dir2_response = await authenticated_client.create_directory(
             "UniqueSearchableFolderTwo"
         )
         dir2 = assert_success(dir2_response)
+        owned_entities["directories"].append(dir2_response["data"]["id"])
         dir3_response = await authenticated_client.create_directory(
             "UnrelatedFolderThree"
         )
         dir3 = assert_success(dir3_response)
+        owned_entities["directories"].append(dir3_response["data"]["id"])
 
         # Search for "Searchable"
         response = await authenticated_client.search(
@@ -117,13 +122,14 @@ class TestSearch:
 
     @pytest.mark.asyncio
     async def test_search_both(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self, authenticated_client: CFMSTestClient, document_factory, owned_entities
     ):
         doc = await document_factory("SharedSearchTermDoc")
         dir_response = await authenticated_client.create_directory(
             "SharedSearchTermFolder"
         )
         folder = assert_success(dir_response)
+        owned_entities["directories"].append(dir_response["data"]["id"])
 
         response = await authenticated_client.search(
             query="SharedSearchTerm", search_documents=True, search_directories=True
@@ -168,6 +174,7 @@ class TestSearch:
         document_factory,
         literal_fragment: str,
         near_miss_fragment: str,
+        owned_entities,
     ):
         matching_document = await document_factory(
             f"Document {literal_fragment} Result"
@@ -180,11 +187,13 @@ class TestSearch:
                 f"Directory {literal_fragment} Result"
             )
         )
+        owned_entities["directories"].append(matching_directory["id"])
         near_miss_directory = assert_success(
             await authenticated_client.create_directory(
                 f"Directory {near_miss_fragment} Result"
             )
         )
+        owned_entities["directories"].append(near_miss_directory["id"])
 
         response = await authenticated_client.search(query=literal_fragment.swapcase())
         data = assert_success(response)
@@ -286,10 +295,10 @@ class TestSearch:
 
     @pytest.mark.asyncio
     async def test_search_with_no_targets_returns_empty_results(
-        self, authenticated_client: CFMSTestClient, document_factory
+        self, authenticated_client: CFMSTestClient, document_factory, directory_factory
     ):
         await document_factory("NoTargetSearchDocument")
-        await authenticated_client.create_directory("NoTargetSearchFolder")
+        await directory_factory("NoTargetSearchFolder")
 
         response = await authenticated_client.search(
             query="NoTargetSearch",

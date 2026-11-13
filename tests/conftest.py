@@ -2,7 +2,6 @@
 Pytest configuration and fixtures for CFMS test suite.
 """
 
-import secrets
 import subprocess
 import sys
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
@@ -14,8 +13,25 @@ import pytest_asyncio
 from include.config import paths
 from tests.support.client import CFMSTestClient
 from tests.support.config import ServerTestSettings, isolated_test_runtime
+from tests.support.entities import (
+    directory_factory,
+    document_factory,
+    group_factory,
+    owned_entities,
+    user_factory,
+)
 from tests.support.server import start_server, stop_server
+from tests.support.time import totp_time
 from tests.support.utils import assert_success
+
+__all__ = [
+    "directory_factory",
+    "document_factory",
+    "group_factory",
+    "owned_entities",
+    "totp_time",
+    "user_factory",
+]
 
 pytest_plugins = ("tests.support.collection",)
 
@@ -148,150 +164,6 @@ async def low_privilege_client(
     response = await unauthenticated_client.login(user["username"], user["password"])
     assert_success(response)
     return unauthenticated_client
-
-
-@pytest_asyncio.fixture
-async def user_factory(
-    authenticated_client: CFMSTestClient,
-) -> AsyncGenerator[Callable]:
-    created_users = []
-
-    async def _creator(
-        username=None,
-        password="TestPassword123!",
-        nickname="Test User",
-        groups=None,
-        permissions=None,
-    ):
-        if not username:
-            username = f"user_{secrets.token_hex(4)}"
-        response = await authenticated_client.create_user(
-            username=username,
-            password=password,
-            nickname=nickname,
-            groups=groups,
-            permissions=permissions,
-        )
-        assert_success(response)
-        user_id = response["data"]["user_id"]
-        created_users.append(user_id)
-        return {
-            "user_id": user_id,
-            "username": username,
-            "password": password,
-            "nickname": nickname,
-        }
-
-    yield _creator
-
-    errors = []
-    for user in reversed(created_users):
-        try:
-            response = await authenticated_client.delete_user(user)
-            assert response["code"] in (200, 404), response
-        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned user
-            errors.append(exc)
-    if errors:
-        raise ExceptionGroup("User cleanup failed", errors)
-
-
-@pytest_asyncio.fixture
-async def document_factory(
-    authenticated_client: CFMSTestClient,
-) -> AsyncGenerator[Callable]:
-    created_docs = []
-
-    async def _creator(title=None, upload_file="./pyproject.toml", folder_id=None):
-        if not title:
-            title = f"Doc_{secrets.token_hex(4)}"
-        response = await authenticated_client.create_document(title, folder_id)
-        data = assert_success(response)
-        doc_id = data["document_id"]
-        created_docs.append(doc_id)
-
-        task_id = data["task_data"]["task_id"]
-        if upload_file:
-            await authenticated_client.upload_file_to_server(task_id, upload_file)
-
-        return {"document_id": doc_id, "title": title}
-
-    yield _creator
-
-    errors = []
-    for doc_id in reversed(created_docs):
-        try:
-            response = await authenticated_client.delete_document(doc_id)
-            assert response["code"] in (200, 404), response
-            response = await authenticated_client.purge_document(doc_id)
-            assert response["code"] in (200, 404), response
-        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned document
-            errors.append(exc)
-    if errors:
-        raise ExceptionGroup("Document cleanup failed", errors)
-
-
-@pytest_asyncio.fixture
-async def group_factory(
-    authenticated_client: CFMSTestClient,
-) -> AsyncGenerator[Callable]:
-    created_groups = []
-
-    async def _creator(group_name=None, permissions=None):
-        if not group_name:
-            group_name = f"group_{secrets.token_hex(4)}"
-        if permissions is None:
-            permissions = []
-
-        response = await authenticated_client.create_group(
-            group_name=group_name, permissions=permissions
-        )
-        assert_success(response)
-        created_groups.append(group_name)
-        return {"group_name": group_name, "permissions": permissions}
-
-    yield _creator
-
-    errors = []
-    for group_name in reversed(created_groups):
-        try:
-            response = await authenticated_client.send_request(
-                "core.group.delete", {"group_name": group_name}
-            )
-            assert response["code"] in (200, 404), response
-        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned group
-            errors.append(exc)
-    if errors:
-        raise ExceptionGroup("Group cleanup failed", errors)
-
-
-@pytest_asyncio.fixture
-async def directory_factory(
-    authenticated_client: CFMSTestClient,
-) -> AsyncGenerator[Callable]:
-    created_directories = []
-
-    async def create_directory(name=None, parent_id=None):
-        if name is None:
-            name = f"Directory_{secrets.token_hex(4)}"
-        response = await authenticated_client.create_directory(name, parent_id)
-        data = assert_success(response)
-        folder_id = data["id"]
-        created_directories.append(folder_id)
-        return {"folder_id": folder_id, "name": name, "parent_id": parent_id}
-
-    yield create_directory
-
-    errors = []
-    for folder_id in reversed(created_directories):
-        try:
-            response = await authenticated_client.delete_directory(folder_id)
-            assert response["code"] in (200, 404), response
-            response = await authenticated_client.purge_directory(folder_id)
-            assert response["code"] in (200, 404), response
-        except Exception as exc:  # noqa: BLE001 -- attempt cleanup of every owned directory
-            errors.append(exc)
-    if errors:
-        raise ExceptionGroup("Directory cleanup failed", errors)
 
 
 @pytest_asyncio.fixture

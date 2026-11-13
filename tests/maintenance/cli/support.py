@@ -1,7 +1,9 @@
 import datetime as dt
 import json
 import re
+import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,7 @@ def _run_maintain(
     input_text: str | None = None,
     permission_now: float | None = None,
 ):
-    command = ["uv", "run", "--locked", "--project", str(_PROJECT_ROOT)]
+    command = ["uv", "run", "--locked", "--no-sync", "--project", str(_PROJECT_ROOT)]
     if permission_now is None:
         command.extend(["maintain", *args])
     else:
@@ -71,6 +73,7 @@ def _run_python(cwd: Path, code: str):
             "uv",
             "run",
             "--locked",
+            "--no-sync",
             "--project",
             str(_PROJECT_ROOT),
             "python",
@@ -100,7 +103,9 @@ def _normalize_cli_output(output: str) -> str:
     return " ".join(output.split())
 
 
-def _make_src_dir(tmp_path: Path, name: str = "src") -> Path:
+def _make_src_dir(
+    tmp_path: Path, name: str = "src", *, database_template: Path | None = None
+) -> Path:
     src_dir = tmp_path / name
     src_dir.mkdir()
     (src_dir / "main.py").write_text("", encoding="utf-8")
@@ -120,6 +125,16 @@ def _make_src_dir(tmp_path: Path, name: str = "src") -> Path:
         (_SRC_PATH / "config.toml.sample").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    if database_template is not None:
+        with (
+            closing(
+                sqlite3.connect(
+                    f"{(database_template / 'app.db').as_uri()}?mode=ro", uri=True
+                )
+            ) as source,
+            closing(sqlite3.connect(src_dir / "app.db")) as target,
+        ):
+            source.backup(target)
     return src_dir
 
 
@@ -269,26 +284,21 @@ with Session.begin() as session:
 
 
 def _read_permission_entries(src_dir: Path) -> dict:
-    result = _run_python(
-        src_dir,
-        """
-import json
-
-from maintenance.runtime import load_database_models
-
-load_database_models()
-
-from include.database.models.identity import UserGroupPermission, UserPermission
-from include.database.session import Session
-
-with Session() as session:
-    print(json.dumps({
-        "user": [entry.permission for entry in session.query(UserPermission).order_by(UserPermission.id)],
-        "group": [entry.permission for entry in session.query(UserGroupPermission).order_by(UserGroupPermission.id)],
-    }, sort_keys=True))
-""",
-    )
-    return json.loads(result.stdout)
+    with closing(sqlite3.connect(src_dir / "app.db")) as connection:
+        return {
+            "user": [
+                row[0]
+                for row in connection.execute(
+                    "SELECT permission FROM user_permissions ORDER BY id"
+                )
+            ],
+            "group": [
+                row[0]
+                for row in connection.execute(
+                    "SELECT permission FROM group_permissions ORDER BY id"
+                )
+            ],
+        }
 
 
 def _seed_audit_entries(src_dir: Path, *, batch_size: int = 2) -> None:
@@ -360,23 +370,13 @@ with Session.begin() as session:
 
 
 def _read_audit_ids(src_dir: Path) -> list[str]:
-    result = _run_python(
-        src_dir,
-        """
-import json
-
-from maintenance.runtime import load_database_models
-
-load_database_models()
-
-from include.database.models.operations import AuditEntry
-from include.database.session import Session
-
-with Session() as session:
-    print(json.dumps([entry.id for entry in session.query(AuditEntry).order_by(AuditEntry.logged_time, AuditEntry.id)]))
-""",
-    )
-    return json.loads(result.stdout)
+    with closing(sqlite3.connect(src_dir / "app.db")) as connection:
+        return [
+            row[0]
+            for row in connection.execute(
+                "SELECT id FROM audit_entries ORDER BY logged_time, id"
+            )
+        ]
 
 
 def _read_jsonl(path: Path) -> list[dict]:

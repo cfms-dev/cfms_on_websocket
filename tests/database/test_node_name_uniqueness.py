@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -55,6 +56,13 @@ def test_same_name_is_allowed_in_different_directories(sqlite_engine_factory) ->
             ]
         )
         session.commit()
+
+    with Session(engine) as session:
+        persisted = session.scalars(select(Document).order_by(Document.id)).all()
+        assert [(document.id, document.folder_id) for document in persisted] == [
+            ("first-report", "first"),
+            ("second-report", "second"),
+        ]
 
 
 @pytest.mark.component

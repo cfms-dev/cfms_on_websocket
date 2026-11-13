@@ -51,6 +51,11 @@ The suite uses strict pytest configuration and markers. Async tests retain
 `@pytest.mark.asyncio`; async fixtures use `pytest_asyncio.fixture` and function
 loop scope.
 
+Ordinary runs disable automatic shuffling. To reproduce an order-dependent
+failure, use `-p randomly --randomly-seed=<seed>`; the health command also sets
+`PYTHONHASHSEED` before starting pytest. See [FIRST checks](FIRST.md) for budgets,
+independent-node checks, and the change-to-contract map.
+
 ## Runtime and ownership
 
 Before test modules are collected, the session copies server code and required
@@ -65,8 +70,12 @@ The real server starts only when requested through `server_process`, normally by
 `client_factory` or another WebSocket fixture. It is shared for the session;
 client connections and owned users, groups, documents, and directories are
 function-scoped. Use `client_factory` for extra connections and the entity
-factories for resources that need cleanup. Factories clean their recorded objects
-in reverse order and report cleanup failures after attempting every object.
+factories for resources that need cleanup. The function-scoped `owned_entities`
+fixture records their identifiers, cleans documents before directories and
+groups before users, and cleans each kind in reverse creation order. It reports
+cleanup failures after attempting every object. When creation itself is the
+operation under test, append its returned identifier to `owned_entities`
+immediately after asserting success; do not leave cleanup at the end of the body.
 
 Server readiness requires a successful WebSocket handshake. Teardown stops the
 subprocess, closes its pipes/log readers, stops imported configuration observers,
@@ -149,15 +158,13 @@ justify rewriting a working test.
 The reorganization keeps domain folders; markers express execution layers.
 Existing behavior tests retain their assertions unless a documented replacement
 covers the same contract. This table records where the principal risks remain.
-The [node inventory](contract_inventory.csv) records every collected parameter
-scenario, its contract label, layer, assertion expressions, and source location.
-It is a review snapshot, not a coverage percentage or a second executable oracle;
-the referenced test remains authoritative. Update it when changing the suite.
+The tests remain the executable contracts. The [FIRST change map](FIRST.md#contract-preservation)
+records the affected behaviors without maintaining a second assertion inventory.
 
 | Behavior or risk | Destination | Layer |
 | --- | --- | --- |
 | Public protocol, login gates, client session separation | `integration/test_basic.py` and domain protocol tests | integration |
-| Isolated configuration/runtime and development-file preservation | `config/test_test_config_lifecycle.py` | component |
+| Isolated configuration/runtime and development-file preservation | `config/test_test_config_lifecycle.py` | component; subprocess probes are integration |
 | Startup failure, log-thread failure, process/pipe cleanup | `integration/test_server_lifecycle.py` | integration |
 | Search visibility/filtering and persisted access rules | `domains/documents/test_search_queries.py`, `domains/access/` | component |
 | Upload, deduplication, cleanup, and file-task state transitions | `domains/documents/` | component plus distinct integration gates |
@@ -171,7 +178,7 @@ the referenced test remains authoritative. Update it when changing the suite.
 | Shared migration setup formerly imported from another test | `maintenance/database/support.py`, consumed by migration/MySQL tests | support only; not a collected test module |
 | Operator-facing maintenance CLI behavior | `maintenance/cli/` | integration; fake console cases are unit |
 | Deployment/extension filesystem safety and recovery | `maintenance/deployment/`, `maintenance/extensions/` | component |
-| Release artifacts, source boundaries and CI channel selection | `project/` | component plus control unit cases |
+| Release artifacts, source boundaries and CI channel selection | `project/` | component plus control unit cases; subprocess probes are integration |
 | Query-plan tooling | `tools/test_explain_query_plans.py` | component; index declaration case is unit |
 | Load-tool metrics/pacing and profile/account-file parsing | `stress/test_ws_load.py`, `test_performance_orchestration.py` | unit / component; no actual stress run |
 
@@ -188,6 +195,8 @@ Redis fixtures remove only their unique test namespace.
 - `CFMS_TEST_POSTGRESQL_URL`: shared scheduler cases; use `-k postgresql`.
 - S3 compatibility is separately opt-in with `CFMS_TEST_S3_WRITE=1` and a dedicated
   `CFMS_TEST_S3_BUCKET`; see `providers/test_s3_compatibility_integration.py`.
+  Explicit opt-in without a bucket fails. CI supplies SeaweedFS 4.53, test-only
+  AWS credentials and a local endpoint; it needs no personal cloud account.
 
 CI runs unit, component, and integration phases with JUnit XML and slow-test
 reports. Dedicated Redis, MySQL 8.4/9.7 and PostgreSQL jobs retain real services,
