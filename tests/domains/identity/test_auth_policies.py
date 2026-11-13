@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
+from include.config.settings import global_config
 from include.config.validation import RequestRateControlPolicy
 from include.database.models.auth import (
     UserAuthPolicy,
@@ -367,7 +368,7 @@ def test_totp_activation_does_not_imply_mfa_and_custom_removal_prunes_policy(
 
 
 @pytest.fixture
-def login_context(auth_sessions, monkeypatch):
+def login_context(auth_sessions, monkeypatch, auth_material_factory):
     from include.domains.identity import sessions
     from include.domains.identity.auth import password_state
     from include.providers.caching.memory import MemoryCachingProvider
@@ -387,11 +388,14 @@ def login_context(auth_sessions, monkeypatch):
     )
     monkeypatch.setattr(auth.LoginGuard, "report_failure", lambda *a, **k: None)
     monkeypatch.setattr(auth.LoginGuard, "report_success", lambda *a, **k: None)
+    material = auth_material_factory(
+        "Password123!", global_config["security"]["pepper"]
+    )
     with auth_sessions.begin() as session:
         user = User(username="login")
         session.add(user)
         session.flush()
-        set_password(session, user, "Password123!")
+        session.add(UserPasswordCredential(user=user, pass_hash=material.password_hash))
         session.flush()
         password = session.get(UserPasswordCredential, user.id)
         replace_auth_policy(
@@ -401,7 +405,12 @@ def login_context(auth_sessions, monkeypatch):
             [[{"method": "password", "credential_ids": [password.credential_id]}]],
             expected_revision=0,
         )
-        credential, codes = setup_totp(session, user)
+        credential = UserTotpCredential(
+            user=user,
+            secret=material.totp_secret,
+            backup_codes=material.backup_hashes,
+        )
+        session.add(credential)
         credential.enable()
         session.flush()
         replace_auth_policy(
@@ -411,7 +420,7 @@ def login_context(auth_sessions, monkeypatch):
             [[{"method": "totp", "credential_ids": [credential.credential_id]}]],
             expected_revision=0,
         )
-        return user.id, credential.secret, codes, user.secret_key
+        return user.id, credential.secret, list(material.backup_codes), user.secret_key
 
 
 class Handler:

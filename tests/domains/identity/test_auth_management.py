@@ -14,6 +14,7 @@ from sqlalchemy import delete, event, select
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import ESCALATION_TOKEN_EXPIRY_SECONDS
+from include.config.settings import global_config
 from include.database.models.auth import (
     UserAuthPolicy,
     UserAuthPublicKey,
@@ -35,7 +36,6 @@ from include.domains.identity.auth.types import (
     InvalidAuthenticationAttempt,
 )
 from include.domains.identity.commands.auth_policies import replace_auth_policy
-from include.domains.identity.commands.credentials import set_password, setup_totp
 from include.domains.identity.handlers import auth, auth_management, users
 from include.domains.identity.tokens import Token, TokenPurpose
 from include.domains.operations.commands import audit
@@ -85,7 +85,10 @@ def ssh_key(private=None):
 
 
 @pytest.fixture
-def management(sqlite_engine_factory, tmp_path, monkeypatch):
+def management(sqlite_engine_factory, tmp_path, monkeypatch, auth_material_factory):
+    material = auth_material_factory(
+        "Password123!", global_config["security"]["pepper"]
+    )
     engine = sqlite_engine_factory(tmp_path / "management.db", timeout_seconds=10)
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine)
@@ -98,7 +101,9 @@ def management(sqlite_engine_factory, tmp_path, monkeypatch):
         session.add_all([user, other])
         session.flush()
         for account in (user, other):
-            set_password(session, account, "Password123!")
+            session.add(
+                UserPasswordCredential(user=account, pass_hash=material.password_hash)
+            )
             session.flush()
             credential = session.get(UserPasswordCredential, account.id)
             replace_auth_policy(
@@ -116,7 +121,14 @@ def management(sqlite_engine_factory, tmp_path, monkeypatch):
                 start_time=0,
             )
         )
-        setup_totp(session, user)
+        session.add(
+            UserTotpCredential(
+                user=user,
+                secret=material.totp_secret,
+                enabled=False,
+                backup_codes=material.backup_hashes,
+            )
+        )
         session.flush()
         user_id, other_id = user.id, other.id
         password_id = session.get(UserPasswordCredential, user.id).credential_id
