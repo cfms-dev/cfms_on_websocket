@@ -16,11 +16,10 @@ from include.extensions.data import (
 from include.extensions.manager import ExtensionManifestError, parse_extension_manifest
 from tests.support.extension_data import example_data
 
-pytestmark = pytest.mark.component
-
 __all__ = ["example_data"]
 
 
+@pytest.mark.component
 def test_data_entrypoint_is_independent_and_orders_foreign_keys(example_data):
     declarations = load_extension_data(Base.metadata)
     assert tuple(declarations) == ("example_parent", "example_child")
@@ -28,6 +27,7 @@ def test_data_entrypoint_is_independent_and_orders_foreign_keys(example_data):
     assert "example_child" not in Base.metadata.tables
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("conflict", ["owner", "duplicate", "core"])
 def test_data_ownership_conflicts_are_rejected(example_data, conflict):
     declarations, _manifest = example_data
@@ -41,6 +41,7 @@ def test_data_ownership_conflicts_are_rejected(example_data, conflict):
         load_extension_data(Base.metadata)
 
 
+@pytest.mark.component
 def test_invalid_data_entrypoint_is_rejected(example_data):
     _declarations, manifest = example_data
     manifest.write_text(
@@ -53,6 +54,7 @@ def test_invalid_data_entrypoint_is_rejected(example_data):
         parse_extension_manifest(manifest)
 
 
+@pytest.mark.component
 def test_schema_preparation_creates_only_extension_tables(
     example_data, sqlite_engine_factory
 ):
@@ -69,6 +71,7 @@ def test_schema_preparation_creates_only_extension_tables(
     assert set(inspect(engine).get_table_names()) == set(declarations)
 
 
+@pytest.mark.component
 def test_incompatible_existing_extension_table_is_rejected(
     example_data, sqlite_engine_factory
 ):
@@ -89,6 +92,7 @@ def test_incompatible_existing_extension_table_is_rejected(
     assert inspect(engine).get_table_names() == ["example_parent"]
 
 
+@pytest.mark.component
 def test_schema_preparation_accepts_foreign_keys_without_optional_options(
     example_data, sqlite_engine_factory, monkeypatch
 ):
@@ -119,6 +123,7 @@ def test_schema_preparation_accepts_foreign_keys_without_optional_options(
         ]
 
 
+@pytest.mark.integration
 def test_oidc_data_import_does_not_require_network_dependencies(protected_test_config):
     source = protected_test_config.src_dir
     script = """

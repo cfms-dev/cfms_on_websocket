@@ -18,11 +18,10 @@ from include.config import settings
 from include.database import engine as engine_module
 from include.database.session import Base
 
-pytestmark = pytest.mark.component
-
 _SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
 
 
+@pytest.mark.component
 def test_migrations_preserve_existing_application_loggers(sqlite_engine_factory):
     logger = logging.getLogger("maintenance.backup.archive")
     assert not logger.disabled
@@ -33,6 +32,7 @@ def test_migrations_preserve_existing_application_loggers(sqlite_engine_factory)
     assert not logger.disabled
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("absolute_path", [False, True])
 def test_alembic_reads_config_toml_from_outside_server_root(
     tmp_path, absolute_path
@@ -84,6 +84,7 @@ def test_alembic_reads_config_toml_from_outside_server_root(
         engine.dispose()
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("database_type", ["sqlite", "mysql", "postgresql"])
 def test_offline_migrations_use_configured_dialect(monkeypatch, database_type) -> None:
     monkeypatch.setattr(
@@ -116,6 +117,7 @@ def test_offline_migrations_use_configured_dialect(monkeypatch, database_type) -
     assert dialects == [database_type]
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("database_type", "drivername", "port"),
     [
@@ -167,6 +169,7 @@ def test_online_migrations_use_configured_external_database(
     assert not (tmp_path / "app.db").exists()
 
 
+@pytest.mark.component
 def test_online_migrations_round_trip_the_configured_database(
     monkeypatch, tmp_path
 ) -> None:
@@ -195,6 +198,7 @@ def test_online_migrations_round_trip_the_configured_database(
         engine.dispose()
 
 
+@pytest.mark.component
 def test_supplied_connection_takes_priority_over_runtime_configuration(
     monkeypatch, tmp_path
 ) -> None:

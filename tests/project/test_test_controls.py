@@ -16,6 +16,7 @@ def test_repository_pytest_configuration_is_active(pytestconfig):
     assert pytestconfig.getini("asyncio_mode") == "strict"
     assert pytestconfig.getini("asyncio_default_fixture_loop_scope") == "function"
     assert float(pytestconfig.getini("timeout")) == 120
+    assert "no:randomly" in pytestconfig.getini("addopts")
     registered_markers = {
         marker.split(":", 1)[0] for marker in pytestconfig.getini("markers")
     }
