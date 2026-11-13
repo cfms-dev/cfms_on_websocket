@@ -9,7 +9,6 @@ from .support import (
     _normalize_cli_output,
     _read_user_state,
     _run_maintain,
-    _seed_users,
 )
 
 pytestmark = pytest.mark.integration
@@ -172,9 +171,10 @@ def test_sync_template_rejects_conflicting_options(tmp_path):
     assert "cannot be combined" in result.stdout + result.stderr
 
 
-def test_reset_password_persists_explicit_password_and_requires_login_update(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_users(src_dir)
+def test_reset_password_persists_explicit_password_and_requires_login_update(
+    user_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=user_database_template)
 
     result = _run_maintain(
         src_dir,
@@ -187,9 +187,10 @@ def test_reset_password_persists_explicit_password_and_requires_login_update(tmp
     assert state["alice"]["passwd_last_modified"] == 0
 
 
-def test_reset_password_persists_the_generated_password_shown_to_operator(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_users(src_dir)
+def test_reset_password_persists_the_generated_password_shown_to_operator(
+    user_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=user_database_template)
 
     result = _run_maintain(src_dir, ["user", "reset-password", "bob"])
 
@@ -203,9 +204,10 @@ def test_reset_password_persists_the_generated_password_shown_to_operator(tmp_pa
     assert state["bob"]["passwd_last_modified"] == 0
 
 
-def test_clear_totp_for_single_user_preserves_other_users(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_users(src_dir)
+def test_clear_totp_for_single_user_preserves_other_users(
+    user_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=user_database_template)
 
     _run_maintain(src_dir, ["user", "clear-totp", "alice"])
     state = _read_user_state(src_dir, "OldPass123!")
@@ -220,9 +222,10 @@ def test_clear_totp_for_single_user_preserves_other_users(tmp_path):
     assert state["bob"]["mfa_revision"] == 1
 
 
-def test_clear_totp_for_all_users_removes_secrets_and_backup_codes(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_users(src_dir)
+def test_clear_totp_for_all_users_removes_secrets_and_backup_codes(
+    user_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=user_database_template)
 
     _run_maintain(src_dir, ["user", "clear-totp", "--all", "--yes"])
     state = _read_user_state(src_dir, "OldPass123!")
@@ -236,9 +239,10 @@ def test_clear_totp_for_all_users_removes_secrets_and_backup_codes(tmp_path):
         assert state[username]["login_revision"] == 1
 
 
-def test_clear_totp_all_abort_uses_typer_abort_and_keeps_users(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_users(src_dir)
+def test_clear_totp_all_abort_uses_typer_abort_and_keeps_users(
+    user_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=user_database_template)
 
     result = _run_maintain(
         src_dir,

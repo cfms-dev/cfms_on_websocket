@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from .support import _make_src_dir, _read_user_state, _run_maintain, _seed_users
+from .support import _make_src_dir, _read_user_state, _run_maintain
 
 pytestmark = pytest.mark.integration
 
@@ -16,10 +16,9 @@ pytestmark = pytest.mark.integration
     ],
 )
 def test_rotate_secrets_confirmation_and_persisted_state(
-    tmp_path, args, input_text, expected_code, rotated
+    user_database_template, tmp_path, args, input_text, expected_code, rotated
 ):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_users(src_dir)
+    src_dir = _make_src_dir(tmp_path, database_template=user_database_template)
     (src_dir / "init").touch()
     with sqlite3.connect(src_dir / "app.db") as connection:
         original_secrets = dict(

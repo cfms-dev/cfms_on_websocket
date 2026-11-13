@@ -10,16 +10,15 @@ from .support import (
     _read_permission_entries,
     _run_maintain,
     _run_python,
-    _seed_audit_entries,
-    _seed_permission_entries,
 )
 
 pytestmark = pytest.mark.integration
 
 
-def test_permission_purge_dry_run_reports_eligible_entries_without_changes(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_permission_entries(src_dir)
+def test_permission_purge_dry_run_reports_eligible_entries_without_changes(
+    permission_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=permission_database_template)
 
     dry_run = _run_maintain(
         src_dir,
@@ -42,9 +41,10 @@ def test_permission_purge_dry_run_reports_eligible_entries_without_changes(tmp_p
     }
 
 
-def test_permission_purge_aborted_confirmation_preserves_all_entries(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_permission_entries(src_dir)
+def test_permission_purge_aborted_confirmation_preserves_all_entries(
+    permission_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=permission_database_template)
 
     aborted = _run_maintain(
         src_dir,
@@ -67,9 +67,10 @@ def test_permission_purge_aborted_confirmation_preserves_all_entries(tmp_path):
     }
 
 
-def test_permission_purge_removes_expired_entries_and_preserves_revocations(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_permission_entries(src_dir)
+def test_permission_purge_removes_expired_entries_and_preserves_revocations(
+    permission_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=permission_database_template)
 
     purged = _run_maintain(
         src_dir,
@@ -85,9 +86,10 @@ def test_permission_purge_removes_expired_entries_and_preserves_revocations(tmp_
     }
 
 
-def test_permission_purge_is_idempotent_after_removing_eligible_entries(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_permission_entries(src_dir)
+def test_permission_purge_is_idempotent_after_removing_eligible_entries(
+    permission_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=permission_database_template)
     _run_maintain(
         src_dir,
         ["permission", "purge-expired", "--yes"],
@@ -105,9 +107,10 @@ def test_permission_purge_is_idempotent_after_removing_eligible_entries(tmp_path
     assert _read_permission_entries(src_dir) == remaining
 
 
-def test_audit_export_applies_filters_and_serializes_matching_record(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir)
+def test_audit_export_applies_filters_and_serializes_matching_record(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[2])
     output_path = tmp_path / "important.jsonl"
 
     result = _run_maintain(
@@ -148,9 +151,10 @@ def test_audit_export_applies_filters_and_serializes_matching_record(tmp_path):
     }
 
 
-def test_audit_export_orders_matching_records_by_logged_time(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir)
+def test_audit_export_orders_matching_records_by_logged_time(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[2])
     output_path = tmp_path / "ordered.jsonl"
 
     _run_maintain(
@@ -163,9 +167,10 @@ def test_audit_export_orders_matching_records_by_logged_time(tmp_path):
     ]
 
 
-def test_audit_export_refuses_to_replace_existing_output(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir)
+def test_audit_export_refuses_to_replace_existing_output(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[2])
     output_path = tmp_path / "important.jsonl"
     output_path.write_bytes(b"existing archive\n")
 
@@ -181,10 +186,10 @@ def test_audit_export_refuses_to_replace_existing_output(tmp_path):
 
 
 def test_audit_purge_dry_run_reports_counts_without_writing_archive_or_deleting(
+    audit_database_templates,
     tmp_path,
 ):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir, batch_size=1)
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[1])
     archive_path = src_dir / "expired.jsonl"
 
     dry_run = _run_maintain(
@@ -206,9 +211,10 @@ def test_audit_purge_dry_run_reports_counts_without_writing_archive_or_deleting(
     ]
 
 
-def test_audit_purge_aborted_confirmation_does_not_archive_or_delete(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir, batch_size=1)
+def test_audit_purge_aborted_confirmation_does_not_archive_or_delete(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[1])
     archive_path = src_dir / "expired.jsonl"
 
     aborted = _run_maintain(
@@ -236,9 +242,10 @@ def test_audit_purge_aborted_confirmation_does_not_archive_or_delete(tmp_path):
     ]
 
 
-def test_audit_purge_refuses_existing_archive_without_deleting_entries(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir, batch_size=1)
+def test_audit_purge_refuses_existing_archive_without_deleting_entries(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[1])
     archive_path = src_dir / "expired.jsonl"
     archive_path.write_text("existing archive", encoding="utf-8")
     blocked = _run_maintain(
@@ -266,9 +273,10 @@ def test_audit_purge_refuses_existing_archive_without_deleting_entries(tmp_path)
     ]
 
 
-def test_audit_purge_archives_expired_entries_before_deleting_them(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir, batch_size=1)
+def test_audit_purge_archives_expired_entries_before_deleting_them(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[1])
     archive_path = src_dir / "expired.jsonl"
 
     purged = _run_maintain(
@@ -297,9 +305,10 @@ def test_audit_purge_archives_expired_entries_before_deleting_them(tmp_path):
     assert _read_audit_ids(src_dir) == ["cutoff", "new-entry"]
 
 
-def test_audit_purge_is_idempotent_and_does_not_create_an_empty_archive(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir, batch_size=1)
+def test_audit_purge_is_idempotent_and_does_not_create_an_empty_archive(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[1])
     archive_path = src_dir / "expired.jsonl"
     _run_maintain(
         src_dir,
@@ -362,9 +371,10 @@ def test_audit_purge_rejects_invalid_arguments(tmp_path, args, message):
     assert message in _normalize_cli_output(result.stderr)
 
 
-def test_audit_purge_partial_failure_keeps_complete_archive(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir, batch_size=1)
+def test_audit_purge_partial_failure_keeps_complete_archive(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[1])
     archive_path = src_dir / "partial.jsonl"
     _run_python(
         src_dir,
@@ -410,9 +420,10 @@ with engine.begin() as connection:
     assert _read_audit_ids(src_dir) == ["old-update", "cutoff", "new-entry"]
 
 
-def test_audit_purge_rejects_changed_candidate_count_before_deletion(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _seed_audit_entries(src_dir)
+def test_audit_purge_rejects_changed_candidate_count_before_deletion(
+    audit_database_templates, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=audit_database_templates[2])
     archive_path = src_dir / "changed.jsonl"
     result = _run_python(
         src_dir,

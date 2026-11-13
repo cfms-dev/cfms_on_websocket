@@ -61,6 +61,22 @@ clears all server state: audit history and unrelated resources may coexist.
 Components own disposable engines/sessions; real concurrency keeps separate
 sessions and real commits. Mutated global settings must be restored.
 
+Authentication fixtures reuse immutable password hashes, TOTP secrets and backup
+code material within one pytest process, keyed by password and pepper. They use
+the normal Argon2 parameters and ten backup codes. Every case still creates its
+own accounts, credentials, database, policies, tokens and caches. Tests of password
+changes, TOTP setup, rehashing, backup-code consumption and concurrency retain
+the real operations; only preparation of already-existing credentials is shared.
+
+CLI fixtures build module-local temporary database templates with the existing
+schema and seed logic. Each case uses SQLite backup to create its own database,
+configuration and filesystem tree; no live engine or connection is shared.
+Permission/audit readback uses fresh SQLite connections, while password checks
+and the CLI commands remain real subprocesses. Auxiliary `uv run --no-sync`
+calls reuse the locked environment already prepared by the outer test command.
+Migration upgrade/downgrade chains and their data/constraint assertions remain
+unchanged. Template and authentication-material isolation have behavioral tests.
+
 The `totp_time` fixture fixes PyOTP's default generation and verification time
 while retaining its real algorithms and explicit `for_time` arguments. Use it
 for in-process TOTP behavior; real server protocol tests retain real clocks and

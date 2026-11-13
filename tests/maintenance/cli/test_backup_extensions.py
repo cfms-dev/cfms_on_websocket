@@ -7,7 +7,6 @@ import tomlkit
 
 from .support import (
     _SRC_PATH,
-    _create_empty_database,
     _make_src_dir,
     _normalize_cli_output,
     _run_maintain,
@@ -103,10 +102,11 @@ def test_backup_export_interactive_rejects_other_arguments(tmp_path, extra_args)
     )
 
 
-def test_backup_export_interactive_wizard_and_import(tmp_path):
-    source_src = _make_src_dir(tmp_path, "interactive-source")
+def test_backup_export_interactive_wizard_and_import(empty_database_template, tmp_path):
+    source_src = _make_src_dir(
+        tmp_path, "interactive-source", database_template=empty_database_template
+    )
     target_src = _make_src_dir(tmp_path, "interactive-target")
-    _create_empty_database(source_src)
 
     input_text = "\n\n\n\n\ninteractive.confbak\nfile\ninteractive.key\ny\n"
     export_result = _run_maintain(
@@ -140,14 +140,15 @@ def test_backup_export_interactive_wizard_and_import(tmp_path):
     assert (target_src / "init").is_file()
 
 
-def test_backup_export_info_and_import(tmp_path):
-    source_src = _make_src_dir(tmp_path, "source-src")
+def test_backup_export_info_and_import(empty_database_template, tmp_path):
+    source_src = _make_src_dir(
+        tmp_path, "source-src", database_template=empty_database_template
+    )
     target_src = _make_src_dir(tmp_path, "target-src")
     source_workdir = source_src / "operator"
     target_workdir = target_src / "operator"
     source_workdir.mkdir()
     target_workdir.mkdir()
-    _create_empty_database(source_src)
 
     export_result = _run_maintain(
         source_workdir,

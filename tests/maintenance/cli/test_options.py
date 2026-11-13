@@ -1,14 +1,15 @@
 import pytest
 import tomlkit
 
-from .support import _create_empty_database, _make_src_dir, _run_maintain
+from .support import _make_src_dir, _run_maintain
 
-pytestmark = pytest.mark.component
+pytestmark = pytest.mark.integration
 
 
-def test_options_cli_creates_updates_and_resets_setting(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _create_empty_database(src_dir)
+def test_options_cli_creates_updates_and_resets_setting(
+    empty_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=empty_database_template)
     payload_file = tmp_path / "server.json"
     payload_file.write_text('"Operator Server"', encoding="utf-8")
 
@@ -59,9 +60,10 @@ def test_options_cli_creates_updates_and_resets_setting(tmp_path):
     assert "CFMS WebSocket Server" in reset.stdout
 
 
-def test_options_cli_set_many_validates_entry_revisions(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _create_empty_database(src_dir)
+def test_options_cli_set_many_validates_entry_revisions(
+    empty_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=empty_database_template)
     payload_file = tmp_path / "updates.json"
     payload_file.write_text(
         '{"name":{"value":"Batch Server","expected_revision":0}}',
@@ -84,9 +86,10 @@ def test_options_cli_set_many_validates_entry_revisions(tmp_path):
     assert "Batch Server" in inspected.stdout
 
 
-def test_options_cli_set_many_rejects_unknown_entry_fields(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _create_empty_database(src_dir)
+def test_options_cli_set_many_rejects_unknown_entry_fields(
+    empty_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=empty_database_template)
     payload_file = tmp_path / "invalid-updates.json"
     payload_file.write_text(
         '{"name":{"value":"Rejected Server","expected_revision":0,"extra":true}}',
@@ -105,9 +108,10 @@ def test_options_cli_set_many_rejects_unknown_entry_fields(tmp_path):
     assert "Rejected Server" not in inspected.stdout
 
 
-def test_migrate_options_cli_preview_then_apply_preserves_private_bootstrap(tmp_path):
-    src_dir = _make_src_dir(tmp_path)
-    _create_empty_database(src_dir)
+def test_migrate_options_cli_preview_then_apply_preserves_private_bootstrap(
+    empty_database_template, tmp_path
+):
+    src_dir = _make_src_dir(tmp_path, database_template=empty_database_template)
     config_path = src_dir / "config.toml"
     document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     document["server"]["name"] = "Imported Server"
