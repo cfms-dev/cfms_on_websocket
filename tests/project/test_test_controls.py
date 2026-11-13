@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -103,3 +104,42 @@ def test_collection_rejects_invalid_test_control(
     output = result.stdout + result.stderr
     assert result.returncode == exit_code, output
     assert diagnostic in output
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("worker", ["thread", "finalizer"])
+def test_unhandled_worker_or_finalizer_errors_fail_the_run(tmp_path, worker):
+    source = (
+        "import threading\nimport gc\nimport pytest\n"
+        "def fail():\n    raise RuntimeError('worker failed')\n"
+        "class Broken:\n    def __del__(self):\n        fail()\n"
+        "@pytest.mark.unit\ndef test_probe():\n"
+    )
+    if worker == "thread":
+        source += "    worker = threading.Thread(target=fail)\n    worker.start()\n    worker.join(timeout=2)\n"
+    else:
+        source += "    value = Broken()\n    del value\n    gc.collect()\n"
+    probe = tmp_path / "test_probe.py"
+    probe.write_text(source, encoding="utf-8")
+    report = tmp_path / "probe.xml"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-c",
+            str(PROJECT_ROOT / "pytest.ini"),
+            str(probe),
+            "-q",
+            f"--junitxml={report}",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    cases = ET.parse(report).findall(".//testcase")
+    assert len(cases) == 1
+    assert cases[0].find("failure") is not None or cases[0].find("error") is not None
