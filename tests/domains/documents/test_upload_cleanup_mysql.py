@@ -6,6 +6,8 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
+from include.database import models
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 pytestmark = pytest.mark.skipif(
@@ -15,16 +17,16 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.integration
-def test_abandoned_upload_cleanup_runs_on_mysql(monkeypatch, request):
-    from include.database import models
+def test_abandoned_upload_cleanup_runs_on_mysql(
+    monkeypatch, request, isolated_metadata
+):
     from include.database.models import files as file_models
-    from include.database.session import Base
     from include.domains.documents.commands import upload_cleanup
 
     engine = create_engine(os.environ["CFMS_TEST_MYSQL_URL"])
     request.addfinalizer(engine.dispose)
     _clear_mysql_database(engine)
-    Base.metadata.create_all(engine)
+    isolated_metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     removed_paths = []
     fake_manager = SimpleNamespace(
