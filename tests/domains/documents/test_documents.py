@@ -72,6 +72,7 @@ class TestDocumentOperations:
         authenticated_client: CFMSTestClient,
         test_document: dict,
         user_factory,
+        client_factory,
     ):
         document_id = test_document["document_id"]
 
@@ -91,61 +92,37 @@ class TestDocumentOperations:
         )
         assert_success(grant_response)
 
-        client = CFMSTestClient()
-        await client.connect()
-        try:
-            login_response = await client.login(user["username"], user["password"])
-            assert_success(login_response)
+        client = await client_factory()
+        login_response = await client.login(user["username"], user["password"])
+        assert_success(login_response)
 
-            info_response = await client.get_document_info(document_id)
-            info = assert_success(info_response)
-            assert "metadata" not in info
-        finally:
-            await client.disconnect()
+        info_response = await client.get_document_info(document_id)
+        info = assert_success(info_response)
+        assert "metadata" not in info
 
     @pytest.mark.asyncio
     async def test_set_document_tags_requires_permission(
         self,
         authenticated_client: CFMSTestClient,
         test_document: dict,
-        server_process,
-        owned_entities,
+        user_factory,
+        client_factory,
     ):
-        username = f"metadata_user_{secrets.token_hex(4)}"
-        password = "TestPassword123!"
+        user = await user_factory(nickname="Metadata User")
         document_id = test_document["document_id"]
-
-        response = await authenticated_client.create_user(
-            username=username,
-            password=password,
-            nickname="Metadata User",
+        grant_response = await authenticated_client.grant_access(
+            entity_type="user",
+            entity_identifier=user["user_id"],
+            target_type="document",
+            target_identifier=document_id,
+            access_types=["write"],
+            start_time=0.0,
         )
-        assert_success(response)
-        owned_entities["users"].append(response["data"]["user_id"])
-
-        try:
-            grant_response = await authenticated_client.grant_access(
-                entity_type="user",
-                entity_identifier=response["data"]["user_id"],
-                target_type="document",
-                target_identifier=document_id,
-                access_types=["write"],
-                start_time=0.0,
-            )
-            assert_success(grant_response)
-
-            client = CFMSTestClient()
-            await client.connect()
-            try:
-                login_response = await client.login(username, password)
-                assert_success(login_response)
-
-                set_response = await client.set_document_tags(document_id, ["blocked"])
-                assert_error(set_response, 403)
-            finally:
-                await client.disconnect()
-        finally:
-            await authenticated_client.delete_user(response["data"]["user_id"])
+        assert_success(grant_response)
+        client = await client_factory()
+        assert_success(await client.login(user["username"], user["password"]))
+        set_response = await client.set_document_tags(document_id, ["blocked"])
+        assert_error(set_response, 403)
 
     @pytest.mark.asyncio
     async def test_rename_document(

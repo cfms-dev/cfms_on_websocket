@@ -114,6 +114,7 @@ exercise an actual resumed upload, and close clients even after failures.
 | --- | --- |
 | Test layers | Existing Pyright, configuration-import, extension-import and Alembic subprocess assertions remain; their layer becomes integration. |
 | Entity ownership | Existing access/search/recycle-bin/document/directory assertions remain; identifiers now survive body failure for cleanup. Unit probes cover failed upload, body failure, dependency order and partial cleanup failure. |
+| Extra client connections | Document permissions, diagnostics lockdown and broadcast-event assertions remain; `client_factory` registers disconnect before connection/authentication can fail. |
 | Security and authorization time | Existing authentication, TOTP and access assertions remain; fixed component clocks and adjacent-window cases replace timing luck. |
 | Database namespace | Same-name creation still commits; a new session verifies both persisted documents and their parents. |
 | Real S3 | Read/write/abort assertions remain; actual resume, complete content, multipart absence and object cleanup are added. |
