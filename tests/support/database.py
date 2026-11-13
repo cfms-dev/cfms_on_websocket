@@ -2,10 +2,19 @@ import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import MetaData, create_engine, event
 lazy from mysql.connector import MySQLConnection
 
 from include.database.engine import create_database_engine
+from include.database.session import Base
+
+
+@pytest.fixture
+def isolated_metadata():
+    metadata = MetaData(naming_convention=Base.metadata.naming_convention)
+    for table in Base.metadata.tables.values():
+        table.to_metadata(metadata)
+    return metadata
 
 
 @pytest.fixture

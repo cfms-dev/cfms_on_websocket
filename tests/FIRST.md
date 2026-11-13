@@ -77,6 +77,12 @@ calls reuse the locked environment already prepared by the outer test command.
 Migration upgrade/downgrade chains and their data/constraint assertions remain
 unchanged. Template and authentication-material isolation have behavioral tests.
 
+Real-backend schema setup uses function-scoped metadata copies. MySQL DDL may
+change how its constraint objects participate in later table creation; it must
+not mutate the mapped core metadata used by subsequent SQLite tests. A local
+MySQL DDL-generator regression checks that later SQLite tables retain their
+foreign keys, alongside the unchanged real-backend migration assertions.
+
 The `totp_time` fixture fixes PyOTP's default generation and verification time
 while retaining its real algorithms and explicit `for_time` arguments. Use it
 for in-process TOTP behavior; real server protocol tests retain real clocks and

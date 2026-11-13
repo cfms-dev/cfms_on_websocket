@@ -18,11 +18,10 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def mysql_lockdown_sessions(monkeypatch, mysql_pure_engine):
-    metadata = SystemStateEntry.metadata
-    metadata.drop_all(mysql_pure_engine)
+def mysql_lockdown_sessions(monkeypatch, mysql_pure_engine, isolated_metadata):
+    isolated_metadata.drop_all(mysql_pure_engine)
     try:
-        metadata.create_all(mysql_pure_engine)
+        isolated_metadata.create_all(mysql_pure_engine)
         sessions = sessionmaker(bind=mysql_pure_engine)
         monkeypatch.setattr(lockdown, "Session", sessions)
         monkeypatch.setattr(lockdown_state, "Session", sessions)
@@ -31,7 +30,7 @@ def mysql_lockdown_sessions(monkeypatch, mysql_pure_engine):
         monkeypatch.setattr(lockdown, "_notify_schedule_change", lambda: None)
         yield sessions
     finally:
-        metadata.drop_all(mysql_pure_engine)
+        isolated_metadata.drop_all(mysql_pure_engine)
 
 
 @pytest.mark.parametrize("existing_disabled_state", [False, True])

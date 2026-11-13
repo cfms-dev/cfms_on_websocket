@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from alembic.migration import MigrationContext
-from sqlalchemy import inspect, text
+from sqlalchemy import create_mock_engine, inspect, text
 
 import include.database.models  # noqa: F401
 from include.database.session import Base
@@ -17,6 +17,31 @@ pytestmark = pytest.mark.component
 @pytest.fixture
 def schema_engine(tmp_path: Path, sqlite_engine_factory):
     return sqlite_engine_factory(tmp_path / "schema.db")
+
+
+def test_mysql_schema_setup_preserves_foreign_keys_in_later_sqlite_databases(
+    isolated_metadata, schema_engine
+):
+    mysql = create_mock_engine(
+        "mysql+mysqlconnector://", lambda *_args, **_kwargs: None
+    )
+    isolated_metadata.create_all(mysql)
+    Base.metadata.create_all(schema_engine)
+
+    expected = {
+        "documents": {("current_revision_id",): "SET NULL"},
+        "nodes": {("parent_id",): "CASCADE", ("access_rule_set_id",): None},
+        "users": {("preference_dek_id",): "SET NULL"},
+    }
+    inspector = inspect(schema_engine)
+    for name, constraints in expected.items():
+        actual = {
+            tuple(constraint["constrained_columns"]): constraint["options"].get(
+                "ondelete"
+            )
+            for constraint in inspector.get_foreign_keys(name)
+        }
+        assert constraints.items() <= actual.items()
 
 
 def test_empty_database_is_created_and_stamped(schema_engine) -> None:
