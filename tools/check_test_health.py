@@ -21,6 +21,7 @@ MYSQL_PATHS = (
     "tests/domains/documents/test_upload_cleanup_mysql.py",
     "tests/domains/documents/test_rate_limits_mysql.py",
     "tests/maintenance/database/test_mysql.py",
+    "tests/database/test_options_mysql.py",
     "tests/database/test_system_states_mysql.py",
     "tests/domains/operations/test_lockdown_mysql.py",
 )
