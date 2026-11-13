@@ -2,7 +2,7 @@
 Tests for access management operations.
 """
 
-import time
+import secrets
 
 import pytest
 
@@ -21,7 +21,7 @@ class TestAccessManagement:
     ):
         """Test granting and revoking access to a document."""
         # Create a test user
-        test_username = f"test_user_access_{int(time.time() * 1000)}"
+        test_username = f"test_user_access_{secrets.token_hex(6)}"
         test_password = "TestPassword123!"
 
         user_response = await authenticated_client.create_user(
@@ -32,7 +32,7 @@ class TestAccessManagement:
 
         # Create a test document
         doc_response = await authenticated_client.create_document(
-            title=f"Test Document {int(time.time() * 1000)}"
+            title=f"Test Document {secrets.token_hex(6)}"
         )
         assert doc_response["code"] == 200, f"Failed to create document: {doc_response}"
         owned_entities["documents"].append(doc_response["data"]["document_id"])
@@ -45,7 +45,7 @@ class TestAccessManagement:
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200, (
             f"Failed to grant access: {grant_response}"
@@ -111,7 +111,7 @@ class TestAccessManagement:
     ):
         """Test granting multiple access types and revoking them individually."""
         # Create a test user
-        test_username = f"test_user_multi_{int(time.time() * 1000)}"
+        test_username = f"test_user_multi_{secrets.token_hex(6)}"
         test_password = "TestPassword123!"
 
         user_response = await authenticated_client.create_user(
@@ -122,7 +122,7 @@ class TestAccessManagement:
 
         # Create a test document
         doc_response = await authenticated_client.create_document(
-            title=f"Test Document Multi {int(time.time() * 1000)}"
+            title=f"Test Document Multi {secrets.token_hex(6)}"
         )
         assert doc_response["code"] == 200
         owned_entities["documents"].append(doc_response["data"]["document_id"])
@@ -135,7 +135,7 @@ class TestAccessManagement:
             target_type="document",
             target_identifier=document_id,
             access_types=["read", "write"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200
 
@@ -201,7 +201,7 @@ class TestAccessManagement:
     ):
         """Test granting and revoking access for a group."""
         # Create a test group
-        test_group_name = f"test_group_{int(time.time() * 1000)}"
+        test_group_name = f"test_group_{secrets.token_hex(6)}"
 
         group_response = await authenticated_client.create_group(
             group_name=test_group_name
@@ -211,7 +211,7 @@ class TestAccessManagement:
 
         # Create a test document
         doc_response = await authenticated_client.create_document(
-            title=f"Test Document Group {int(time.time() * 1000)}"
+            title=f"Test Document Group {secrets.token_hex(6)}"
         )
         assert doc_response["code"] == 200
         owned_entities["documents"].append(doc_response["data"]["document_id"])
@@ -224,7 +224,7 @@ class TestAccessManagement:
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200
 
@@ -262,7 +262,7 @@ class TestAccessManagement:
     ):
         """Test granting and revoking access for a directory."""
         # Create a test user
-        test_username = f"test_user_dir_{int(time.time() * 1000)}"
+        test_username = f"test_user_dir_{secrets.token_hex(6)}"
         test_password = "TestPassword123!"
 
         user_response = await authenticated_client.create_user(
@@ -273,7 +273,7 @@ class TestAccessManagement:
 
         # Create a test directory
         dir_response = await authenticated_client.create_directory(
-            name=f"Test Directory {int(time.time() * 1000)}"
+            name=f"Test Directory {secrets.token_hex(6)}"
         )
         assert dir_response["code"] == 200
         owned_entities["directories"].append(dir_response["data"]["id"])
@@ -286,7 +286,7 @@ class TestAccessManagement:
             target_type="directory",
             target_identifier=directory_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert grant_response["code"] == 200
 

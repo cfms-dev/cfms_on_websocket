@@ -1327,7 +1327,7 @@ def test_totp_status_requires_independent_cross_user_read_permission(
     "policy_state", ["absent", "empty", "totp", "publickey", "escalation"]
 )
 def test_totp_confirmation_preserves_all_authentication_policies(
-    management, monkeypatch, policy_state
+    management, monkeypatch, policy_state, totp_time
 ):
     monkeypatch.setattr(totp_handlers, "Session", management.sessions)
     if policy_state == "publickey":

@@ -21,6 +21,7 @@ from tests.support.entities import (
     user_factory,
 )
 from tests.support.server import start_server, stop_server
+from tests.support.time import totp_time
 from tests.support.utils import assert_success
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "document_factory",
     "group_factory",
     "owned_entities",
+    "totp_time",
     "user_factory",
 ]
 

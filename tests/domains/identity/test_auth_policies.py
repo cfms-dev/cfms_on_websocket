@@ -631,7 +631,7 @@ def test_unauthorized_totp_fails_without_consuming_backup_code(
 
 @pytest.mark.parametrize("change", ["policy", "delete", "pending", "legacy"])
 def test_auth_continuation_rejects_changed_or_legacy_context(
-    login_context, auth_sessions, change
+    login_context, auth_sessions, change, totp_time
 ):
     user_id, secret, _, signing_key = login_context
     handler = Handler(
@@ -711,7 +711,7 @@ def test_login_evidence_cannot_satisfy_mfa(login_context, auth_sessions):
 
 
 def test_totp_setup_validation_does_not_use_authentication_throttle(
-    monkeypatch, auth_sessions
+    monkeypatch, auth_sessions, totp_time
 ):
     import pyotp
 
@@ -2038,7 +2038,7 @@ def test_legacy_login_totp_chain_is_unavailable_without_shortening(
 @pytest.mark.parametrize("purpose", [AuthPurpose.MFA, AuthPurpose.ESCALATION])
 @pytest.mark.parametrize("backup", [False, True], ids=["totp", "backup-code"])
 def test_totp_remains_usable_for_mfa_and_escalation(
-    login_context, auth_sessions, purpose, backup
+    login_context, auth_sessions, purpose, backup, totp_time
 ):
     user_id, secret, codes, _ = login_context
     with auth_sessions.begin() as session:

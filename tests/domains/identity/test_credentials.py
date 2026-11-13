@@ -1,3 +1,4 @@
+import datetime as dt
 import uuid
 from unittest.mock import Mock
 
@@ -38,6 +39,29 @@ def credential_sessions(sqlite_engine_factory):
     return sessionmaker(bind=engine)
 
 
+@pytest.mark.parametrize(
+    ("offset", "allowed"),
+    [(-60, False), (-30, True), (0, True), (30, True), (60, False)],
+)
+def test_totp_credential_accepts_only_the_adjacent_time_windows(
+    credential_sessions, totp_time, offset, allowed
+):
+    with credential_sessions.begin() as session:
+        user = User(username="totp-window")
+        credential = UserTotpCredential(
+            user=user, secret="JBSWY3DPEHPK3PXP", enabled=True
+        )
+        session.add(credential)
+        session.flush()
+        user_id = user.id
+
+    token = pyotp.TOTP("JBSWY3DPEHPK3PXP").at(totp_time + dt.timedelta(seconds=offset))
+    with credential_sessions() as session:
+        credential = session.get(UserTotpCredential, user_id)
+        assert credential.verify(token) is allowed
+        assert credential.enabled is True
+
+
 @pytest.mark.parametrize("password", [None, "Password123!"])
 @pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning")
 def test_create_user_persists_credentials_and_account_relations(
@@ -66,7 +90,9 @@ def test_create_user_persists_credentials_and_account_relations(
         assert session.get(UserTotpCredential, user.id) is None
 
 
-def test_sparse_credentials_and_provider_queries_are_isolated(credential_sessions):
+def test_sparse_credentials_and_provider_queries_are_isolated(
+    credential_sessions, totp_time
+):
     with credential_sessions.begin() as session:
         empty, password, mfa, keys = [
             User(username=name) for name in ("empty", "password", "mfa", "keys")
@@ -194,7 +220,7 @@ def test_credential_deletion_and_user_deletion_have_distinct_lifetimes(
 
 
 def test_totp_setup_and_backup_code_consumption_follow_the_caller_transaction(
-    credential_sessions,
+    credential_sessions, totp_time
 ):
     with credential_sessions.begin() as session:
         user = User(username="totp")

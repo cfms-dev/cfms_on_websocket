@@ -1,5 +1,4 @@
 import secrets
-import time
 
 import pytest
 
@@ -88,7 +87,7 @@ class TestDocumentOperations:
             target_type="document",
             target_identifier=document_id,
             access_types=["read"],
-            start_time=time.time(),
+            start_time=0.0,
         )
         assert_success(grant_response)
 
@@ -131,7 +130,7 @@ class TestDocumentOperations:
                 target_type="document",
                 target_identifier=document_id,
                 access_types=["write"],
-                start_time=time.time(),
+                start_time=0.0,
             )
             assert_success(grant_response)
 
