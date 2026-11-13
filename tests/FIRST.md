@@ -27,36 +27,30 @@ uv run --locked python tools/check_test_health.py run --profile integration --re
 Follow the database snapshot instructions in [the test guide](README.md) before
 all pytest runs, including invocations through this tool.
 
-CI uses a pinned reference commit from `first-baseline-ref.txt`. On a cache miss,
-the composite action checks out that commit into `.first-baseline`, executes
-three clean sessions using the candidate's locked environment, and caches those
-reference measurements. Imports and subprocesses use the reference checkout's
-source paths, rather than the candidate's editable installation. The environment
-fingerprint includes the exact Python version, platform/architecture, runner
-image version and lockfile hash; the cache also includes the checker hash,
-profile and reference commit. A mismatch fails validation.
+Each profile has an explicit whole-process feedback limit in
+`tools/check_test_health.py`:
 
-For median reference time `B`, the budget is `max(1.5 * B, B + allowance)`:
-
-| Profile | Allowance |
+| Profile | Time limit |
 | --- | --- |
-| unit | 5 seconds |
-| component | 15 seconds |
-| integration, Redis, each MySQL version, PostgreSQL, S3 | 30 seconds |
+| unit | 30 seconds |
+| component, integration | 420 seconds each |
+| all non-stress tests | 900 seconds |
+| Redis, S3 | 60 seconds each |
+| MySQL 8.4, MySQL 9.7 | 300 seconds each |
+| PostgreSQL | 120 seconds |
+| Each independent protocol node | 60 seconds |
 
-Candidate execution cannot update a baseline. Changing the pinned reference
-requires a reviewed commit explaining legitimate coverage or cost changes.
-Cache misses, including runner-image updates, cost three additional reference
-runs; warm runs execute only the candidate. This is a coarse feedback regression
-check, not an application benchmark.
+A limit breach fails the command even if pytest passed. JSON reports preserve
+both the pytest exit status and the overall check status, elapsed time and limit,
+Python version and platform. Every run checks the current source once; the tool
+needs no Git history, calibration files, cached measurements or lockfile reader.
 
-For local calibration, make a disposable checkout of the pinned reference and
-pass its path to `--root`; the tool verifies its Git HEAD before measuring:
-
-```powershell
-uv run --locked python tools/check_test_health.py calibrate --profile unit --root .first-baseline --baseline test-results/unit-baseline.json --report test-results/reference-unit.xml
-uv run --locked python tools/check_test_health.py run --profile unit --baseline test-results/unit-baseline.json --report test-results/unit.xml
-```
+The initial layer limits leave headroom above observed Windows runs (roughly
+10 seconds for unit and 250–270 seconds for each larger layer). Backend limits
+are feedback constraints to verify in the dedicated service jobs. Adjusting a
+limit requires a reviewed change justified by the affected test cost. These
+limits constrain total feedback time; slowdowns below a limit remain visible in
+timing reports and require review rather than an automatic relative comparison.
 
 ## Independence and repeatability
 
@@ -118,7 +112,7 @@ exercise an actual resumed upload, and close clients even after failures.
 | Security and authorization time | Existing authentication, TOTP and access assertions remain; fixed component clocks and adjacent-window cases replace timing luck. |
 | Database namespace | Same-name creation still commits; a new session verifies both persisted documents and their parents. |
 | Real S3 | Read/write/abort assertions remain; actual resume, complete content, multipart absence and object cleanup are added. |
-| Feedback controls | Synthetic JUnit, failed subprocesses, invalid baselines, exceeded budgets and background errors verify that checks reject false green results. |
+| Feedback controls | Synthetic JUnit, failed subprocesses, exceeded time limits and background errors verify that checks reject false green results. |
 
 No production protocol, transaction, password strength or authorization policy
 changes are required. Reordering and repeated passing runs supply evidence;

@@ -54,7 +54,7 @@ loop scope.
 Ordinary runs disable automatic shuffling. To reproduce an order-dependent
 failure, use `-p randomly --randomly-seed=<seed>`; the health command also sets
 `PYTHONHASHSEED` before starting pytest. See [FIRST checks](FIRST.md) for budgets,
-calibration, independent-node checks, and the change-to-contract map.
+independent-node checks, and the change-to-contract map.
 
 ## Runtime and ownership
 

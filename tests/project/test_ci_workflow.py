@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 
 import pytest
@@ -18,16 +19,25 @@ def test_main_ci_runs_every_test_layer_and_retains_junit_reports():
     )
     steps = workflow["jobs"]["test"]["steps"]
     channels = [
-        step for step in steps if step.get("uses") == "./.github/actions/test-health"
+        step
+        for step in steps
+        if step.get("name")
+        in {"Run unit tests", "Run component tests", "Run integration tests"}
     ]
-    assert [step["with"]["profile"] for step in channels] == [
-        "unit",
-        "component",
-        "integration",
-    ]
+    assert len(channels) == 3
     for layer, step in zip(("unit", "component", "integration"), channels, strict=True):
+        arguments = shlex.split(step["run"])
+        assert arguments[:5] == [
+            "uv",
+            "run",
+            "--locked",
+            "python",
+            "tools/check_test_health.py",
+        ]
+        assert arguments[arguments.index("--profile") + 1] == layer
         assert PROFILES[layer] == ["tests/", "-m", f"{layer} and not stress"]
-        assert step["with"]["report"] == f"test-results/{layer}.xml"
+        assert arguments[arguments.index("--report") + 1] == f"test-results/{layer}.xml"
+        assert step["timeout-minutes"] == 10
     artifact = next(step for step in steps if step.get("name") == "Upload test results")
     assert artifact["if"] == "always()"
     assert "test-results/" in artifact["with"]["path"].splitlines()
@@ -84,10 +94,11 @@ def test_backend_ci_requires_real_execution_without_skips(
     test_step = next(
         step
         for step in job["steps"]
-        if step.get("uses") == "./.github/actions/test-health"
+        if "check_test_health.py run " in step.get("run", "")
     )
     assert test_step["env"][environment]
-    profile = test_step["with"]["profile"]
+    command = shlex.split(test_step["run"])
+    profile = command[command.index("--profile") + 1]
     if report == "mysql":
         assert profile == "mysql-${{ matrix.mysql-version }}"
         profile = "mysql-8.4"
@@ -95,7 +106,7 @@ def test_backend_ci_requires_real_execution_without_skips(
     assert all(path in arguments for path in required_paths)
     if selector is not None:
         assert arguments[arguments.index("-k") + 1] == selector
-    assert test_step["with"]["report"] == f"test-results/{report}.xml"
+    assert command[command.index("--report") + 1] == f"test-results/{report}.xml"
     artifact = next(
         step for step in job["steps"] if "upload-artifact@" in step.get("uses", "")
     )
@@ -103,26 +114,10 @@ def test_backend_ci_requires_real_execution_without_skips(
     assert artifact["with"]["path"] == "test-results/"
 
 
-def test_first_ci_keeps_reference_budgets_and_reproducible_order_checks():
+def test_first_ci_keeps_reproducible_order_checks():
     workflow = yaml.safe_load(
         (PROJECT_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8")
     )
-    action = yaml.safe_load(
-        (PROJECT_ROOT / ".github/actions/test-health/action.yml").read_text(
-            encoding="utf-8"
-        )
-    )
-    steps = action["runs"]["steps"]
-    calibration = next(
-        step for step in steps if "calibrate --profile" in step.get("run", "")
-    )
-    assert calibration["if"] == "steps.cache.outputs.cache-hit != 'true'"
-    assert "--root .first-baseline" in calibration["run"]
-    checkout = next(
-        step for step in steps if step.get("uses", "").startswith("actions/checkout@")
-    )
-    assert checkout["with"]["ref"] == "${{ steps.baseline.outputs.reference }}"
-    assert "--baseline" in steps[-1]["run"]
     main_steps = workflow["jobs"]["test"]["steps"]
     shuffled = next(step for step in main_steps if "--seed" in step.get("run", ""))
     assert shuffled["env"]["TEST_COMMIT"] == "${{ github.sha }}"
@@ -146,4 +141,4 @@ def test_s3_ci_uses_a_disposable_service_and_explicit_configuration():
         job["env"]["CFMS_TEST_S3_BUCKET"] == job["services"]["s3"]["env"]["S3_BUCKET"]
     )
     assert job["env"]["CFMS_TEST_S3_ENDPOINT_URL"] == "http://127.0.0.1:8333"
-    assert any(step.get("with", {}).get("profile") == "s3" for step in job["steps"])
+    assert any('--profile "s3"' in step.get("run", "") for step in job["steps"])

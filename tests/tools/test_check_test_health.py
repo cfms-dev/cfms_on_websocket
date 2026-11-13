@@ -37,48 +37,6 @@ def test_junit_requires_executed_successes_and_checks_backend_skips(
             health.validate_junit(report, require_no_skips=no_skips)
 
 
-@pytest.mark.parametrize(
-    ("profile", "samples", "expected"),
-    [
-        ("unit", [5, 6, 7], 11),
-        ("component", [40, 50, 60], 75),
-        ("integration", [10, 20, 30], 50),
-        ("redis", [2, 3, 4], 33),
-    ],
-)
-def test_time_budget_uses_median_and_layer_allowance(profile, samples, expected):
-    baseline = {
-        "profile": profile,
-        "environment": "environment",
-        "reference": "reference",
-        "samples_seconds": samples,
-    }
-    assert health.time_budget(baseline, profile, "environment", "reference") == expected
-
-
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        ("profile", "integration"),
-        ("environment", "other"),
-        ("reference", "other"),
-        ("samples_seconds", [1, 2]),
-        ("samples_seconds", [1, 2, float("nan")]),
-        ("samples_seconds", [0, 1, 2]),
-    ],
-)
-def test_time_budget_rejects_incomparable_or_invalid_baselines(key, value):
-    baseline = {
-        "profile": "unit",
-        "environment": "environment",
-        "reference": "reference",
-        "samples_seconds": [1, 2, 3],
-    }
-    baseline[key] = value
-    with pytest.raises(ValueError, match="Baseline"):
-        health.time_budget(baseline, "unit", "environment", "reference")
-
-
 @pytest.mark.parametrize("code", [0, 2, 5])
 def test_run_preserves_pytest_exit_status_and_records_elapsed_time(
     tmp_path, monkeypatch, code
@@ -108,21 +66,36 @@ def test_run_preserves_pytest_exit_status_and_records_elapsed_time(
     assert health.run_pytest(tmp_path, ["tests/"], report, 17) == (code, 2.5)
 
 
-@pytest.mark.parametrize(("elapsed", "exit_code"), [(10, 0), (40, 1)])
-def test_main_blocks_excessive_time_without_updating_the_baseline(
-    tmp_path, monkeypatch, elapsed, exit_code
+@pytest.mark.parametrize(
+    ("profile", "elapsed", "exit_code"),
+    [
+        ("unit", 29, 0),
+        ("unit", 30, 0),
+        ("unit", 31, 1),
+        ("component", 420, 0),
+        ("component", 421, 1),
+        ("integration", 420, 0),
+        ("integration", 421, 1),
+        ("all", 900, 0),
+        ("all", 901, 1),
+        ("redis", 60, 0),
+        ("redis", 61, 1),
+        ("mysql-8.4", 300, 0),
+        ("mysql-8.4", 301, 1),
+        ("mysql-9.7", 300, 0),
+        ("mysql-9.7", 301, 1),
+        ("postgresql", 120, 0),
+        ("postgresql", 121, 1),
+        ("s3", 60, 0),
+        ("s3", 61, 1),
+    ],
+)
+def test_main_enforces_the_profile_time_limit(
+    tmp_path, monkeypatch, profile, elapsed, exit_code
 ):
-    baseline = tmp_path / "baseline.json"
-    original = json.dumps(
-        {
-            "profile": "unit",
-            "environment": health.environment_fingerprint(),
-            "reference": health.REFERENCE_FILE.read_text().strip(),
-            "samples_seconds": [10, 11, 12],
-        }
-    )
-    baseline.write_text(original, encoding="utf-8")
     report = tmp_path / "result.xml"
+    for name in health.BACKEND_ENVIRONMENT.get(profile, ()):
+        monkeypatch.setenv(name, "1" if name == "CFMS_TEST_S3_WRITE" else "configured")
 
     def run(_root, _arguments, path, _seed):
         path.write_text(
@@ -133,66 +106,12 @@ def test_main_blocks_excessive_time_without_updating_the_baseline(
 
     monkeypatch.setattr(health, "run_pytest", run)
     assert (
-        health.main(
-            [
-                "run",
-                "--profile",
-                "unit",
-                "--report",
-                str(report),
-                "--baseline",
-                str(baseline),
-            ]
-        )
-        == exit_code
+        health.main(["run", "--profile", profile, "--report", str(report)]) == exit_code
     )
-    assert baseline.read_text(encoding="utf-8") == original
-    assert (
-        json.loads(report.with_suffix(".json").read_text())["elapsed_seconds"]
-        == elapsed
-    )
-
-
-def test_calibration_runs_three_clean_sessions_at_the_pinned_reference(
-    tmp_path, monkeypatch
-):
-    baseline = tmp_path / "baseline.json"
-    elapsed = iter([3, 1, 2])
-    reports = []
-
-    def run(_root, _arguments, report, seed):
-        assert seed is None
-        reports.append(report)
-        report.write_text(
-            "<testsuites><testsuite><testcase/></testsuite></testsuites>",
-            encoding="utf-8",
-        )
-        return 0, next(elapsed)
-
-    monkeypatch.setattr(health, "run_pytest", run)
-    monkeypatch.setattr(
-        health.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            stdout=health.REFERENCE_FILE.read_text()
-        ),
-    )
-    assert (
-        health.main(
-            [
-                "calibrate",
-                "--profile",
-                "unit",
-                "--report",
-                str(tmp_path / "baseline.xml"),
-                "--baseline",
-                str(baseline),
-            ]
-        )
-        == 0
-    )
-    assert len(set(reports)) == 3
-    assert json.loads(baseline.read_text())["samples_seconds"] == [3, 1, 2]
+    summary = json.loads(report.with_suffix(".json").read_text())
+    assert summary["elapsed_seconds"] == elapsed
+    assert summary["returncode"] == exit_code
+    assert summary["pytest_returncode"] == 0
 
 
 def test_configured_backend_requires_environment_before_running(tmp_path, monkeypatch):

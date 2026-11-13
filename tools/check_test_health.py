@@ -1,12 +1,9 @@
 """Run pytest with reproducible ordering, whole-process timing and JUnit checks."""
 
 import argparse
-import hashlib
 import json
-import math
 import os
 import platform
-import statistics
 import subprocess
 import sys
 import time
@@ -18,7 +15,6 @@ lazy from botocore.config import Config
 lazy from botocore.exceptions import BotoCoreError, ClientError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_FILE = PROJECT_ROOT / "tests" / "first-baseline-ref.txt"
 MYSQL_PATHS = (
     "tests/scheduling/test_engine_shared_database.py",
     "tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database",
@@ -52,6 +48,17 @@ BACKEND_ENVIRONMENT = {
     "postgresql": ("CFMS_TEST_POSTGRESQL_URL",),
     "s3": ("CFMS_TEST_S3_WRITE", "CFMS_TEST_S3_BUCKET", "CFMS_TEST_S3_ENDPOINT_URL"),
 }
+TIME_LIMIT_SECONDS = {
+    "unit": 30,
+    "component": 420,
+    "integration": 420,
+    "all": 900,
+    "redis": 60,
+    "mysql-8.4": 300,
+    "mysql-9.7": 300,
+    "postgresql": 120,
+    "s3": 60,
+}
 ISOLATED_NODES = (
     *[
         f"tests/domains/access/test_access.py::TestAccessManagement::{name}"
@@ -67,18 +74,6 @@ ISOLATED_NODES = (
     "tests/domains/security/test_totp.py::TestTotpCredentials::test_confirm_totp_setup_with_valid_token",
     "tests/domains/security/test_totp.py::TestMfaLogin::test_totp_mfa_login_with_valid_token",
 )
-
-
-def environment_fingerprint() -> str:
-    environment = {
-        "python": platform.python_version(),
-        "platform": sys.platform,
-        "machine": platform.machine(),
-        "runner_image": os.environ.get("ImageOS", "local"),
-        "runner_version": os.environ.get("ImageVersion", "local"),
-        "lock": hashlib.sha256((PROJECT_ROOT / "uv.lock").read_bytes()).hexdigest(),
-    }
-    return hashlib.sha256(json.dumps(environment, sort_keys=True).encode()).hexdigest()
 
 
 def validate_junit(path: Path, *, require_no_skips: bool) -> dict[str, int]:
@@ -98,26 +93,6 @@ def validate_junit(path: Path, *, require_no_skips: bool) -> dict[str, int]:
     if executed == 0:
         raise ValueError("JUnit report contains only skipped tests")
     return {"executed": executed, **counts}
-
-
-def time_budget(
-    baseline: dict, profile: str, fingerprint: str, reference: str
-) -> float:
-    if (
-        baseline["profile"] != profile
-        or baseline["environment"] != fingerprint
-        or baseline["reference"] != reference
-    ):
-        raise ValueError("Baseline profile, environment or reference does not match")
-    samples = baseline["samples_seconds"]
-    if len(samples) != 3 or any(
-        not isinstance(sample, (int, float)) or not math.isfinite(sample) or sample <= 0
-        for sample in samples
-    ):
-        raise ValueError("Baseline requires three positive finite samples")
-    median = statistics.median(samples)
-    allowance = {"unit": 5.0, "component": 15.0}.get(profile, 30.0)
-    return max(1.5 * median, median + allowance)
 
 
 def run_pytest(
@@ -175,29 +150,16 @@ def wait_for_s3(timeout_seconds: float = 30) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "mode", choices=("run", "calibrate", "isolate", "fingerprint", "wait-s3")
-    )
+    parser.add_argument("mode", choices=("run", "isolate", "wait-s3"))
     parser.add_argument("--profile", choices=PROFILES, default="all")
-    parser.add_argument("--root", type=Path, default=PROJECT_ROOT)
     parser.add_argument(
         "--report", type=Path, default=PROJECT_ROOT / "test-results" / "health.xml"
     )
-    parser.add_argument("--baseline", type=Path)
     parser.add_argument("--seed", type=int)
     options = parser.parse_args(argv)
-    fingerprint = environment_fingerprint()
-    if options.mode == "fingerprint":
-        print(fingerprint)
-        return 0
     if options.seed is not None and not 0 <= options.seed <= 0xFFFFFFFF:
         parser.error("seed must be a 32-bit unsigned integer")
-    if options.mode == "calibrate" and (
-        options.baseline is None or options.seed is not None
-    ):
-        parser.error("calibrate requires --baseline and ordinary test order")
-    root, report = options.root.resolve(), options.report.resolve()
-    reference = REFERENCE_FILE.read_text(encoding="utf-8").strip()
+    report = options.report.resolve()
     try:
         if options.mode == "wait-s3":
             wait_for_s3()
@@ -207,45 +169,29 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError(f"{name} is required for {options.profile}")
         if options.profile == "s3" and os.environ["CFMS_TEST_S3_WRITE"] != "1":
             raise ValueError("CFMS_TEST_S3_WRITE must be 1")
-        budget = None
-        if options.mode == "run" and options.baseline is not None:
-            budget = time_budget(
-                json.loads(options.baseline.read_text(encoding="utf-8")),
-                options.profile,
-                fingerprint,
-                reference,
-            )
-        if options.mode == "calibrate":
-            actual_reference = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=root,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if actual_reference != reference:
-                raise ValueError(
-                    "Calibration checkout must match the pinned reference commit"
-                )
-        arguments = [PROFILES[options.profile]] * (
-            3 if options.mode == "calibrate" else 1
-        )
+        limit = TIME_LIMIT_SECONDS[options.profile]
+        arguments = [PROFILES[options.profile]]
         if options.mode == "isolate":
             arguments = [[node] for node in ISOLATED_NODES]
-        samples = []
+            limit = 60
         for index, selection in enumerate(arguments):
             case_report = (
                 report
                 if len(arguments) == 1
                 else report.with_stem(f"{report.stem}-{index + 1}")
             )
-            code, elapsed = run_pytest(root, selection, case_report, options.seed)
+            code, elapsed = run_pytest(
+                PROJECT_ROOT, selection, case_report, options.seed
+            )
             summary = {
                 "profile": options.profile,
                 "seed": options.seed,
                 "elapsed_seconds": elapsed,
-                "returncode": code,
-                "environment": fingerprint,
+                "limit_seconds": limit,
+                "pytest_returncode": code,
+                "returncode": code or int(elapsed > limit),
+                "python": platform.python_version(),
+                "platform": sys.platform,
             }
             if code == 0:
                 summary.update(
@@ -260,30 +206,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(summary), flush=True)
             if code != 0:
                 return code
-            samples.append(elapsed)
-            if budget is not None and elapsed > budget:
+            if elapsed > limit:
                 raise ValueError(
-                    f"{options.profile} exceeded time budget: {elapsed:.2f}s > {budget:.2f}s"
+                    f"{options.profile} exceeded time limit: {elapsed:.2f}s > {limit:.2f}s"
                 )
-        if options.mode == "calibrate":
-            baseline = {
-                "profile": options.profile,
-                "environment": fingerprint,
-                "reference": reference,
-                "samples_seconds": samples,
-            }
-            options.baseline.parent.mkdir(parents=True, exist_ok=True)
-            options.baseline.write_text(
-                json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
-            )
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        ET.ParseError,
-        subprocess.CalledProcessError,
-    ) as exc:
+    except (OSError, ValueError, KeyError, ET.ParseError) as exc:
         print(f"Test health check failed: {exc}", file=sys.stderr)
         return 1
     return 0

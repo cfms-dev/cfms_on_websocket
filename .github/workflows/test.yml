@@ -66,25 +66,16 @@ jobs:
         uv run --locked towncrier check --compare-with "origin/${BASE_REF}"
     
     - name: Run unit tests
-      uses: ./.github/actions/test-health
-      with:
-        profile: unit
-        report: test-results/unit.xml
-      timeout-minutes: 30
+      run: uv run --locked python tools/check_test_health.py run --profile "unit" --report test-results/unit.xml
+      timeout-minutes: 10
 
     - name: Run component tests
-      uses: ./.github/actions/test-health
-      with:
-        profile: component
-        report: test-results/component.xml
-      timeout-minutes: 30
+      run: uv run --locked python tools/check_test_health.py run --profile "component" --report test-results/component.xml
+      timeout-minutes: 10
 
     - name: Run integration tests
-      uses: ./.github/actions/test-health
-      with:
-        profile: integration
-        report: test-results/integration.xml
-      timeout-minutes: 30
+      run: uv run --locked python tools/check_test_health.py run --profile "integration" --report test-results/integration.xml
+      timeout-minutes: 10
 
     - name: Run one reproducible shuffled suite
       env:
@@ -92,7 +83,7 @@ jobs:
       run: |
         seed=$(uv run --locked python -c "import os; print(int(os.environ['TEST_COMMIT'][:8], 16))")
         uv run --locked python tools/check_test_health.py run --profile all --seed "$seed" --report test-results/random.xml
-      timeout-minutes: 15
+      timeout-minutes: 20
 
     - name: Verify test configuration cleanup
       if: always()
@@ -148,11 +139,8 @@ jobs:
     - name: Run real Redis provider behavior tests
       env:
         CFMS_TEST_REDIS_URL: "redis://127.0.0.1:6379/0"
-      uses: ./.github/actions/test-health
-      with:
-        profile: redis
-        report: test-results/redis.xml
-      timeout-minutes: 30
+      run: uv run --locked python tools/check_test_health.py run --profile "redis" --report test-results/redis.xml
+      timeout-minutes: 10
 
     - name: Upload Redis test results
       if: always()
@@ -205,11 +193,8 @@ jobs:
     - name: Run MySQL integration tests
       env:
         CFMS_TEST_MYSQL_URL: "mysql+mysqlconnector://cfms:cfms-test-password@127.0.0.1:3306/cfms_migration?charset=utf8mb4"
-      uses: ./.github/actions/test-health
-      with:
-        profile: mysql-${{ matrix.mysql-version }}
-        report: test-results/mysql.xml
-      timeout-minutes: 30
+      run: uv run --locked python tools/check_test_health.py run --profile "mysql-${{ matrix.mysql-version }}" --report test-results/mysql.xml
+      timeout-minutes: 10
 
     - name: Upload MySQL test results
       if: always()
@@ -257,11 +242,8 @@ jobs:
     - name: Run PostgreSQL scheduling concurrency tests
       env:
         CFMS_TEST_POSTGRESQL_URL: "postgresql+psycopg2://cfms:cfms-test-password@127.0.0.1:5432/cfms_scheduling"
-      uses: ./.github/actions/test-health
-      with:
-        profile: postgresql
-        report: test-results/postgresql.xml
-      timeout-minutes: 30
+      run: uv run --locked python tools/check_test_health.py run --profile "postgresql" --report test-results/postgresql.xml
+      timeout-minutes: 10
 
     - name: Upload PostgreSQL test results
       if: always()
@@ -305,10 +287,7 @@ jobs:
         run: |
           uv run --locked python tools/check_test_health.py wait-s3
       - name: Check real S3 behavior
-        uses: ./.github/actions/test-health
-        with:
-          profile: s3
-          report: test-results/s3.xml
+        run: uv run --locked python tools/check_test_health.py run --profile "s3" --report test-results/s3.xml
         timeout-minutes: 10
       - uses: actions/upload-artifact@v7
         if: always()

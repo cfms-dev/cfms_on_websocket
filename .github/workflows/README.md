@@ -30,15 +30,15 @@ lightweight required job and conditionally skip only the expensive test jobs.
 7. Verifies rate-limit Lua and scheduler lease behavior against Redis 8.2.10
 8. Runs PostgreSQL scheduler concurrency/atomic initialization and platform smoke checks
 9. Uploads JUnit results and logs as artifacts (retained for 7 days)
-10. Compares each channel against three cached runs of a pinned reference commit,
-    adds a shuffled PR run, and runs daily multi-seed/independent-node checks
+10. Enforces explicit whole-process feedback limits, adds a shuffled PR run,
+    and runs daily multi-seed/independent-node checks
 11. Exercises real S3 behavior against disposable SeaweedFS 4.53
 
 ### Configuration:
-- **Timeout**: 30 minutes per main-layer check to allow cold-cache reference
-  calibration; the measured candidate budget is much smaller and determined
-  from its reference median. Pytest's 120-second watchdog includes individual-case
-  setup and teardown
+- **Timeout**: 10 minutes per main-layer step. The health command enforces a
+  30-second unit limit and 420-second component/integration limits, including
+  process startup and collection. Pytest's 120-second watchdog includes
+  individual-case setup and teardown
 - **Python version**: Tests run on Python 3.15
 - **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
   9.7 LTS
@@ -91,14 +91,13 @@ uv run --locked pytest tests/providers/test_redis_lua_integration.py -q
 
 ### FIRST feedback checks
 
-The local composite action `.github/actions/test-health` uses
-`tools/check_test_health.py` for complete pytest-process timing and JUnit
-validation. The pinned reference lives in `tests/first-baseline-ref.txt`.
-Reference samples are cached by channel, commit, exact Python/platform, runner
-image, lockfile and checker; candidates never replace the reference. An expired
-cache triggers three reference runs, so the first check is intentionally more
-expensive. Later checks execute only the candidate and fail on a clear elapsed
-time regression. See [FIRST checks](../../tests/FIRST.md) for formulas and commands.
+CI invokes `tools/check_test_health.py` directly for complete pytest-process
+timing and JUnit validation. It runs the current checkout once and compares its
+elapsed time with an explicit per-profile limit. Checks have no dependency on
+historical commits, additional checkouts or cached timing samples. Each run
+uploads XML and JSON reports, including the limit and check status; a limit
+breach fails even when the tests themselves passed. See
+[FIRST checks](../../tests/FIRST.md) for the limits and commands.
 
 Every ordinary run adds one shuffled non-stress suite seeded from the tested
 commit. Scheduled and manually dispatched runs additionally exercise seeds

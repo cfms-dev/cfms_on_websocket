@@ -1,7 +1,9 @@
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from shutil import copyfile
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -143,3 +145,42 @@ def test_unhandled_worker_or_finalizer_errors_fail_the_run(tmp_path, worker):
     cases = ET.parse(report).findall(".//testcase")
     assert len(cases) == 1
     assert cases[0].find("failure") is not None or cases[0].find("error") is not None
+
+
+@pytest.mark.integration
+def test_health_command_runs_without_git_history_or_calibration_files(tmp_path):
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    command = tools_dir / "check_test_health.py"
+    copyfile(PROJECT_ROOT / "tools/check_test_health.py", command)
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_probe.py").write_text(
+        "import pytest\n@pytest.mark.unit\ndef test_probe():\n    assert sum((1, 2)) == 3\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nmarkers =\n    unit: pure logic\n", encoding="utf-8"
+    )
+    report = tmp_path / "result.xml"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(command),
+            "run",
+            "--profile",
+            "unit",
+            "--report",
+            str(report),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+    assert summary["executed"] == 1
+    assert summary["returncode"] == summary["pytest_returncode"] == 0
+    assert summary["limit_seconds"] == 30
