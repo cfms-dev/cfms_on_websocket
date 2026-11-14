@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Uuid,
     event,
+    select,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.orm.session import object_session
@@ -284,44 +285,40 @@ class User(Base):
         if now is None:
             now = time.time()
 
-        group_granted_perms = set()
-        group_revoked_perms = set()
-        session = object_session(self)
-
+        active_group_names = set()
         for membership in getattr(self, "groups", []):
             membership: UserMembership
             if membership.start_time is not None and membership.start_time > now:
                 continue
             if membership.end_time is not None and membership.end_time < now:
                 continue
-
-            if hasattr(membership, "group_name"):
-                if session is not None:
-                    group = session.get(UserGroup, membership.group_name)
-                else:
-                    with Session() as fallback_session:
-                        group = fallback_session.get(UserGroup, membership.group_name)
-                        if group:
-                            group_grants, group_revocations = (
-                                _permission_grants_and_revocations(
-                                    group.permissions, now
-                                )
-                            )
-                            group_granted_perms |= group_grants
-                            group_revoked_perms |= group_revocations
-                    continue
-                if group:
-                    group_grants, group_revocations = (
-                        _permission_grants_and_revocations(group.permissions, now)
-                    )
-                    group_granted_perms |= group_grants
-                    group_revoked_perms |= group_revocations
-            else:
+            if not hasattr(membership, "group_name"):
                 raise ValueError(
                     f"UserMembership {membership.id} does not have a valid group_name attribute."
                 )
+            active_group_names.add(membership.group_name)
 
-        return group_granted_perms, group_revoked_perms
+        if not active_group_names:
+            return set(), set()
+
+        statement = (
+            select(
+                UserGroupPermission.permission,
+                UserGroupPermission.granted,
+                UserGroupPermission.start_time,
+                UserGroupPermission.end_time,
+            )
+            .join(UserGroup, UserGroupPermission.group_name == UserGroup.group_name)
+            .where(UserGroup.group_name.in_(active_group_names))
+        )
+        session = object_session(self)
+        if session is not None:
+            entries = session.execute(statement).all()
+        else:
+            with Session() as fallback_session:
+                entries = fallback_session.execute(statement).all()
+
+        return _permission_grants_and_revocations(entries, now)
 
     @property
     def inherited_permissions(self) -> set[Permissions]:
