@@ -373,6 +373,71 @@ def test_fetch_latest_active_revisions_batches_without_lazy_revision_loads(
     assert len(statements) <= 3
 
 
+def test_fetch_latest_active_revisions_short_circuits_when_current_revision_is_active(
+    directory_models,
+    directory_session,
+):
+    folder = directory_models.Folder(id="short-circuit-folder", name="short-circuit")
+    directory_session.add(folder)
+
+    def seed_chain(doc_id: str, depth: int) -> str:
+        document = _document(directory_models, directory_session, doc_id, folder.id)
+        parent_id = None
+        for index in range(depth):
+            rev = _revision(
+                directory_models,
+                directory_session,
+                f"{doc_id}-rev-{index}",
+                document.id,
+                _file(
+                    directory_models,
+                    f"{doc_id}-file-{index}",
+                    active=True,
+                    size=index + 1,
+                ),
+                created_time=float(index + 1),
+                parent_revision_id=parent_id,
+            )
+            parent_id = rev.id
+        assert parent_id is not None
+        document.current_revision_id = parent_id
+        return document.id
+
+    shallow_id = seed_chain("shallow-doc", 1)
+    deep_id = seed_chain("deep-doc", 32)
+    directory_session.commit()
+    directory_models.fetch_latest_active_revisions(directory_session, [shallow_id])
+
+    raw_connection = directory_session.connection().connection.dbapi_connection
+    assert isinstance(raw_connection, sqlite3.Connection)
+
+    def measure_vm_steps(doc_id: str) -> int:
+        directory_session.expunge_all()
+        directory_session.connection()
+        steps = 0
+
+        def count_step() -> int:
+            nonlocal steps
+            steps += 1
+            return 0
+
+        raw_connection.set_progress_handler(count_step, 1)
+        try:
+            revisions = directory_models.fetch_latest_active_revisions(
+                directory_session, [doc_id]
+            )
+            assert revisions[doc_id].id.endswith(
+                "-rev-0" if doc_id == shallow_id else "-rev-31"
+            )
+        finally:
+            raw_connection.set_progress_handler(None, 0)
+        return steps
+
+    shallow_steps = measure_vm_steps(shallow_id)
+    deep_steps = measure_vm_steps(deep_id)
+    assert deep_steps == shallow_steps
+
+
 def test_count_active_directory_children_uses_aggregate_queries(
     directory_models,
     directory_session,

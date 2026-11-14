@@ -169,32 +169,20 @@ def fetch_latest_active_revisions_by_document(
                 parent_revision.c.parent_revision_id,
                 parent_file.c.active,
                 (current_chain.c.depth + 1).label("depth"),
-            ).select_from(
+            )
+            .select_from(
                 current_chain.join(
                     parent_revision,
                     current_chain.c.parent_revision_id == parent_revision.c.id,
                 ).join(parent_file, parent_revision.c.file_id == parent_file.c.id)
             )
-        )
-        active_current_chain = (
-            select(
-                current_chain.c.document_id,
-                current_chain.c.revision_id,
-                func.row_number()
-                .over(
-                    partition_by=current_chain.c.document_id,
-                    order_by=current_chain.c.depth,
-                )
-                .label("row_number"),
-            )
-            .where(current_chain.c.file_active.is_(True))
-            .subquery()
+            .where(current_chain.c.file_active.is_(False))
         )
         current_chain_rows = session.execute(
             select(
-                active_current_chain.c.document_id,
-                active_current_chain.c.revision_id,
-            ).where(active_current_chain.c.row_number == 1)
+                current_chain.c.document_id,
+                current_chain.c.revision_id,
+            ).where(current_chain.c.file_active.is_(True))
         ).all()
         for document_id, revision_id in current_chain_rows:
             revision_ids_by_document[document_id] = revision_id
@@ -474,12 +462,14 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
             parent_revision.c.parent_revision_id,
             parent_file.c.active,
             (current_chain.c.depth + 1).label("depth"),
-        ).select_from(
+        )
+        .select_from(
             current_chain.join(
                 parent_revision,
                 current_chain.c.parent_revision_id == parent_revision.c.id,
             ).join(parent_file, parent_revision.c.file_id == parent_file.c.id)
         )
+        .where(current_chain.c.file_active.is_(False))
     )
 
     current_ranked = (
