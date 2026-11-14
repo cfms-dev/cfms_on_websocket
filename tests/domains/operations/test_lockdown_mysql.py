@@ -18,7 +18,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def mysql_lockdown_sessions(monkeypatch, mysql_pure_engine, isolated_metadata):
+def mysql_lockdown_sessions(monkeypatch, isolated_metadata, mysql_pure_engine):
     isolated_metadata.drop_all(mysql_pure_engine)
     try:
         isolated_metadata.create_all(mysql_pure_engine)

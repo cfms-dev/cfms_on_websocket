@@ -13,10 +13,14 @@ from include.config.options import (
 from include.config.options import (
     read_option as read_resolved_option,
 )
-from include.database.models.operations import (
+from include.database.models import (
     AuditEntry,
+    Comment,
+    File,
     OptionEntry,
     SystemStateEntry,
+    User,
+    UserKey,
 )
 from include.database.options import (
     create_option,
@@ -28,11 +32,18 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def mysql_option_sessions(mysql_pure_engine, isolated_metadata):
+def mysql_option_sessions(isolated_metadata, mysql_pure_engine):
     tables = [
-        isolated_metadata.tables[OptionEntry.__tablename__],
-        isolated_metadata.tables[SystemStateEntry.__tablename__],
-        isolated_metadata.tables[AuditEntry.__tablename__],
+        isolated_metadata.tables[model.__tablename__]
+        for model in (
+            Comment,
+            File,
+            UserKey,
+            User,
+            OptionEntry,
+            SystemStateEntry,
+            AuditEntry,
+        )
     ]
     isolated_metadata.drop_all(mysql_pure_engine, tables=tables, checkfirst=True)
     try:

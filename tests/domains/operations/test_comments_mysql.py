@@ -15,7 +15,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def mysql_comment_sessions(mysql_pure_engine, isolated_metadata):
+def mysql_comment_sessions(isolated_metadata, mysql_pure_engine):
     tables = [isolated_metadata.tables[Comment.__tablename__]]
     isolated_metadata.drop_all(mysql_pure_engine, tables=tables, checkfirst=True)
     try:
