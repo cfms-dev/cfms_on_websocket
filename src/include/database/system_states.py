@@ -114,10 +114,7 @@ def create_system_state(
             statement = statement.prefix_with("IGNORE")
         case _:
             raise ValueError(f"Unsupported system state database dialect: {dialect}")
-    result = cast(
-        CursorResult[Any],
-        session.execute(statement, execution_options={"preserve_rowcount": True}),
-    )
+    result = cast(CursorResult[Any], session.execute(statement))
     return result.rowcount == 1
 
 

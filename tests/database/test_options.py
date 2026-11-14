@@ -1,12 +1,10 @@
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
-from types import SimpleNamespace
 
 import pytest
 from pydantic import JsonValue, ValidationError
 from sqlalchemy import create_engine, event, select
-from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import sessionmaker
 
 import include.config.options as option_config
@@ -584,34 +582,3 @@ def test_owner_and_namespace_are_independent(option_database):
             assert first.revision == second.revision == 1
     finally:
         unregister_options("sample")
-
-
-@pytest.mark.parametrize(("rowcount", "expected"), [(1, True), (0, False)])
-def test_create_option_mysql_dialect_preserves_rowcount(
-    option_database, monkeypatch, rowcount, expected
-):
-    captured: dict[str, object] = {}
-
-    def fake_execute(statement, execution_options=None):
-        captured["sql"] = str(statement.compile(dialect=mysql.dialect()))
-        captured["execution_options"] = execution_options
-        return SimpleNamespace(rowcount=rowcount)
-
-    with option_database() as session:
-        monkeypatch.setattr(
-            session,
-            "get_bind",
-            lambda: SimpleNamespace(dialect=SimpleNamespace(name="mysql")),
-        )
-        monkeypatch.setattr(session, "execute", fake_execute)
-        created = create_option(
-            session,
-            "server",
-            "name",
-            schema_version=1,
-            value="CFMS WebSocket Server",
-        )
-
-    assert created is expected
-    assert captured["execution_options"] == {"preserve_rowcount": True}
-    assert str(captured["sql"]).startswith("INSERT IGNORE INTO options")

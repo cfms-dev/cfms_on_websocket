@@ -54,6 +54,7 @@ def test_sqlite_engine_applies_runtime_pragmas(tmp_path, request) -> None:
     request.addfinalizer(engine.dispose)
 
     with engine.connect() as connection:
+        assert connection.get_execution_options()["preserve_rowcount"] is True
         assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
         assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 30000
         assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one() == "wal"
@@ -127,6 +128,7 @@ def test_external_database_keeps_recycle_and_applies_pool_settings(monkeypatch) 
     assert options == {
         "pool_recycle": DEFAULT_TOKEN_EXPIRY_SECONDS,
         "echo": True,
+        "execution_options": {"preserve_rowcount": True},
         "pool_size": 3,
         "max_overflow": 4,
         "pool_timeout": 0.5,

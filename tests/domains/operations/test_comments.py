@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, select
@@ -251,3 +252,36 @@ def test_comment_store_deduplicates_concurrent_transactions(
     with Session(engine) as session:
         assert ids[0] == ids[1]
         assert len(session.scalars(select(Comment)).all()) == 1
+
+
+@pytest.mark.unit
+def test_mysql_comment_id_store_uses_pre_memoized_inserted_primary_key(
+    sqlite_engine_factory, monkeypatch
+) -> None:
+    from include.domains.operations.comments import CommentStore
+
+    class ClosedCursorResult:
+        inserted_primary_key = (7,)
+
+        @property
+        def lastrowid(self) -> int:
+            raise AssertionError("lastrowid must not be read after cursor close")
+
+    with _make_session(sqlite_engine_factory) as session:
+        monkeypatch.setattr(
+            session,
+            "get_bind",
+            lambda: SimpleNamespace(dialect=SimpleNamespace(name="mysql")),
+        )
+        monkeypatch.setattr(session, "execute", lambda _stmt: ClosedCursorResult())
+        monkeypatch.setattr(
+            CommentStore,
+            "_load_and_validate",
+            classmethod(
+                lambda _cls, _session, _serialized, _digest, *, comment_id=None: (
+                    SimpleNamespace(comment_id=comment_id)
+                )
+            ),
+        )
+
+        assert CommentStore.get_or_create_id(session, "Reason") == 7

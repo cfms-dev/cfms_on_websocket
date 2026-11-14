@@ -180,11 +180,7 @@ def create_option(
             statement = mysql_insert(OptionEntry).values(**values).prefix_with("IGNORE")
         case _:
             raise ValueError(f"Unsupported options database dialect: {dialect}")
-    result = cast(
-        CursorResult[Any],
-        session.execute(statement, execution_options={"preserve_rowcount": True}),
-    )
-    return result.rowcount == 1
+    return cast(CursorResult[Any], session.execute(statement)).rowcount == 1
 
 
 @validate_call(config=OPTION_VALIDATION_CONFIG)

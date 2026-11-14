@@ -130,14 +130,14 @@ class CommentStore:
                     raise RuntimeError("Comment insert did not return a primary key")
                 return primary_key[0]
             if dialect_name == "mysql":
-                comment_id = result.lastrowid
-                if not comment_id:
+                primary_key = result.inserted_primary_key
+                if not primary_key or not primary_key[0]:
                     raise RuntimeError("Comment upsert did not return a primary key")
                 return cls._load_and_validate(
                     session,
                     serialized,
                     content_digest,
-                    comment_id=comment_id,
+                    comment_id=primary_key[0],
                 ).comment_id
 
         return cls._load_and_validate(

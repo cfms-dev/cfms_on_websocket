@@ -23,7 +23,11 @@ def mysql_pure_engine():
     if database_url is None:
         pytest.skip("CFMS_TEST_MYSQL_URL is required")
 
-    engine = create_engine(database_url, connect_args={"use_pure": True})
+    engine = create_engine(
+        database_url,
+        connect_args={"use_pure": True},
+        execution_options={"preserve_rowcount": True},
+    )
     try:
         with engine.connect() as connection:
             assert isinstance(connection.connection.driver_connection, MySQLConnection)

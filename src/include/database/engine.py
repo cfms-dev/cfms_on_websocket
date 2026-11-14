@@ -71,6 +71,7 @@ def create_database_engine(
                     "autocommit": sqlite3.LEGACY_TRANSACTION_CONTROL,
                 },
                 echo=echo,
+                execution_options={"preserve_rowcount": True},
                 **pool_options,
             )
 
@@ -114,5 +115,6 @@ def create_database_engine(
         url,
         pool_recycle=DEFAULT_TOKEN_EXPIRY_SECONDS,
         echo=echo,
+        execution_options={"preserve_rowcount": True},
         **pool_options,
     )

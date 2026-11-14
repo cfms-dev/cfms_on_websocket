@@ -23,6 +23,7 @@ MYSQL_PATHS = (
     "tests/maintenance/database/test_mysql.py",
     "tests/database/test_options_mysql.py",
     "tests/database/test_system_states_mysql.py",
+    "tests/domains/operations/test_comments_mysql.py",
     "tests/domains/operations/test_lockdown_mysql.py",
 )
 PROFILES = {
