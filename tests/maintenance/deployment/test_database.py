@@ -1,4 +1,5 @@
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,7 @@ def test_database_upgrade_and_downgrade_require_versioned_database(
     project_root, source, target, source_head, target_revision = (
         _prepare_database_releases(tmp_path)
     )
+    original_sys_path = list(sys.path)
     source_scripts = ScriptDirectory(str(source.root / "src" / "alembic"))
     engine = deployment_database._database_engine(project_root)
     try:
@@ -108,6 +110,7 @@ def test_database_upgrade_and_downgrade_require_versioned_database(
 
     deployment_database._preflight_upgrade_database(project_root, source, target)
     deployment_database._upgrade_database(project_root, source, target)
+    assert sys.path == original_sys_path
     assert not tuple(target.root.rglob("*.pyc"))
     engine = deployment_database._database_engine(project_root)
     try:
@@ -123,6 +126,7 @@ def test_database_upgrade_and_downgrade_require_versioned_database(
         shutil.rmtree(cache)
     deployment_database._preflight_downgrade_database(project_root, target, source)
     deployment_database._downgrade_database(project_root, target, source)
+    assert sys.path == original_sys_path
     assert not tuple(source.root.rglob("*.pyc"))
     assert not tuple(target.root.rglob("*.pyc"))
     engine = deployment_database._database_engine(project_root)

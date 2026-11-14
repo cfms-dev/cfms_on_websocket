@@ -1,7 +1,7 @@
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-lazy from collections.abc import Iterator
+lazy from collections.abc import Generator
 
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -20,7 +20,7 @@ lazy from maintenance.operations.deployment.models import _Release
 
 
 @contextmanager
-def _suppress_bytecode_writes() -> Iterator[None]:
+def _suppress_bytecode_writes() -> Generator[None]:
     previous = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
     try:
@@ -32,6 +32,7 @@ def _suppress_bytecode_writes() -> Iterator[None]:
 def _alembic(release: _Release, connection=None) -> tuple[Config, ScriptDirectory, str]:
     config = Config(str(release.root / "src" / "alembic.ini"))
     config.set_main_option("script_location", str(release.root / "src" / "alembic"))
+    config.set_main_option("prepend_sys_path", "")
     if connection is not None:
         config.attributes["connection"] = connection
     scripts = ScriptDirectory.from_config(config)
