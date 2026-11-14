@@ -5,6 +5,7 @@ import json
 import ssl
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import orjson
 import pytest
@@ -19,12 +20,14 @@ from tests.stress.load_metrics import (
 )
 from tests.stress.ws_load import (
     FixedRatePacer,
+    LoadPhase,
     LoadStats,
     build_phases,
     create_load_ssl_context,
     load_account_pool,
     parse_args,
     resolve_credentials,
+    run_worker_phase,
     summarize,
     timed_call,
 )
@@ -146,6 +149,35 @@ def test_fixed_global_arrival_rate_uses_the_full_scheduling_window():
 
     assert result["requests"] == 20
     assert result["throughput_rps"] == 10
+
+
+@pytest.mark.unit
+def test_arrivals_remaining_when_the_last_request_overruns_are_dropped():
+    pacer = FixedRatePacer(next_start=0, interval=0.25, deadline=1)
+
+    assert pacer.next_slot(0) == (0, 0)
+    assert pacer.next_slot(2) == (None, 3)
+    assert pacer.next_slot(3) == (None, 0)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_slow_final_request_accounts_for_unsent_arrivals(monkeypatch):
+    now = [0.0]
+
+    class Client:
+        async def server_info(self, *_args, **_kwargs):
+            now[0] = 2
+            return {"code": 200, "data": {}}
+
+    monkeypatch.setattr("tests.stress.ws_load.time.perf_counter", lambda: now[0])
+    context = SimpleNamespace(worker_id=0, client=Client())
+    args = parse_args(["--scenario", "server-info", "--users", "1", "--rate", "4"])
+
+    stats = await run_worker_phase(context, args, LoadPhase("fixed", 1, 4), 0, 0)
+
+    assert stats.total.requests == 1
+    assert stats.dropped_iterations == 3
 
 
 @pytest.mark.unit

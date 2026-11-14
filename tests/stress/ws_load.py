@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import platform
 import random
@@ -91,6 +92,12 @@ class FixedRatePacer:
         deadline_tolerance = min(0.000001, self.interval / 1000)
         if self.next_start >= self.deadline - deadline_tolerance:
             return None, 0
+        if now >= self.deadline:
+            dropped = math.ceil(
+                (self.deadline - self.next_start - deadline_tolerance) / self.interval
+            )
+            self.next_start = self.deadline
+            return None, dropped
         dropped = 0
         if now > self.next_start:
             dropped = int((now - self.next_start) // self.interval)
@@ -825,6 +832,9 @@ async def run_worker_phase(
             delay = scheduled - time.perf_counter()
             if delay > 0:
                 await asyncio.sleep(delay)
+            if time.perf_counter() >= deadline:
+                stats.dropped_iterations += 1
+                break
         if args.scenario == "server-info":
             await timed_call(stats, "core.server.info.get", context.client.server_info)
         elif args.scenario == "auth-read":
@@ -889,6 +899,9 @@ async def run_worker_phase(
         else:
             raise ValueError(f"Unknown scenario: {args.scenario}")
         sequence += 1
+    if pacer is not None:
+        _, remaining = pacer.next_slot(deadline)
+        stats.dropped_iterations += remaining
     return stats
 
 
