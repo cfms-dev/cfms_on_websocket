@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
 
@@ -1190,4 +1191,185 @@ def test_storage_provider_rejects_unknown_backend():
     config["provider"] = {"storage": "unknown"}
 
     with pytest.raises(ConfigValidationError, match="provider.storage"):
+        validate_config(config)
+
+
+@pytest.mark.unit
+def test_sample_config_document_is_valid():
+    sample_path = Path(__file__).resolve().parents[2] / "src" / "config.toml.sample"
+    document = parse_config_document(sample_path.read_text(encoding="utf-8"))
+    assert document["server"]["port"] == 5104
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["false", 1, 0, None])
+def test_debug_flag_requires_boolean(value):
+    config = _valid_config()
+    config["debug"] = value
+
+    with pytest.raises(ConfigValidationError):
+        validate_config(config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("host", ""),
+        ("host", "   "),
+        ("host", 123),
+        ("port", 0),
+        ("port", 65536),
+        ("port", True),
+        ("port", "5104"),
+        ("dualstack_ipv6", 1),
+        ("dualstack_ipv6", "true"),
+        ("secret_key", 123),
+        ("ssl_keyfile", "   "),
+        ("ssl_certfile", ""),
+    ],
+)
+def test_server_deployment_section_rejects_invalid_values(key, value):
+    config = _valid_config()
+    config["server"][key] = value
+
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == (key,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("pepper", 123),
+        ("pepper", None),
+        ("client_cert_ca_path", 123),
+    ],
+)
+def test_security_deployment_section_rejects_invalid_values(key, value):
+    config = _valid_config()
+    config["security"][key] = value
+
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == (key,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "database",
+    [
+        {"type": "sqlite", "file": "app.db"},
+        {"type": "mysql", "host": "db.internal", "port": 3306, "name": "cfms"},
+        {"type": "postgresql", "host": "db.internal", "port": 5432, "name": "cfms"},
+    ],
+)
+def test_database_deployment_section_accepts_valid_dialects(database):
+    config = _valid_config()
+    config["database"] = database
+
+    validate_config(config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("database", "expected_loc"),
+    [
+        ({"type": "oracle"}, ("type",)),
+        ({"type": "sqlite", "port": 0}, ("port",)),
+        ({"type": "mysql", "port": 70000}, ("port",)),
+    ],
+)
+def test_database_deployment_section_rejects_invalid_field_types(
+    database, expected_loc
+):
+    config = _valid_config()
+    config["database"] = database
+
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == expected_loc
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "database",
+    [
+        {"type": "sqlite", "file": "   "},
+        {"type": "mysql", "host": "   ", "name": "cfms"},
+        {"type": "mysql", "host": "db.internal", "name": "   "},
+        {"type": "mysql", "host": "db.internal", "name": "cfms", "charset": "utf8"},
+        {"type": "postgresql", "host": "", "name": "cfms"},
+        {"type": "postgresql", "host": "db.internal", "name": ""},
+    ],
+)
+def test_database_deployment_section_rejects_invalid_dialect_invariants(database):
+    config = _valid_config()
+    config["database"] = database
+
+    with pytest.raises(ConfigValidationError):
+        validate_config(config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("caching", "memcached"),
+        ("event_bus", "kafka"),
+    ],
+)
+def test_provider_deployment_section_rejects_unknown_backends(key, value):
+    config = _valid_config()
+    config["provider"] = {key: value}
+
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == (key,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("host", 123),
+        ("port", 0),
+        ("port", 65536),
+        ("db", -1),
+        ("password", 123),
+    ],
+)
+def test_redis_deployment_section_rejects_invalid_values(key, value):
+    config = _valid_config()
+    config["redis"] = {key: value}
+
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == (key,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "provider_key", ["caching", "event_bus", "rate_limit", "scheduling"]
+)
+def test_redis_host_must_not_be_blank_when_redis_provider_is_selected(provider_key):
+    config = _valid_config()
+    config["provider"] = {provider_key: "redis"}
+    config["redis"] = {"host": "   "}
+    if provider_key == "scheduling":
+        config["database"] = {"type": "postgresql"}
+        config["scheduling"] = {"redis_namespace": "prod-1"}
+
+    with pytest.raises(ConfigValidationError):
+        validate_config(config)
+
+
+@pytest.mark.unit
+def test_s3_section_validates_credentials_even_when_local_storage_is_selected():
+    config = _valid_config()
+    config["provider"] = {"storage": "local"}
+    config["s3"] = {"access_key_id": "only-key", "secret_access_key": ""}
+
+    with pytest.raises(ConfigValidationError):
         validate_config(config)

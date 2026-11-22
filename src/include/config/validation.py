@@ -27,10 +27,10 @@ from include.config.constants import DEFAULT_TRUSTED_PROXY_NETWORKS
 from include.extensions.identifiers import validate_extension_identifier
 lazy from include.extensions.manager import validate_extension_config
 lazy from include.types import (
-    NonEmptyString,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveInt,
+    TrimmedNonEmptyString,
     UnitRatio,
 )
 
@@ -39,14 +39,20 @@ __all__ = [
     "AuditRetentionPolicy",
     "AuthThrottlePolicy",
     "ConfigValidationError",
+    "DatabaseDeploymentPolicy",
     "DatabasePoolPolicy",
     "DocumentCreationRiskPolicy",
     "DocumentDownloadRiskPolicy",
     "DocumentUploadPolicy",
     "IdentityPermissionRetentionPolicy",
+    "ProviderDeploymentPolicy",
+    "RedisDeploymentPolicy",
     "RequestRateControlPolicy",
+    "S3SectionPolicy",
     "S3StoragePolicy",
     "SchedulingPolicy",
+    "SecurityDeploymentPolicy",
+    "ServerDeploymentPolicy",
     "ServerTLSReloadPolicy",
     "get_config_warnings",
     "get_enabled_extensions",
@@ -500,11 +506,91 @@ class DocumentDownloadRiskPolicy(_ConfigPolicy):
     state_retention_seconds: PositiveInt = 86400
 
 
-@dataclass(frozen=True)
-class S3StoragePolicy(_ConfigPolicy):
-    _SOURCE = _PolicySource((_Section("s3", required=True),))
+_PortNumber = Annotated[int, Field(ge=1, le=65535)]
 
-    bucket: NonEmptyString
+
+@dataclass(frozen=True)
+class ServerDeploymentPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("server", required=True),))
+
+    host: TrimmedNonEmptyString = "localhost"
+    port: _PortNumber = 5104
+    dualstack_ipv6: bool = True
+    secret_key: str = field(default="", repr=False)
+    ssl_keyfile: TrimmedNonEmptyString = "./content/ssl/key.pem"
+    ssl_certfile: TrimmedNonEmptyString = "./content/ssl/cert.pem"
+
+
+@dataclass(frozen=True)
+class SecurityDeploymentPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("security", required=True),))
+
+    pepper: str = field(default="", repr=False)
+    client_cert_ca_path: str = "./content/ssl/client/"
+
+
+@dataclass(frozen=True)
+class DatabaseDeploymentPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("database", required=True),))
+
+    type: Literal["sqlite", "mysql", "postgresql"]
+    file: str = "app.db"
+    host: str = "localhost"
+    port: _PortNumber = 3306
+    username: str = ""
+    password: str = field(default="", repr=False)
+    name: str = "app_db"
+    charset: str = "utf8mb4"
+    options: str = ""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.type == "sqlite":
+            if not self.file.strip():
+                raise ConfigValidationError(
+                    "database.file must not be empty when database.type is 'sqlite'"
+                )
+            return
+        if not self.host.strip():
+            raise ConfigValidationError(
+                f"database.host must not be empty when database.type is {self.type!r}"
+            )
+        if not self.name.strip():
+            raise ConfigValidationError(
+                f"database.name must not be empty when database.type is {self.type!r}"
+            )
+        if self.type == "mysql" and self.charset != "utf8mb4":
+            raise ConfigValidationError(
+                "database.charset must be 'utf8mb4' when database.type is 'mysql'"
+            )
+
+
+@dataclass(frozen=True)
+class ProviderDeploymentPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("provider"),))
+
+    caching: Literal["memory", "redis"] = "memory"
+    storage: Literal["local", "s3"] = "local"
+    event_bus: Literal["local", "redis"] = "local"
+    rate_limit: Literal["memory", "redis"] = "memory"
+    scheduling: Literal["local", "redis"] = "local"
+
+
+@dataclass(frozen=True)
+class RedisDeploymentPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("redis"),))
+
+    host: str = "localhost"
+    port: _PortNumber = 6379
+    password: str = field(default="", repr=False)
+    db: NonNegativeInt = 0
+
+
+@dataclass(frozen=True)
+class S3SectionPolicy(_ConfigPolicy):
+    _SOURCE = _PolicySource((_Section("s3"),))
+
+    bucket: str = ""
     endpoint_url: str = ""
     access_key_id: str = ""
     secret_access_key: str = field(default="", repr=False)
@@ -523,6 +609,16 @@ class S3StoragePolicy(_ConfigPolicy):
             raise ConfigValidationError(
                 "s3.session_token requires explicit access key credentials"
             )
+
+
+@dataclass(frozen=True)
+class S3StoragePolicy(S3SectionPolicy):
+    _SOURCE = _PolicySource((_Section("s3", required=True),))
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.bucket:
+            raise ConfigValidationError("s3.bucket must not be empty")
 
 
 _RedisNamespaceString = Annotated[
@@ -643,17 +739,16 @@ def _validate_file_chunk_size_config(config: _ConfigSource) -> None:
         raise ConfigValidationError("server.file_chunk_size must be a positive integer")
 
 
-def _validate_storage_provider_config(
-    config: _ConfigSource, provider: Mapping[str, Any]
-) -> None:
-    storage = provider.get("storage", "local")
-    if storage not in {"local", "s3"}:
-        raise ConfigValidationError("provider.storage must be either 'local' or 's3'")
-    if storage == "s3":
-        S3StoragePolicy.from_config(config)
-
-
 def validate_config(config: _ConfigSource) -> None:
+    try:
+        raw_debug = config["debug"]
+    except KeyError:
+        pass
+    else:
+        if not isinstance(raw_debug, bool):
+            raise ConfigValidationError("debug must be a boolean")
+
+    ServerDeploymentPolicy.from_config(config)
     ServerTLSReloadPolicy.from_config(config)
     get_trusted_proxy_networks(config)
     get_enabled_extensions(config)
@@ -662,34 +757,45 @@ def validate_config(config: _ConfigSource) -> None:
     scheduling_policy = SchedulingPolicy.from_config(config)
     _validate_file_chunk_size_config(config)
     _validate_client_certificate_config(config)
+    SecurityDeploymentPolicy.from_config(config)
 
+    database_policy: DatabaseDeploymentPolicy | None = None
     try:
-        provider = config["provider"]
+        config["database"]
     except KeyError:
-        provider = {}
-    if not isinstance(provider, Mapping):
-        raise ConfigValidationError("Configuration section 'provider' must be a table")
-    _validate_storage_provider_config(config, provider)
-    if provider.get("rate_limit", "memory") not in {"memory", "redis"}:
-        raise ConfigValidationError(
-            "provider.rate_limit must be either 'memory' or 'redis'"
-        )
-    scheduling_provider = provider.get("scheduling", "local")
-    if scheduling_provider not in {"local", "redis"}:
-        raise ConfigValidationError(
-            "provider.scheduling must be either 'local' or 'redis'"
-        )
+        pass
+    else:
+        database_policy = DatabaseDeploymentPolicy.from_config(config)
+
+    provider = ProviderDeploymentPolicy.from_config(config)
+    if provider.storage == "s3":
+        S3StoragePolicy.from_config(config)
+    else:
+        S3SectionPolicy.from_config(config)
+
+    redis_policy = RedisDeploymentPolicy.from_config(config)
     if (
-        scheduling_provider == "redis"
-        and _section(config, "database").get("type") == "sqlite"
+        any(
+            getattr(provider, name) == "redis"
+            for name in ("caching", "event_bus", "rate_limit", "scheduling")
+        )
+        and not redis_policy.host.strip()
     ):
         raise ConfigValidationError(
-            "provider.scheduling='redis' requires a shared non-SQLite database"
+            "redis.host must not be empty when a Redis provider is selected"
         )
-    if scheduling_provider == "redis" and scheduling_policy.redis_namespace is None:
-        raise ConfigValidationError(
-            "scheduling.redis_namespace is required when provider.scheduling='redis'"
-        )
+
+    if provider.scheduling == "redis":
+        if database_policy is None:
+            database_policy = DatabaseDeploymentPolicy.from_config(config)
+        if database_policy.type == "sqlite":
+            raise ConfigValidationError(
+                "provider.scheduling='redis' requires a shared non-SQLite database"
+            )
+        if scheduling_policy.redis_namespace is None:
+            raise ConfigValidationError(
+                "scheduling.redis_namespace is required when provider.scheduling='redis'"
+            )
 
     validate_extension_config(config)
 
