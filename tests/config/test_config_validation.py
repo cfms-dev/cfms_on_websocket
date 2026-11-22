@@ -16,6 +16,7 @@ from include.config.validation import (
     DocumentDownloadRiskPolicy,
     DocumentUploadPolicy,
     IdentityPermissionRetentionPolicy,
+    PasswordPolicy,
     RequestRateControlPolicy,
     S3StoragePolicy,
     SchedulingPolicy,
@@ -632,6 +633,26 @@ def test_scheduling_lease_refresh_must_precede_expiry():
 
     with pytest.raises(ConfigValidationError, match="must be less than"):
         validate_config(config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [0, -1, True, "1", float("inf"), float("nan")])
+def test_scheduling_poll_interval_rejects_non_finite_or_non_positive_values(value):
+    config = _valid_config()
+    config["scheduling"] = {"poll_interval_seconds": value}
+
+    with pytest.raises(ConfigValidationError) as failure:
+        validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == ("poll_interval_seconds",)
+
+
+@pytest.mark.unit
+def test_password_policy_rejects_min_length_exceeding_max_length():
+    config = _valid_config()
+    config["security"].update({"passwd_min_length": 16, "passwd_max_length": 8})
+
+    with pytest.raises(ConfigValidationError):
+        PasswordPolicy.from_config(config)
 
 
 @pytest.mark.component

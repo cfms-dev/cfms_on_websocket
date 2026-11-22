@@ -21,7 +21,7 @@ from sqlalchemy.engine import CursorResult
 lazy from sqlalchemy.orm import Session
 
 from include.config._policy import OptionNamespace
-from include.database.models.operations import OptionEntry
+lazy from include.database.models.operations import OptionEntry
 lazy from include.types import PositiveInt
 
 OPTION_VALIDATION_CONFIG = ConfigDict(

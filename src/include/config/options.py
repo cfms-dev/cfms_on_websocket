@@ -1,6 +1,7 @@
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Protocol, get_origin
 
 from pydantic import Field, TypeAdapter, ValidationError, validate_call
 from sqlalchemy import select
@@ -19,7 +20,6 @@ from include.config.validation import (
     RequestRateControlPolicy,
     SchedulingOptionsPolicy,
 )
-from include.database.models.operations import AuditEntry, OptionEntry, SystemStateEntry
 from include.database.options import (
     OPTION_VALIDATION_CONFIG,
     OptionKey,
@@ -35,8 +35,12 @@ from include.database.options import (
 from include.database.options import (
     read_option as read_stored_option,
 )
-from include.database.system_states import create_system_state, update_system_state
-from include.types import PositiveInt
+lazy from include.database.models.operations import (
+    AuditEntry,
+    OptionEntry,
+    SystemStateEntry,
+)
+lazy from include.database.system_states import create_system_state, update_system_state
 
 _KEY_ADAPTER = TypeAdapter(OptionKey)
 _NAMESPACE_ADAPTER = TypeAdapter(OptionNamespace)
@@ -513,7 +517,7 @@ CORE_POLICY_TYPES = {
         SchedulingOptionsPolicy,
     )
 }
-CORE_OPTIONS = {
+CORE_OPTIONS: dict[OptionNamespace, tuple[OptionDefinition[Any], ...]] = {
     "server": (SERVER_NAME_OPTION,),
     "access": (
         OptionDefinition(
@@ -527,20 +531,28 @@ CORE_OPTIONS = {
 }
 for _namespace, _policy in CORE_POLICY_TYPES.items():
     _defaults = _policy()
-    CORE_OPTIONS[_namespace] = tuple(
-        OptionDefinition(
-            item.name,
-            1,
-            dict[str, PositiveInt] if item.name == "action_costs" else item.type,
-            dict(getattr(_defaults, item.name))
-            if item.name == "action_costs"
-            else getattr(_defaults, item.name),
-            setting=CORE_SETTING_METADATA[_namespace][item.name],
+    _definitions: list[OptionDefinition[Any]] = []
+    for _item in fields(_policy):
+        _option_type = _policy._OPTION_TYPES.get(_item.name, _item.type)
+        _raw_default = getattr(_defaults, _item.name)
+        _origin = get_origin(_option_type) or _option_type
+        _default_value = (
+            dict(_raw_default)
+            if isinstance(_origin, type) and issubclass(_origin, Mapping)
+            else _raw_default
         )
-        for item in fields(_policy)
-    )
-for _namespace, _definitions in CORE_OPTIONS.items():
-    register_options(_namespace, _definitions)
+        _definitions.append(
+            OptionDefinition(
+                _item.name,
+                1,
+                _option_type,
+                _default_value,
+                setting=CORE_SETTING_METADATA[_namespace][_item.name],
+            )
+        )
+    CORE_OPTIONS[_namespace] = tuple(_definitions)
+for _namespace, _registered_definitions in CORE_OPTIONS.items():
+    register_options(_namespace, _registered_definitions)
 
 
 def ensure_core_option_defaults(session: Session) -> None:

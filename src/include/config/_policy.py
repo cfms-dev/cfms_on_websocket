@@ -131,6 +131,7 @@ class _ConfigPolicy:
     _SOURCE: ClassVar[_PolicySource]
     _OPTION_NAMESPACE: ClassVar[str]
     _RULES: ClassVar[tuple[_PolicyRule, ...]] = ()
+    _OPTION_TYPES: ClassVar[Mapping[str, Any]] = {}
 
     @classmethod
     def _read_section(cls, config: _ConfigSource) -> Mapping[str, Any]:

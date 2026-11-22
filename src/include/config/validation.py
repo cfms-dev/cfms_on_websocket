@@ -4,9 +4,9 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import field
 from functools import lru_cache
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, StringConstraints, ValidationError
 from pydantic.dataclasses import dataclass
 from tomlkit import TOMLDocument, parse
 from tomlkit.exceptions import TOMLKitError
@@ -285,6 +285,7 @@ class RequestRateControlPolicy(_ConfigPolicy):
             ),
         ),
     )
+    _OPTION_TYPES: ClassVar = {"action_costs": dict[str, PositiveInt]}
 
     mode: Literal["disabled", "observe", "enforce"] = "observe"
     connection_capacity: PositiveInt = 20
@@ -524,6 +525,12 @@ class S3StoragePolicy(_ConfigPolicy):
             )
 
 
+_RedisNamespaceString = Annotated[
+    str,
+    StringConstraints(strict=True, pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$"),
+]
+
+
 @dataclass(frozen=True)
 class SchedulingPolicy(_ConfigPolicy):
     """Validated timing, concurrency, retention, and cluster scheduling settings.
@@ -534,34 +541,25 @@ class SchedulingPolicy(_ConfigPolicy):
     """
 
     _SOURCE = _PolicySource((_Section("scheduling"),))
+    _RULES = (
+        _FieldOrder(
+            "lease_refresh_seconds",
+            "execution_lease_seconds",
+            allow_equal=False,
+            message=(
+                "scheduling.lease_refresh_seconds must be less than "
+                "execution_lease_seconds"
+            ),
+        ),
+    )
 
     worker_threads: PositiveInt = 4
-    poll_interval_seconds: float = 1.0
+    poll_interval_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0
     execution_lease_seconds: PositiveInt = 60
     lease_refresh_seconds: PositiveInt = 20
     shutdown_grace_seconds: PositiveInt = 30
     claim_batch_size: PositiveInt = 100
-    redis_namespace: str | None = None
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.poll_interval_seconds <= 0:
-            raise ConfigValidationError(
-                "scheduling.poll_interval_seconds must be greater than zero"
-            )
-        if self.lease_refresh_seconds >= self.execution_lease_seconds:
-            raise ConfigValidationError(
-                "scheduling.lease_refresh_seconds must be less than "
-                "execution_lease_seconds"
-            )
-        if (
-            self.redis_namespace is not None
-            and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", self.redis_namespace) is None
-        ):
-            raise ConfigValidationError(
-                "scheduling.redis_namespace must contain 1 to 63 lowercase ASCII "
-                "letters, digits, underscores, or hyphens"
-            )
+    redis_namespace: _RedisNamespaceString | None = None
 
 
 @dataclass(frozen=True)
@@ -577,6 +575,14 @@ class SchedulingOptionsPolicy(_ConfigPolicy):
 class PasswordPolicy(_ConfigPolicy):
     _OPTION_NAMESPACE = "security.password"
     _SOURCE = _PolicySource((_Section("security", required=True),))
+    _RULES = (
+        _FieldOrder(
+            "passwd_min_length",
+            "passwd_max_length",
+            allow_equal=True,
+            message="Minimum password length exceeds maximum",
+        ),
+    )
 
     passwd_min_length: PositiveInt = 8
     passwd_max_length: PositiveInt = 32
@@ -589,8 +595,6 @@ class PasswordPolicy(_ConfigPolicy):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.passwd_min_length > self.passwd_max_length:
-            raise ConfigValidationError("Minimum password length exceeds maximum")
         for rule in self.passwd_rules:
             try:
                 re.compile(rule)
