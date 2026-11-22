@@ -69,9 +69,10 @@ using the existing atomic backup/write mechanism. Equal rows keep their revision
 and do not generate duplicate audit entries. Conflicting values require explicit
 `--discard-legacy --yes`, which keeps database values or validated code defaults.
 Database changes commit before TOML cleanup. If cleanup fails, rerun the command
-to complete it safely. Startup refuses outstanding legacy business fields without
-importing them automatically. Template synchronization cannot discard these
-values or reintroduce database-backed settings.
+to complete it safely. Startup silently ignores any remaining legacy business
+fields in `config.toml` without importing them automatically; database options
+remain the source of truth. Template synchronization preserves unknown or
+unmigrated fields unless explicitly removed with `--remove` or `--prune`.
 
 Fresh databases are initialized and stamped. Existing databases must be explicitly
 upgraded to this release's Alembic head before startup. The unreleased feature

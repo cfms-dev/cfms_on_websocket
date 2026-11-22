@@ -12,7 +12,6 @@ from typing import Any
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
-from include.config.legacy_options import legacy_option_paths
 from include.config.validation import ConfigValidationError, parse_config_document
 from maintenance.operations.config.legacy import (
     LEGACY_PATHS,
@@ -148,10 +147,6 @@ def sync_config_template(
     )
     migrations, migrated_targets, warnings = apply_legacy_migrations(current, candidate)
 
-    if legacy_option_paths(candidate):
-        raise MaintenanceOperationError(
-            "Run maintain config migrate-options before synchronizing legacy business settings"
-        )
     rendered = tomlkit.dumps(candidate)
     try:
         parse_config_document(rendered)
@@ -212,12 +207,6 @@ def _load_documents(
         raise MaintenanceOperationError(
             f"Unable to read configuration documents: {exc}"
         ) from exc
-    for document in (current, template):
-        if legacy_option_paths(document):
-            raise MaintenanceOperationError(
-                "Database-backed settings must be moved out of config.toml and its template. "
-                "Run 'maintain config migrate-options' before synchronizing the template."
-            )
     return config_path, resolved_template_path, current, template, current_source
 
 

@@ -8,9 +8,8 @@ from typing import Any, Final
 
 from tomlkit import TOMLDocument, dumps, parse
 
-from include.config.legacy_options import legacy_option_paths
 from include.config.paths import EXECUTABLE_ABSPATH
-from include.config.validation import ConfigValidationError, parse_config_document
+from include.config.validation import parse_config_document
 
 __all__ = ["global_config"]
 
@@ -70,14 +69,6 @@ class GlobalConfig(Mapping[str, Any]):
 
         self._load()
 
-    def require_migrated_options(self) -> None:
-        if self._legacy_option_paths:
-            raise ConfigValidationError(
-                "Database-backed settings remain in config.toml: "
-                + ", ".join(self._legacy_option_paths)
-                + ". Run 'maintain config migrate-options' before starting the server."
-            )
-
     # -- loading ----------------------------------------------------------
 
     def _load(self):
@@ -86,7 +77,6 @@ class GlobalConfig(Mapping[str, Any]):
 
         with self._lock:
             self._data = new_data
-            self._legacy_option_paths = legacy_option_paths(new_data)
 
     # -- dict-like access (thread-safe reads) -----------------------------
 

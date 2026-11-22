@@ -341,7 +341,8 @@ settings can change atomically; unmentioned keys retain their revisions. Install
 disabled extension declarations are temporarily loaded for writes without
 handlers, providers, data preparation or startup.
 
-Legacy business fields require `maintain config migrate-options` before startup.
+Legacy business fields in `config.toml` are ignored at runtime; run
+`maintain config migrate-options` to move them to the database.
 See [database configuration](DATABASE_OPTIONS.md) for the complete migration list,
 effective times and upgrade sequence.
 

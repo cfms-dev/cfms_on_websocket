@@ -20,7 +20,7 @@ from include.config.validation import ConfigValidationError
 _POLICY_CONFIG = ConfigDict(
     strict=True,
     validate_default=True,
-    extra="forbid",
+    extra="ignore",
 )
 _PositiveInt = Annotated[int, Field(gt=0)]
 _Port = Annotated[int, Field(ge=1, le=65535)]

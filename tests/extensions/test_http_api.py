@@ -157,7 +157,6 @@ def test_http_extension_shutdown_does_not_reload_changed_config(
 @pytest.mark.parametrize(
     "section",
     [
-        {"unknown": True},
         {"ssl_certfile": "cert.pem"},
         {"ssl_keyfile": "key.pem"},
         {"cors_allowed_origins": ["*"]},
@@ -176,6 +175,15 @@ def test_invalid_http_configuration_is_rejected(http_api_modules, section):
         match=r"Invalid extensions\.http_api configuration",
     ):
         http_api_modules.config.HttpApiPolicy.from_config(config)
+
+
+@pytest.mark.unit
+def test_unknown_http_configuration_fields_are_ignored(http_api_modules):
+    config = {"extensions": {"http_api": {"unknown": True, "port": 5106}}}
+
+    policy = http_api_modules.config.HttpApiPolicy.from_config(config)
+
+    assert policy.port == 5106
 
 
 @pytest.mark.unit

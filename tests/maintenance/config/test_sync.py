@@ -192,22 +192,41 @@ def test_atomic_config_write_refuses_to_overwrite_same_timestamp_backup(
     assert config_path.read_bytes() == b"second\n"
 
 
-@pytest.mark.parametrize("legacy_path", ["password", "creation", "oidc"])
+@pytest.mark.parametrize("legacy_path", ["password", "creation"])
 def test_sync_preserves_legacy_business_values_for_explicit_migration(
     config_runtime, legacy_path
 ):
     current = tomlkit.parse(_SAMPLE_SOURCE)
     if legacy_path == "password":
         current["security"]["passwd_must_contain"] = [["A", "B"], "01"]
-    elif legacy_path == "creation":
-        current["document"] = {"upload": {"creation_rate_per_user": 50}}
     else:
-        current["sso"] = {"oidc": {"auto_provision": True}}
+        current["document"] = {"upload": {"creation_rate_per_user": 50}}
     src_dir = config_runtime(current)
     original = (src_dir / "config.toml").read_bytes()
     with pytest.raises(MaintenanceOperationError):
         sync_config_template()
     assert (src_dir / "config.toml").read_bytes() == original
+
+
+def test_sync_allows_and_preserves_unused_database_backed_settings(config_runtime):
+    current = tomlkit.parse(_SAMPLE_SOURCE)
+    current["server"]["name"] = "Legacy Server"
+    current["extensions"]["brute_force_lockdown"] = {"failure_threshold": 12}
+    current["sso"] = {"oidc": {"auto_provision": True}}
+    src_dir = config_runtime(current)
+
+    inspection = inspect_config_template()
+    assert "server.name" in inspection.unknown_paths
+    assert "extensions.brute_force_lockdown" in inspection.unknown_paths
+
+    result = sync_config_template()
+    synchronized = tomlkit.parse((src_dir / "config.toml").read_text(encoding="utf-8"))
+
+    assert synchronized["server"]["name"] == "Legacy Server"
+    assert synchronized["extensions"]["brute_force_lockdown"]["failure_threshold"] == 12
+    assert synchronized["extensions"]["oidc_sso"]["auto_provision"] is True
+    assert "server.name" in result.preserved_paths
+    assert "extensions.brute_force_lockdown" in result.preserved_paths
 
 
 def test_sync_preserves_other_settings_beside_legacy_oidc(config_runtime):

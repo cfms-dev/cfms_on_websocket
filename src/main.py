@@ -373,7 +373,6 @@ def _server_lifecycle(server: Server) -> Generator[None]:
 def _run_server():
     prepare_logger()
 
-    global_config.require_migrated_options()
     initialize_database_schema(engine, Base.metadata)
     global_config.initialize_secrets()
 

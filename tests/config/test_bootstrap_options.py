@@ -4,7 +4,6 @@ import pytest
 import tomlkit
 
 from include.config.settings import GlobalConfig
-from include.config.validation import ConfigValidationError
 
 _SAMPLE_PATH = Path(__file__).resolve().parents[2] / "src" / "config.toml.sample"
 
@@ -34,7 +33,7 @@ def test_bootstrap_loading_does_not_generate_or_write_secrets(bootstrap_config):
     assert not (config_path.parent / "app.db").exists()
 
 
-def test_legacy_options_are_available_for_maintenance_but_block_startup(
+def test_unused_legacy_options_are_silently_ignored_when_loading(
     bootstrap_config,
 ):
     config, config_path, document = bootstrap_config
@@ -46,8 +45,6 @@ def test_legacy_options_are_available_for_maintenance_but_block_startup(
 
     assert config["server"]["name"] == "Legacy Server"
     assert "brute_force_lockdown" in config["extensions"]
-    with pytest.raises(ConfigValidationError, match="migrate-options"):
-        config.require_migrated_options()
     assert "Legacy Server" in config_path.read_text(encoding="utf-8")
 
 
@@ -63,7 +60,6 @@ def test_file_edits_do_not_change_running_configuration(bootstrap_config, legacy
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
 
     assert config._data is previous
-    config.require_migrated_options()
 
 
 def test_explicit_secret_initialization_updates_loaded_bootstrap(bootstrap_config):

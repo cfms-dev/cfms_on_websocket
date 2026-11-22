@@ -82,15 +82,3 @@ def legacy_option_candidates(config: Mapping[str, Any]):
             )
             if values or keys is None:
                 yield path, namespace, owner, values
-
-
-def legacy_option_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(
-        location
-        for path, _, _, values in legacy_option_candidates(config)
-        for location in (
-            [f"{path}.{key}" for key in values]
-            if isinstance(values, Mapping) and values
-            else [path]
-        )
-    )
