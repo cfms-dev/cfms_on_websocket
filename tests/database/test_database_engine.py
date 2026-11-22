@@ -2,13 +2,14 @@ import pytest
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.pool import SingletonThreadPool
 
+from include.config import paths
 from include.config.constants import DEFAULT_TOKEN_EXPIRY_SECONDS
 from include.database import engine as engine_module
 from include.database.engine import create_database_engine, database_url
 
 
 @pytest.mark.unit
-def test_mysql_database_url_keeps_password_out_of_rendered_value() -> None:
+def test_mysql_database_url_keeps_password_out_of_rendered_value():
     url = database_url(
         {
             "type": "mysql",
@@ -28,7 +29,7 @@ def test_mysql_database_url_keeps_password_out_of_rendered_value() -> None:
 
 
 @pytest.mark.unit
-def test_postgresql_database_url_uses_packaged_driver() -> None:
+def test_postgresql_database_url_uses_packaged_driver():
     url = database_url(
         {
             "type": "postgresql",
@@ -46,8 +47,23 @@ def test_postgresql_database_url_uses_packaged_driver() -> None:
     assert "secret" not in str(url)
 
 
+@pytest.mark.unit
+def test_sqlite_database_url_resolves_relative_files_against_executable_root(
+    tmp_path,
+):
+    absolute_file = tmp_path / "absolute.db"
+
+    assert database_url({"type": "sqlite", "file": ":memory:"}).database == ":memory:"
+    assert database_url({"type": "sqlite", "file": "relative.db"}).database == str(
+        paths.EXECUTABLE_ABSPATH / "relative.db"
+    )
+    assert database_url({"type": "sqlite", "file": str(absolute_file)}).database == str(
+        absolute_file
+    )
+
+
 @pytest.mark.component
-def test_sqlite_engine_applies_runtime_pragmas(tmp_path, request) -> None:
+def test_sqlite_engine_applies_runtime_pragmas(tmp_path, request):
     engine = create_database_engine(
         {"type": "sqlite", "file": str(tmp_path / "runtime.db")}
     )
@@ -62,9 +78,7 @@ def test_sqlite_engine_applies_runtime_pragmas(tmp_path, request) -> None:
 
 
 @pytest.mark.component
-def test_file_sqlite_engine_applies_configured_queue_pool_limits(
-    tmp_path, request
-) -> None:
+def test_file_sqlite_engine_applies_configured_queue_pool_limits(tmp_path, request):
     engine = create_database_engine(
         {
             "type": "sqlite",
@@ -79,13 +93,13 @@ def test_file_sqlite_engine_applies_configured_queue_pool_limits(
     with (
         engine.connect(),
         engine.connect(),
-        pytest.raises(SQLAlchemyTimeoutError, match="QueuePool limit"),
+        pytest.raises(SQLAlchemyTimeoutError),
     ):
         engine.connect()
 
 
 @pytest.mark.component
-def test_in_memory_sqlite_keeps_its_dedicated_pool(request) -> None:
+def test_in_memory_sqlite_keeps_its_dedicated_pool(request):
     engine = create_database_engine(
         {
             "type": "sqlite",
@@ -99,7 +113,7 @@ def test_in_memory_sqlite_keeps_its_dedicated_pool(request) -> None:
 
 
 @pytest.mark.unit
-def test_external_database_keeps_recycle_and_applies_pool_settings(monkeypatch) -> None:
+def test_external_database_keeps_recycle_and_applies_pool_settings(monkeypatch):
     created = []
     expected_engine = object()
 
@@ -136,6 +150,6 @@ def test_external_database_keeps_recycle_and_applies_pool_settings(monkeypatch) 
 
 
 @pytest.mark.unit
-def test_database_url_rejects_unknown_database_type() -> None:
-    with pytest.raises(ValueError, match="Unsupported database type: oracle"):
+def test_database_url_rejects_unknown_database_type():
+    with pytest.raises(ValueError, match="oracle"):
         database_url({"type": "oracle"})

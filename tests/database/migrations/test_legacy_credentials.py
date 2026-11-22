@@ -57,18 +57,23 @@ def test_real_legacy_schema_preserves_credentials_and_references(sqlite_engine_f
         command.upgrade(config, "head")
         with sessionmaker(bind=connection)() as session:
             user = session.scalar(select(User).where(User.username == "alice"))
+            assert user is not None
             user_id = user.id
             assert user.secret_key == "s" * 64
             assert user.preference_dek_id == "legacy-key"
             password = session.get(UserPasswordCredential, user_id)
+            assert password is not None
             assert password.pass_hash == original_hash
             assert password.verify("LegacyPassword123!")
             assert password.passwd_last_modified == 0
             totp = session.get(UserTotpCredential, user_id)
+            assert totp is not None
             assert totp.enabled is True
             assert totp.secret == "JBSWY3DPEHPK3PXP"
             assert totp.backup_codes == "[]"
-            assert session.get(UserAuthPolicy, (user_id, "mfa")).chains == [
+            mfa_policy = session.get(UserAuthPolicy, (user_id, "mfa"))
+            assert mfa_policy is not None
+            assert mfa_policy.chains == [
                 [{"method": "totp", "credential_ids": [totp.credential_id]}]
             ]
         for name, column in (

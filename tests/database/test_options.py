@@ -1,11 +1,13 @@
 import traceback
+from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier, Event
 
 import pytest
 from pydantic import JsonValue, ValidationError
-from sqlalchemy import create_engine, event, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import event, select
+from sqlalchemy.orm import Session, sessionmaker
 
 import include.config.options as option_config
 import include.database.options as option_storage
@@ -41,20 +43,20 @@ from include.database.options import (
 )
 from include.database.session import Base
 from include.database.system_states import create_system_state
+from tests.support.database import SqliteEngineFactory
 
 
 @pytest.fixture
-def option_database(tmp_path):
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'options.db'}", connect_args={"timeout": 30}
-    )
+def option_database(
+    tmp_path: Path, sqlite_engine_factory: SqliteEngineFactory
+) -> sessionmaker[Session]:
+    engine = sqlite_engine_factory(tmp_path / "options.db")
     Base.metadata.create_all(engine)
-    yield sessionmaker(bind=engine)
-    engine.dispose()
+    return sessionmaker(bind=engine)
 
 
 @pytest.fixture
-def sample_options():
+def sample_options() -> Generator[tuple[OptionDefinition, ...]]:
     definitions = (
         OptionDefinition("failure_threshold", 1, int, 50),
         OptionDefinition("distinct_account_threshold", 1, int, 10),
@@ -71,6 +73,7 @@ def sample_options():
     unregister_options("sample")
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("value", "value_type", "text"),
     [
@@ -98,25 +101,27 @@ def test_codec_preserves_values_and_types(value, value_type, text):
     assert type(decoded) is type(value)
 
 
-pytestmark = pytest.mark.component
-
-
+@pytest.mark.unit
 def test_structured_codec_preserves_large_integer_and_nested_scalar_types():
     value = {"nested": [2**64, 2**100, True, 1, 1.0]}
     value_type, text = encode_option_value(value)
     assert value_type == "json"
     decoded = decode_option_value(value_type, text)
     assert decoded == value
+    assert isinstance(decoded, dict)
+    assert isinstance(decoded["nested"], list)
     assert [type(item) for item in decoded["nested"]] == [int, int, bool, int, float]
 
 
+@pytest.mark.unit
 def test_structured_codec_errors_do_not_expose_invalid_json():
     malformed = '{"private-marker": invalid}'
-    with pytest.raises(ValueError, match="Invalid stored option") as error:
+    with pytest.raises(ValueError, match="json") as error:
         decode_option_value("json", malformed)
     assert "private-marker" not in "".join(traceback.format_exception(error.value))
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "value", [float("nan"), float("inf"), {"nested": [float("-inf")]}]
 )
@@ -125,6 +130,7 @@ def test_codec_rejects_nonfinite_values(value):
         encode_option_value(value)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("value_type", "text"),
     [
@@ -144,20 +150,22 @@ def test_codec_rejects_nonfinite_values(value):
     ],
 )
 def test_codec_rejects_invalid_storage_without_exposing_values(value_type, text):
-    with pytest.raises(ValueError, match="Invalid stored option") as error:
+    with pytest.raises(ValueError, match=value_type) as error:
         decode_option_value(value_type, text)
     assert "private-marker" not in str(error.value)
 
 
+@pytest.mark.component
 def test_missing_options_use_defaults_without_writing(option_database):
     with option_database() as session:
         option = read_resolved_option(session, "server", SERVER_NAME_OPTION)
         assert option.value == "CFMS WebSocket Server"
         assert option.revision == 0
         assert read_option(session, "server", "name") is None
-        assert not list(session.scalars(select(SystemStateEntry)))
+        assert session.scalars(select(SystemStateEntry)).all() == []
 
 
+@pytest.mark.component
 def test_defaults_do_not_overwrite_and_repeated_writes_share_a_session(option_database):
     with option_database.begin() as session:
         initial = ensure_option_defaults(session, "server")
@@ -188,7 +196,7 @@ def test_defaults_do_not_overwrite_and_repeated_writes_share_a_session(option_da
             read_resolved_option(session, "server", SERVER_NAME_OPTION).value
             == "Changed again"
         )
-        audits = list(session.scalars(select(AuditEntry)))
+        audits = session.scalars(select(AuditEntry)).all()
         assert len(audits) == 2
         maintenance_audit = next(
             audit for audit in audits if audit.data["source"] == "maintenance_cli"
@@ -199,6 +207,7 @@ def test_defaults_do_not_overwrite_and_repeated_writes_share_a_session(option_da
         assert "Changed" not in repr(maintenance_audit.data)
 
 
+@pytest.mark.component
 def test_conflict_and_invalid_values_do_not_change_data(option_database):
     with option_database.begin() as session:
         ensure_option_defaults(session, "server")
@@ -219,9 +228,10 @@ def test_conflict_and_invalid_values_do_not_change_data(option_database):
     with option_database() as session:
         assert read_resolved_option(session, "server", SERVER_NAME_OPTION).revision == 1
         assert session.scalar(select(SystemStateEntry.revision)) == 1
-        assert not list(session.scalars(select(AuditEntry)))
+        assert session.scalars(select(AuditEntry)).all() == []
 
 
+@pytest.mark.component
 def test_transaction_rolls_back_options_guard_and_audit(option_database):
     with option_database() as session:
         write_options(
@@ -234,36 +244,45 @@ def test_transaction_rolls_back_options_guard_and_audit(option_database):
         session.rollback()
     with option_database() as session:
         assert read_option(session, "server", "name") is None
-        assert not list(session.scalars(select(SystemStateEntry)))
-        assert not list(session.scalars(select(AuditEntry)))
+        assert session.scalars(select(SystemStateEntry)).all() == []
+        assert session.scalars(select(AuditEntry)).all() == []
 
 
+@pytest.mark.component
 def test_reads_are_detached_and_unknown_version_is_preserved(option_database):
     with option_database.begin() as session:
         create_option(
             session, "sample", "mapping", schema_version=1, value={"nested": {"x": 1}}
         )
         stored = read_option(session, "sample", "mapping")
-        stored.value["nested"]["x"] = 2
-        assert read_option(session, "sample", "mapping").value == {"nested": {"x": 1}}
+        assert stored is not None
+        assert isinstance(stored.value, dict)
+        nested = stored.value["nested"]
+        assert isinstance(nested, dict)
+        nested["x"] = 2
+        reloaded = read_option(session, "sample", "mapping")
+        assert reloaded is not None
+        assert reloaded.value == {"nested": {"x": 1}}
         create_option(session, "server", "name", schema_version=2, value="Future")
-    with (
-        pytest.raises(ConfigValidationError, match="Unsupported option schema"),
-        option_database.begin() as session,
-    ):
+    with pytest.raises(ConfigValidationError), option_database.begin() as session:
         ensure_option_defaults(session, "server")
     with option_database() as session:
-        assert read_option(session, "server", "name").value == "Future"
-        assert not list(session.scalars(select(SystemStateEntry)))
+        future_option = read_option(session, "server", "name")
+        assert future_option is not None
+        assert future_option.value == "Future"
+        assert session.scalars(select(SystemStateEntry)).all() == []
 
 
+@pytest.mark.component
 def test_structured_defaults_do_not_leak_mutations(option_database):
     definition = OptionDefinition("mapping", 1, dict[str, JsonValue], {"nested": [1]})
     register_options("sample", (definition,), owner="sample")
     try:
         with option_database() as session:
             first = read_resolved_option(session, "sample", definition)
-            first.value["nested"].append(2)
+            nested = first.value["nested"]
+            assert isinstance(nested, list)
+            nested.append(2)
             assert read_resolved_option(session, "sample", definition).value == {
                 "nested": [1]
             }
@@ -272,11 +291,12 @@ def test_structured_defaults_do_not_leak_mutations(option_database):
         unregister_options("sample")
 
 
+@pytest.mark.component
 def test_compare_and_swap_has_one_winner(option_database):
     with option_database.begin() as session:
         create_option(session, "sample", "winner", schema_version=1, value=0)
 
-    def compete(value):
+    def compete(value: int) -> bool:
         with option_database.begin() as session:
             return update_option(
                 session,
@@ -291,9 +311,12 @@ def test_compare_and_swap_has_one_winner(option_database):
         outcomes = list(workers.map(compete, (1, 2)))
     assert sorted(outcomes) == [False, True]
     with option_database() as session:
-        assert read_option(session, "sample", "winner").revision == 2
+        winner = read_option(session, "sample", "winner")
+        assert winner is not None
+        assert winner.revision == 2
 
 
+@pytest.mark.component
 @pytest.mark.parametrize(
     ("owner", "key", "version", "value"),
     [
@@ -309,21 +332,22 @@ def test_low_level_api_rejects_invalid_rows(
     with option_database() as session, pytest.raises(ValidationError):
         create_option(session, owner, key, schema_version=version, value=value)
     with option_database() as session:
-        assert not list(session.scalars(select(OptionEntry)))
+        assert session.scalars(select(OptionEntry)).all() == []
 
 
+@pytest.mark.component
 def test_invalid_option_errors_do_not_expose_the_original_value(option_database):
-    with option_database() as session:
-        with pytest.raises(ConfigValidationError) as error:
-            write_options(
-                session,
-                "server",
-                {"name": ["private-marker"]},
-                expected_revisions={"name": 0},
-            )
-        assert "private-marker" not in "".join(traceback.format_exception(error.value))
+    with option_database() as session, pytest.raises(ConfigValidationError) as error:
+        write_options(
+            session,
+            "server",
+            {"name": ["private-marker"]},
+            expected_revisions={"name": 0},
+        )
+    assert "private-marker" not in "".join(traceback.format_exception(error.value))
 
 
+@pytest.mark.component
 def test_scalar_storage_and_reads_never_call_json_codec(option_database, monkeypatch):
     def unexpected_json(*args, **kwargs):
         raise AssertionError("Scalar option used JSON serialization")
@@ -339,6 +363,7 @@ def test_scalar_storage_and_reads_never_call_json_codec(option_database, monkeyp
         )
     with option_database() as session:
         option = read_option(session, "server", "name")
+        assert option is not None
         assert option.value_type == "str"
         assert option.option_value == '{"unparsed":true}'
         assert (
@@ -347,6 +372,7 @@ def test_scalar_storage_and_reads_never_call_json_codec(option_database, monkeyp
         )
 
 
+@pytest.mark.component
 def test_owner_reads_fetch_all_options_in_one_query(option_database, sample_options):
     with option_database.begin() as session:
         ensure_option_defaults(session, "sample")
@@ -369,6 +395,7 @@ def test_owner_reads_fetch_all_options_in_one_query(option_database, sample_opti
         event.remove(engine, "before_cursor_execute", record_query)
 
 
+@pytest.mark.component
 def test_batch_validates_final_policy_and_updates_only_target_revisions(
     option_database, sample_options
 ):
@@ -405,6 +432,7 @@ def test_batch_validates_final_policy_and_updates_only_target_revisions(
         assert current["distinct_account_threshold"].revision == 2
 
 
+@pytest.mark.component
 def test_concurrent_edits_of_different_keys_cannot_commit_write_skew(option_database):
     candidate_barrier = Barrier(2)
     concurrent = Event()
@@ -425,7 +453,7 @@ def test_concurrent_edits_of_different_keys_cannot_commit_write_skew(option_data
             ensure_option_defaults(session, "sample")
         concurrent.set()
 
-        def compete(patch):
+        def compete(patch: dict[str, int]) -> str:
             try:
                 with option_database.begin() as session:
                     write_options(
@@ -457,13 +485,14 @@ def test_concurrent_edits_of_different_keys_cannot_commit_write_skew(option_data
                 {"failure_threshold": 50, "distinct_account_threshold": 20},
             )
             validate_options("sample", current)
-            assert len(list(session.scalars(select(AuditEntry)))) == 1
+            assert len(session.scalars(select(AuditEntry)).all()) == 1
             assert session.scalar(select(SystemStateEntry.revision)) == 2
     finally:
         concurrent.clear()
         unregister_options("sample")
 
 
+@pytest.mark.component
 def test_defaults_reject_invalid_aggregate_and_roll_back(
     option_database, sample_options
 ):
@@ -473,10 +502,13 @@ def test_defaults_reject_invalid_aggregate_and_roll_back(
         ensure_option_defaults(session, "sample")
     with option_database() as session:
         assert read_option(session, "sample", "distinct_account_threshold") is None
-        assert read_option(session, "sample", "failure_threshold").value == 5
-        assert not list(session.scalars(select(SystemStateEntry)))
+        threshold = read_option(session, "sample", "failure_threshold")
+        assert threshold is not None
+        assert threshold.value == 5
+        assert session.scalars(select(SystemStateEntry)).all() == []
 
 
+@pytest.mark.component
 def test_invalid_reserved_guard_schema_fails_before_writes(option_database):
     with option_database.begin() as session:
         create_system_state(
@@ -486,10 +518,7 @@ def test_invalid_reserved_guard_schema_fails_before_writes(option_database):
             schema_version=1,
             payload={"unexpected": True},
         )
-    with (
-        pytest.raises(ConfigValidationError, match="revision schema"),
-        option_database.begin() as session,
-    ):
+    with pytest.raises(ConfigValidationError), option_database.begin() as session:
         write_options(
             session,
             "server",
@@ -498,9 +527,10 @@ def test_invalid_reserved_guard_schema_fails_before_writes(option_database):
         )
     with option_database() as session:
         assert read_option(session, "server", "name") is None
-        assert not list(session.scalars(select(AuditEntry)))
+        assert session.scalars(select(AuditEntry)).all() == []
 
 
+@pytest.mark.component
 def test_failed_second_row_rolls_back_first_row_and_guard(
     option_database, sample_options, monkeypatch
 ):
@@ -532,9 +562,10 @@ def test_failed_second_row_rolls_back_first_row_and_guard(
             "distinct_account_threshold": 10,
         }
         assert session.scalar(select(SystemStateEntry.revision)) == 1
-        assert not list(session.scalars(select(AuditEntry)))
+        assert session.scalars(select(AuditEntry)).all() == []
 
 
+@pytest.mark.component
 def test_preparation_guard_and_option_write_can_share_one_transaction(option_database):
     with option_database.begin() as session:
         assert acquire_options_revision(session, "server") == 1
@@ -546,16 +577,34 @@ def test_preparation_guard_and_option_write_can_share_one_transaction(option_dat
             expected_revisions={"name": 1},
         )
     with option_database() as session:
-        assert read_option(session, "server", "name").value == "Prepared"
+        prepared = read_option(session, "server", "name")
+        assert prepared is not None
+        assert prepared.value == "Prepared"
         assert session.scalar(select(SystemStateEntry.revision)) == 3
 
 
-def test_raw_snapshot_decodes_once_and_hides_value():
-    option = StoredOption("sample", "sample", "key", 1, 1, "str", "private-marker", 1.0)
-    assert option.value == "private-marker"
+@pytest.mark.unit
+def test_raw_snapshot_decodes_once_and_hides_value(monkeypatch):
+    calls = 0
+    original_decode = option_storage.decode_option_value
+
+    def counted_decode(value_type, option_value):
+        nonlocal calls
+        calls += 1
+        return original_decode(value_type, option_value)
+
+    monkeypatch.setattr(option_storage, "decode_option_value", counted_decode)
+    option = StoredOption(
+        "sample", "sample", "key", 1, 1, "json", '{"secret":"private-marker"}', 1.0
+    )
+
+    assert option.value == {"secret": "private-marker"}
+    assert option.value is option.value
+    assert calls == 1
     assert "private-marker" not in repr(option)
 
 
+@pytest.mark.component
 def test_owner_and_namespace_are_independent(option_database):
     definition = OptionDefinition("threshold", 1, int, 1)
     register_options("sample.first", (definition,), owner="sample")

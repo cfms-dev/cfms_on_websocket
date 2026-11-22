@@ -10,12 +10,13 @@ from alembic import command
 from include.database.session import Base
 
 pytestmark = pytest.mark.component
+_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "src/alembic.ini"
 
 
 def test_account_identity_migration_preserves_references(sqlite_engine_factory):
     engine = sqlite_engine_factory()
     Base.metadata.create_all(engine)
-    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    config = Config(_ALEMBIC_INI)
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "head")

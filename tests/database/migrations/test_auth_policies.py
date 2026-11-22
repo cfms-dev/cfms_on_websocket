@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,12 @@ from include.database.models.identity import User
 from include.database.session import Base
 from include.extensions.oidc_sso.credentials import bind_oidc_identity
 from include.extensions.oidc_sso.models import OIDCBase, UserOidcCredential
+from tests.support.database import SqliteEngineFactory
 
-pytestmark = pytest.mark.component
+_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "src/alembic.ini"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("dialect", [mysql.dialect(), postgresql.dialect()])
 def test_public_key_fingerprint_uses_an_indexable_fixed_length_type(dialect):
     column = UserAuthPublicKey.__table__.c.fingerprint
@@ -32,22 +35,25 @@ def test_public_key_fingerprint_uses_an_indexable_fixed_length_type(dialect):
 
 
 @pytest.fixture
-def auth_migration(sqlite_engine_factory):
+def auth_migration(
+    sqlite_engine_factory: SqliteEngineFactory,
+) -> Generator[tuple[sa.Connection, Config]]:
     engine = sqlite_engine_factory()
     Base.metadata.create_all(engine)
     OIDCBase.metadata.create_all(engine)
-    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    config = Config(_ALEMBIC_INI)
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "head")
         command.downgrade(config, "d252e662fc05")
-        yield engine, connection, config
+        yield connection, config
 
 
+@pytest.mark.component
 def test_auth_migration_backfills_without_changing_secrets_and_round_trips(
     auth_migration,
 ):
-    _engine, connection, config = auth_migration
+    connection, config = auth_migration
     user_id = uuid.uuid4()
     users = sa.table(
         "users",
@@ -92,17 +98,25 @@ def test_auth_migration_backfills_without_changing_secrets_and_round_trips(
     with sessionmaker(bind=connection)() as session:
         password = session.get(UserPasswordCredential, user_id)
         credential = session.get(UserTotpCredential, user_id)
+        login_policy = session.get(UserAuthPolicy, (user_id, "login"))
+        mfa_policy = session.get(UserAuthPolicy, (user_id, "mfa"))
+        escalation_policy = session.get(UserAuthPolicy, (user_id, "escalation"))
+        assert password is not None
+        assert credential is not None
+        assert login_policy is not None
+        assert mfa_policy is not None
+        assert escalation_policy is not None
         assert len(password.credential_id) == len(credential.credential_id) == 32
         assert password.pass_hash == "preserved"
         assert password.passwd_last_modified == 0.0
         assert credential.secret == "preserved-totp"
-        assert session.get(UserAuthPolicy, (user_id, "login")).chains == [
+        assert login_policy.chains == [
             [{"method": "password", "credential_ids": [password.credential_id]}]
         ]
-        assert session.get(UserAuthPolicy, (user_id, "mfa")).chains == [
+        assert mfa_policy.chains == [
             [{"method": "totp", "credential_ids": [credential.credential_id]}]
         ]
-        assert session.get(UserAuthPolicy, (user_id, "escalation")).chains == []
+        assert escalation_policy.chains == []
     command.downgrade(config, "d252e662fc05")
     assert "credential_id" not in {
         c["name"] for c in sa.inspect(connection).get_columns("user_passwords")
@@ -111,9 +125,10 @@ def test_auth_migration_backfills_without_changing_secrets_and_round_trips(
     assert "user_auth_policies" in sa.inspect(connection).get_table_names()
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("restriction", ["password-denied", "oidc"])
 def test_downgrade_cannot_discard_restrictions_or_bindings(auth_migration, restriction):
-    _engine, connection, config = auth_migration
+    connection, config = auth_migration
     command.upgrade(config, "head")
     with sessionmaker(bind=connection).begin() as session:
         user = User(username="restricted")
@@ -130,6 +145,7 @@ def test_downgrade_cannot_discard_restrictions_or_bindings(auth_migration, restr
     assert "user_auth_policies" in sa.inspect(connection).get_table_names()
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("dialect", [mysql.dialect(), postgresql.dialect()])
 def test_oidc_identity_unique_index_uses_supported_fixed_length_digest(dialect):
     ddl = str(CreateTable(UserOidcCredential.__table__).compile(dialect=dialect))
@@ -137,10 +153,11 @@ def test_oidc_identity_unique_index_uses_supported_fixed_length_digest(dialect):
     assert "BINARY(32)" in ddl if dialect.name == "mysql" else "BYTEA" in ddl
 
 
+@pytest.mark.component
 def test_historical_downgrade_accepts_core_only_schema(sqlite_engine_factory):
     engine = sqlite_engine_factory()
     Base.metadata.create_all(engine)
-    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    config = Config(_ALEMBIC_INI)
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "head")
@@ -148,6 +165,7 @@ def test_historical_downgrade_accepts_core_only_schema(sqlite_engine_factory):
         assert "user_auth_policies" not in sa.inspect(connection).get_table_names()
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("extension_table_present", [False, True])
 def test_autogeneration_excludes_extension_tables(
     sqlite_engine_factory, extension_table_present
@@ -156,7 +174,7 @@ def test_autogeneration_excludes_extension_tables(
     Base.metadata.create_all(engine)
     if extension_table_present:
         OIDCBase.metadata.create_all(engine)
-    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    config = Config(_ALEMBIC_INI)
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "head")

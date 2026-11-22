@@ -1,8 +1,10 @@
+from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from include.database.models.operations import SystemStateEntry
 from include.database.system_states import (
@@ -16,7 +18,9 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def mysql_state_sessions(mysql_pure_engine):
+def mysql_state_sessions(
+    mysql_pure_engine: Engine,
+) -> Generator[sessionmaker[Session]]:
     table = SystemStateEntry.__table__
     table.drop(mysql_pure_engine, checkfirst=True)
     try:

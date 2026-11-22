@@ -19,10 +19,11 @@ from include.domains.identity.tokens import Token
 from include.extensions.oidc_sso.credentials import bind_oidc_identity
 from include.extensions.oidc_sso.models import OIDCBase
 
-pytestmark = pytest.mark.component
 _EXISTING_SECRET = "existing-non-hex-key-longer-than-32-bytes"
+_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "src/alembic.ini"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("dialect", [mysql.dialect(), postgresql.dialect()])
 def test_user_secret_constraints_compile_for_supported_dialects(dialect):
     ddl = str(CreateTable(User.__table__).compile(dialect=dialect))
@@ -30,6 +31,7 @@ def test_user_secret_constraints_compile_for_supported_dialects(dialect):
     assert "ck_users_secret_key_nonempty CHECK (length(secret_key) > 0)" in ddl
 
 
+@pytest.mark.component
 @pytest.mark.parametrize("extension_tables", [False, True])
 def test_secret_migration_preserves_data_and_round_trips(
     sqlite_engine_factory, extension_tables
@@ -69,7 +71,7 @@ def test_secret_migration_preserves_data_and_round_trips(
     tables.pop("options")  # Absent at the historical secret-key migration boundary.
     if extension_tables:
         tables.update(extra.tables)
-    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    config = Config(_ALEMBIC_INI)
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "head")
@@ -101,9 +103,11 @@ def test_secret_migration_preserves_data_and_round_trips(
             .values(preference_dek_id="preference")
         )
         with sessionmaker(bind=connection).begin() as session:
+            kept_user = session.get(User, user_ids["kept"])
+            assert kept_user is not None
             bind_oidc_identity(
                 session,
-                session.get(User, user_ids["kept"]),
+                kept_user,
                 "https://issuer.example",
                 "subject",
             )

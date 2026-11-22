@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from include.database.models.operations import SystemStateEntry
 from include.database.system_states import (
@@ -11,21 +13,22 @@ from include.database.system_states import (
     read_system_state,
     update_system_state,
 )
+from tests.support.database import SqliteEngineFactory
 
 pytestmark = pytest.mark.component
 
 
 @pytest.fixture
-def state_database(tmp_path, sqlite_engine_factory):
+def state_database(
+    tmp_path: Path, sqlite_engine_factory: SqliteEngineFactory
+) -> sessionmaker[Session]:
     engine = sqlite_engine_factory(tmp_path / "system-states.db", timeout_seconds=30)
-
     SystemStateEntry.__table__.create(engine)
-    sessions = sessionmaker(bind=engine)
-    return sessions
+    return sessionmaker(bind=engine)
 
 
 @pytest.fixture
-def existing_state(state_database):
+def existing_state(state_database: sessionmaker[Session]) -> sessionmaker[Session]:
     with state_database.begin() as session:
         assert create_system_state(
             session,
@@ -37,7 +40,7 @@ def existing_state(state_database):
     return state_database
 
 
-def test_create_state_persists_first_revision(state_database) -> None:
+def test_create_state_persists_first_revision(state_database):
     with state_database.begin() as session:
         created = create_system_state(
             session,
@@ -55,7 +58,7 @@ def test_create_state_persists_first_revision(state_database) -> None:
         assert state.payload == {"position": 4}
 
 
-def test_duplicate_create_preserves_existing_state(existing_state) -> None:
+def test_duplicate_create_preserves_existing_state(existing_state):
     with existing_state.begin() as session:
         created = create_system_state(
             session,
@@ -84,7 +87,7 @@ def test_state_update_uses_revision_compare_and_swap(
     existing_state,
     expected_revision,
     applied,
-) -> None:
+):
     with existing_state.begin() as session:
         updated = update_system_state(
             session,
@@ -115,7 +118,7 @@ def test_state_delete_uses_revision_compare_and_swap(
     existing_state,
     expected_revision,
     applied,
-) -> None:
+):
     with existing_state.begin() as session:
         assert update_system_state(
             session,
@@ -145,7 +148,7 @@ def test_state_delete_uses_revision_compare_and_swap(
             assert state.payload == {"position": 6}
 
 
-def test_state_payloads_are_detached_copies(state_database) -> None:
+def test_state_payloads_are_detached_copies(state_database):
     payload = {"items": [{"value": 1}]}
     with state_database.begin() as session:
         assert create_system_state(
@@ -172,7 +175,7 @@ def test_state_payloads_are_detached_copies(state_database) -> None:
         assert second.payload == {"items": [{"value": 1}]}
 
 
-def test_state_write_participates_in_caller_transaction(state_database) -> None:
+def test_state_write_participates_in_caller_transaction(state_database):
     with state_database() as session:
         assert create_system_state(
             session,
@@ -187,9 +190,12 @@ def test_state_write_participates_in_caller_transaction(state_database) -> None:
         assert read_system_state(session, "sample_ext", "rolled_back") is None
 
 
-def test_concurrent_create_has_one_winner(state_database) -> None:
+def test_concurrent_create_has_one_winner(state_database):
+    ready = Barrier(4)
+
     def create(index: int) -> bool:
         with state_database.begin() as session:
+            ready.wait(timeout=10)
             return create_system_state(
                 session,
                 "sample_ext",
@@ -198,14 +204,16 @@ def test_concurrent_create_has_one_winner(state_database) -> None:
                 payload={"winner": index},
             )
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        results = list(executor.map(create, range(16)))
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(create, range(4)))
 
-    assert sum(results) == 1
+    assert results.count(True) == 1
+    assert results.count(False) == 3
     with state_database() as session:
         state = read_system_state(session, "sample_ext", "singleton")
         assert state is not None
-        assert state.payload["winner"] in range(16)
+        assert state.revision == 1
+        assert state.payload == {"winner": results.index(True)}
 
 
 @pytest.mark.parametrize(
@@ -217,7 +225,7 @@ def test_concurrent_create_has_one_winner(state_database) -> None:
         ("sample_ext", "x" * 129),
     ],
 )
-def test_state_identity_is_validated(state_database, owner, state_key) -> None:
+def test_state_identity_is_validated(state_database, owner, state_key):
     with state_database.begin() as session, pytest.raises(ValidationError):
         create_system_state(
             session,
@@ -238,7 +246,7 @@ def test_state_identity_is_validated(state_database, owner, state_key) -> None:
         {"value": (1, 2)},
     ],
 )
-def test_state_payload_must_be_a_json_object(state_database, payload) -> None:
+def test_state_payload_must_be_a_json_object(state_database, payload):
     with state_database.begin() as session, pytest.raises(ValidationError):
         create_system_state(
             session,

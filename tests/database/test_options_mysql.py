@@ -1,9 +1,10 @@
+from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import Engine, MetaData, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from include.config.options import (
     SERVER_NAME_OPTION,
@@ -32,7 +33,9 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def mysql_option_sessions(isolated_metadata, mysql_pure_engine):
+def mysql_option_sessions(
+    isolated_metadata: MetaData, mysql_pure_engine: Engine
+) -> Generator[sessionmaker[Session]]:
     tables = [
         isolated_metadata.tables[model.__tablename__]
         for model in (

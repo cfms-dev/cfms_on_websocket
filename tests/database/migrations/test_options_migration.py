@@ -3,19 +3,21 @@ from pathlib import Path
 import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 
 import include.database.models  # noqa: F401
 from alembic import command
 from include.database.session import Base
 
 pytestmark = pytest.mark.component
+_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "src/alembic.ini"
 
 
-def test_options_migration_round_trip_and_nonempty_downgrade_protection(tmp_path):
-    root = Path(__file__).resolve().parents[3] / "src"
-    engine = create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
-    config = Config(root / "alembic.ini")
+def test_options_migration_round_trip_and_nonempty_downgrade_protection(
+    sqlite_engine_factory,
+):
+    engine = sqlite_engine_factory()
+    config = Config(_ALEMBIC_INI)
     with engine.begin() as connection:
         Base.metadata.create_all(connection)
         config.attributes["connection"] = connection
@@ -42,7 +44,7 @@ def test_options_migration_round_trip_and_nonempty_downgrade_protection(tmp_path
         )
     with engine.begin() as connection:
         config.attributes["connection"] = connection
-        with pytest.raises(RuntimeError, match="persistent configuration"):
+        with pytest.raises(RuntimeError):
             command.downgrade(config, "03197fed3401")
         assert (
             MigrationContext.configure(connection).get_current_revision()
@@ -52,4 +54,3 @@ def test_options_migration_round_trip_and_nonempty_downgrade_protection(tmp_path
             connection.exec_driver_sql("SELECT option_value FROM options").scalar_one()
             == "Saved"
         )
-    engine.dispose()

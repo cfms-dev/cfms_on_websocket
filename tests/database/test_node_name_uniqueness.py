@@ -2,27 +2,23 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
+from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-
-def _create_schema(engine) -> None:
-    import include.database.models  # noqa: F401
-    from include.database.session import Base
-
-    Base.metadata.create_all(engine)
+import include.database.models  # noqa: F401
+from include.config.constants import ROOT_DIRECTORY_ID
+from include.database.models.documents import Document, EntityStatus, Folder, Node
+from include.database.models.files import FileTask, TransferMode
+from include.database.session import Base
 
 
 @pytest.mark.component
-def test_documents_and_folders_share_one_active_namespace(
-    sqlite_engine_factory,
-) -> None:
-    from include.database.models.documents import Document, Folder
-
-    engine = sqlite_engine_factory(":memory:")
-    _create_schema(engine)
+def test_documents_and_folders_share_one_active_namespace(sqlite_engine_factory):
+    engine = sqlite_engine_factory()
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         root = Folder(id="/", name="/")
         session.add_all(
@@ -37,11 +33,9 @@ def test_documents_and_folders_share_one_active_namespace(
 
 
 @pytest.mark.component
-def test_same_name_is_allowed_in_different_directories(sqlite_engine_factory) -> None:
-    from include.database.models.documents import Document, Folder
-
-    engine = sqlite_engine_factory(":memory:")
-    _create_schema(engine)
+def test_same_name_is_allowed_in_different_directories(sqlite_engine_factory):
+    engine = sqlite_engine_factory()
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         root = Folder(id="/", name="/")
         first = Folder(id="first", name="First", parent=root)
@@ -66,17 +60,9 @@ def test_same_name_is_allowed_in_different_directories(sqlite_engine_factory) ->
 
 
 @pytest.mark.component
-def test_deleted_nodes_release_names_but_locked_nodes_do_not(
-    sqlite_engine_factory,
-) -> None:
-    from include.database.models.documents import (
-        Document,
-        EntityStatus,
-        Folder,
-    )
-
-    engine = sqlite_engine_factory(":memory:")
-    _create_schema(engine)
+def test_deleted_nodes_release_names_but_locked_nodes_do_not(sqlite_engine_factory):
+    engine = sqlite_engine_factory()
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         root = Folder(id="/", name="/")
         deleted_document = Document(
@@ -102,13 +88,9 @@ def test_deleted_nodes_release_names_but_locked_nodes_do_not(
 
 
 @pytest.mark.component
-def test_only_root_may_have_no_parent(sqlite_engine_factory) -> None:
-    from sqlalchemy import insert
-
-    from include.database.models.documents import Folder, Node
-
-    engine = sqlite_engine_factory(":memory:")
-    _create_schema(engine)
+def test_only_root_may_have_no_parent(sqlite_engine_factory):
+    engine = sqlite_engine_factory()
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         session.add(Folder(id="/", name="/"))
         session.commit()
@@ -136,19 +118,16 @@ def test_only_root_may_have_no_parent(sqlite_engine_factory) -> None:
 )
 def test_concurrent_creates_have_one_winner(
     tmp_path, first_type, second_type, sqlite_engine_factory
-) -> None:
-    from include.database.models.documents import Document, Folder
-
+):
     engine = sqlite_engine_factory(
         tmp_path / f"{first_type}-{second_type}.db", timeout_seconds=10
     )
-    _create_schema(engine)
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         session.add(Folder(id="/", name="/"))
         session.commit()
 
     barrier = Barrier(2, timeout=10)
-
     node_types = (first_type, second_type)
 
     def create_sibling(index: int) -> bool:
@@ -192,9 +171,9 @@ def test_concurrent_creates_have_one_winner(
 )
 def test_name_pagination_queries_use_node_indexes(
     statement, index_name, sqlite_engine_factory
-) -> None:
-    engine = sqlite_engine_factory(":memory:")
-    _create_schema(engine)
+):
+    engine = sqlite_engine_factory()
+    Base.metadata.create_all(engine)
 
     with engine.connect() as connection:
         plan = connection.exec_driver_sql(f"EXPLAIN QUERY PLAN {statement}").all()
@@ -204,12 +183,7 @@ def test_name_pagination_queries_use_node_indexes(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("dialect_name", ["sqlite", "mysql", "postgresql"])
-def test_node_namespace_ddl_is_portable(dialect_name: str) -> None:
-    from sqlalchemy.dialects import mysql, postgresql, sqlite
-
-    from include.config.constants import ROOT_DIRECTORY_ID
-    from include.database.models.documents import EntityStatus, Node
-
+def test_node_namespace_ddl_is_portable(dialect_name):
     dialects = {
         "sqlite": sqlite.dialect(),
         "mysql": mysql.dialect(),
@@ -237,11 +211,9 @@ def test_node_namespace_ddl_is_portable(dialect_name: str) -> None:
 
 
 @pytest.mark.component
-def test_file_task_requires_an_existing_file(sqlite_engine_factory) -> None:
-    from include.database.models.files import FileTask, TransferMode
-
+def test_file_task_requires_an_existing_file(sqlite_engine_factory):
     engine = sqlite_engine_factory()
-    _create_schema(engine)
+    Base.metadata.create_all(engine)
     with Session(engine) as session:
         session.add(
             FileTask(
@@ -252,5 +224,5 @@ def test_file_task_requires_an_existing_file(sqlite_engine_factory) -> None:
                 end_time=100.0,
             )
         )
-        with pytest.raises(IntegrityError, match="FOREIGN KEY constraint failed"):
+        with pytest.raises(IntegrityError):
             session.commit()

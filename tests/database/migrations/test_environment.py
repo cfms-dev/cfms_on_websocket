@@ -9,7 +9,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.runtime.environment import EnvironmentContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 from tomlkit import dumps, parse
 
 import include.database.models  # noqa: F401
@@ -35,8 +35,8 @@ def test_migrations_preserve_existing_application_loggers(sqlite_engine_factory)
 @pytest.mark.integration
 @pytest.mark.parametrize("absolute_path", [False, True])
 def test_alembic_reads_config_toml_from_outside_server_root(
-    tmp_path, absolute_path
-) -> None:
+    tmp_path, absolute_path, sqlite_engine_factory
+):
     server_root = tmp_path / "server"
     server_root.mkdir()
     database_path = server_root / "configured.db"
@@ -72,21 +72,18 @@ def test_alembic_reads_config_toml_from_outside_server_root(
     assert database_path.is_file()
     assert not (tmp_path / "app.db").exists()
     assert not (server_root / "app.db").exists()
-    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    try:
-        with engine.connect() as connection:
-            assert MigrationContext.configure(connection).get_current_revision() == (
-                ScriptDirectory.from_config(
-                    Config(_SOURCE_ROOT / "alembic.ini")
-                ).get_current_head()
-            )
-    finally:
-        engine.dispose()
+    engine = sqlite_engine_factory(database_path)
+    with engine.connect() as connection:
+        assert MigrationContext.configure(connection).get_current_revision() == (
+            ScriptDirectory.from_config(
+                Config(_SOURCE_ROOT / "alembic.ini")
+            ).get_current_head()
+        )
 
 
 @pytest.mark.component
 @pytest.mark.parametrize("database_type", ["sqlite", "mysql", "postgresql"])
-def test_offline_migrations_use_configured_dialect(monkeypatch, database_type) -> None:
+def test_offline_migrations_use_configured_dialect(monkeypatch, database_type):
     monkeypatch.setattr(
         settings,
         "global_config",
@@ -127,7 +124,7 @@ def test_offline_migrations_use_configured_dialect(monkeypatch, database_type) -
 )
 def test_online_migrations_use_configured_external_database(
     monkeypatch, tmp_path, database_type, drivername, port
-) -> None:
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         settings,
@@ -171,48 +168,39 @@ def test_online_migrations_use_configured_external_database(
 
 @pytest.mark.component
 def test_online_migrations_round_trip_the_configured_database(
-    monkeypatch, tmp_path
-) -> None:
-    database = {"type": "sqlite", "file": str(tmp_path / "configured.db")}
+    monkeypatch, tmp_path, sqlite_engine_factory
+):
+    database_path = tmp_path / "configured.db"
+    database = {"type": "sqlite", "file": str(database_path)}
     monkeypatch.setattr(settings, "global_config", {"database": database})
     config = Config(_SOURCE_ROOT / "alembic.ini")
-    engine = engine_module.create_database_engine(database)
-    try:
-        Base.metadata.create_all(engine)
-        command.stamp(config, "head")
-        command.downgrade(config, "3c496a214a87")
-        assert "ix_documents_current_revision_id" not in {
-            index["name"] for index in inspect(engine).get_indexes("documents")
-        }
+    engine = sqlite_engine_factory(database_path)
+    Base.metadata.create_all(engine)
+    command.stamp(config, "head")
+    command.downgrade(config, "03197fed3401")
+    assert "options" not in inspect(engine).get_table_names()
 
-        command.upgrade(config, "head")
+    command.upgrade(config, "head")
 
-        assert "ix_documents_current_revision_id" in {
-            index["name"] for index in inspect(engine).get_indexes("documents")
-        }
-        with engine.connect() as connection:
-            assert MigrationContext.configure(connection).get_current_revision() == (
-                ScriptDirectory.from_config(config).get_current_head()
-            )
-    finally:
-        engine.dispose()
+    assert "options" in inspect(engine).get_table_names()
+    with engine.connect() as connection:
+        assert MigrationContext.configure(connection).get_current_revision() == (
+            ScriptDirectory.from_config(config).get_current_head()
+        )
 
 
 @pytest.mark.component
 def test_supplied_connection_takes_priority_over_runtime_configuration(
-    monkeypatch, tmp_path
-) -> None:
+    monkeypatch, sqlite_engine_factory
+):
     monkeypatch.setattr(settings, "global_config", {"database": {"type": "invalid"}})
     config = Config(_SOURCE_ROOT / "alembic.ini")
     scripts = ScriptDirectory.from_config(config)
-    engine = create_engine(f"sqlite:///{(tmp_path / 'supplied.db').as_posix()}")
-    try:
-        with engine.begin() as connection:
-            config.attributes["connection"] = connection
-            command.stamp(config, "head")
-            assert MigrationContext.configure(connection).get_current_revision() == (
-                scripts.get_current_head()
-            )
-            assert not connection.closed
-    finally:
-        engine.dispose()
+    engine = sqlite_engine_factory()
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.stamp(config, "head")
+        assert MigrationContext.configure(connection).get_current_revision() == (
+            scripts.get_current_head()
+        )
+        assert not connection.closed

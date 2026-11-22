@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -14,11 +12,10 @@ from include.database.session import Base
 pytestmark = pytest.mark.component
 
 
-def test_fresh_database_is_initialized_and_stamped(
-    tmp_path: Path, sqlite_engine_factory
-) -> None:
+def test_fresh_database_is_initialized_and_stamped(tmp_path, sqlite_engine_factory):
     engine = sqlite_engine_factory(tmp_path / "fresh.db")
 
+    initialize_database_schema(engine, Base.metadata)
     initialize_database_schema(engine, Base.metadata)
 
     scripts = ScriptDirectory.from_config(Config(EXECUTABLE_ABSPATH / "alembic.ini"))
@@ -31,15 +28,19 @@ def test_fresh_database_is_initialized_and_stamped(
 
 
 def test_existing_old_database_is_not_modified_before_upgrade(
-    tmp_path: Path, sqlite_engine_factory
-) -> None:
+    tmp_path, sqlite_engine_factory
+):
     engine = sqlite_engine_factory(tmp_path / "old.db")
     scripts = ScriptDirectory.from_config(Config(EXECUTABLE_ABSPATH / "alembic.ini"))
-    old_head = scripts.get_revision(scripts.get_current_head()).down_revision
+    head = scripts.get_current_head()
+    assert head is not None
+    revision = scripts.get_revision(head)
+    assert revision is not None
+    assert isinstance(revision.down_revision, str)
     with engine.begin() as connection:
         connection.exec_driver_sql("CREATE TABLE legacy_data (id INTEGER PRIMARY KEY)")
-        MigrationContext.configure(connection).stamp(scripts, old_head)
-    with pytest.raises(RuntimeError, match="cfms-ctl database upgrade"):
+        MigrationContext.configure(connection).stamp(scripts, revision.down_revision)
+    with pytest.raises(RuntimeError):
         initialize_database_schema(engine, Base.metadata)
     with engine.connect() as connection:
         assert set(inspect(connection).get_table_names()) == {

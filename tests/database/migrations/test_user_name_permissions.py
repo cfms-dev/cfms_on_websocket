@@ -16,6 +16,7 @@ from include.database.models.operations import AuditEntry
 from include.database.session import Base
 
 pytestmark = pytest.mark.component
+_ALEMBIC_INI = Path(__file__).resolve().parents[3] / "src/alembic.ini"
 
 
 def test_nickname_permission_migration_preserves_records_and_round_trips(
@@ -63,7 +64,7 @@ def test_nickname_permission_migration_preserves_records_and_round_trips(
         session.add(user)
 
     tables = (UserPermission.__table__, UserGroupPermission.__table__)
-    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    config = Config(_ALEMBIC_INI)
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "3815ba18197b")
@@ -103,7 +104,7 @@ def test_nickname_permission_migration_preserves_records_and_round_trips(
 def test_nickname_permission_migration_does_not_create_groups(sqlite_engine_factory):
     engine = sqlite_engine_factory()
     Base.metadata.create_all(engine)
-    config = Config(Path(__file__).resolve().parents[3] / "src/alembic.ini")
+    config = Config(_ALEMBIC_INI)
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "3815ba18197b")

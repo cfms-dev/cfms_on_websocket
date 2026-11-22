@@ -177,9 +177,9 @@ def test_sqlite_requires_unique_error_and_message_prefix(error_name, message):
 @pytest.mark.component
 @pytest.mark.parametrize("duplicate_column", ["username", "email"])
 def test_real_sqlite_unique_error_identifies_only_target_columns(
-    sqlite_engine_factory, tmp_path, duplicate_column
+    sqlite_engine_factory, duplicate_column
 ):
-    engine = sqlite_engine_factory(tmp_path / "constraints.db")
+    engine = sqlite_engine_factory()
     users = Table(
         "users",
         MetaData(),

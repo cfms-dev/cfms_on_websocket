@@ -1,14 +1,24 @@
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import Engine, event, select, update
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    sessionmaker,
+)
+from sqlalchemy.orm import (
+    Session as OrmSession,
+)
 
 from include.database.models.documents import Document, EntityStatus, Folder
 from include.database.session import Base, Session
+from tests.support.database import SqliteEngineFactory
 
 pytestmark = pytest.mark.component
 
@@ -25,7 +35,9 @@ class _Item(_LockingBase):
 
 
 @pytest.fixture
-def locking_database(sqlite_engine_factory, tmp_path):
+def locking_database(
+    sqlite_engine_factory: SqliteEngineFactory, tmp_path: Path
+) -> tuple[Engine, sessionmaker[OrmSession]]:
     database = sqlite_engine_factory(tmp_path / "locking.db", timeout_seconds=5)
     _LockingBase.metadata.create_all(database)
     factory = sessionmaker(bind=database)
