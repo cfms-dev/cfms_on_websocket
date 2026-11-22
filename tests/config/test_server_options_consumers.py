@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from include.config.options import write_options
@@ -10,12 +9,17 @@ from include.database.models.operations import AuditEntry, OptionEntry, SystemSt
 from include.database.session import Base
 from include.extensions.builtin import _extension as builtin
 from include.transport.request_handler import EmptyRequestDataModel
+from tests.support.database import sqlite_engine_factory
+
+__all__ = ["sqlite_engine_factory"]
 
 pytestmark = pytest.mark.component
 
 
-def test_server_info_reads_name_again_after_database_update(monkeypatch):
-    engine = create_engine("sqlite://")
+def test_server_info_reads_name_again_after_database_update(
+    monkeypatch, sqlite_engine_factory
+):
+    engine = sqlite_engine_factory()
     Base.metadata.create_all(
         engine,
         tables=[

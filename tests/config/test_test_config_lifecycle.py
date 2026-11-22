@@ -75,7 +75,7 @@ def test_runtime_is_ready_before_initial_conftest_import_and_cleaned_up(
     assert not runtime.parent.exists()
 
 
-def _copy_config_sample(src_dir):
+def _copy_config_sample(src_dir: Path) -> None:
     src_dir.mkdir()
     copyfile(SOURCE_ROOT / "config.toml.sample", src_dir / "config.toml.sample")
 
@@ -129,6 +129,7 @@ def test_managed_test_config_restores_existing_config_exactly(tmp_path):
     config_path.write_bytes(original)
 
     with managed_test_config(src_dir):
+        assert config_path.read_bytes() != original
         config_path.write_bytes(b"changed")
 
     assert config_path.read_bytes() == original
@@ -146,6 +147,7 @@ def test_managed_test_config_restores_existing_config_after_body_failure(tmp_pat
         pytest.raises(RuntimeError, match="test failure"),
         managed_test_config(src_dir),
     ):
+        assert config_path.read_bytes() != original
         config_path.write_bytes(b"changed")
         raise RuntimeError("test failure")
 

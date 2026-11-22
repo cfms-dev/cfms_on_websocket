@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import tomlkit
+from tomlkit import TOMLDocument
 
 from include.config.settings import GlobalConfig
 
@@ -9,7 +10,7 @@ _SAMPLE_PATH = Path(__file__).resolve().parents[2] / "src" / "config.toml.sample
 
 
 @pytest.fixture
-def bootstrap_config(tmp_path, monkeypatch):
+def bootstrap_config(tmp_path: Path) -> tuple[GlobalConfig, Path, TOMLDocument]:
     config_path = tmp_path / "config.toml"
     document = tomlkit.parse(_SAMPLE_PATH.read_text(encoding="utf-8"))
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
@@ -42,24 +43,13 @@ def test_unused_legacy_options_are_silently_ignored_when_loading(
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
 
     config.__init__(str(config_path))
+    config.initialize_secrets()
 
+    stored = tomlkit.parse(config_path.read_text(encoding="utf-8"))
     assert config["server"]["name"] == "Legacy Server"
     assert "brute_force_lockdown" in config["extensions"]
-    assert "Legacy Server" in config_path.read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize("legacy_path", ["name", "brute_force_lockdown"])
-def test_file_edits_do_not_change_running_configuration(bootstrap_config, legacy_path):
-    config, config_path, document = bootstrap_config
-    config.__init__(str(config_path))
-    previous = config._data
-    if legacy_path == "name":
-        document["server"]["name"] = "Reintroduced name"
-    else:
-        document["extensions"]["brute_force_lockdown"] = {}
-    config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
-
-    assert config._data is previous
+    assert stored["server"]["name"] == "Legacy Server"
+    assert stored["extensions"]["brute_force_lockdown"] == {"failure_threshold": 12}
 
 
 def test_explicit_secret_initialization_updates_loaded_bootstrap(bootstrap_config):

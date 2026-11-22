@@ -1,17 +1,15 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-pytestmark = pytest.mark.component
+import main as server_main
+
+pytestmark = pytest.mark.unit
 
 
 def test_old_database_is_rejected_before_secret_initialization_without_marker(
     monkeypatch, tmp_path
 ):
-    monkeypatch.chdir(Path(__file__).resolve().parents[2] / "src")
-    import main as server_main
-
     def reject_old_schema(*_args):
         raise RuntimeError("Run cfms-ctl database upgrade")
 

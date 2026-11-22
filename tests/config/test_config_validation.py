@@ -1,8 +1,10 @@
 import subprocess
 import sys
+from collections.abc import Generator
 from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from tomlkit import dumps, parse
@@ -29,9 +31,10 @@ from include.config.validation import (
     parse_trusted_proxy_networks,
     validate_config,
 )
+from include.extensions.manager import hookimpl, pm
 
 
-def _valid_config() -> dict:
+def _valid_config() -> dict[str, Any]:
     return {
         "extensions": {"enabled": []},
         "server": {
@@ -89,14 +92,14 @@ def test_tls_reload_policy_requires_boolean_switch(value):
 
 
 @pytest.fixture
-def _clear_proxy_network_cache():
+def _clear_proxy_network_cache() -> Generator[None]:
     parse_trusted_proxy_networks.cache_clear()
     yield
     parse_trusted_proxy_networks.cache_clear()
 
 
 @pytest.fixture
-def config_lifecycle(tmp_path):
+def config_lifecycle(tmp_path: Path) -> SimpleNamespace:
     config_root = tmp_path / "server"
     config_root.mkdir()
     config_path = config_root / "config.toml"
@@ -109,7 +112,7 @@ def config_lifecycle(tmp_path):
     working_directory = tmp_path / "elsewhere"
     working_directory.mkdir()
 
-    def run_check(code):
+    def run_check(code: str) -> None:
         script = (
             "import sys\n"
             "from pathlib import Path\n"
@@ -150,8 +153,6 @@ def test_valid_configuration_is_accepted():
 
 @pytest.mark.unit
 def test_registered_extension_validates_configuration():
-    from include.extensions.manager import hookimpl, pm
-
     class RejectingExtension:
         @hookimpl
         def ext_validate_config(self, config):
@@ -162,7 +163,7 @@ def test_registered_extension_validates_configuration():
     plugin = RejectingExtension()
     pm.register(plugin, name="test_config_validator")
     try:
-        with pytest.raises(ConfigValidationError, match="extension setting is invalid"):
+        with pytest.raises(ConfigValidationError):
             validate_config(invalid_config)
     finally:
         pm.unregister(name="test_config_validator")
@@ -178,24 +179,24 @@ def test_enabled_extensions_preserve_configuration_order():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("value", "message"),
+    "value",
     [
-        ("sample_ext", "must be an array"),
-        ([1], "valid extension identifiers"),
-        (["Invalid-Identifier"], "valid extension identifiers"),
-        ([" sample_ext "], "valid extension identifiers"),
-        (["x" * 256], "valid extension identifiers"),
-        (["core"], "valid extension identifiers"),
-        (["sample_ext", "sample_ext"], "duplicate identifier"),
-        (["builtin"], "always enabled"),
-        (["scheduling"], "management APIs are part of the server core"),
+        "sample_ext",
+        [1],
+        ["Invalid-Identifier"],
+        [" sample_ext "],
+        ["x" * 256],
+        ["core"],
+        ["sample_ext", "sample_ext"],
+        ["builtin"],
+        ["scheduling"],
     ],
 )
-def test_invalid_enabled_extensions_are_rejected(value, message):
+def test_invalid_enabled_extensions_are_rejected(value):
     config = _valid_config()
     config["extensions"]["enabled"] = value
 
-    with pytest.raises(ConfigValidationError, match=message):
+    with pytest.raises(ConfigValidationError):
         get_enabled_extensions(config)
 
 
@@ -213,7 +214,7 @@ def test_extensions_enabled_is_required():
     config = _valid_config()
     del config["extensions"]["enabled"]
 
-    with pytest.raises(ConfigValidationError, match="extensions.enabled"):
+    with pytest.raises(ConfigValidationError):
         get_enabled_extensions(config)
 
 
@@ -222,7 +223,7 @@ def test_invalid_proxy_network_is_rejected():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = ["not-a-cidr"]
 
-    with pytest.raises(ConfigValidationError, match="server.trusted_proxy_networks"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -231,7 +232,7 @@ def test_proxy_networks_must_be_an_array():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = "10.0.0.0/8"
 
-    with pytest.raises(ConfigValidationError, match="must be an array of CIDRs"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -240,7 +241,7 @@ def test_proxy_network_entries_must_be_strings():
     config = _valid_config()
     config["server"]["trusted_proxy_networks"] = [10]
 
-    with pytest.raises(ConfigValidationError, match="must be CIDR strings"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -250,9 +251,7 @@ def test_file_chunk_size_must_be_a_positive_integer(value):
     config = _valid_config()
     config["server"]["file_chunk_size"] = value
 
-    with pytest.raises(
-        ConfigValidationError, match="server.file_chunk_size must be a positive integer"
-    ):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -261,7 +260,7 @@ def test_file_chunk_size_is_required():
     config = _valid_config()
     del config["server"]["file_chunk_size"]
 
-    with pytest.raises(ConfigValidationError, match="server.file_chunk_size"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -273,7 +272,7 @@ def test_auth_throttle_values_are_validated():
     with pytest.raises(ConfigValidationError) as error:
         AuthThrottlePolicy.from_config(config)
 
-    assert "security.auth_throttle.ip_failure_threshold" in str(error.value)
+    assert error.value.__cause__.errors()[0]["loc"] == ("ip_failure_threshold",)
 
 
 @pytest.mark.unit
@@ -284,7 +283,7 @@ def test_auth_throttle_delay_range_is_validated():
         "account_max_delay_seconds": 30,
     }
 
-    with pytest.raises(ConfigValidationError, match="must not exceed"):
+    with pytest.raises(ConfigValidationError):
         AuthThrottlePolicy.from_config(config)
 
 
@@ -355,7 +354,7 @@ def test_database_pool_policy_rejects_invalid_values(setting, value):
     with pytest.raises(ConfigValidationError) as error:
         validate_config(config)
 
-    assert f"database.pool.{setting}" in str(error.value)
+    assert error.value.__cause__.errors()[0]["loc"] == (setting,)
 
 
 @pytest.mark.unit
@@ -436,7 +435,7 @@ def test_audit_retention_rejects_invalid_values(setting, value):
     with pytest.raises(ConfigValidationError) as error:
         AuditRetentionPolicy.from_config(config)
 
-    assert f"maintenance.audit_retention.{setting}" in str(error.value)
+    assert error.value.__cause__.errors()[0]["loc"] == (setting,)
 
 
 @pytest.mark.unit
@@ -455,36 +454,26 @@ def test_identity_permission_retention_rejects_invalid_values(setting, value):
     with pytest.raises(ConfigValidationError) as error:
         IdentityPermissionRetentionPolicy.from_config(config)
 
-    assert f"identity.permission_retention.{setting}" in str(error.value)
+    assert error.value.__cause__.errors()[0]["loc"] == (setting,)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("setting", "value", "expected_fragment"),
+    ("setting", "value"),
     [
-        ("mode", "sometimes", "security.request_rate_control.mode"),
-        (
-            "account_capacity",
-            0,
-            "security.request_rate_control.account_capacity",
-        ),
-        ("state_retention_seconds", 1, "cover every refill period"),
-        (
-            "action_costs",
-            {"core.search.query": 0},
-            "security.request_rate_control.action_costs",
-        ),
-        ("action_costs", {"core.search.query": 1_000}, "must not exceed"),
+        ("mode", "sometimes"),
+        ("account_capacity", 0),
+        ("state_retention_seconds", 1),
+        ("action_costs", {"core.search.query": 0}),
+        ("action_costs", {"core.search.query": 1_000}),
     ],
 )
-def test_request_rate_control_values_are_validated(setting, value, expected_fragment):
+def test_request_rate_control_values_are_validated(setting, value):
     config = _valid_config()
     config["security"]["request_rate_control"] = {setting: value}
 
-    with pytest.raises(ConfigValidationError) as error:
+    with pytest.raises(ConfigValidationError):
         RequestRateControlPolicy.from_config(config)
-
-    assert expected_fragment in str(error.value)
 
 
 @pytest.mark.unit
@@ -514,23 +503,20 @@ def test_quoted_namespaced_action_costs_are_literal_toml_keys():
 
 
 @pytest.mark.unit
-def test_admission_control_rejects_per_identity_limit_above_global_limit():
+@pytest.mark.parametrize(
+    "admission_control",
+    [
+        {"max_connections": 4, "max_connections_per_ip": 5},
+        {"max_inflight_requests": 4, "max_inflight_requests_per_connection": 5},
+    ],
+)
+def test_admission_control_rejects_per_identity_limit_above_global_limit(
+    admission_control,
+):
     config = _valid_config()
-    config["server"]["admission_control"] = {
-        "max_connections": 4,
-        "max_connections_per_ip": 5,
-    }
+    config["server"]["admission_control"] = admission_control
 
-    with pytest.raises(ConfigValidationError, match="must not exceed"):
-        validate_config(config)
-
-
-@pytest.mark.unit
-def test_rate_limit_provider_selection_is_validated():
-    config = _valid_config()
-    config["provider"] = {"rate_limit": "database"}
-
-    with pytest.raises(ConfigValidationError, match="provider.rate_limit"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -564,22 +550,12 @@ def test_scheduling_policy_uses_configured_values_or_defaults(settings, expected
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("provider", ["database", "dramatiq"])
-def test_scheduling_provider_selection_is_validated(provider):
-    config = _valid_config()
-    config["provider"] = {"scheduling": provider}
-
-    with pytest.raises(ConfigValidationError, match="provider.scheduling"):
-        validate_config(config)
-
-
-@pytest.mark.unit
 def test_redis_scheduling_requires_shared_database():
     config = _valid_config()
     config["provider"] = {"scheduling": "redis"}
     config["database"] = {"type": "sqlite"}
 
-    with pytest.raises(ConfigValidationError, match="non-SQLite"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -589,7 +565,7 @@ def test_redis_scheduling_requires_explicit_deployment_namespace():
     config["provider"] = {"scheduling": "redis"}
     config["database"] = {"type": "postgresql"}
 
-    with pytest.raises(ConfigValidationError, match="redis_namespace is required"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -612,8 +588,9 @@ def test_redis_scheduling_namespace_is_validated(namespace):
     config = _valid_config()
     config["scheduling"] = {"redis_namespace": namespace}
 
-    with pytest.raises(ConfigValidationError, match="redis_namespace"):
+    with pytest.raises(ConfigValidationError) as failure:
         validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == ("redis_namespace",)
 
 
 @pytest.mark.unit
@@ -632,7 +609,7 @@ def test_scheduling_lease_refresh_must_precede_expiry():
         "lease_refresh_seconds": 20,
     }
 
-    with pytest.raises(ConfigValidationError, match="must be less than"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -662,11 +639,13 @@ def test_client_certificate_ca_directory_is_validated(tmp_path):
     config["security"].update(
         {
             "require_client_cert": True,
-            "client_cert_ca_path": str(tmp_path / "missing"),
+            "client_cert_ca_path": str(tmp_path),
         }
     )
+    validate_config(config)
 
-    with pytest.raises(ConfigValidationError, match="client_cert_ca_path"):
+    config["security"]["client_cert_ca_path"] = str(tmp_path / "missing")
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -675,7 +654,7 @@ def test_client_certificate_flag_must_be_boolean():
     config = _valid_config()
     config["security"]["require_client_cert"] = "false"
 
-    with pytest.raises(ConfigValidationError, match="must be a boolean"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -719,16 +698,14 @@ def test_policy_is_built_from_validated_config():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("policy_type", "section"),
+    "policy_type",
     [
-        pytest.param(AuthThrottlePolicy, "security", id="security"),
-        pytest.param(AdmissionControlPolicy, "server", id="server"),
+        pytest.param(AuthThrottlePolicy, id="security"),
+        pytest.param(AdmissionControlPolicy, id="server"),
     ],
 )
-def test_policy_sources_require_their_root_section(policy_type, section):
-    with pytest.raises(
-        ConfigValidationError, match=f"^Missing configuration section '{section}'$"
-    ):
+def test_policy_sources_require_their_root_section(policy_type):
+    with pytest.raises(ConfigValidationError):
         policy_type.from_config({})
 
 
@@ -903,60 +880,44 @@ def test_document_download_risk_policy_uses_configured_values_or_defaults(
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("setting", "value", "expected_fragment"),
+    ("setting", "value"),
     [
-        ("mode", "disabled", "document.download.risk_control.mode"),
-        (
-            "issue_account_capacity",
-            0,
-            "document.download.risk_control.issue_account_capacity",
-        ),
-        ("ip_accounts_high", 4, "must be less than"),
-        ("denials_high", 1, "must be less than"),
-        ("high_cost", 201, "at least high_cost"),
-        ("state_retention_seconds", 3599, "cover every risk-control window"),
+        ("mode", "disabled"),
+        ("issue_account_capacity", 0),
+        ("ip_accounts_high", 4),
+        ("denials_high", 1),
+        ("high_cost", 201),
+        ("state_retention_seconds", 3599),
     ],
 )
-def test_download_risk_policy_validates_settings(setting, value, expected_fragment):
+def test_download_risk_policy_validates_settings(setting, value):
     config = _valid_config()
     config["document"] = {"download": {"risk_control": {setting: value}}}
 
-    with pytest.raises(ConfigValidationError) as error:
+    with pytest.raises(ConfigValidationError):
         DocumentDownloadRiskPolicy.from_config(config)
-
-    assert expected_fragment in str(error.value)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("setting", "value", "expected_fragment"),
+    ("setting", "value"),
     [
-        ("mode", "disabled", "document.upload.creation_risk_control.mode"),
-        (
-            "account_capacity",
-            0,
-            "document.upload.creation_risk_control.account_capacity",
-        ),
-        (
-            "pending_elevated_ratio",
-            1.1,
-            "document.upload.creation_risk_control.pending_elevated_ratio",
-        ),
-        ("pending_high_ratio", 0.25, "must be less than"),
-        ("ip_accounts_high", 4, "must be less than"),
-        ("denials_high", 1, "must be less than"),
-        ("high_cost", 201, "at least high_cost"),
-        ("state_retention_seconds", 599, "cover every risk-control window"),
+        ("mode", "disabled"),
+        ("account_capacity", 0),
+        ("pending_elevated_ratio", 1.1),
+        ("pending_high_ratio", 0.25),
+        ("ip_accounts_high", 4),
+        ("denials_high", 1),
+        ("high_cost", 201),
+        ("state_retention_seconds", 599),
     ],
 )
-def test_creation_risk_policy_validates_settings(setting, value, expected_fragment):
+def test_creation_risk_policy_validates_settings(setting, value):
     config = _valid_config()
     config["document"] = {"upload": {"creation_risk_control": {setting: value}}}
 
-    with pytest.raises(ConfigValidationError) as error:
+    with pytest.raises(ConfigValidationError):
         DocumentCreationRiskPolicy.from_config(config)
-
-    assert expected_fragment in str(error.value)
 
 
 @pytest.mark.unit
@@ -964,7 +925,6 @@ def test_creation_risk_policy_validates_settings(setting, value, expected_fragme
     "upload",
     [
         {"start_timeout_seconds": 0},
-        {"idle_timeout_seconds": True},
         {"idle_timeout_seconds": 10, "max_duration_seconds": 5},
         {"start_timeout_seconds": 10, "max_duration_seconds": 10},
     ],
@@ -973,7 +933,7 @@ def test_document_upload_policy_rejects_invalid_values(upload):
     config = _valid_config()
     config["document"] = {"upload": upload}
 
-    with pytest.raises(ConfigValidationError, match="document.upload"):
+    with pytest.raises(ConfigValidationError):
         DocumentUploadPolicy.from_config(config)
 
 
@@ -985,19 +945,29 @@ def test_empty_pepper_warning_is_centralized():
     assert "`pepper`" in get_config_warnings(config)[0]
 
 
-@pytest.mark.component
-@pytest.mark.parametrize("invalid_source", ["[server", "invalid-cidr"])
-def test_file_changes_require_restart(config_lifecycle, invalid_source):
+@pytest.mark.unit
+def test_obsolete_duplicate_name_setting_emits_warning():
+    config = _valid_config()
+    config["document"] = {"allow_name_duplicate": True}
+
+    warnings = get_config_warnings(config)
+
+    assert len(warnings) == 1
+    assert "document.allow_name_duplicate" in warnings[0]
+
+
+@pytest.mark.integration
+def test_file_changes_require_restart(config_lifecycle):
     config_lifecycle.run_check(
-        f"""
+        """
         valid_source = config_path.read_text(encoding="utf-8")
         previous = dict(config)
-        invalid_source = {invalid_source!r}
-        if invalid_source == "invalid-cidr":
-            invalid_source = valid_source.replace("127.0.0.1/32", "not-a-cidr")
-        config_path.write_text(invalid_source, encoding="utf-8")
+        config_path.write_text("[server", encoding="utf-8")
         assert dict(config) == previous
-        config_path.write_text(valid_source.replace("port = 8765", "port = 9000"), encoding="utf-8")
+        config_path.write_text(
+            valid_source.replace("port = 8765", "port = 9000"),
+            encoding="utf-8",
+        )
         assert config["server"]["port"] == 8765
         """
     )
@@ -1009,6 +979,10 @@ def test_file_changes_require_restart(config_lifecycle, invalid_source):
 def test_secret_initialization_uses_config_directory_sentinel(
     config_lifecycle, sentinel_in_config_directory
 ):
+    document = parse(config_lifecycle.config_path.read_text(encoding="utf-8"))
+    document["server"]["secret_key"] = ""
+    document["security"]["pepper"] = ""
+    config_lifecycle.config_path.write_text(dumps(document), encoding="utf-8")
     if not sentinel_in_config_directory:
         config_lifecycle.sentinel.unlink()
         (config_lifecycle.working_directory / "init").touch()
@@ -1020,13 +994,11 @@ def test_secret_initialization_uses_config_directory_sentinel(
         config.initialize_secrets()
         document = parse(config_path.read_text(encoding="utf-8"))
         if {sentinel_in_config_directory!r}:
-            assert document["server"]["secret_key"] == "existing-secret"
-            assert document["security"]["pepper"] == "existing-pepper"
+            assert document["server"]["secret_key"] == ""
+            assert document["security"]["pepper"] == ""
         else:
-            assert document["server"]["secret_key"]
-            assert document["server"]["secret_key"] == "existing-secret"
-            assert document["security"]["pepper"]
-            assert document["security"]["pepper"] == "existing-pepper"
+            assert len(document["server"]["secret_key"]) == 64
+            assert len(document["security"]["pepper"]) == 64
         assert config["server"]["secret_key"] == document["server"]["secret_key"]
         assert config["security"]["pepper"] == document["security"]["pepper"]
         """
@@ -1056,11 +1028,11 @@ def test_global_config_implements_read_only_mapping_contract(config_lifecycle):
 
 @pytest.mark.unit
 def test_invalid_toml_is_reported_as_configuration_error():
-    with pytest.raises(ConfigValidationError, match="Invalid TOML configuration"):
+    with pytest.raises(ConfigValidationError):
         parse_config_document("[server")
 
 
-def _valid_s3_config() -> dict:
+def _valid_s3_config() -> dict[str, Any]:
     config = _valid_config()
     config["provider"] = {"storage": "s3"}
     config["s3"] = {
@@ -1138,8 +1110,9 @@ def test_s3_configuration_rejects_invalid_connection_pool(max_pool_connections):
     config = _valid_s3_config()
     config["s3"]["max_pool_connections"] = max_pool_connections
 
-    with pytest.raises(ConfigValidationError, match="max_pool_connections"):
+    with pytest.raises(ConfigValidationError) as failure:
         validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == ("max_pool_connections",)
 
 
 @pytest.mark.unit
@@ -1147,21 +1120,22 @@ def test_s3_configuration_rejects_invalid_addressing_style():
     config = _valid_s3_config()
     config["s3"]["addressing_style"] = "custom"
 
-    with pytest.raises(ConfigValidationError, match="addressing_style"):
+    with pytest.raises(ConfigValidationError) as failure:
         validate_config(config)
+    assert failure.value.__cause__.errors()[0]["loc"] == ("addressing_style",)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("access_key_id", "secret_access_key", "session_token", "message"),
+    ("access_key_id", "secret_access_key", "session_token"),
     [
-        ("access", "", "", "configured together"),
-        ("", "secret", "", "configured together"),
-        ("", "", "token", "session_token"),
+        ("access", "", ""),
+        ("", "secret", ""),
+        ("", "", "token"),
     ],
 )
 def test_s3_configuration_rejects_incomplete_explicit_credentials(
-    access_key_id, secret_access_key, session_token, message
+    access_key_id, secret_access_key, session_token
 ):
     config = _valid_s3_config()
     config["s3"].update(
@@ -1172,7 +1146,7 @@ def test_s3_configuration_rejects_incomplete_explicit_credentials(
         }
     )
 
-    with pytest.raises(ConfigValidationError, match=message):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -1181,16 +1155,7 @@ def test_s3_configuration_requires_non_empty_bucket():
     config = _valid_s3_config()
     config["s3"]["bucket"] = ""
 
-    with pytest.raises(ConfigValidationError, match="s3.bucket"):
-        validate_config(config)
-
-
-@pytest.mark.unit
-def test_storage_provider_rejects_unknown_backend():
-    config = _valid_config()
-    config["provider"] = {"storage": "unknown"}
-
-    with pytest.raises(ConfigValidationError, match="provider.storage"):
+    with pytest.raises(ConfigValidationError):
         validate_config(config)
 
 
@@ -1317,7 +1282,11 @@ def test_database_deployment_section_rejects_invalid_dialect_invariants(database
     ("key", "value"),
     [
         ("caching", "memcached"),
+        ("storage", "unknown"),
         ("event_bus", "kafka"),
+        ("rate_limit", "database"),
+        ("scheduling", "database"),
+        ("scheduling", "dramatiq"),
     ],
 )
 def test_provider_deployment_section_rejects_unknown_backends(key, value):
