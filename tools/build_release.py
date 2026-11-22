@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
 ROOT_FILES = (
+    "LICENSE",
     "CHANGELOG.md",
     "README.md",
     "SECURITY.md",
@@ -19,7 +20,6 @@ ROOT_FILES = (
     "uv.lock",
 )
 RUNTIME_FILES = (
-    "src/LICENSE",
     "src/alembic.ini",
     "src/config.toml.sample",
     "src/content/hello",
