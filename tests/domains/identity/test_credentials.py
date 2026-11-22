@@ -46,16 +46,15 @@ def credential_sessions(sqlite_engine_factory):
 def test_totp_credential_accepts_only_the_adjacent_time_windows(
     credential_sessions, totp_time, offset, allowed
 ):
+    secret = pyotp.random_base32()
     with credential_sessions.begin() as session:
         user = User(username="totp-window")
-        credential = UserTotpCredential(
-            user=user, secret="JBSWY3DPEHPK3PXP", enabled=True
-        )
+        credential = UserTotpCredential(user=user, secret=secret, enabled=True)
         session.add(credential)
         session.flush()
         user_id = user.id
 
-    token = pyotp.TOTP("JBSWY3DPEHPK3PXP").at(totp_time + dt.timedelta(seconds=offset))
+    token = pyotp.TOTP(secret).at(totp_time + dt.timedelta(seconds=offset))
     with credential_sessions() as session:
         credential = session.get(UserTotpCredential, user_id)
         assert credential.verify(token) is allowed
