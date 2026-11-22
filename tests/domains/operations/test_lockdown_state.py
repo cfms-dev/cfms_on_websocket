@@ -894,9 +894,11 @@ def _run_lockdown_process(runtime_dir: Path, action: str) -> dict:
 import sys
 import orjson
 from pathlib import Path
-from maintenance.runtime import enter_server_root
+from include.config import paths
 
-enter_server_root(Path.cwd())
+server_root = Path.cwd().resolve()
+paths.EXECUTABLE_ABSPATH = server_root
+paths.EXTENSION_ROOT = server_root / "include" / "extensions"
 import include.database.models
 from include.config.settings import global_config
 from include.database.session import Base, engine

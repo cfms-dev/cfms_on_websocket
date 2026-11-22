@@ -33,7 +33,6 @@ On the 2026-09-10 tree, active locations included:
 - `pyproject.toml` and `uv.lock`;
 - `.github/workflows/test.yml`, `performance.yml`, and `release.yml`;
 - `tests/project/test_python_version_policy.py`;
-- Python-version fixtures in `tests/maintenance/test_deployment.py`;
 - `README.md`, `tests/README.md`, and `.github/workflows/README.md`;
 - `AGENTS.md` and the `maintain-cfms-python` skill/reference;
 - the ignored, untracked local `.python-version`.

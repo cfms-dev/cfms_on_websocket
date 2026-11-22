@@ -70,7 +70,7 @@ UUIDs. Username updates record the original `data.target_username` and requested
 Stop the server and back up its database before running:
 
 ```console
-uv run --locked maintain database upgrade
+cfms-ctl database upgrade
 ```
 
 Revision `03197fed3401` renames `rename_user` to `set_nickname` and
@@ -88,8 +88,8 @@ can preview and apply the new defaults using the
 [existing synchronization command](IDENTITY_PERMISSIONS_API.md#restoring-default-group-permission-records):
 
 ```console
-uv run --locked maintain permission sync-defaults --dry-run
-uv run --locked maintain permission sync-defaults --group user --group sysop --yes
+cfms-ctl permission sync-defaults --dry-run
+cfms-ctl permission sync-defaults --group user --group sysop --yes
 ```
 
 Stop every server sharing the database before applying synchronization. Existing

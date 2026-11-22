@@ -41,8 +41,8 @@ whose `end_time` is `null`, including permanent revocations.
 Operators can preview or run the same cleanup policy explicitly:
 
 ```console
-maintain permission purge-expired --dry-run
-maintain permission purge-expired --yes
+cfms-ctl permission purge-expired --dry-run
+cfms-ctl permission purge-expired --yes
 ```
 
 Expired-entry cleanup always runs as the system-managed
@@ -57,8 +57,8 @@ and `sysop` with database records. Preview all default groups, or select one or
 more groups with repeatable `--group` options:
 
 ```console
-uv run --locked maintain permission sync-defaults --dry-run
-uv run --locked maintain permission sync-defaults --group sysop --dry-run
+cfms-ctl permission sync-defaults --dry-run
+cfms-ctl permission sync-defaults --group sysop --dry-run
 ```
 
 The report lists each selected group's default count, recorded count, and missing
@@ -70,8 +70,8 @@ Unknown group names are rejected.
 Stop **all server instances sharing the database** before applying changes:
 
 ```console
-uv run --locked maintain permission sync-defaults
-uv run --locked maintain permission sync-defaults --group user --group sysop --yes
+cfms-ctl permission sync-defaults
+cfms-ctl permission sync-defaults --group user --group sysop --yes
 ```
 
 Without `--yes`, the command previews the differences and asks for confirmation.

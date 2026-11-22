@@ -2,20 +2,15 @@
 
 import importlib
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from pathlib import Path
-from typing import Any
 
 from sqlalchemy import Connection, MetaData, Table, UniqueConstraint, inspect
 
 from include.config import paths
 from include.extensions.manager import discover_extensions
-
-type DataRow = dict[str, Any]
-type RowCodec = Callable[[DataRow], DataRow]
-type RowValidator = Callable[[Mapping[str, Any]], None]
 
 
 class ExtensionDataError(ValueError):
@@ -26,10 +21,6 @@ class ExtensionDataError(ValueError):
 class ExtensionDataTable:
     owner: str
     table: Table
-    backup_component: str | None = None
-    encode_row: RowCodec | None = None
-    decode_row: RowCodec | None = None
-    validate_row: RowValidator | None = None
 
 
 def load_extension_data(
@@ -66,14 +57,6 @@ def load_extension_data(
                     raise ExtensionDataError(
                         f"Duplicate data table ownership: {name!r}"
                     )
-                if entry.backup_component not in {
-                    None,
-                    "accounts",
-                    "documents",
-                    "audit",
-                    "banned_subnets",
-                }:
-                    raise ExtensionDataError(f"Invalid backup component for {name!r}")
                 declarations[name] = entry
         except ExtensionDataError:
             raise
@@ -121,10 +104,8 @@ def prepare_extension_tables(
     connection: Connection,
     metadata: MetaData,
     table_names: set[str],
-    *,
-    create: bool = True,
 ) -> None:
-    """Adopt compatible existing tables and optionally create missing ones."""
+    """Adopt compatible existing tables and create missing ones."""
     inspector = inspect(connection)
     existing = set(inspector.get_table_names())
     for name in table_names & existing:
@@ -186,7 +167,6 @@ def prepare_extension_tables(
         )
         if not compatible:
             raise ExtensionDataError(f"Incompatible extension table schema: {name!r}")
-    if create:
-        metadata.create_all(
-            connection, tables=[metadata.tables[name] for name in table_names]
-        )
+    metadata.create_all(
+        connection, tables=[metadata.tables[name] for name in table_names]
+    )

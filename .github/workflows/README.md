@@ -26,7 +26,7 @@ lightweight required job and conditionally skip only the expensive test jobs.
 4. Collects tests against an isolated temporary server tree
 5. Runs unit, component, and integration in parallel jobs, once each in shuffled
    order, with strict markers and an aggregate `test (3.15)` success gate
-6. Runs focused SQLite-to-MySQL and MySQL-to-SQLite migration tests against
+6. Runs focused MySQL database and domain integration tests against
    MySQL 8.4 and 9.7 LTS services
 7. Verifies rate-limit Lua and scheduler lease behavior against Redis 8.2.10
 8. Runs PostgreSQL scheduler concurrency/atomic initialization and platform smoke checks
@@ -41,7 +41,7 @@ lightweight required job and conditionally skip only the expensive test jobs.
   process startup and collection. Pytest's 120-second watchdog includes
   individual-case setup and teardown
 - **Python version**: Tests run on Python 3.15
-- **Database integration**: Cross-engine migration tests run on MySQL 8.4 and
+- **Database integration**: MySQL integration tests run on MySQL 8.4 and
   9.7 LTS
 - **Artifacts**: JUnit XML, test cache and server logs are uploaded for debugging;
   `--durations=25` records the slowest cases in the job output
@@ -64,7 +64,7 @@ configuration, an unavailable service, zero selected tests, and unexpected skips
 therefore fail those channels instead of yielding a green optional-backend run.
 MySQL/PostgreSQL use `-k mysql` / `-k postgresql` to select only that backend's
 parameters in the shared scheduler modules. The MySQL job also retains upload
-cleanup, rate limits, and cross-engine migration cases on both MySQL versions.
+cleanup, rate limits, options, and comment integration cases on both MySQL versions.
 System-state creation and scheduled lockdown windows also run with the pure
 Python MySQL connector to cover INSERT row counts after cursor closure.
 Backend XML is uploaded even on failure; normal local integration runs can still
@@ -145,7 +145,7 @@ Release assets:
 - `cfms-on-websocket-X.Y.Z.tar.gz`
 - `SHA256SUMS.txt`
 
-The archives contain the server, maintenance commands, migrations, configuration
+The archives contain the server, migrations, configuration
 sample, initialization content, and checked-out client CA certificates. Tests,
 development tools, repository metadata, local databases, configuration, logs,
 credentials, and uploaded content are excluded.

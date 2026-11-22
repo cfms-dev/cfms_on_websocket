@@ -1,7 +1,7 @@
 # CFMS test suite
 
 The suite checks the public WebSocket protocol, domain behavior, persistence,
-providers, maintenance commands, deployment artifacts, and the test tools.
+providers, deployment artifacts, and the test tools.
 Python 3.15 and the locked development dependencies are required:
 
 ```powershell
@@ -18,8 +18,8 @@ cases that depend on the integration server through their fixture dependencies.
 | Marker | Behavior under test | Examples |
 | --- | --- | --- |
 | `unit` | Pure decisions, serialization, and collaborators replaced at existing boundaries | Trigger calculations, in-memory rate limits, fake Redis/S3 behavior |
-| `component` | Real in-process SQLite, filesystem, archives, or handlers with disposable resources | Visibility queries, persisted state transitions, backup restoration, local storage |
-| `integration` | Real subprocesses, WebSocket/HTTP connections, or external backends | Protocol authentication, maintenance CLI, server lifecycle, Redis Lua, MySQL/PostgreSQL concurrency |
+| `component` | Real in-process SQLite, filesystem, archives, or handlers with disposable resources | Visibility queries, persisted state transitions, extension loading, local storage |
+| `integration` | Real subprocesses, WebSocket/HTTP connections, or external backends | Protocol authentication, server lifecycle, Redis Lua, MySQL/PostgreSQL concurrency |
 
 `slow` is an additional cost annotation, not a layer. `stress` identifies actual
 load execution. The ordinary tests under `tests/stress/` check the load tools;
@@ -174,11 +174,7 @@ records the affected behaviors without maintaining a second assertion inventory.
 | Memory rate-limit capacity race and provider lifecycle | `providers/test_request_rate_control.py`, local/fake provider tests | unit |
 | Real Redis script atomicity, expiry, time and lease ownership | `providers/test_redis_lua_integration.py` | integration |
 | Local storage effects, fake S3 behavior, real S3 compatibility | `providers/test_storage_providers.py`, `test_s3_compatibility_integration.py` | component / unit / integration respectively |
-| Backup integrity, round trips and migration contents | `maintenance/backup/`, `maintenance/database/` | component; real MySQL cases are integration |
-| Shared migration setup formerly imported from another test | `maintenance/database/support.py`, consumed by migration/MySQL tests | support only; not a collected test module |
-| Operator-facing maintenance CLI behavior | `maintenance/cli/` | integration; fake console cases are unit |
-| Deployment/extension filesystem safety and recovery | `maintenance/deployment/`, `maintenance/extensions/` | component |
-| Release artifacts, source boundaries and CI channel selection | `project/` | component plus control unit cases; subprocess probes are integration |
+| Release artifacts, runtime locks, source boundaries and CI channel selection | `project/` | component plus control unit cases; subprocess probes are integration |
 | Query-plan tooling | `tools/test_explain_query_plans.py` | component; index declaration case is unit |
 | Load-tool metrics/pacing and profile/account-file parsing | `stress/test_ws_load.py`, `test_performance_orchestration.py` | unit / component; no actual stress run |
 

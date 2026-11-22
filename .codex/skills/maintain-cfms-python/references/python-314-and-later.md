@@ -75,8 +75,7 @@ def ext_before_file_upload_finalize(
     id: str,
     path: str,
     sha256: str,
-) -> None:
-    ...
+) -> None: ...
 ```
 
 Do not quote all annotations globally to solve this local framework boundary.

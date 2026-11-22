@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, cast
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
 lazy from sqlalchemy.orm import Session
 
@@ -16,31 +16,6 @@ class PermissionEntryCounts:
     @property
     def total(self) -> int:
         return self.user_entries + self.group_entries
-
-
-def _count_expired_entries(
-    session: Session,
-    model: type[UserPermission | UserGroupPermission],
-    cutoff: float,
-) -> int:
-    return int(
-        session.scalar(
-            select(func.count())
-            .select_from(model)
-            .where(model.end_time.is_not(None), model.end_time < cutoff)
-        )
-        or 0
-    )
-
-
-def count_expired_permission_entries(
-    session: Session,
-    cutoff: float,
-) -> PermissionEntryCounts:
-    return PermissionEntryCounts(
-        user_entries=_count_expired_entries(session, UserPermission, cutoff),
-        group_entries=_count_expired_entries(session, UserGroupPermission, cutoff),
-    )
 
 
 def _purge_expired_entry_batch(

@@ -59,7 +59,7 @@ The `security.request_rate_control/action_costs` database option is a JSON map:
 {"core.search.query": 4, "core.document.upload": 8}
 ```
 
-Migrate legacy TOML policy fields using `maintain config migrate-options`, then
+Manage business policy options in the database using `cfms-ctl config options`, then
 manage the option with the maintenance CLI and its current revision.
 
 Rename existing overrides explicitly. Old keys are unknown actions and continue to

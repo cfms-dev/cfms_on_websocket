@@ -58,7 +58,6 @@ def _create_minimal_project(project_root: Path, version: str = "1.2.3") -> None:
             'authors = ["Test"]\n'
             'license = "Apache-2.0"\n'
         ),
-        "src/maintenance/__init__.py": "",
         "src/content/ssl/client/8a5a09f0.0": "certificate\n",
         "src/content/ssl/client/.git": "gitdir: elsewhere\n",
     }
@@ -97,9 +96,8 @@ def test_release_archives_contain_only_deployable_files(tmp_path):
         "src/config.toml.sample",
         "src/content/hello",
         "src/include/extensions/builtin/manifest.toml",
-        "src/maintenance/cli/__init__.py",
-        "src/maintenance/cli/app.py",
     } <= relative_members
+    assert not any(member.startswith("src/maintenance/") for member in relative_members)
     assert any(
         member.startswith("src/content/ssl/client/")
         and re.fullmatch(r"[0-9a-fA-F]{8}\.[0-9]+", PurePosixPath(member).name)

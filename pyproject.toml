@@ -22,13 +22,8 @@ dependencies = [
     "pluggy>=1.6.0",
     "loguru>=0.7.3",
     "watchdog>=6.0.0",
-    "rich>=15.0.0",
-    "typer>=0.26.7",
     "pydantic>=2.13.4",
 ]
-
-[project.scripts]
-maintain = "maintenance.cli:app"
 
 [project.optional-dependencies]
 cluster = [
@@ -75,7 +70,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["include*", "maintenance*"]
+include = ["include*"]
 
 [tool.pyright]
 include = ["src/include"]
@@ -105,11 +100,10 @@ extend-select = ["I", "UP", "PT"]
 "src/include/database/models/*" = ["E711", "E712", "UP037"] # allow `== None`, `== True`, and quoted ORM forward references
 "src/include/extensions/*" = ["UP037"] # pluggy evaluates hook annotations at runtime
 "src/include/extensions/manager.py" = ["UP037"] # pluggy evaluates hook annotations at runtime
-"src/maintenance/operations/backups.py" = ["UP037"] # imported lazily to avoid loading backup providers
 "tests/*" = ["E722", "F841"]  # allow bare `except:` in tests for better error detection
 
 [tool.ruff.lint.isort]
-known-first-party = ["include", "maintenance"]
+known-first-party = ["include"]
 
 [tool.towncrier]
 directory = "changelog.d"

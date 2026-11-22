@@ -52,10 +52,8 @@ Stop every server node and exclude other maintenance writers before upgrading.
 The server directory runtime lock is local, not a cluster maintenance lock.
 
 ```powershell
-uv run maintain database upgrade
-uv run maintain config migrate-options --check
-uv run maintain config migrate-options --yes
-uv run maintain config sync-template
+cfms-ctl database upgrade
+cfms-ctl config sync-template
 ```
 
 The preview validates all legacy business settings, including disabled extension
@@ -86,12 +84,12 @@ options through the [Setting API](SETTING_API.md), using the same defaults,
 namespace validation and optimistic concurrency described here.
 
 ```powershell
-uv run maintain config options list
-uv run maintain config options list --namespace security.password
-uv run maintain config options get server name
-uv run maintain config options set server name server-name.json --expected-revision 1
-uv run maintain config options reset server name --expected-revision 2
-uv run maintain config options set-many security.brute_force_lockdown changes.json
+cfms-ctl config options list
+cfms-ctl config options list --namespace security.password
+cfms-ctl config options get server name
+cfms-ctl config options set server name server-name.json --expected-revision 1
+cfms-ctl config options reset server name --expected-revision 2
+cfms-ctl config options set-many security.brute_force_lockdown changes.json
 ```
 
 A single-setting JSON file contains the value, for example `"My CFMS Server"`.

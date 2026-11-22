@@ -9,7 +9,7 @@ options without metadata are not exposed.
 All actions require authentication with the usual general-purpose token.
 `view_settings` permits discovery and reading; `manage_settings` permits writing.
 Neither implies the other. The default `sysop` receives both. Existing deployments
-must run `uv run maintain database upgrade` before starting the updated server.
+must run `cfms-ctl database upgrade` before starting the updated server.
 
 ## Discovery
 

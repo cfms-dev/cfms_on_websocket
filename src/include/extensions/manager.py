@@ -13,11 +13,9 @@ __all__ = [
     "discover_extensions",
     "get_loaded_extension_metadata",
     "load_extensions_from_directory",
-    "maintenance_extension_context",
     "parse_extension_manifest",
     "pm",
     "prepare_extension_data",
-    "purge_extension_data",
     "resolve_extension_selection",
     "shutdown_extensions",
     "start_extensions",
@@ -28,13 +26,11 @@ import importlib.util
 import sys
 import tomllib
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from types import ModuleType
 from typing import Annotated, Any, Literal
-lazy from collections.abc import Generator, Mapping
+lazy from collections.abc import Mapping
 
 import pluggy
 from loguru import logger as log
@@ -64,7 +60,6 @@ lazy from include.config.options import (
     unregister_options,
     validate_options,
 )
-lazy from include.config.paths import EXTENSION_ROOT
 lazy from include.database.session import Session
 lazy from include.domains.identity.auth.base import BaseAuthMethodProvider
 lazy from include.extensions.identifiers import ExtensionIdentifier
@@ -646,8 +641,6 @@ def validate_extension_config(config: Any) -> None:
 def resolve_extension_selection(
     discovered: Mapping[str, DiscoveredExtension],
     enabled_identifiers: tuple[str, ...] | list[str],
-    *,
-    core_version: Version | None = None,
 ) -> tuple[DiscoveredExtension, ...]:
     """Validate and order an extension selection without importing its code."""
     builtin_ext = discovered.get("builtin")
@@ -672,15 +665,14 @@ def resolve_extension_selection(
     selected_identifiers = ("builtin", *enabled)
     ordered_extensions = _resolve_extension_load_order(discovered, selected_identifiers)
 
-    current_core_version = core_version if core_version is not None else CORE_VERSION
     for extension in ordered_extensions:
         minimum_version = extension.manifest.compatibility.minimum_server_version
-        if minimum_version is not None and current_core_version < minimum_version:
+        if minimum_version is not None and CORE_VERSION < minimum_version:
             identifier = extension.manifest.extension.identifier
             raise ExtensionLoadError(
                 f"Extension {identifier!r} requires server version "
                 f"{minimum_version} or newer; current server version is "
-                f"{current_core_version}"
+                f"{CORE_VERSION}"
             )
     return ordered_extensions
 
@@ -800,62 +792,6 @@ def shutdown_extensions() -> None:
             errors.append(exc)
     if errors:
         raise ExceptionGroup("Extension shutdown failed", errors)
-
-
-def purge_extension_data(identifier: str, session: "OrmSession") -> None:
-    """Invoke one registered owner's purge hook through the maintenance transaction."""
-    _extension_hook(identifier, "ext_purge_data")(session=session)
-
-
-@contextmanager
-def maintenance_extension_context(identifier: str) -> Generator[ModuleType]:
-    """Temporarily register one target and its dependencies without activating them."""
-    discovered = discover_extensions(EXTENSION_ROOT)
-    selected = []
-    collected = set()
-
-    def collect(current: str) -> None:
-        if current in collected:
-            return
-        extension = discovered.get(current)
-        if extension is None:
-            raise ExtensionLoadError(f"Required extension {current!r} is not installed")
-        collected.add(current)
-        selected.append(current)
-        for dependency in extension.manifest.dependencies.extensions:
-            collect(dependency)
-
-    collect(identifier)
-    ordered = _resolve_extension_load_order(discovered, tuple(selected))
-    for extension in ordered:
-        minimum = extension.manifest.compatibility.minimum_server_version
-        if minimum is not None and CORE_VERSION < minimum:
-            raise ExtensionLoadError(
-                f"Extension {extension.manifest.extension.identifier!r} requires "
-                f"server version {minimum} or newer; current server version is {CORE_VERSION}"
-            )
-
-    loaded = []
-    saved_modules = {}
-    try:
-        for extension in ordered:
-            name = extension.manifest.extension.identifier
-            if pm.has_plugin(name):
-                continue
-            saved_modules.update(
-                (module_name, module)
-                for module_name, module in sys.modules.items()
-                if module_name == name or module_name.startswith(f"{name}.")
-            )
-            _load_extension(extension)
-            loaded.append(extension)
-        plugin = pm.get_plugin(identifier)
-        if plugin is None:
-            raise ExtensionLoadError(f"Extension {identifier!r} is not registered")
-        yield plugin
-    finally:
-        _rollback_extensions(loaded)
-        sys.modules.update(saved_modules)
 
 
 def collect_extension_flags() -> list[str]:

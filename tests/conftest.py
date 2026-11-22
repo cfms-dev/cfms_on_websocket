@@ -56,7 +56,6 @@ def pytest_plugin_registered(plugin: object) -> None:
         patch = pytest.MonkeyPatch()
         manager.callback(patch.undo)
         patch.setattr(paths, "EXECUTABLE_ABSPATH", settings.src_dir)
-        patch.setattr(paths, "PROJECT_ABSPATH", settings.src_dir.parent)
         patch.setattr(
             paths, "EXTENSION_ROOT", settings.src_dir / "include" / "extensions"
         )

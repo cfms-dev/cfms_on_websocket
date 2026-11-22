@@ -35,19 +35,10 @@ module = "include.extensions.example.data"
 The dotted module must be importable from the installed release. It exposes
 `register_data() -> tuple[ExtensionDataTable, ...]`, using
 `include.extensions.data.ExtensionDataTable`. Each declaration supplies the
-manifest identifier as `owner`, a SQLAlchemy `table`, and an optional
-`backup_component`: `accounts`, `documents`, `audit`, or `banned_subnets`.
-Use `None` for reconstructible tables excluded from logical backups; those
-tables still participate in database transfers. Table names and ownership must
-be unique, including against core tables. Extension table dependencies are
-ordered by foreign keys; cycles between extension tables are rejected.
-
-Optional `encode_row` and `decode_row` callbacks convert dictionaries between
-database values and the JSON archive representation. A `validate_row` callback
-checks native database values after decoding and before export or transfer;
-raise `ValueError` with an actionable message for invalid data. The maintenance
-workflow owns transactions; callbacks must not commit, close sessions, or write
-external state. Keep all extension-specific codecs and invariants in this module.
+manifest identifier as `owner` and a SQLAlchemy `table`. Table names and
+ownership must be unique, including against core tables. Extension table
+dependencies are ordered by foreign keys; cycles between extension tables are
+rejected.
 
 Data entrypoints must remain usable without optional runtime dependencies and
 must not load `_extension.py`, register request handlers, start services, or
@@ -158,19 +149,19 @@ Packaged extensions can only be changed by switching the server release. Command
 inspect manifests without importing extension code:
 
 ```bash
-maintain extension list
-maintain extension info example_extension
-maintain extension install example_extension.zip --sha256 <digest>
-maintain extension upgrade example_extension.zip --sha256 <digest>
-maintain extension enable example_extension
-maintain extension disable example_extension
-maintain extension uninstall example_extension
-maintain extension purge-data example_extension
-maintain extension uninstall example_extension --purge-data
+cfms-ctl extension list
+cfms-ctl extension info example_extension
+cfms-ctl extension install example_extension.zip --sha256 <digest>
+cfms-ctl extension upgrade example_extension.zip --sha256 <digest>
+cfms-ctl extension enable example_extension
+cfms-ctl extension disable example_extension
+cfms-ctl extension uninstall example_extension
+cfms-ctl extension purge-data example_extension
+cfms-ctl extension uninstall example_extension --purge-data
 ```
 
 Relative extension package paths are resolved from the directory where
-`maintain` was invoked, not from the located runtime root.
+`cfms-ctl` was invoked, not from the located runtime root.
 
 Install leaves a new extension disabled so that its configuration and Python
 dependencies can be prepared first. Enable adds installed transitive dependencies
@@ -330,20 +321,18 @@ options/system states in the same audited transaction. Purge must be idempotent.
 Unknown or removed owners remain readable without importing their code.
 
 ```text
-maintain config options get server name
-maintain config options get security.brute_force_lockdown failure_threshold
-maintain config options set-many security.brute_force_lockdown changes.json
-maintain config options reset security.brute_force_lockdown failure_threshold --expected-revision 2
+cfms-ctl config options get server name
+cfms-ctl config options get security.brute_force_lockdown failure_threshold
+cfms-ctl config options set-many security.brute_force_lockdown changes.json
+cfms-ctl config options reset security.brute_force_lockdown failure_threshold --expected-revision 2
 ```
 
 `set-many` accepts `{key: {"value": ..., "expected_revision": ...}}`. Related
-settings can change atomically; unmentioned keys retain their revisions. Installed
-disabled extension declarations are temporarily loaded for writes without
-handlers, providers, data preparation or startup.
+settings can change atomically; unmentioned keys retain their revisions.
 
-Legacy business fields in `config.toml` are ignored at runtime; run
-`maintain config migrate-options` to move them to the database.
-See [database configuration](DATABASE_OPTIONS.md) for the complete migration list,
+Legacy business fields in `config.toml` are ignored at runtime; manage business
+policies in the database using `cfms-ctl config options` or the Setting API.
+See [database configuration](DATABASE_OPTIONS.md) for the complete option list,
 effective times and upgrade sequence.
 
 ## Request handlers
@@ -632,9 +621,9 @@ Its owner is `brute_force_lockdown`, with separate settings for `window_seconds`
 `failure_threshold`, `distinct_account_threshold`, `distinct_ip_threshold`, and
 `reason`. The code defaults are a 600-second window, 50 failures, 10 distinct
 accounts, 10 distinct IP addresses, and a generic public reason. Inspect the
-current keys with `maintain config options list --namespace security.brute_force_lockdown`;
+current keys with `cfms-ctl config options list --namespace security.brute_force_lockdown`;
 read an individual value with
-`maintain config options get security.brute_force_lockdown failure_threshold`. Update
+`cfms-ctl config options get security.brute_force_lockdown failure_threshold`. Update
 related thresholds atomically with `set-many` as described above. Disabling or
 purging the extension never clears existing core lockdown state or historical
 audit entries.
@@ -741,9 +730,8 @@ redirect_uri = "https://client.example/callback"
 ```
 
 User mapping and provisioning rules live in the `identity.oidc` database
-namespace. Run `maintain config migrate-options` for legacy business settings,
-then `maintain config sync-template` for deployment settings. Existing
-`extensions.oidc_sso` values take precedence over their older `sso.oidc` sources.
+namespace. Use `cfms-ctl config options` to manage them, and
+`cfms-ctl config sync-template` for deployment settings.
 
 ## Authentication methods (protocol 28)
 

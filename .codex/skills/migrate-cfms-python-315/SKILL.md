@@ -36,7 +36,7 @@ Do not declare the cutover ready until all applicable gates pass:
 - The intended production release is available. A release candidate requires explicit authorization for production use even after ABI freeze.
 - Core dependencies, development tools, and every supported optional extra install under CPython 3.15 on every deployment/CI platform. Prefer published wheels for native dependencies; any source-build exception must be an explicit, reproducible deployment decision.
 - The locked environment can be recreated from scratch with `uv` under 3.15. Review the resolution diff instead of editing `uv.lock` manually.
-- Source, tests, maintenance commands, release bundles, extension loading, and configured database/provider paths pass their proportionate checks under 3.15.
+- Source, tests, release bundles, extension loading, and configured database/provider paths pass their proportionate checks under 3.15.
 - Removed APIs, changed call signatures, runtime deprecations, encoding behavior, annotation introspection, import-time side effects, and platform-specific behavior have been audited.
 - All 3.14 support claims and pins have either been updated or intentionally retained as historical examples.
 

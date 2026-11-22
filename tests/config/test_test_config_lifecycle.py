@@ -161,7 +161,6 @@ def test_session_runtime_paths_are_isolated_from_development_files(
     assert src_dir != SOURCE_ROOT
     assert not src_dir.is_relative_to(SOURCE_ROOT.parent)
     assert paths.EXECUTABLE_ABSPATH == src_dir
-    assert paths.PROJECT_ABSPATH == src_dir.parent
     assert paths.EXTENSION_ROOT == src_dir / "include" / "extensions"
 
 
@@ -169,7 +168,7 @@ def test_session_runtime_paths_are_isolated_from_development_files(
 def test_isolated_runtime_copies_resources_without_development_state(tmp_path):
     source = tmp_path / "development"
     _copy_config_sample(source)
-    for directory in ("include", "maintenance", "alembic", "content/ssl/client"):
+    for directory in ("include", "alembic", "content/ssl/client"):
         (source / directory).mkdir(parents=True)
     resources = {
         "main.py": b"# server entrypoint\n",

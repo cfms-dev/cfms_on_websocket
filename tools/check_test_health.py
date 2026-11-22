@@ -20,7 +20,6 @@ MYSQL_PATHS = (
     "tests/scheduling/test_engine.py::test_runtime_state_initialization_is_atomic_on_shared_database",
     "tests/domains/documents/test_upload_cleanup_mysql.py",
     "tests/domains/documents/test_rate_limits_mysql.py",
-    "tests/maintenance/database/test_mysql.py",
     "tests/database/test_options_mysql.py",
     "tests/database/test_system_states_mysql.py",
     "tests/domains/operations/test_comments_mysql.py",

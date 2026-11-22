@@ -23,7 +23,7 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
 
 @pytest.mark.component
 def test_migrations_preserve_existing_application_loggers(sqlite_engine_factory):
-    logger = logging.getLogger("maintenance.backup.archive")
+    logger = logging.getLogger("include.database.migrations.probe")
     assert not logger.disabled
     config = Config(_SOURCE_ROOT / "alembic.ini")
     with sqlite_engine_factory().begin() as connection:

@@ -60,7 +60,7 @@ Token-bucket quotas use the `security.request_rate_control` database namespace.
 Inspect the complete policy with:
 
 ```console
-maintain config options list --namespace security.request_rate_control
+cfms-ctl config options list --namespace security.request_rate_control
 ```
 
 `action_costs` is one JSON-object option, for example:

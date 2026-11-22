@@ -1,6 +1,6 @@
 ---
 name: maintain-cfms-python
-description: Maintain, implement, refactor, review, debug, or test Python code in the CFMS on WebSocket repository while preserving its architecture, business contracts, transaction boundaries, and test integrity. Use for changes to src/, tests/, tools/, Python dependencies, Alembic migrations, WebSocket handlers, SQLAlchemy queries/models, Pluggy extensions, providers, maintenance commands, or Python-version policy; especially when a failing test, proposed abstraction, deprecation, Python 3.14+ feature, compatibility concern, or defensive check could tempt an agent to distort correct behavior or add unnecessary wrappers.
+description: Maintain, implement, refactor, review, debug, or test Python code in the CFMS on WebSocket repository while preserving its architecture, business contracts, transaction boundaries, and test integrity. Use for changes to src/, tests/, tools/, Python dependencies, Alembic migrations, WebSocket handlers, SQLAlchemy queries/models, Pluggy extensions, providers, or Python-version policy; especially when a failing test, proposed abstraction, deprecation, Python 3.14+ feature, compatibility concern, or defensive check could tempt an agent to distort correct behavior or add unnecessary wrappers.
 ---
 
 # Maintain CFMS Python

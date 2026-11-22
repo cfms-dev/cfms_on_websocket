@@ -47,17 +47,7 @@ def test_server_runtime_lock_rejects_unfinished_deployment(tmp_path: Path) -> No
 
 
 @pytest.mark.component
-def test_server_runtime_lock_allows_deployment_recovery(tmp_path: Path) -> None:
-    transaction_path = tmp_path / ".maintenance" / "transaction.json"
-    transaction_path.parent.mkdir()
-    transaction_path.write_text("{}", encoding="utf-8")
-
-    with server_runtime_lock(tmp_path, allow_unfinished_deployment=True):
-        assert (tmp_path / ".maintenance" / "server.lock").is_file()
-
-
-@pytest.mark.component
-def test_server_runtime_lock_blocks_maintenance_for_the_same_root(
+def test_server_runtime_lock_blocks_concurrent_acquisition_for_the_same_root(
     tmp_path: Path,
 ) -> None:
     with server_runtime_lock(tmp_path), pytest.raises(RuntimeLockError):

@@ -134,7 +134,7 @@ def isolated_test_runtime(
         src_dir.mkdir()
         for filename in ("main.py", "alembic.ini", "config.toml.sample"):
             shutil.copy2(source_dir / filename, src_dir / filename)
-        for directory in ("include", "maintenance", "alembic"):
+        for directory in ("include", "alembic"):
             shutil.copytree(
                 source_dir / directory,
                 src_dir / directory,

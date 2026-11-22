@@ -123,7 +123,7 @@ authentication-lockout selectors retain their existing username semantics.
 ## Historical UUID database upgrade
 
 Stop the server and back up its database before running
-`uv run maintain database upgrade`. Revision `d252e662fc05` assigns UUIDs to
+`cfms-ctl database upgrade`. Revision `d252e662fc05` assigns UUIDs to
 existing accounts and translates their references. It preserves password hashes,
 TOTP secrets and audit targets. Orphaned required references abort the upgrade;
 nullable references to deleted users become null. Direct user grants whose

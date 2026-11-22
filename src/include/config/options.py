@@ -167,7 +167,7 @@ def iter_options(
     )
 
 
-def get_option_definition(namespace: str, option_key: str) -> OptionDefinition[Any]:
+def _get_option_definition(namespace: str, option_key: str) -> OptionDefinition[Any]:
     try:
         return _option_definitions[namespace, option_key]
     except KeyError as exc:
@@ -399,7 +399,7 @@ def write_options(
         return {}
     guard_revision = _read_options_revision(session, namespace)
     for option_key in values:
-        get_option_definition(namespace, option_key)
+        _get_option_definition(namespace, option_key)
     previous = read_options(session, namespace)
     for key, expected_revision in expected_revisions.items():
         if previous[key].revision != expected_revision:
@@ -409,7 +409,7 @@ def write_options(
     )
     _claim_options_revision(session, namespace, guard_revision)
     for key in sorted(values):
-        definition = get_option_definition(namespace, key)
+        definition = _get_option_definition(namespace, key)
         expected_revision = expected_revisions[key]
         if expected_revision == 0:
             applied = create_option(
@@ -457,7 +457,7 @@ def write_options(
     return read_options(
         session,
         namespace,
-        tuple(get_option_definition(namespace, key) for key in values),
+        tuple(_get_option_definition(namespace, key) for key in values),
     )
 
 

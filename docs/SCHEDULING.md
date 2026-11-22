@@ -242,5 +242,5 @@ Worker, polling, lease, shutdown, claim-batch and Redis deployment settings rema
 in `config.toml` and require a restart. `misfire_grace_seconds` and
 `history_retention_days` live in the `scheduling` database namespace. Due scans
 read the current misfire policy and history cleanup reads the current retention
-policy; updates apply without restarting. Use `maintain config options` as
+policy; updates apply without restarting. Use `cfms-ctl config options` as
 explained in [database configuration](DATABASE_OPTIONS.md).

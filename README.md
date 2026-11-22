@@ -53,11 +53,13 @@ Distributed scheduling also requires `--extra ext-scheduling-cluster`. See the
 
 ## Maintenance
 
-The `maintain` command covers release-bundle deployment, configuration updates,
-database migrations, permission records, audit logs, and extensions:
+Operational maintenance—including release-bundle deployment, configuration
+updates, database migrations, encrypted logical backups, permission records,
+audit logs, and extension management—is handled by
+[`cfms-ctl`](https://github.com/cfms-dev/cfms-ctl):
 
 ```bash
-uv run maintain --help
+cfms-ctl --help
 ```
 
 More detailed guides are available for
@@ -90,7 +92,7 @@ Bug reports, improvement proposals, and testing contributions are welcome throug
 follow [SECURITY.md](SECURITY.md) when reporting a vulnerability.
 
 AI-generated contributions are accepted. Changes to core logic under
-`src/include` require human review; tests and maintenance tools are evaluated by
+`src/include` require human review; tests and development tools are evaluated by
 their externally observable correctness.
 
 [documentation]: https://cfms-server-doc.readthedocs.io/zh_CN/latest

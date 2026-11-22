@@ -13,7 +13,7 @@ def test_old_database_is_rejected_before_secret_initialization_without_marker(
     import main as server_main
 
     def reject_old_schema(*_args):
-        raise RuntimeError("Run maintain database upgrade")
+        raise RuntimeError("Run cfms-ctl database upgrade")
 
     def unexpected_write():
         pytest.fail("An outdated database must be rejected before changing secrets")

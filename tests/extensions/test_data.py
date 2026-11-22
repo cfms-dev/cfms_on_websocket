@@ -116,7 +116,7 @@ def test_schema_preparation_accepts_foreign_keys_without_optional_options(
         )
         monkeypatch.setattr(Inspector, "get_foreign_keys", reflect_without_options)
 
-        prepare_extension_tables(connection, metadata, set(declarations), create=False)
+        prepare_extension_tables(connection, metadata, set(declarations))
 
         assert connection.execute(metadata.tables["example_child"].select()).all() == [
             (2, 1, b"preserved")

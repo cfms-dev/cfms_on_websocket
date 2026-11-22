@@ -8,7 +8,7 @@ background cleanup worker, or delete other operational state.
 
 When `--before` is omitted, audit commands read the database namespace
 `maintenance.audit_retention`. Code defaults are `retention_days = 365` and
-`batch_size = 500`. Inspect or update them with `maintain config options`; see
+`batch_size = 500`. Inspect or update them with `cfms-ctl config options`; see
 [database configuration](DATABASE_OPTIONS.md).
 
 `retention_days` determines the default cutoff. `batch_size` limits both export
@@ -24,7 +24,7 @@ example `2026-01-01T00:00:00Z` or `2026-01-01T08:00:00+08:00`. Only entries with
 Preview eligible entries without writing or deleting anything:
 
 ```console
-maintain audit purge --dry-run --before 2026-01-01T00:00:00Z
+cfms-ctl audit purge --dry-run --before 2026-01-01T00:00:00Z
 ```
 
 The preview reports the total and counts grouped by action and exact result
@@ -34,7 +34,7 @@ successful operation uses the same value.
 Export an important subset for separate review:
 
 ```console
-maintain audit export important.jsonl \
+cfms-ctl audit export important.jsonl \
   --before 2026-01-01T00:00:00Z \
   --action lockdown \
   --action block_user \
@@ -44,7 +44,7 @@ maintain audit export important.jsonl \
 Archive and then purge all entries before the cutoff:
 
 ```console
-maintain audit purge \
+cfms-ctl audit purge \
   --archive audit-before-2026.jsonl \
   --before 2026-01-01T00:00:00Z \
   --yes

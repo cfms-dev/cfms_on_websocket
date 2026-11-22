@@ -25,7 +25,7 @@ def initialize_database_schema(engine: Engine, metadata: MetaData) -> None:
             if current_heads != target_heads:
                 raise RuntimeError(
                     "Database schema is not at this release's head; "
-                    "run maintain database upgrade before starting the server"
+                    "run cfms-ctl database upgrade before starting the server"
                 )
             return
         metadata.create_all(connection)

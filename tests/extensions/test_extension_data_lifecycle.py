@@ -1,18 +1,22 @@
 import builtins
 import sys
+from pathlib import Path
 
 import pluggy
 import pytest
+import tomlkit
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from include.config import options as option_config
+from include.config import paths
 from include.database.models.operations import OptionEntry, SystemStateEntry
 from include.database.session import Base
 from include.extensions import manager
-from tests.maintenance.extensions.support import (
-    _prepare_src,
-    _write_installed_extension,
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_SAMPLE_CONFIG = (_PROJECT_ROOT / "src" / "config.toml.sample").read_text(
+    encoding="utf-8"
 )
 
 OPTION_DECLARATION = """
@@ -27,10 +31,60 @@ def ext_register_options():
 """
 
 
+def _write_installed_extension(
+    root: Path,
+    identifier: str,
+    *,
+    version: str = "1.0.0",
+    dependencies: dict[str, str] | None = None,
+) -> Path:
+    manifest_version = 3 if dependencies is not None else 2
+    lines = [
+        f"manifest_version = {manifest_version}",
+        "",
+        "[extension]",
+        f'identifier = "{identifier}"',
+        f'name = "{identifier} extension"',
+        f'version = "{version}"',
+        'authors = ["Test Author"]',
+        'license = "Apache-2.0"',
+    ]
+    if dependencies is not None:
+        lines.extend(["", "[dependencies.extensions]"])
+        lines.extend(
+            f'{dependency} = "{minimum}"'
+            for dependency, minimum in dependencies.items()
+        )
+    directory = root / identifier
+    directory.mkdir()
+    (directory / "manifest.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (directory / "_extension.py").write_text(
+        f'EXTENSION_VERSION = "{version}"\n', encoding="utf-8"
+    )
+    return directory
+
+
+def _prepare_src(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    src = tmp_path / "src"
+    root = src / "include" / "extensions"
+    root.mkdir(parents=True)
+    (src / "main.py").write_text("", encoding="utf-8")
+    config = tomlkit.parse(_SAMPLE_CONFIG)
+    config["extensions"]["enabled"] = []
+    (src / "config.toml").write_text(tomlkit.dumps(config), encoding="utf-8")
+    _write_installed_extension(root, "builtin")
+    monkeypatch.setattr(paths, "EXECUTABLE_ABSPATH", src)
+    monkeypatch.setattr(paths, "EXTENSION_ROOT", root)
+    monkeypatch.chdir(src)
+    return src, root
+
+
 @pytest.fixture
 def extension_data_context(tmp_path, monkeypatch):
     src, root = _prepare_src(tmp_path, monkeypatch)
-    monkeypatch.setattr(manager, "EXTENSION_ROOT", root)
     plugin_manager = pluggy.PluginManager("cfms")
     plugin_manager.add_hookspecs(manager.ServerHookSpecs)
     monkeypatch.setattr(manager, "pm", plugin_manager)
@@ -81,114 +135,24 @@ def test_setting_metadata_follows_extension_registration_and_rollback(
     )
     target.joinpath("_extension.py").write_text(declaration, encoding="utf-8")
     assert option_config.describe_settings("sample_ext") == []
-    with manager.maintenance_extension_context("sample_ext"):
-        (item,) = option_config.describe_settings("sample_ext")
-        assert item["owner"] == "sample_ext"
-        assert item["default"] == 7
-        assert item["value_schema"] == {"type": "integer"}
+    manager.load_extensions_from_directory(root, ["sample_ext"], config={})
+    (item,) = option_config.describe_settings("sample_ext")
+    assert item["owner"] == "sample_ext"
+    assert item["default"] == 7
+    assert item["value_schema"] == {"type": "integer"}
+    manager._rollback_extension("sample_ext")
     assert option_config.describe_settings("sample_ext") == []
+
+    sys.modules.pop("sample_ext", None)
     target.joinpath("_extension.py").write_text(
         declaration
         + '\n@hookimpl\ndef ext_register_options():\n    return {"sample_ext": (OPTIONS, OPTIONS)}\n',
         encoding="utf-8",
     )
-    with (
-        pytest.raises(manager.ExtensionLoadError),
-        manager.maintenance_extension_context("sample_ext"),
-    ):
-        pytest.fail("Duplicate definitions must prevent extension registration")
+    with pytest.raises(manager.ExtensionLoadError):
+        manager.load_extensions_from_directory(root, ["sample_ext"], config={})
     assert option_config.describe_settings("sample_ext") == []
     assert not manager.pm.has_plugin("sample_ext")
-
-
-def test_maintenance_load_registers_disabled_options_without_validation_or_startup(
-    extension_data_context,
-):
-    _, root, sessions, _ = extension_data_context
-    target = _write_installed_extension(
-        root, "sample_ext", dependencies={"dependency": "1.0.0"}
-    )
-    dependency = _write_installed_extension(root, "dependency")
-    dependency.joinpath("_extension.py").write_text(
-        "VALUE = 'dependency available'\n", encoding="utf-8"
-    )
-    target.joinpath("_extension.py").write_text(
-        OPTION_DECLARATION
-        + """
-import dependency
-
-@hookimpl
-def ext_validate_config(config):
-    raise RuntimeError("invalid settings must not block maintenance")
-
-@hookimpl
-def ext_prepare_data(session):
-    raise RuntimeError("maintenance must not prepare")
-
-@hookimpl
-def ext_on_startup():
-    raise RuntimeError("maintenance must not start")
-""",
-        encoding="utf-8",
-    )
-
-    with manager.maintenance_extension_context("sample_ext") as plugin:
-        definition = option_config.get_option_definition("sample_ext", "threshold")
-        assert plugin.dependency.VALUE == "dependency available"
-        with sessions() as session:
-            assert (
-                option_config.read_option(session, "sample_ext", definition).value == 7
-            )
-            assert session.get(OptionEntry, ("sample_ext", "threshold")) is None
-        assert manager.pm.has_plugin("dependency")
-
-    assert not manager.pm.has_plugin("sample_ext")
-    assert not manager.pm.has_plugin("dependency")
-    assert option_config.iter_options("sample_ext") == ()
-
-
-def test_maintenance_load_preserves_preexisting_registration(extension_data_context):
-    _, root, _, _ = extension_data_context
-    target = _write_installed_extension(
-        root, "sample_ext", dependencies={"dependency": "1.0.0"}
-    )
-    _write_installed_extension(root, "dependency")
-    target.joinpath("_extension.py").write_text(OPTION_DECLARATION, encoding="utf-8")
-    existing = object()
-    manager.pm.register(existing, "dependency")
-
-    with manager.maintenance_extension_context("sample_ext"):
-        assert manager.pm.get_plugin("dependency") is existing
-
-    assert manager.pm.get_plugin("dependency") is existing
-    assert option_config.iter_options("sample_ext") == ()
-
-
-def test_maintenance_import_failure_removes_temporary_declarations_and_submodules(
-    extension_data_context,
-):
-    _, root, _, _ = extension_data_context
-    dependency = _write_installed_extension(root, "dependency")
-    dependency.joinpath("_extension.py").write_text(
-        OPTION_DECLARATION + "\nfrom . import helper\n", encoding="utf-8"
-    )
-    dependency.joinpath("helper.py").write_text("VALUE = 1\n", encoding="utf-8")
-    target = _write_installed_extension(
-        root, "sample_ext", dependencies={"dependency": "1.0.0"}
-    )
-    target.joinpath("_extension.py").write_text(
-        "raise RuntimeError('broken')\n", encoding="utf-8"
-    )
-
-    with (
-        pytest.raises(manager.ExtensionLoadError, match="sample_ext"),
-        manager.maintenance_extension_context("sample_ext"),
-    ):
-        pytest.fail("failed load must not enter maintenance body")
-
-    assert manager.pm.get_plugins() == set()
-    assert option_config.iter_options("dependency") == ()
-    assert "dependency.helper" not in sys.modules
 
 
 def test_prepare_defaults_does_not_replace_existing_options(extension_data_context):

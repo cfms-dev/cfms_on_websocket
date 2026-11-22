@@ -28,7 +28,6 @@ RUNTIME_FILES = (
 RUNTIME_TREES = (
     "src/alembic",
     "src/include",
-    "src/maintenance",
     "src/content/ssl/client",
 )
 FORBIDDEN_PREFIXES = (

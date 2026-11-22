@@ -39,7 +39,7 @@ def test_existing_old_database_is_not_modified_before_upgrade(
     with engine.begin() as connection:
         connection.exec_driver_sql("CREATE TABLE legacy_data (id INTEGER PRIMARY KEY)")
         MigrationContext.configure(connection).stamp(scripts, old_head)
-    with pytest.raises(RuntimeError, match="maintain database upgrade"):
+    with pytest.raises(RuntimeError, match="cfms-ctl database upgrade"):
         initialize_database_schema(engine, Base.metadata)
     with engine.connect() as connection:
         assert set(inspect(connection).get_table_names()) == {

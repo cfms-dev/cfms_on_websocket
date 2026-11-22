@@ -1,10 +1,10 @@
 # Deployment settings are read at startup; changes require a restart.
-# Business policies: see docs/DATABASE_OPTIONS.md and `maintain config options`.
+# Business policies: see docs/DATABASE_OPTIONS.md and `cfms-ctl config options`.
 # Enable debug mode for verbose logging and additional debugging features
 debug = false
 
 [server]
-# Display name is managed with `maintain config options`, under core/server.
+# Display name is managed with `cfms-ctl config options`, under core/server.
 # Host address to bind the server to
 host = "localhost"
 # Port to listen on
@@ -44,7 +44,7 @@ busy_retry_after_seconds = 1
 [security]
 # Pepper used for password hashing
 pepper = ""
-# Password and risk policies are managed with `maintain config options`.
+# Password and risk policies are managed with `cfms-ctl config options`.
 
 # Whether to require clients to provide a certificate for authentication.
 # If enabled, the server will verify if the client certificate is trusted.
@@ -138,7 +138,7 @@ max_pool_connections = 64
 # Add "scheduled_lockdown" to schedule lockdown transitions or windows.
 enabled = []
 
-# Brute-force lockdown policy is managed with `maintain config options`, under
+# Brute-force lockdown policy is managed with `cfms-ctl config options`, under
 # security.brute_force_lockdown; enable the extension above to use the detector.
 
 # Optional HTTPS API framework for extension-owned APIRouter registrations.

@@ -16,7 +16,7 @@ so callers must flush a newly constructed user before issuing tokens.
 All user JWT purposes (AUTH, POST_AUTH, GENERAL and GENERAL|ESCALATION) are signed
 and verified exclusively with that user's key. Authentication contexts store
 its SHA256 digest to detect key changes during authentication. Changing a
-password or running `maintain user rotate-secrets` replaces user signing keys,
+password or running `cfms-ctl user rotate-secrets` replaces user signing keys,
 invalidating their previous tokens and authentication contexts.
 
 `server.secret_key` remains independent configuration for pagination cursor
@@ -27,7 +27,7 @@ and backup-code verification.
 
 When upgrading from nullable user keys, stop every instance sharing the
 database, back up the database, run
-`uv run --locked maintain database upgrade --yes`, and then start the new
+`cfms-ctl database upgrade --yes`, and then start the new
 release. The migration generates independent random keys only for users whose
 key is NULL or empty; those users must log in again. Existing non-empty keys
 and their tokens remain valid. Restoring a historical backup applies the same
@@ -344,7 +344,7 @@ must invalidate all existing tokens before allowing requests on the new release:
 3. From the server root or its project directory, run:
 
    ```powershell
-   uv run --locked maintain user rotate-secrets
+   cfms-ctl user rotate-secrets
    ```
 
    Confirm the operation, or supply `--yes` for an unattended upgrade.

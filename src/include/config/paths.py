@@ -2,10 +2,9 @@
 
 from pathlib import Path
 
-__all__ = ["EXECUTABLE_ABSPATH", "EXTENSION_ROOT", "PROJECT_ABSPATH"]
+__all__ = ["EXECUTABLE_ABSPATH", "EXTENSION_ROOT"]
 
 EXECUTABLE_ABSPATH = Path(__file__).resolve().parents[2]
 """Executable absolute path, i.e. the root of the CFMS server tree."""
 
-PROJECT_ABSPATH = EXECUTABLE_ABSPATH.parent
 EXTENSION_ROOT = EXECUTABLE_ABSPATH / "include" / "extensions"

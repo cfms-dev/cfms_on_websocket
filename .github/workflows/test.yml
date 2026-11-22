@@ -450,4 +450,11 @@ jobs:
         $bundle = (Resolve-Path "smoke/cfms-on-websocket-$version").Path
         uv sync --project $bundle --locked --no-dev
         Copy-Item -LiteralPath (Join-Path $bundle "src/config.toml.sample") -Destination (Join-Path $bundle "src/config.toml")
-        uv run --project $bundle --no-dev maintain deployment status --deployment-root $bundle
+        uv run --project $bundle --no-dev python -m compileall -q (Join-Path $bundle "src")
+        Push-Location (Join-Path $bundle "src")
+        try {
+          uv run --project $bundle --no-dev alembic --version
+          uv run --project $bundle --no-dev python -c "import main"
+        } finally {
+          Pop-Location
+        }

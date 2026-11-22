@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import event, func, select, update
 from sqlalchemy.orm import sessionmaker
 
 pytestmark = pytest.mark.component
@@ -19,7 +19,6 @@ def permission_cleanup_context(tmp_path, sqlite_engine_factory):
     )
     from include.database.session import Base
     from include.domains.identity.commands.permission_cleanup import (
-        count_expired_permission_entries,
         purge_expired_permission_entries,
     )
 
@@ -32,7 +31,6 @@ def permission_cleanup_context(tmp_path, sqlite_engine_factory):
         "UserGroup": UserGroup,
         "UserGroupPermission": UserGroupPermission,
         "UserPermission": UserPermission,
-        "count": count_expired_permission_entries,
         "purge": purge_expired_permission_entries,
         "session": test_session,
     }
@@ -125,8 +123,6 @@ def test_cleanup_uses_strict_cutoff_and_preserves_active_entries(
         group = session.get(context["UserGroup"], "staff")
         assert user.own_permissions == {"active"}
         assert group.all_permissions == {"active_group"}
-        assert context["count"](session, 1000.0).user_entries == 2
-        assert context["count"](session, 1000.0).group_entries == 1
 
     with context["session"].begin() as session:
         removed = context["purge"](session, 1000.0, batch_size=10)
@@ -150,7 +146,7 @@ def test_cleanup_uses_strict_cutoff_and_preserves_active_entries(
             "active_group",
             "permanent_group_revocation",
         }
-        assert context["count"](session, 1000.0).total == 0
+        assert context["purge"](session, 1000.0, batch_size=10).total == 0
 
 
 def test_cleanup_honors_per_table_batch_limit_and_is_idempotent(
@@ -183,7 +179,23 @@ def test_cleanup_participates_in_caller_transaction(permission_cleanup_context) 
         session.rollback()
 
     with context["session"]() as session:
-        assert context["count"](session, 1000.0).total == 3
+        expired_user = session.scalar(
+            select(func.count())
+            .select_from(context["UserPermission"])
+            .where(
+                context["UserPermission"].end_time.is_not(None),
+                context["UserPermission"].end_time < 1000.0,
+            )
+        )
+        expired_group = session.scalar(
+            select(func.count())
+            .select_from(context["UserGroupPermission"])
+            .where(
+                context["UserGroupPermission"].end_time.is_not(None),
+                context["UserGroupPermission"].end_time < 1000.0,
+            )
+        )
+        assert (expired_user or 0) + (expired_group or 0) == 3
 
 
 def test_cleanup_rechecks_cutoff_when_deleting(permission_cleanup_context) -> None:

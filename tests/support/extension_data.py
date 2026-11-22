@@ -8,19 +8,6 @@ from include.config import paths
 from include.extensions.data import ExtensionDataTable
 
 
-def encode_example(row):
-    return {**row, "value": row["value"].hex()}
-
-
-def decode_example(row):
-    return {**row, "value": bytes.fromhex(row["value"])}
-
-
-def validate_example(row):
-    if not row["value"]:
-        raise ValueError("Example data cannot be empty")
-
-
 @pytest.fixture
 def example_data(monkeypatch, tmp_path):
     root = tmp_path / "extensions"
@@ -54,15 +41,8 @@ module = "example_extension_data"
         Column("value", LargeBinary(32), nullable=False),
     )
     declarations = [
-        ExtensionDataTable(
-            "example",
-            child,
-            "accounts",
-            encode_example,
-            decode_example,
-            validate_example,
-        ),
-        ExtensionDataTable("example", parent, "accounts"),
+        ExtensionDataTable("example", child),
+        ExtensionDataTable("example", parent),
     ]
     module = ModuleType("example_extension_data")
     module.register_data = lambda: tuple(declarations)

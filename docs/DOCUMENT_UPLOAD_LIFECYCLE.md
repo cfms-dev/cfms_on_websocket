@@ -331,7 +331,7 @@ remains fixed.
 
 Upload policies are read from database namespaces on each operation. Changes to
 cleanup intervals are applied by system-schedule reconciliation. The tables below
-show code defaults; manage values with `maintain config options` as described in
+show code defaults; manage values with `cfms-ctl config options` as described in
 [database configuration](DATABASE_OPTIONS.md).
 
 ### `document.upload`

@@ -14,7 +14,7 @@
 Treat these as a repository snapshot, then re-read the live files before acting:
 
 - `pyproject.toml` declares Python `>=3.14`; `.python-version` selects 3.14.
-- The package uses a `src/` layout with first-party packages `include` and `maintenance`.
+- The package uses a `src/` layout with first-party package `include`.
 - The server uses the threading API in `websockets.sync`, not an asyncio server architecture.
 - SQLAlchemy 2 manages persistence. SQLite is the common local/test engine; MySQL and PostgreSQL are configured alternatives.
 - Pluggy owns optional extension hooks. Provider base classes own storage, caching, and event backend variation.
@@ -61,10 +61,6 @@ Hook timing is a contract:
 - `ext_on_file_uploaded` runs after commit and before the success response.
 - `ext_on_file_upload_completed` runs after acknowledgement and cannot change the client result.
 - startup/shutdown hooks must preserve the documented ordering; shutdown implementations are idempotent.
-
-### `src/maintenance`
-
-Own Typer CLI workflows, backup/export/import, runtime loading, and operator-facing errors. Keep optional provider imports lazy where the current architecture avoids loading unused backends.
 
 ### `src/include/config`
 
