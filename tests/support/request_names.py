@@ -1,6 +1,7 @@
-"""Independent protocol 32 request-name and handler contract."""
+"""Independent protocol 31 request-name and handler contract."""
 
-REMOVED_PROTOCOL_31_ACTIONS = (
+# TODO: Remove when applicable.
+REMOVED_PROTOCOL_30_ACTIONS = (
     "core.document.move",
     "core.directory.move",
     "core.document.access_rule.get",

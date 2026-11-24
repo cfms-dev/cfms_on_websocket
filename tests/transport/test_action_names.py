@@ -3,12 +3,14 @@ from types import SimpleNamespace
 import pytest
 
 from include.config.validation import RequestRateControlPolicy
-from tests.support.request_names import REMOVED_PROTOCOL_31_ACTIONS, REQUEST_RENAMES
+from tests.support.request_names import REMOVED_PROTOCOL_30_ACTIONS, REQUEST_RENAMES
 
 
+# FIXME: It is not a good idea to make tests applicable only to a specific protocol
+# version. Perhaps we should consider removing these tests.
 @pytest.mark.unit
 @pytest.mark.parametrize("debug", [False, True])
-def test_request_registry_matches_protocol_32(
+def test_request_registry_matches_protocol_31(
     monkeypatch, protected_test_config, debug
 ):
     monkeypatch.chdir(protected_test_config.src_dir)
@@ -57,7 +59,7 @@ def test_request_registry_matches_protocol_32(
         action: f"{handler.__module__}.{handler.__qualname__}"
         for action, handler in core_handlers.items()
     }
-    assert PROTOCOL_VERSION == 32
+    assert PROTOCOL_VERSION == 31
     assert len(REQUEST_RENAMES) == len({new for _, new, _ in REQUEST_RENAMES}) == 85
     expected["core.user.username.set"] = (
         "include.domains.identity.handlers.users.RequestSetUsernameHandler"
@@ -71,7 +73,7 @@ def test_request_registry_matches_protocol_32(
     )
     assert actual == expected
     assert set(core_handlers).isdisjoint(old for old, _, _ in REQUEST_RENAMES)
-    assert set(core_handlers).isdisjoint(REMOVED_PROTOCOL_31_ACTIONS)
+    assert set(core_handlers).isdisjoint(REMOVED_PROTOCOL_30_ACTIONS)
     assert set(server_main.whitelisted_functions) == {
         "core.server.info.get",
         "core.auth.login",
@@ -91,7 +93,7 @@ def test_request_registry_matches_protocol_32(
 @pytest.mark.parametrize(
     "old_action",
     [old for old, _, _ in REQUEST_RENAMES]
-    + ["core.user.rename", *REMOVED_PROTOCOL_31_ACTIONS],
+    + ["core.user.rename", *REMOVED_PROTOCOL_30_ACTIONS],
 )
 async def test_old_request_names_are_rejected_and_connection_remains_usable(
     client, old_action
@@ -103,4 +105,4 @@ async def test_old_request_names_are_rejected_and_connection_remains_usable(
         "core.server.info.get", {}, include_auth=False
     )
     assert following["code"] == 200
-    assert following["data"]["protocol_version"] == 32
+    assert following["data"]["protocol_version"] == 31
