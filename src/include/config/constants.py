@@ -1,5 +1,7 @@
 __all__ = [
     "CORE_VERSION",
+    "DACL_MAX_RULES_PER_NODE",
+    "DACL_SOURCE_MAX_LENGTH",
     "DEFAULT_SSL_CERT_VALIDITY_DAYS",
     "DEFAULT_TOKEN_EXPIRY_SECONDS",
     "DEFAULT_TRUSTED_PROXY_NETWORKS",
@@ -55,6 +57,10 @@ NONCE_MIN_LENGTH = 16  # Minimum length of a nonce string
 
 # Root directory virtual folder ID — used to store access rules for the root directory
 ROOT_DIRECTORY_ID = "/"
+
+# CACL DACL Limits
+DACL_SOURCE_MAX_LENGTH = 65_536  # 64 KiB max raw CACL policy source per request
+DACL_MAX_RULES_PER_NODE = 256  # Max compiled DACL rules persisted on a single node
 
 # Pagination Constants
 PAGINATION_DEFAULT_PAGE_SIZE = 128

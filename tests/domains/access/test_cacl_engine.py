@@ -10,11 +10,14 @@ from include.domains.access.authorization.engine import (
     NamespaceNode,
     ObjectState,
     Subject,
+    SubtreeNode,
     authorize_policy_save,
     evaluate_access,
     evaluate_effective_masks,
+    evaluate_path_masks,
     evaluate_reparent,
     evaluate_soft_delete,
+    evaluate_soft_delete_subtree,
 )
 
 pytestmark = pytest.mark.unit
@@ -247,3 +250,134 @@ def test_next_transition_at_and_evaluate_effective_masks():
     assert masks.next_transition_at == datetime.datetime(
         2026, 11, 25, tzinfo=datetime.UTC
     )
+
+
+def test_deep_path_single_pass_handles_scopes_inherit_off_and_transitions():
+    chain: list[NamespaceNode] = [
+        _node(
+            "root",
+            D,
+            'inherit off; allow [TRAVERSE] to any; allow [READ_CONTENT] on docs to any until "2026-12-20T00:00:00Z";',
+        )
+    ]
+    for depth in range(1, 15):
+        if depth == 5:
+            chain.append(
+                _node(
+                    f"d{depth}",
+                    D,
+                    'inherit off; allow [TRAVERSE] to any; allow [LIST_DIRECTORY] on self to any; allow [READ_METADATA] on docs to any from "2026-12-01T00:00:00Z";',
+                )
+            )
+        elif depth == 10:
+            chain.append(
+                _node(
+                    f"d{depth}",
+                    D,
+                    'allow [READ_CONTENT] on docs to any until "2026-11-30T00:00:00Z";',
+                )
+            )
+        else:
+            chain.append(_node(f"d{depth}", D))
+    leaf_doc = _node(
+        "leaf", F, 'deny [WRITE_CONTENT] to any until "2026-11-28T00:00:00Z";'
+    )
+    full_path = [*chain, leaf_doc]
+
+    decision = evaluate_access(ALICE, full_path, AtomicOp.READ_CONTENT, NOW)
+    assert decision.allowed
+    assert decision.next_transition_at == datetime.datetime(
+        2026, 11, 28, tzinfo=datetime.UTC
+    )
+    assert len(decision.matched_allows) == 1
+    assert decision.matched_allows[0].node_id == "d10"
+    assert decision.matched_allows[0].distance == 5
+
+    # Ancestor d5 granted LIST_DIRECTORY only on self, so leaf parent d14 does not have LIST_DIRECTORY.
+    path_masks = evaluate_path_masks(ALICE, full_path, NOW)
+    assert path_masks.target.allowed_traverse
+    assert path_masks.parent_state is ObjectState.NORMAL
+    assert not (path_masks.parent_effective_mask & int(AtomicOp.LIST_DIRECTORY))
+    assert path_masks.parent_effective_mask & int(AtomicOp.TRAVERSE)
+
+    # Check direct child of d5 sees LIST_DIRECTORY on parent d5.
+    child_of_d5 = evaluate_path_masks(ALICE, [*chain[:6], _node("c", D)], NOW)
+    assert child_of_d5.target.allowed_traverse
+    assert child_of_d5.parent_effective_mask & int(AtomicOp.LIST_DIRECTORY)
+
+
+def test_evaluate_soft_delete_subtree_linear_traversal_and_edge_cases():
+    root = _node("root", D, "inherit off; allow [TRAVERSE, DELETE] to any;")
+    target = _node("target", D)
+    target_masks = evaluate_path_masks(ALICE, [root, target], NOW)
+    assert target_masks.target.allowed_traverse
+
+    d1_policy = _compile("inherit on;").policy
+    doc1_policy = _compile("inherit on;").policy
+    denied_doc_policy = _compile("inherit on; deny [DELETE] to any;").policy
+    no_traverse_dir_policy = _compile("inherit off; allow [DELETE] to any;").policy
+    assert d1_policy is not None
+    assert doc1_policy is not None
+    assert denied_doc_policy is not None
+    assert no_traverse_dir_policy is not None
+
+    ok_nodes = [
+        SubtreeNode("d1", "target", "d1", D, ObjectState.NORMAL, d1_policy),
+        SubtreeNode("doc1", "d1", "doc1", F, ObjectState.NORMAL, doc1_policy),
+    ]
+    assert evaluate_soft_delete_subtree(
+        ALICE,
+        "target",
+        target_masks.target.effective_mask,
+        target_masks.target_inherited,
+        ok_nodes,
+        NOW,
+    ).allowed
+
+    denied_nodes = [
+        SubtreeNode("d1", "target", "d1", D, ObjectState.NORMAL, d1_policy),
+        SubtreeNode("doc1", "d1", "doc1", F, ObjectState.NORMAL, denied_doc_policy),
+    ]
+    denied_res = evaluate_soft_delete_subtree(
+        ALICE,
+        "target",
+        target_masks.target.effective_mask,
+        target_masks.target_inherited,
+        denied_nodes,
+        NOW,
+    )
+    assert not denied_res.allowed
+    assert denied_res.step == "5_composite_delete_descendant"
+
+    # Intermediate directory lacking TRAVERSE blocks deleting its child when traverse checking is on.
+    blocked_traverse_nodes = [
+        SubtreeNode(
+            "d1", "target", "d1", D, ObjectState.NORMAL, no_traverse_dir_policy
+        ),
+        SubtreeNode(
+            "doc1",
+            "d1",
+            "doc1",
+            F,
+            ObjectState.NORMAL,
+            _compile("inherit off; allow [DELETE] to any;").policy,
+        ),  # type: ignore[arg-type]
+    ]
+    assert not evaluate_soft_delete_subtree(
+        ALICE,
+        "target",
+        target_masks.target.effective_mask,
+        target_masks.target_inherited,
+        blocked_traverse_nodes,
+        NOW,
+        check_ancestor_traverse=True,
+    ).allowed
+    assert evaluate_soft_delete_subtree(
+        ALICE,
+        "target",
+        target_masks.target.effective_mask,
+        target_masks.target_inherited,
+        blocked_traverse_nodes,
+        NOW,
+        check_ancestor_traverse=False,
+    ).allowed

@@ -9,7 +9,8 @@ __all__ = [
 
 import datetime
 import uuid
-from collections.abc import Iterable, Sequence
+from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import batched
 
 from cacl_compiler import (
@@ -32,11 +33,13 @@ from cacl_compiler import (
     parse_cacl,
 )
 from cacl_compiler.ast_nodes import PolicyAST
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session as OrmSession
-from sqlalchemy.orm import selectinload
 
-from include.config.constants import QUERY_CHUNK_SIZE
+from include.config.constants import (
+    DACL_MAX_RULES_PER_NODE,
+    QUERY_CHUNK_SIZE,
+)
 from include.database.models.access import (
     NodeDaclAtom,
     NodeDaclClause,
@@ -152,7 +155,22 @@ def compile_policy_source(
     principal_diags = _validate_ast_principals(
         session, ast, strict_principals=strict_principals
     )
-    all_diags = parse_diags + compiled.diagnostics + principal_diags
+    limit_diags: list[Diagnostic] = []
+    if (
+        compiled.policy is not None
+        and len(compiled.policy.rules) > DACL_MAX_RULES_PER_NODE
+    ):
+        limit_diags.append(
+            Diagnostic(
+                code="E401",
+                severity=Severity.ERROR,
+                message=(
+                    f"Policy has {len(compiled.policy.rules)} compiled rules, "
+                    f"exceeding the maximum of {DACL_MAX_RULES_PER_NODE} rules per node."
+                ),
+            )
+        )
+    all_diags = parse_diags + compiled.diagnostics + principal_diags + limit_diags
     has_errors = any(d.severity is Severity.ERROR for d in all_diags)
     return CompileResult(
         policy=None if has_errors else compiled.policy,
@@ -182,36 +200,45 @@ def render_policy_text(
     return decompile_policy(policy, opts=options)
 
 
-def _orm_rule_to_compiled(rule: NodeDaclRule) -> CompiledRule:
-    clauses = tuple(
-        DNFClause(
-            atoms=tuple(
-                sorted(
-                    (
-                        ConditionAtom(
-                            kind=PredicateKind(atom.predicate_kind),
-                            value=atom.predicate_value,
-                            negated=atom.is_negated,
-                        )
-                        for atom in clause.atoms
-                    ),
-                    key=lambda a: a.sort_key(),
+def _build_compiled_rule(
+    effect: str,
+    permission_mask: int,
+    scope: str,
+    valid_from: datetime.datetime | None,
+    valid_until: datetime.datetime | None,
+    remark: str | None,
+    clause_ids: Sequence[int],
+    atoms_by_clause: Mapping[int, list[ConditionAtom]],
+    *,
+    canonicalize: bool,
+) -> CompiledRule:
+    if canonicalize:
+        clauses = tuple(
+            DNFClause(
+                atoms=tuple(
+                    sorted(
+                        atoms_by_clause.get(cid, ()),
+                        key=lambda a: a.sort_key(),
+                    )
                 )
             )
+            for cid in clause_ids
         )
-        for clause in rule.clauses
-    )
-    sorted_clauses = tuple(
-        sorted(clauses, key=lambda c: tuple(a.sort_key() for a in c.atoms))
-    )
+        final_clauses = tuple(
+            sorted(clauses, key=lambda c: tuple(a.sort_key() for a in c.atoms))
+        )
+    else:
+        final_clauses = tuple(
+            DNFClause(atoms=tuple(atoms_by_clause.get(cid, ()))) for cid in clause_ids
+        )
     return CompiledRule(
-        effect=Effect(rule.effect),
-        permission_mask=int(rule.permission_mask),
-        scope=Scope(rule.scope),
-        dnf_clauses=sorted_clauses,
-        valid_from=rule.valid_from,
-        valid_until=rule.valid_until,
-        remark=rule.remark,
+        effect=Effect(effect),
+        permission_mask=int(permission_mask),
+        scope=Scope(scope),
+        dnf_clauses=final_clauses,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        remark=remark,
     )
 
 
@@ -220,44 +247,149 @@ def load_node_policies(
     node_ids: Sequence[str] | Iterable[str],
     *,
     include_deleted: bool = False,
+    preloaded_inherit: Mapping[str, bool] | None = None,
+    exclude_expired_before: datetime.datetime | None = None,
+    active_at_utc: datetime.datetime | None = None,
+    canonicalize: bool = True,
 ) -> dict[str, CompiledPolicy]:
-    """Bulk-load CompiledPolicy objects for the requested node IDs."""
+    """Bulk-load CompiledPolicy objects for the requested node IDs using scalar Core queries."""
     unique_ids = list(dict.fromkeys(node_ids))
     if not unique_ids:
         return {}
 
     exec_opts = {"include_deleted": True} if include_deleted else {}
     inherit_by_node: dict[str, bool] = {}
-    rules_by_node: dict[str, list[CompiledRule]] = {nid: [] for nid in unique_ids}
+    if preloaded_inherit is not None:
+        for nid in unique_ids:
+            if nid in preloaded_inherit:
+                inherit_by_node[nid] = bool(preloaded_inherit[nid])
 
-    for chunk in batched(unique_ids, QUERY_CHUNK_SIZE):
-        chunk_ids = list(chunk)
+    missing_inherit_ids = [nid for nid in unique_ids if nid not in inherit_by_node]
+    for chunk in batched(missing_inherit_ids, QUERY_CHUNK_SIZE):
         node_rows = session.execute(
             select(Node.id, Node.inherit)
-            .where(Node.id.in_(chunk_ids))
+            .where(Node.id.in_(list(chunk)))
             .execution_options(**exec_opts)
         ).all()
         for nid, inherit_flag in node_rows:
             inherit_by_node[nid] = bool(inherit_flag)
 
-        rule_rows = session.scalars(
-            select(NodeDaclRule)
-            .options(
-                selectinload(NodeDaclRule.clauses).selectinload(NodeDaclClause.atoms)
+    active_ref = (
+        active_at_utc.astimezone(datetime.UTC) if active_at_utc is not None else None
+    )
+    expired_ref = (
+        exclude_expired_before.astimezone(datetime.UTC)
+        if exclude_expired_before is not None
+        else None
+    )
+
+    existing_ids = [nid for nid in unique_ids if nid in inherit_by_node]
+    rules_by_node: dict[str, list[CompiledRule]] = {nid: [] for nid in existing_ids}
+
+    for chunk in batched(existing_ids, QUERY_CHUNK_SIZE):
+        chunk_ids = list(chunk)
+        rule_stmt = (
+            select(
+                NodeDaclRule.id,
+                NodeDaclRule.node_id,
+                NodeDaclRule.effect,
+                NodeDaclRule.permission_mask,
+                NodeDaclRule.scope,
+                NodeDaclRule.valid_from,
+                NodeDaclRule.valid_until,
+                NodeDaclRule.remark,
             )
             .where(NodeDaclRule.node_id.in_(chunk_ids))
             .order_by(NodeDaclRule.id.asc())
-        ).all()
-        for orm_rule in rule_rows:
-            rules_by_node[orm_rule.node_id].append(_orm_rule_to_compiled(orm_rule))
+        )
+        if active_ref is not None:
+            rule_stmt = rule_stmt.where(
+                or_(
+                    NodeDaclRule.valid_from.is_(None),
+                    NodeDaclRule.valid_from <= active_ref,
+                ),
+                or_(
+                    NodeDaclRule.valid_until.is_(None),
+                    NodeDaclRule.valid_until > active_ref,
+                ),
+            )
+        elif expired_ref is not None:
+            rule_stmt = rule_stmt.where(
+                or_(
+                    NodeDaclRule.valid_until.is_(None),
+                    NodeDaclRule.valid_until > expired_ref,
+                ),
+            )
+
+        rule_rows = session.execute(rule_stmt).all()
+        if not rule_rows:
+            continue
+
+        rule_ids = [row[0] for row in rule_rows]
+        clauses_by_rule: dict[int, list[int]] = defaultdict(list)
+        all_clause_ids: list[int] = []
+        for rule_chunk in batched(rule_ids, QUERY_CHUNK_SIZE):
+            clause_rows = session.execute(
+                select(NodeDaclClause.id, NodeDaclClause.rule_id)
+                .where(NodeDaclClause.rule_id.in_(list(rule_chunk)))
+                .order_by(NodeDaclClause.id.asc())
+            ).all()
+            for clause_id, rule_id in clause_rows:
+                clauses_by_rule[rule_id].append(clause_id)
+                all_clause_ids.append(clause_id)
+
+        atoms_by_clause: dict[int, list[ConditionAtom]] = defaultdict(list)
+        if all_clause_ids:
+            for clause_chunk in batched(all_clause_ids, QUERY_CHUNK_SIZE):
+                atom_rows = session.execute(
+                    select(
+                        NodeDaclAtom.clause_id,
+                        NodeDaclAtom.predicate_kind,
+                        NodeDaclAtom.predicate_value,
+                        NodeDaclAtom.is_negated,
+                    )
+                    .where(NodeDaclAtom.clause_id.in_(list(clause_chunk)))
+                    .order_by(NodeDaclAtom.id.asc())
+                ).all()
+                for clause_id, kind, value, is_negated in atom_rows:
+                    atoms_by_clause[clause_id].append(
+                        ConditionAtom(
+                            kind=PredicateKind(kind),
+                            value=value,
+                            negated=bool(is_negated),
+                        )
+                    )
+
+        for (
+            rule_id,
+            node_id,
+            effect,
+            permission_mask,
+            scope,
+            valid_from,
+            valid_until,
+            remark,
+        ) in rule_rows:
+            rules_by_node[node_id].append(
+                _build_compiled_rule(
+                    effect,
+                    permission_mask,
+                    scope,
+                    valid_from,
+                    valid_until,
+                    remark,
+                    clauses_by_rule.get(rule_id, ()),
+                    atoms_by_clause,
+                    canonicalize=canonicalize,
+                )
+            )
 
     return {
         nid: CompiledPolicy(
             inherit=inherit_by_node[nid],
             rules=tuple(rules_by_node[nid]),
         )
-        for nid in unique_ids
-        if nid in inherit_by_node
+        for nid in existing_ids
     }
 
 

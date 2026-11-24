@@ -1,22 +1,33 @@
 __all__ = [
+    "DirectorySoftDeleteRootCheck",
+    "authorize_create_on_parent",
+    "authorize_dacl_read",
     "authorize_dacl_save",
+    "authorize_directory_access_with_parent",
     "authorize_directory_soft_delete",
     "authorize_node_operation",
     "authorize_reparent",
     "authorize_restore",
+    "authorize_soft_delete_descendants",
+    "authorize_write_dacl_and_load_path",
+    "check_directory_soft_delete_root",
+    "evaluate_node_effective_masks",
     "has_bypass_dacl",
     "load_ancestor_path",
     "load_ancestor_paths_for_nodes",
     "node_to_object_state",
     "node_to_object_type",
     "should_check_ancestor_traverse",
+    "simulate_dacl_save_lockout",
     "user_to_subject",
     "would_self_lockout_on_create",
 ]
 
 import datetime
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from itertools import batched
+from typing import Any, Protocol
 
 from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType
 from sqlalchemy import literal, select
@@ -33,21 +44,52 @@ from include.database.models.documents import (
 )
 from include.database.models.identity import User
 from include.domains.access.authorization.engine import (
+    EffectiveMasksResult,
     EvalDecision,
+    InheritedDaclState,
     NamespaceNode,
     ObjectState,
     SaveAuthzResult,
     Subject,
+    SubtreeNode,
     authorize_policy_save,
     evaluate_access,
     evaluate_effective_masks,
+    evaluate_path_masks,
     evaluate_reparent,
-    evaluate_soft_delete,
+    evaluate_soft_delete_subtree,
     op_applies_to_object,
     op_applies_to_state,
 )
 from include.domains.access.authorization.storage import load_node_policies
 from include.domains.access.permissions import Permissions
+
+_ALL_OPS_MASK = (1 << len(AtomicOp)) - 1
+
+
+class _SubtreeNodeLike(Protocol):
+    @property
+    def id(self) -> Any: ...
+    @property
+    def name(self) -> Any: ...
+    @property
+    def parent_id(self) -> Any: ...
+    @property
+    def type(self) -> Any: ...
+    @property
+    def status(self) -> Any: ...
+    @property
+    def inherit(self) -> Any: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DirectorySoftDeleteRootCheck:
+    allowed: bool
+    needs_descendant_check: bool
+    target_effective_mask: int = 0
+    target_inherited: InheritedDaclState = field(default_factory=InheritedDaclState)
+    check_ancestor_traverse: bool = True
+    eval_time_utc: datetime.datetime | None = None
 
 
 def has_bypass_dacl(user: User) -> bool:
@@ -86,6 +128,9 @@ def load_ancestor_paths_for_nodes(
     targets: Sequence[Document | Folder],
     *,
     include_deleted: bool = False,
+    exclude_expired_before: datetime.datetime | None = None,
+    active_at_utc: datetime.datetime | None = None,
+    canonicalize: bool = True,
 ) -> dict[str, list[NamespaceNode]]:
     """Bulk-load root-to-node NamespaceNode paths for a batch of targets."""
     if not targets:
@@ -93,7 +138,7 @@ def load_ancestor_paths_for_nodes(
 
     target_ids = list(dict.fromkeys(t.id for t in targets))
     node_table = Node.__table__
-    all_node_rows: dict[str, tuple[str, str, str | None, str, int]] = {}
+    all_node_rows: dict[str, tuple[str, str, str | None, str, int, bool]] = {}
 
     for chunk in batched(target_ids, QUERY_CHUNK_SIZE):
         chunk_ids = list(chunk)
@@ -103,6 +148,7 @@ def load_ancestor_paths_for_nodes(
             node_table.c.parent_id.label("parent_id"),
             node_table.c.type.label("type"),
             node_table.c.status.label("status"),
+            node_table.c.inherit.label("inherit"),
             literal(0).label("depth"),
         ).where(node_table.c.id.in_(chunk_ids))
 
@@ -115,6 +161,7 @@ def load_ancestor_paths_for_nodes(
                 parent_node.c.parent_id,
                 parent_node.c.type,
                 parent_node.c.status,
+                parent_node.c.inherit,
                 (ancestors.c.depth + 1).label("depth"),
             )
             .select_from(
@@ -130,10 +177,18 @@ def load_ancestor_paths_for_nodes(
                 ancestors.c.parent_id,
                 ancestors.c.type,
                 ancestors.c.status,
+                ancestors.c.inherit,
             ).distinct()
         ).all()
-        for nid, name, parent_id, node_type, status in rows:
-            all_node_rows[nid] = (nid, name, parent_id, node_type, status)
+        for nid, name, parent_id, node_type, status, inherit_flag in rows:
+            all_node_rows[nid] = (
+                nid,
+                name,
+                parent_id,
+                node_type,
+                status,
+                bool(inherit_flag),
+            )
 
     # Ensure in-memory unflushed target state (e.g. newly created or modified nodes) is authoritative.
     for target in targets:
@@ -143,14 +198,29 @@ def load_ancestor_paths_for_nodes(
             target.parent_id,
             target.type,
             int(target.status),
+            bool(target.inherit),
         )
 
+    preloaded_inherit = {nid: row[5] for nid, row in all_node_rows.items()}
     policies = load_node_policies(
-        session, list(all_node_rows.keys()), include_deleted=True
+        session,
+        list(all_node_rows.keys()),
+        include_deleted=True,
+        preloaded_inherit=preloaded_inherit,
+        exclude_expired_before=exclude_expired_before,
+        active_at_utc=active_at_utc,
+        canonicalize=canonicalize,
     )
 
     namespace_nodes: dict[str, NamespaceNode] = {}
-    for nid, (_id, name, _parent_id, node_type, status) in all_node_rows.items():
+    for nid, (
+        _id,
+        name,
+        _parent_id,
+        node_type,
+        status,
+        inherit_flag,
+    ) in all_node_rows.items():
         obj_type = (
             ObjectType.DOCUMENT
             if node_type == NodeType.DOCUMENT.value
@@ -161,7 +231,7 @@ def load_ancestor_paths_for_nodes(
             if status == EntityStatus.DELETED.value
             else ObjectState.NORMAL
         )
-        policy = policies.get(nid, CompiledPolicy(inherit=True, rules=()))
+        policy = policies.get(nid, CompiledPolicy(inherit=inherit_flag, rules=()))
         namespace_nodes[nid] = NamespaceNode(
             node_id=nid,
             name=name,
@@ -194,9 +264,17 @@ def load_ancestor_path(
     target: Document | Folder,
     *,
     include_deleted: bool = False,
+    exclude_expired_before: datetime.datetime | None = None,
+    active_at_utc: datetime.datetime | None = None,
+    canonicalize: bool = True,
 ) -> list[NamespaceNode]:
     return load_ancestor_paths_for_nodes(
-        session, [target], include_deleted=include_deleted
+        session,
+        [target],
+        include_deleted=include_deleted,
+        exclude_expired_before=exclude_expired_before,
+        active_at_utc=active_at_utc,
+        canonicalize=canonicalize,
     )[target.id]
 
 
@@ -243,7 +321,13 @@ def authorize_node_operation(
         )
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    path = load_ancestor_path(session, target, include_deleted=include_deleted)
+    path = load_ancestor_path(
+        session,
+        target,
+        include_deleted=include_deleted,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
     return evaluate_access(
         user_to_subject(user),
         path,
@@ -251,6 +335,235 @@ def authorize_node_operation(
         eval_time_utc=now,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
     )
+
+
+def evaluate_node_effective_masks(
+    session: OrmSession,
+    user: User,
+    target: Document | Folder,
+    *,
+    include_deleted: bool = False,
+    eval_time_utc: datetime.datetime | None = None,
+) -> EffectiveMasksResult:
+    """Compute effective masks for a target node in one DB pass."""
+    if has_bypass_dacl(user):
+        return EffectiveMasksResult(
+            allowed_traverse=True,
+            effective_allow_mask=_ALL_OPS_MASK,
+            effective_deny_mask=0,
+            effective_mask=_ALL_OPS_MASK,
+        )
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = load_ancestor_path(
+        session,
+        target,
+        include_deleted=include_deleted,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    return evaluate_effective_masks(
+        user_to_subject(user),
+        path,
+        eval_time_utc=now,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    )
+
+
+def authorize_directory_access_with_parent(
+    session: OrmSession,
+    user: User,
+    directory: Folder,
+    operation: AtomicOp,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> tuple[bool, str | None]:
+    """Authorize directory access and compute visible parent_id in a single DB pass."""
+    if _check_step1_invariants(directory, operation) is not None:
+        return False, None
+
+    if has_bypass_dacl(user):
+        return True, directory.parent_id
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = load_ancestor_path(
+        session,
+        directory,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    path_masks = evaluate_path_masks(
+        user_to_subject(user),
+        path,
+        eval_time_utc=now,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    )
+    if not path_masks.target.allowed_traverse or not (
+        path_masks.target.effective_mask & int(operation)
+    ):
+        return False, None
+
+    visible_parent_id = (
+        directory.parent_id
+        if (
+            directory.parent_id is not None
+            and path_masks.parent_state is ObjectState.NORMAL
+            and bool(path_masks.parent_effective_mask & int(AtomicOp.LIST_DIRECTORY))
+        )
+        else None
+    )
+    return True, visible_parent_id
+
+
+def authorize_dacl_read(
+    session: OrmSession,
+    user: User,
+    target: Document | Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> tuple[bool, CompiledPolicy | None]:
+    """Authorize READ_DACL and return the target's canonical CompiledPolicy in one DB pass."""
+    if _check_step1_invariants(target, AtomicOp.READ_DACL) is not None:
+        return False, None
+
+    if has_bypass_dacl(user):
+        policy = load_node_policies(
+            session,
+            [target.id],
+            preloaded_inherit={target.id: bool(target.inherit)},
+            canonicalize=True,
+        )[target.id]
+        return True, policy
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = load_ancestor_path(
+        session,
+        target,
+        exclude_expired_before=None,
+        canonicalize=True,
+    )
+    decision = evaluate_access(
+        user_to_subject(user),
+        path,
+        AtomicOp.READ_DACL,
+        eval_time_utc=now,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    )
+    if not decision.allowed:
+        return False, None
+    return True, path[-1].policy
+
+
+def authorize_write_dacl_and_load_path(
+    session: OrmSession,
+    user: User,
+    target: Document | Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> tuple[bool, list[NamespaceNode] | None, bool]:
+    """Authorize WRITE_DACL up front and return the loaded path for post-compile lockout checks."""
+    if _check_step1_invariants(target, AtomicOp.WRITE_DACL) is not None:
+        return False, None, False
+
+    if has_bypass_dacl(user):
+        return True, None, False
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = load_ancestor_path(
+        session,
+        target,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    check_traverse = should_check_ancestor_traverse(session, user)
+    decision = evaluate_access(
+        user_to_subject(user),
+        path,
+        AtomicOp.WRITE_DACL,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
+    if not decision.allowed:
+        return False, None, check_traverse
+    return True, path, check_traverse
+
+
+def simulate_dacl_save_lockout(
+    user: User,
+    current_path: list[NamespaceNode] | None,
+    proposed_policy: CompiledPolicy,
+    *,
+    check_ancestor_traverse: bool,
+    eval_time_utc: datetime.datetime | None = None,
+) -> bool:
+    """Return True if saving proposed_policy would revoke WRITE_DACL, using a preloaded path."""
+    if current_path is None or has_bypass_dacl(user):
+        return False
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    target = current_path[-1]
+    simulated_target = NamespaceNode(
+        node_id=target.node_id,
+        name=target.name,
+        object_type=target.object_type,
+        state=target.state,
+        policy=proposed_policy,
+    )
+    post_check = evaluate_access(
+        user_to_subject(user),
+        current_path[:-1] + [simulated_target],
+        AtomicOp.WRITE_DACL,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_ancestor_traverse,
+    )
+    return not post_check.allowed
+
+
+def authorize_create_on_parent(
+    session: OrmSession,
+    user: User,
+    parent: Folder,
+    operation: AtomicOp,
+    *,
+    require_write_dacl: bool = False,
+    eval_time_utc: datetime.datetime | None = None,
+) -> tuple[bool, bool, list[NamespaceNode] | None, bool]:
+    """Check CREATE_* (and optional WRITE_DACL) on parent in one DB pass."""
+    if _check_step1_invariants(parent, operation) is not None:
+        return False, False, None, False
+    if (
+        require_write_dacl
+        and _check_step1_invariants(parent, AtomicOp.WRITE_DACL) is not None
+    ):
+        return True, False, None, False
+
+    if has_bypass_dacl(user):
+        return True, True, None, False
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    parent_path = load_ancestor_path(
+        session,
+        parent,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    check_traverse = should_check_ancestor_traverse(session, user)
+    masks = evaluate_effective_masks(
+        user_to_subject(user),
+        parent_path,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
+    if not masks.allowed_traverse:
+        return False, False, None, check_traverse
+
+    can_create = bool(masks.effective_mask & int(operation))
+    can_write_dacl = (
+        bool(masks.effective_mask & int(AtomicOp.WRITE_DACL))
+        if require_write_dacl
+        else True
+    )
+    return can_create, can_write_dacl, parent_path, check_traverse
 
 
 def authorize_reparent(
@@ -281,13 +594,128 @@ def authorize_reparent(
         )
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    paths = load_ancestor_paths_for_nodes(session, [source, dest_parent])
+    paths = load_ancestor_paths_for_nodes(
+        session,
+        [source, dest_parent],
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
     return evaluate_reparent(
         user_to_subject(user),
         paths[source.id],
         paths[dest_parent.id],
         eval_time_utc=now,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    )
+
+
+def check_directory_soft_delete_root(
+    session: OrmSession,
+    user: User,
+    target: Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> DirectorySoftDeleteRootCheck:
+    """Authorize DELETE and DIRECTORY_DELETE_CHILD on target before scanning any subtree."""
+    if _check_step1_invariants(target, AtomicOp.DELETE) is not None:
+        return DirectorySoftDeleteRootCheck(allowed=False, needs_descendant_check=False)
+
+    if has_bypass_dacl(user):
+        return DirectorySoftDeleteRootCheck(allowed=True, needs_descendant_check=False)
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = load_ancestor_path(
+        session,
+        target,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    check_traverse = should_check_ancestor_traverse(session, user)
+    path_masks = evaluate_path_masks(
+        user_to_subject(user),
+        path,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
+    if not path_masks.target.allowed_traverse or not (
+        path_masks.target.effective_mask & int(AtomicOp.DELETE)
+    ):
+        return DirectorySoftDeleteRootCheck(allowed=False, needs_descendant_check=False)
+
+    if path_masks.target.effective_mask & int(AtomicOp.DIRECTORY_DELETE_CHILD):
+        return DirectorySoftDeleteRootCheck(allowed=True, needs_descendant_check=False)
+
+    return DirectorySoftDeleteRootCheck(
+        allowed=True,
+        needs_descendant_check=True,
+        target_effective_mask=path_masks.target.effective_mask,
+        target_inherited=path_masks.target_inherited,
+        check_ancestor_traverse=check_traverse,
+        eval_time_utc=now,
+    )
+
+
+def authorize_soft_delete_descendants(
+    session: OrmSession,
+    user: User,
+    target_id: str,
+    descendant_rows: Sequence[_SubtreeNodeLike],
+    root_check: DirectorySoftDeleteRootCheck,
+) -> EvalDecision:
+    """Load only descendant DACLs (0 ancestor CTEs) and verify DELETE in O(N * R)."""
+    if not root_check.allowed:
+        return EvalDecision(
+            allowed=False,
+            reason="DELETE on target failed.",
+            step="5_composite_delete_target",
+        )
+    if not root_check.needs_descendant_check or not descendant_rows:
+        return EvalDecision(
+            allowed=True,
+            reason="Subtree delete authorized without per-descendant checks.",
+            step="5_composite_allowed",
+        )
+
+    now = root_check.eval_time_utc or datetime.datetime.now(datetime.UTC)
+    preloaded_inherit = {row.id: bool(row.inherit) for row in descendant_rows}
+    policies = load_node_policies(
+        session,
+        list(preloaded_inherit.keys()),
+        include_deleted=False,
+        preloaded_inherit=preloaded_inherit,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+
+    subtree_nodes = [
+        SubtreeNode(
+            node_id=row.id,
+            parent_id=row.parent_id or target_id,
+            name=row.name,
+            object_type=(
+                ObjectType.DOCUMENT
+                if row.type == NodeType.DOCUMENT.value
+                else ObjectType.DIRECTORY
+            ),
+            state=(
+                ObjectState.SOFT_DELETED
+                if int(row.status) == EntityStatus.DELETED.value
+                else ObjectState.NORMAL
+            ),
+            policy=policies.get(
+                row.id, CompiledPolicy(inherit=bool(row.inherit), rules=())
+            ),
+        )
+        for row in descendant_rows
+    ]
+    return evaluate_soft_delete_subtree(
+        user_to_subject(user),
+        target_id,
+        root_check.target_effective_mask,
+        root_check.target_inherited,
+        subtree_nodes,
+        eval_time_utc=now,
+        check_ancestor_traverse=root_check.check_ancestor_traverse,
     )
 
 
@@ -300,26 +728,17 @@ def authorize_directory_soft_delete(
     eval_time_utc: datetime.datetime | None = None,
 ) -> EvalDecision:
     """Evaluate CEP-0002 Step 5 atomic soft-delete for a directory and its descendants."""
-    step1_denial = _check_step1_invariants(target, AtomicOp.DELETE)
-    if step1_denial is not None:
-        return step1_denial
-
-    if has_bypass_dacl(user):
+    root_check = check_directory_soft_delete_root(
+        session, user, target, eval_time_utc=eval_time_utc
+    )
+    if not root_check.allowed:
         return EvalDecision(
-            allowed=True,
-            reason="Allowed by global BYPASS_DACL capability.",
-            step="0_bypass_dacl",
+            allowed=False,
+            reason="DELETE on target failed.",
+            step="5_composite_delete_target",
         )
-
-    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    all_nodes: list[Document | Folder] = [target, *descendants]
-    paths = load_ancestor_paths_for_nodes(session, all_nodes)
-    return evaluate_soft_delete(
-        user_to_subject(user),
-        paths[target.id],
-        [paths[node.id] for node in descendants],
-        eval_time_utc=now,
-        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    return authorize_soft_delete_descendants(
+        session, user, target.id, descendants, root_check
     )
 
 
@@ -361,7 +780,11 @@ def authorize_restore(
     check_traverse = should_check_ancestor_traverse(session, user)
     subject = user_to_subject(user)
     paths = load_ancestor_paths_for_nodes(
-        session, [target, target_parent], include_deleted=True
+        session,
+        [target, target_parent],
+        include_deleted=True,
+        exclude_expired_before=now,
+        canonicalize=False,
     )
     target_path = paths[target.id]
 
@@ -431,7 +854,12 @@ def authorize_dacl_save(
         )
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    path = load_ancestor_path(session, target)
+    path = load_ancestor_path(
+        session,
+        target,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
     return authorize_policy_save(
         user_to_subject(user),
         path,
@@ -450,13 +878,29 @@ def would_self_lockout_on_create(
     proposed_policy: CompiledPolicy,
     *,
     eval_time_utc: datetime.datetime | None = None,
+    parent_path: list[NamespaceNode] | None = None,
+    check_ancestor_traverse: bool | None = None,
 ) -> bool:
     """Return True if saving proposed_policy on a newly created child would revoke the actor's WRITE_DACL."""
     if has_bypass_dacl(user):
         return False
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    parent_path = load_ancestor_path(session, parent)
+    resolved_path = (
+        parent_path
+        if parent_path is not None
+        else load_ancestor_path(
+            session,
+            parent,
+            exclude_expired_before=now,
+            canonicalize=False,
+        )
+    )
+    check_traverse = (
+        check_ancestor_traverse
+        if check_ancestor_traverse is not None
+        else should_check_ancestor_traverse(session, user)
+    )
     simulated_node = NamespaceNode(
         node_id="__pending__",
         name=name,
@@ -466,9 +910,9 @@ def would_self_lockout_on_create(
     )
     post_check = evaluate_access(
         user_to_subject(user),
-        [*parent_path, simulated_node],
+        [*resolved_path, simulated_node],
         AtomicOp.WRITE_DACL,
         eval_time_utc=now,
-        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+        check_ancestor_traverse=check_traverse,
     )
     return not post_check.allowed
