@@ -85,11 +85,11 @@ from include.domains.documents.handlers.dacl import (
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
+from include.domains.documents.queries.active_revisions import (
+    fetch_latest_active_revisions_by_document,
+)
 from include.domains.documents.queries.file_references import (
     find_unreachable_document_file_ids,
-)
-from include.domains.documents.queries.listing import (
-    fetch_latest_active_revisions_by_document,
 )
 from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.exceptions.misc import NoActiveRevisionsError
@@ -938,15 +938,6 @@ class RequestReparentDocumentHandler(RequestHandler[_ReparentDocumentRequest]):
                     user_id=handler.user_id,
                 )
 
-            if (document.folder_id or ROOT_DIRECTORY_ID) == target_folder_id:
-                handler.conclude_request(400, {}, smsg.CANNOT_REPARENT_TO_SAME_FOLDER)
-                return Result(
-                    code=400,
-                    target=document_id,
-                    data={"target_folder_id": target_folder_id},
-                    user_id=handler.user_id,
-                )
-
             target_folder = session.get(Folder, target_folder_id)
             if not target_folder:
                 handler.conclude_request(
@@ -963,6 +954,15 @@ class RequestReparentDocumentHandler(RequestHandler[_ReparentDocumentRequest]):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_REPARENT_DOCUMENT)
                 return Result(
                     code=403,
+                    target=document_id,
+                    data={"target_folder_id": target_folder_id},
+                    user_id=handler.user_id,
+                )
+
+            if (document.folder_id or ROOT_DIRECTORY_ID) == target_folder_id:
+                handler.conclude_request(400, {}, smsg.CANNOT_REPARENT_TO_SAME_FOLDER)
+                return Result(
+                    code=400,
                     target=document_id,
                     data={"target_folder_id": target_folder_id},
                     user_id=handler.user_id,

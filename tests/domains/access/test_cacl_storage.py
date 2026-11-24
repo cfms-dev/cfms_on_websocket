@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from include.config.constants import DACL_MAX_RULES_PER_NODE
 from include.database import models
 from include.database.models.access import datetime_to_epoch_us, epoch_us_to_datetime
+from include.database.models.documents import NodeType
 from include.database.session import Base, Session
 from include.domains.access.authorization import (
     evaluation as eval_mod,
@@ -589,6 +590,19 @@ def test_load_ancestor_paths_fails_closed_when_depth_limit_exceeded(
     monkeypatch.setattr(eval_mod, "MAX_HIERARCHY_DEPTH", 2)
     with pytest.raises(RuntimeError, match="Incomplete ancestor chain"):
         load_ancestor_paths_for_nodes(cacl_session, [deepest])
+
+
+def test_load_ancestor_paths_fails_closed_for_orphan_root_mismatch(cacl_session):
+    orphan = models.Folder(
+        id="orphan-unrooted",
+        name="Orphan",
+        parent_id=None,
+        type=NodeType.DIRECTORY.value,
+        status=models.EntityStatus.OK,
+        inherit=True,
+    )
+    with pytest.raises(RuntimeError, match="not rooted at '/'"):
+        load_ancestor_paths_for_nodes(cacl_session, [orphan])
 
 
 def test_authorize_create_on_parent_fails_closed_on_write_dacl_step1_failure(

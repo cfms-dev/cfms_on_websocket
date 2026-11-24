@@ -578,10 +578,6 @@ class RequestReparentDirectoryHandler(RequestHandler[_ReparentDirectoryRequest])
                 )
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
 
-            if (folder.parent_id or ROOT_DIRECTORY_ID) == target_folder_id:
-                handler.conclude_request(400, {}, smsg.CANNOT_REPARENT_TO_SAME_FOLDER)
-                return Result(code=400, target=folder_id, user_id=handler.user_id)
-
             target_folder = session.get(Folder, target_folder_id)
             if not target_folder:
                 handler.conclude_request(
@@ -589,15 +585,19 @@ class RequestReparentDirectoryHandler(RequestHandler[_ReparentDirectoryRequest])
                 )
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
 
+            if not authorize_reparent(session, user, folder, target_folder).allowed:
+                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_REPARENT_DIRECTORY)
+                return Result(code=403, target=folder_id, user_id=handler.user_id)
+
+            if (folder.parent_id or ROOT_DIRECTORY_ID) == target_folder_id:
+                handler.conclude_request(400, {}, smsg.CANNOT_REPARENT_TO_SAME_FOLDER)
+                return Result(code=400, target=folder_id, user_id=handler.user_id)
+
             if target_folder.id == folder.id or target_folder.is_descendant_of(folder):
                 handler.conclude_request(
                     400, {}, smsg.CANNOT_REPARENT_DIRECTORY_INTO_SUBDIRECTORY
                 )
                 return Result(code=400, target=folder_id, user_id=handler.user_id)
-
-            if not authorize_reparent(session, user, folder, target_folder).allowed:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_REPARENT_DIRECTORY)
-                return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             name = folder.name
             try:

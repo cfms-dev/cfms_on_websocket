@@ -10,6 +10,7 @@ __all__ = [
     "PathMasksResult",
     "Subject",
     "SubtreeNode",
+    "check_op_applicability",
     "eval_dnf",
     "evaluate_access",
     "evaluate_effective_masks",
@@ -17,6 +18,8 @@ __all__ = [
     "evaluate_reparent",
     "evaluate_restore",
     "evaluate_soft_delete_subtree",
+    "is_ancestor_dir_traversable",
+    "is_effective_mask_visible",
     "op_applies_to_object",
     "op_applies_to_state",
     "rule_active_at",
@@ -320,6 +323,52 @@ _TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
 _DELETE_BIT = int(AtomicOp.DELETE)
 
 
+def check_op_applicability(
+    operation: AtomicOp,
+    object_type: ObjectType,
+    state: ObjectState,
+) -> EvalDecision | None:
+    """Return a Step 1 denial if operation does not apply to object_type or state."""
+    if not op_applies_to_object(operation, object_type):
+        return EvalDecision(
+            allowed=False,
+            reason=f"Operation {operation.name} is not applicable to {object_type.value}.",
+            step="1_lifecycle_and_type",
+        )
+    if not op_applies_to_state(operation, state):
+        return EvalDecision(
+            allowed=False,
+            reason=f"Operation {operation.name} is not applicable in state {state.value}.",
+            step="1_lifecycle_and_type",
+        )
+    return None
+
+
+def is_ancestor_dir_traversable(
+    state: ObjectState,
+    own_allow: int,
+    own_deny: int,
+    *,
+    check_traverse: bool,
+) -> bool:
+    """Return True if an ancestor directory permits traversal for visibility/access."""
+    if not check_traverse:
+        return True
+    if state is not ObjectState.NORMAL:
+        return False
+    return bool((own_allow & _TRAVERSE_BIT) and not (own_deny & _TRAVERSE_BIT))
+
+
+def is_effective_mask_visible(object_type: ObjectType, effective_mask: int) -> bool:
+    """Return True if an effective permission mask makes the node visible."""
+    required_mask = (
+        DIRECTORY_VISIBILITY_MASK
+        if object_type is ObjectType.DIRECTORY
+        else DOCUMENT_VISIBILITY_MASK
+    )
+    return bool(effective_mask & required_mask)
+
+
 def _collect_op_traces_on_chain(
     subject: Subject,
     chain_root_to_target: list[NamespaceNode],
@@ -412,7 +461,9 @@ def _walk_path_dacl(
             if ancestor.state is not ObjectState.NORMAL:
                 continue
             next_transition = _min_transition(next_transition, own_next)
-            if not ((own_allow & _TRAVERSE_BIT) and not (own_deny & _TRAVERSE_BIT)):
+            if not is_ancestor_dir_traversable(
+                ancestor.state, own_allow, own_deny, check_traverse=True
+            ):
                 return _PathWalkResult(
                     allowed_traverse=False,
                     allow_mask=own_allow,
@@ -535,18 +586,11 @@ def _check_access_preconditions(
     operation: AtomicOp,
     path_root_to_target: list[NamespaceNode],
 ) -> EvalDecision | None:
-    if not op_applies_to_object(operation, target.object_type):
-        return EvalDecision(
-            allowed=False,
-            reason=f"Operation {operation.name} is not applicable to {target.object_type.value}.",
-            step="1_lifecycle_and_type",
-        )
-    if not op_applies_to_state(operation, target.state):
-        return EvalDecision(
-            allowed=False,
-            reason=f"Operation {operation.name} is not applicable in state {target.state.value}.",
-            step="1_lifecycle_and_type",
-        )
+    applicability_denial = check_op_applicability(
+        operation, target.object_type, target.state
+    )
+    if applicability_denial is not None:
+        return applicability_denial
     if (
         operation is AtomicOp.RESTORE
         and target.object_type is ObjectType.DIRECTORY
@@ -796,18 +840,11 @@ def evaluate_restore(
     )
     target = target_path[-1]
     dest_parent = dest_parent_path[-1]
-    if not op_applies_to_object(AtomicOp.RESTORE, target.object_type):
-        return EvalDecision(
-            allowed=False,
-            reason=f"Operation RESTORE is not applicable to {target.object_type.value}.",
-            step="1_lifecycle_and_type",
-        )
-    if not op_applies_to_state(AtomicOp.RESTORE, target.state):
-        return EvalDecision(
-            allowed=False,
-            reason=f"Operation RESTORE is not applicable in state {target.state.value}.",
-            step="1_lifecycle_and_type",
-        )
+    applicability_denial = check_op_applicability(
+        AtomicOp.RESTORE, target.object_type, target.state
+    )
+    if applicability_denial is not None:
+        return applicability_denial
     if dest_parent.state is not ObjectState.NORMAL:
         return EvalDecision(
             allowed=False,

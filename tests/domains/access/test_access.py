@@ -460,3 +460,52 @@ class TestCaclAuthorizationSemantics:
             ),
             403,
         )
+
+    @pytest.mark.asyncio
+    async def test_reparent_authorizes_before_topology_and_same_parent_checks(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        actor = await user_factory()
+        parent = await directory_factory()
+        child = await directory_factory(parent_id=parent["folder_id"])
+        grandchild = await directory_factory(parent_id=child["folder_id"])
+        doc = await document_factory("ReparentOrderDoc", folder_id=parent["folder_id"])
+
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"], "inherit off;"
+            )
+        )
+
+        actor_client = await client_factory()
+        assert_success(await actor_client.login(actor["username"], actor["password"]))
+
+        assert_error(
+            await actor_client.reparent_directory(
+                child["folder_id"], parent["folder_id"]
+            ),
+            403,
+        )
+        assert_error(
+            await actor_client.reparent_directory(
+                parent["folder_id"], parent["folder_id"]
+            ),
+            403,
+        )
+        assert_error(
+            await actor_client.reparent_directory(
+                parent["folder_id"], grandchild["folder_id"]
+            ),
+            403,
+        )
+        assert_error(
+            await actor_client.reparent_document(
+                doc["document_id"], parent["folder_id"]
+            ),
+            403,
+        )

@@ -22,12 +22,14 @@ def directory_models():
     )
     from include.database.models.files import File
     from include.database.session import Base
+    from include.domains.documents.queries.active_revisions import (
+        fetch_latest_active_revisions_by_document,
+    )
     from include.domains.documents.queries.listing import (
         count_active_directory_children,
         directory_cursor_key,
         fetch_deleted_listing_items,
         fetch_directory_listing_items,
-        fetch_latest_active_revisions_by_document,
     )
 
     _ = (access_models, keyring)

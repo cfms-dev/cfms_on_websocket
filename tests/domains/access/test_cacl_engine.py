@@ -11,12 +11,15 @@ from include.domains.access.authorization.engine import (
     ObjectState,
     Subject,
     SubtreeNode,
+    check_op_applicability,
     evaluate_access,
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_reparent,
     evaluate_restore,
     evaluate_soft_delete_subtree,
+    is_ancestor_dir_traversable,
+    is_effective_mask_visible,
     simulate_policy_save_lockout,
 )
 
@@ -592,3 +595,39 @@ def test_evaluate_restore_in_place_and_reparenting():
     )
     assert not reparent_denied_restore.allowed
     assert reparent_denied_restore.step == "4_deny_overrides"
+
+
+def test_shared_step1_traverse_and_visibility_predicates():
+    assert check_op_applicability(AtomicOp.READ_CONTENT, F, ObjectState.NORMAL) is None
+    wrong_type = check_op_applicability(AtomicOp.READ_CONTENT, D, ObjectState.NORMAL)
+    assert wrong_type is not None
+    assert not wrong_type.allowed
+    assert wrong_type.step == "1_lifecycle_and_type"
+
+    wrong_state = check_op_applicability(
+        AtomicOp.READ_CONTENT, F, ObjectState.SOFT_DELETED
+    )
+    assert wrong_state is not None
+    assert not wrong_state.allowed
+    assert wrong_state.step == "1_lifecycle_and_type"
+
+    t_bit = int(AtomicOp.TRAVERSE)
+    assert is_ancestor_dir_traversable(
+        ObjectState.NORMAL, t_bit, 0, check_traverse=True
+    )
+    assert not is_ancestor_dir_traversable(
+        ObjectState.NORMAL, t_bit, t_bit, check_traverse=True
+    )
+    assert not is_ancestor_dir_traversable(
+        ObjectState.SOFT_DELETED, t_bit, 0, check_traverse=True
+    )
+    assert is_ancestor_dir_traversable(
+        ObjectState.SOFT_DELETED, 0, t_bit, check_traverse=False
+    )
+
+    assert is_effective_mask_visible(D, int(AtomicOp.LIST_DIRECTORY))
+    assert is_effective_mask_visible(D, int(AtomicOp.READ_METADATA))
+    assert not is_effective_mask_visible(D, int(AtomicOp.TRAVERSE))
+    assert is_effective_mask_visible(F, int(AtomicOp.READ_CONTENT))
+    assert is_effective_mask_visible(F, int(AtomicOp.READ_METADATA))
+    assert not is_effective_mask_visible(F, int(AtomicOp.WRITE_CONTENT))

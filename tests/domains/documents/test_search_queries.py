@@ -37,7 +37,8 @@ def search_query_context(sqlite_engine_factory):
         compile_policy_source,
         persist_node_policy,
     )
-    from include.domains.documents.queries.listing import (
+    from include.domains.documents.queries.search import (
+        SearchQuerySpec,
         fetch_visible_search_candidate_rows,
     )
 
@@ -54,6 +55,7 @@ def search_query_context(sqlite_engine_factory):
         persist_node_policy(session, root, root_compiled.policy)
         session.commit()
         yield SimpleNamespace(
+            SearchQuerySpec=SearchQuerySpec,
             authorize_node_operation=authorize_node_operation,
             compile_policy_source=compile_policy_source,
             fetch_visible_search_candidate_rows=fetch_visible_search_candidate_rows,
@@ -61,6 +63,37 @@ def search_query_context(sqlite_engine_factory):
             persist_node_policy=persist_node_policy,
             session=session,
         )
+
+
+def _search(
+    context,
+    *,
+    user,
+    query: str,
+    sort_by: str = "name",
+    sort_order: str = "asc",
+    search_documents: bool = True,
+    search_directories: bool = True,
+    last_key=None,
+    limit: int = 10,
+    now: float = _NOW,
+    batch_strategy=None,
+):
+    return context.fetch_visible_search_candidate_rows(
+        context.session,
+        context.SearchQuerySpec(
+            query=query,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            search_documents=search_documents,
+            search_directories=search_directories,
+            last_key=last_key,
+            limit=limit,
+        ),
+        user=user,
+        now=now,
+        batch_strategy=batch_strategy,
+    )
 
 
 def _make_user(context, *, permissions=(), groups=(), username="alice"):
@@ -215,17 +248,12 @@ def test_visible_search_query_honors_cacl_dnf_and_negation(search_query_context)
         }
         sql_visible_ids = {
             item["id"]
-            for item in context.fetch_visible_search_candidate_rows(
-                context.session,
+            for item in _search(
+                context,
                 user=user,
-                now=_NOW,
                 query=query,
-                sort_by="name",
-                sort_order="asc",
                 search_documents=False,
                 search_directories=True,
-                last_key=None,
-                limit=10,
             )
         }
         assert sql_visible_ids == python_visible_ids == expected_ids
@@ -257,17 +285,12 @@ def test_visible_search_query_honors_inherit_off_and_ancestor_traverse(
     context.session.commit()
 
     # Without TRAVERSE on parent, child is hidden even with inherit off + local allow.
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query=f"{query}Child",
-        sort_by="name",
-        sort_order="asc",
         search_documents=False,
         search_directories=True,
-        last_key=None,
-        limit=10,
     )
     assert rows == []
 
@@ -280,17 +303,12 @@ def test_visible_search_query_honors_inherit_off_and_ancestor_traverse(
     )
     context.session.commit()
 
-    rows_after = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows_after = _search(
+        context,
         user=user,
-        now=_NOW,
         query=f"{query}Child",
-        sort_by="name",
-        sort_order="asc",
         search_documents=False,
         search_directories=True,
-        last_key=None,
-        limit=10,
     )
     assert [item["id"] for item in rows_after] == [child.id]
 
@@ -330,17 +348,12 @@ def test_visible_search_query_honors_deny_overrides_and_time_windows(
     )
     context.session.commit()
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query="SearchWindow",
-        sort_by="name",
-        sort_order="asc",
         search_documents=True,
         search_directories=False,
-        last_key=None,
-        limit=10,
     )
     assert [item["id"] for item in rows] == [active_doc.id]
     assert not context.authorize_node_operation(
@@ -386,31 +399,17 @@ def test_visible_search_query_honors_scopes_and_bypass_dacl(search_query_context
     )
     context.session.commit()
 
-    alice_rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    alice_rows = _search(
+        context,
         user=alice,
-        now=_NOW,
         query="SearchScope",
-        sort_by="name",
-        sort_order="asc",
-        search_documents=True,
-        search_directories=True,
-        last_key=None,
-        limit=10,
     )
     assert [item["id"] for item in alice_rows] == [child_doc.id]
 
-    admin_rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    admin_rows = _search(
+        context,
         user=admin,
-        now=_NOW,
         query="SearchScope",
-        sort_by="name",
-        sort_order="asc",
-        search_documents=True,
-        search_directories=True,
-        last_key=None,
-        limit=10,
     )
     assert {item["id"] for item in admin_rows} == {
         parent.id,
@@ -438,16 +437,12 @@ def test_visible_search_query_filters_before_limit(search_query_context):
     )
     context.session.commit()
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query=query,
-        sort_by="name",
-        sort_order="asc",
         search_documents=False,
         search_directories=True,
-        last_key=None,
         limit=1,
     )
 
@@ -495,13 +490,10 @@ def test_visible_search_query_multi_batch_pagination_and_no_legacy_ctes(
         collected_ids: list[str] = []
         last_key = None
         while True:
-            page = context.fetch_visible_search_candidate_rows(
-                context.session,
+            page = _search(
+                context,
                 user=user,
-                now=_NOW,
                 query=query,
-                sort_by="name",
-                sort_order="asc",
                 search_documents=False,
                 search_directories=True,
                 last_key=last_key,
@@ -539,17 +531,12 @@ def test_visible_search_query_hides_items_under_soft_deleted_ancestor(
     parent.status = context.models.EntityStatus.DELETED
     context.session.commit()
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query="DeletedAncChildTarget",
-        sort_by="name",
-        sort_order="asc",
         search_documents=False,
         search_directories=True,
-        last_key=None,
-        limit=10,
     )
     assert rows == []
 
@@ -561,17 +548,12 @@ def test_visible_search_query_hides_items_under_soft_deleted_ancestor(
     )
     context.session.commit()
 
-    rows_bypassed = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows_bypassed = _search(
+        context,
         user=user,
-        now=_NOW,
         query="DeletedAncChildTarget",
-        sort_by="name",
-        sort_order="asc",
         search_documents=False,
         search_directories=True,
-        last_key=None,
-        limit=10,
     )
     assert [item["id"] for item in rows_bypassed] == [child.id]
 
@@ -639,16 +621,12 @@ def test_low_selectivity_document_search_avoids_repeated_revision_subquery_and_s
         # 1. Default sort_by="name": no search_current_chain / row_number at all,
         # and blocked parent pruning keeps total SQL count very low.
         statements.clear()
-        name_rows = context.fetch_visible_search_candidate_rows(
-            context.session,
+        name_rows = _search(
+            context,
             user=user,
-            now=_NOW,
             query=query,
-            sort_by="name",
-            sort_order="asc",
             search_documents=True,
             search_directories=False,
-            last_key=None,
             limit=5,
         )
         name_stmts = list(statements)
@@ -657,16 +635,13 @@ def test_low_selectivity_document_search_avoids_repeated_revision_subquery_and_s
         # candidate query runs at most twice (Phase 1 probe + Phase 2 stream), and
         # no standalone clause/atom queries are emitted.
         statements.clear()
-        size_rows = context.fetch_visible_search_candidate_rows(
-            context.session,
+        size_rows = _search(
+            context,
             user=user,
-            now=_NOW,
             query=query,
             sort_by="size",
-            sort_order="asc",
             search_documents=True,
             search_directories=False,
-            last_key=None,
             limit=5,
         )
         size_stmts = list(statements)
@@ -811,16 +786,13 @@ def test_search_active_revision_resolution_parity_across_sort_modes(
     doc_inactive.current_revision_id = r_inactive.id
     context.session.commit()
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query=query,
         sort_by=sort_by,
-        sort_order="asc",
         search_documents=True,
         search_directories=False,
-        last_key=None,
         limit=3,
     )
 
@@ -848,7 +820,7 @@ def test_search_statements_compile_across_supported_dialects(dialect_name: str):
     from include.domains.access.authorization.storage import (
         build_ancestors_and_active_policies_stmt,
     )
-    from include.domains.documents.queries.listing import (
+    from include.domains.documents.queries.search import (
         _build_search_select,
         _search_candidate_selectable,
         _search_lightweight_candidate_selectable,
@@ -935,13 +907,10 @@ def test_windowed_keyset_batch_strategy_matches_streaming_parity(search_query_co
         collected: list[str] = []
         last_key = None
         while True:
-            page = context.fetch_visible_search_candidate_rows(
-                context.session,
+            page = _search(
+                context,
                 user=user,
-                now=_NOW,
                 query=query,
-                sort_by="name",
-                sort_order="asc",
                 search_documents=False,
                 search_directories=True,
                 last_key=last_key,
@@ -1001,10 +970,9 @@ def test_windowed_keyset_batch_strategy_matches_streaming_for_document_size_desc
         collected: list[tuple[str, int]] = []
         last_key = None
         while True:
-            page = context.fetch_visible_search_candidate_rows(
-                context.session,
+            page = _search(
+                context,
                 user=user,
-                now=_NOW,
                 query=query,
                 sort_by="size",
                 sort_order="desc",
@@ -1057,17 +1025,12 @@ def test_search_visibility_fails_closed_when_ancestor_chain_truncated(
     monkeypatch.setattr(storage_mod, "MAX_HIERARCHY_DEPTH", 2)
 
     # Fails closed with normal traverse checking.
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query="DeepSearchTargetDoc",
-        sort_by="name",
-        sort_order="asc",
         search_documents=True,
         search_directories=False,
-        last_key=None,
-        limit=10,
     )
     assert rows == []
 
@@ -1080,17 +1043,12 @@ def test_search_visibility_fails_closed_when_ancestor_chain_truncated(
     )
     context.session.commit()
 
-    rows_bypassed = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows_bypassed = _search(
+        context,
         user=user,
-        now=_NOW,
         query="DeepSearchTargetDoc",
-        sort_by="name",
-        sort_order="asc",
         search_documents=True,
         search_directories=False,
-        last_key=None,
-        limit=10,
     )
     assert rows_bypassed == []
 
@@ -1120,3 +1078,42 @@ def test_batch_visibility_evaluator_fails_closed_for_orphan_ancestor():
         inherit=False,
     )
     assert evaluator.is_visible(candidate) is False
+
+
+@pytest.mark.unit
+def test_batch_visibility_evaluator_preserves_deleted_candidate_status_when_used_as_ancestor():
+    evaluator = BatchVisibilityEvaluator(
+        session=None,  # type: ignore[arg-type]
+        subject=Subject(user_id=uuid.uuid4()),
+        now_utc=_NOW_DT,
+        check_traverse=True,
+    )
+    root_allow = compile_cacl(
+        "inherit off; allow [TRAVERSE, LIST_DIRECTORY, READ_CONTENT] to any;"
+    ).policy
+    assert root_allow is not None
+    evaluator._node_meta["/"] = AncestorNodeMeta(
+        parent_id=None, status=EntityStatus.OK.value, inherit=False
+    )
+    evaluator._node_policies["/"] = root_allow
+    evaluator._node_policies["deleted-dir"] = CompiledPolicy(inherit=True, rules=())
+    evaluator._node_policies["child-doc"] = CompiledPolicy(inherit=True, rules=())
+
+    deleted_dir_candidate = VisibilityCandidate(
+        node_id="deleted-dir",
+        parent_id="/",
+        object_type=ObjectType.DIRECTORY,
+        inherit=True,
+        status=EntityStatus.DELETED.value,
+    )
+    child_doc_candidate = VisibilityCandidate(
+        node_id="child-doc",
+        parent_id="deleted-dir",
+        object_type=ObjectType.DOCUMENT,
+        inherit=True,
+    )
+    evaluator._register_candidates_and_collect_missing(
+        [deleted_dir_candidate, child_doc_candidate]
+    )
+    assert evaluator._node_meta["deleted-dir"].status == EntityStatus.DELETED.value
+    assert evaluator.is_visible(child_doc_candidate) is False

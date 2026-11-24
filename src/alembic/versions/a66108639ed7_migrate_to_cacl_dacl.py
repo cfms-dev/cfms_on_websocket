@@ -6,14 +6,12 @@ Create Date: 2026-11-24 16:20:40.698440
 
 """
 
-import operator
 import time
 from collections.abc import Sequence
-from functools import reduce
+from dataclasses import dataclass
 
 import sqlalchemy as sa
 from alembic import op
-from cacl_compiler import DEFAULT_PRESET_MACROS, AtomicOp
 
 # revision identifiers, used by Alembic.
 revision: str = "a66108639ed7"
@@ -50,8 +48,11 @@ _REMOVED_PERMISSIONS = (
     "set_current_revision",
 )
 _ROOT_DIRECTORY_ID = "/"
-_PRESET_READ_MASK = DEFAULT_PRESET_MACROS["PRESET_READ"]
-_ALL_OPS_MASK = int(reduce(operator.or_, AtomicOp, 0))
+# Frozen CEP-0002 v1 bitmasks corresponding to DEFAULT_ROOT_DACL_SOURCE:
+# allow [PRESET_READ] to any;
+# allow [PRESET_RW, PRESET_TRASH_RW, PRESET_ACL_RW, READ_REVISION, DELETE_REVISION] to group("sysop");
+_PRESET_READ_MASK = 1043  # TRAVERSE | LIST_DIRECTORY | READ_CONTENT | READ_METADATA
+_DEFAULT_SYSOP_ALL_OPS_MASK = 2097151  # All 21 CEP-0002 v1 AtomicOps (bits 0..20)
 
 
 def _data_tables():
@@ -178,7 +179,7 @@ def _seed_default_root_dacl(connection: sa.Connection) -> None:
         dacl_rules.insert().values(
             node_id=_ROOT_DIRECTORY_ID,
             effect="allow",
-            permission_mask=_ALL_OPS_MASK,
+            permission_mask=_DEFAULT_SYSOP_ALL_OPS_MASK,
             scope="all",
             valid_from=None,
             valid_until=None,
@@ -203,129 +204,239 @@ _SQLITE_FK_NAMING = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class _SqliteNodeMigrationSnapshot:
+    saved_current_revisions: list[tuple[str, str]]
+    saved_parent_revisions: list[tuple[str, str]]
+    detached_fks: list[tuple[str, list[dict]]]
+    saved_nodes: list[dict]
+    saved_folders: list[dict]
+
+
+def _detach_sqlite_node_dependents(
+    connection: sa.Connection,
+) -> _SqliteNodeMigrationSnapshot:
+    inspector = sa.inspect(connection)
+    existing_tables = set(inspector.get_table_names())
+
+    saved_current_revisions: list[tuple[str, str]] = []
+    if "documents" in existing_tables:
+        saved_current_revisions = [
+            (row[0], row[1])
+            for row in connection.execute(
+                sa.text(
+                    "SELECT id, current_revision_id FROM documents "
+                    "WHERE current_revision_id IS NOT NULL"
+                )
+            ).all()
+        ]
+        if saved_current_revisions:
+            connection.execute(
+                sa.text("UPDATE documents SET current_revision_id = NULL")
+            )
+
+    saved_parent_revisions: list[tuple[str, str]] = []
+    if "document_revisions" in existing_tables:
+        saved_parent_revisions = [
+            (row[0], row[1])
+            for row in connection.execute(
+                sa.text(
+                    "SELECT id, parent_revision_id FROM document_revisions "
+                    "WHERE parent_revision_id IS NOT NULL"
+                )
+            ).all()
+        ]
+        if saved_parent_revisions:
+            connection.execute(
+                sa.text("UPDATE document_revisions SET parent_revision_id = NULL")
+            )
+
+    detached_fks: list[tuple[str, list[dict]]] = []
+    child_detach_plan = (
+        ("document_metadata_tags", {"document_metadata"}),
+        ("document_metadata", {"documents"}),
+        ("document_revisions", {"documents"}),
+        ("documents", {"nodes"}),
+    )
+    for table_name, referred_targets in child_detach_plan:
+        if table_name not in existing_tables:
+            continue
+        fks_to_drop = [
+            fk
+            for fk in inspector.get_foreign_keys(table_name)
+            if fk["referred_table"] in referred_targets
+        ]
+        if not fks_to_drop:
+            continue
+        detached_fks.append((table_name, fks_to_drop))
+        with op.batch_alter_table(
+            table_name, naming_convention=_SQLITE_FK_NAMING
+        ) as batch_op:
+            for fk in fks_to_drop:
+                constraint_name = fk["name"] or (
+                    f"fk_{table_name}_{fk['constrained_columns'][0]}_"
+                    f"{fk['referred_table']}"
+                )
+                batch_op.drop_constraint(constraint_name, type_="foreignkey")
+
+    saved_nodes = [
+        dict(row)
+        for row in connection.execute(
+            sa.text(
+                "SELECT id, type, name, parent_id, inherit, status, status_operation_id "
+                "FROM nodes"
+            )
+        )
+        .mappings()
+        .all()
+    ]
+    saved_folders = [
+        dict(row)
+        for row in connection.execute(
+            sa.text("SELECT id, created_time FROM folders")
+        )
+        .mappings()
+        .all()
+    ]
+    if saved_nodes:
+        connection.execute(sa.text("DELETE FROM nodes"))
+
+    return _SqliteNodeMigrationSnapshot(
+        saved_current_revisions=saved_current_revisions,
+        saved_parent_revisions=saved_parent_revisions,
+        detached_fks=detached_fks,
+        saved_nodes=saved_nodes,
+        saved_folders=saved_folders,
+    )
+
+
+def _reinsert_sqlite_nodes_and_folders(
+    connection: sa.Connection,
+    saved_nodes: list[dict],
+    saved_folders: list[dict],
+) -> None:
+    if not saved_nodes:
+        return
+
+    insert_node_sql = sa.text(
+        "INSERT INTO nodes (id, type, name, parent_id, inherit, status, status_operation_id) "
+        "VALUES (:id, :type, :name, :parent_id, :inherit, :status, :status_operation_id)"
+    )
+    insert_folder_sql = sa.text(
+        "INSERT INTO folders (id, created_time) VALUES (:id, :created_time)"
+    )
+    folders_by_id = {row["id"]: row for row in saved_folders}
+    folder_nodes = [row for row in saved_nodes if row["id"] in folders_by_id]
+    other_nodes = [row for row in saved_nodes if row["id"] not in folders_by_id]
+
+    inserted_folders: set[str] = set()
+    remaining_folders = list(folder_nodes)
+    while remaining_folders:
+        ready = [
+            row
+            for row in remaining_folders
+            if row["parent_id"] is None or row["parent_id"] in inserted_folders
+        ]
+        if not ready:
+            raise RuntimeError(
+                "Unable to restore folder hierarchy during nodes migration: cycle detected"
+            )
+        for row in ready:
+            connection.execute(insert_node_sql, row)
+            connection.execute(insert_folder_sql, folders_by_id[row["id"]])
+            inserted_folders.add(row["id"])
+        remaining_folders = [
+            row for row in remaining_folders if row["id"] not in inserted_folders
+        ]
+
+    for row in other_nodes:
+        connection.execute(insert_node_sql, row)
+
+
+def _restore_sqlite_node_dependents(
+    connection: sa.Connection,
+    snapshot: _SqliteNodeMigrationSnapshot,
+) -> None:
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_nodes_parent_status_lower_name_id "
+            "ON nodes (parent_id, status, lower(name), id)"
+        )
+    )
+    op.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_nodes_status_lower_name_id "
+            "ON nodes (status, lower(name), id)"
+        )
+    )
+
+    _reinsert_sqlite_nodes_and_folders(
+        connection, snapshot.saved_nodes, snapshot.saved_folders
+    )
+
+    for table_name, fks in reversed(snapshot.detached_fks):
+        with op.batch_alter_table(
+            table_name, naming_convention=_SQLITE_FK_NAMING
+        ) as batch_op:
+            for fk in fks:
+                batch_op.create_foreign_key(
+                    fk["name"],
+                    fk["referred_table"],
+                    fk["constrained_columns"],
+                    fk["referred_columns"],
+                    referent_schema=fk["referred_schema"],
+                    **fk["options"],
+                )
+
+    for rev_id, parent_rev_id in snapshot.saved_parent_revisions:
+        connection.execute(
+            sa.text(
+                "UPDATE document_revisions SET parent_revision_id = :parent_rev_id "
+                "WHERE id = :rev_id"
+            ),
+            {"rev_id": rev_id, "parent_rev_id": parent_rev_id},
+        )
+
+    for doc_id, rev_id in snapshot.saved_current_revisions:
+        connection.execute(
+            sa.text(
+                "UPDATE documents SET current_revision_id = :rev_id WHERE id = :doc_id"
+            ),
+            {"doc_id": doc_id, "rev_id": rev_id},
+        )
+
+
 def _alter_nodes_access_rule_set_column(*, drop: bool) -> None:
     """Drop or restore nodes.access_rule_set_id without losing SQLite rows via FK cascade."""
     connection = op.get_bind()
     is_sqlite = connection.dialect.name == "sqlite"
-
-    saved_current_revisions: list[tuple[str, str]] = []
-    saved_parent_revisions: list[tuple[str, str]] = []
-    detached_fks: list[tuple[str, list[dict]]] = []
-    saved_nodes: list[dict] = []
-    saved_folders: list[dict] = []
-
-    if is_sqlite:
-        inspector = sa.inspect(connection)
-        existing_tables = set(inspector.get_table_names())
-
-        # Save & clear documents.current_revision_id before detaching document_revisions.
-        if "documents" in existing_tables:
-            saved_current_revisions = [
-                (row[0], row[1])
-                for row in connection.execute(
-                    sa.text(
-                        "SELECT id, current_revision_id FROM documents "
-                        "WHERE current_revision_id IS NOT NULL"
-                    )
-                ).all()
-            ]
-            if saved_current_revisions:
-                connection.execute(
-                    sa.text("UPDATE documents SET current_revision_id = NULL")
-                )
-
-        # Save & clear self-referencing document_revisions.parent_revision_id before batch-altering document_revisions.
-        if "document_revisions" in existing_tables:
-            saved_parent_revisions = [
-                (row[0], row[1])
-                for row in connection.execute(
-                    sa.text(
-                        "SELECT id, parent_revision_id FROM document_revisions "
-                        "WHERE parent_revision_id IS NOT NULL"
-                    )
-                ).all()
-            ]
-            if saved_parent_revisions:
-                connection.execute(
-                    sa.text("UPDATE document_revisions SET parent_revision_id = NULL")
-                )
-
-        # Detach non-cyclic child tables referencing documents/nodes in reverse dependency order.
-        child_detach_plan = (
-            ("document_metadata_tags", {"document_metadata"}),
-            ("document_metadata", {"documents"}),
-            ("document_revisions", {"documents"}),
-            ("documents", {"nodes"}),
-        )
-        for table_name, referred_targets in child_detach_plan:
-            if table_name not in existing_tables:
-                continue
-            fks_to_drop = [
-                fk
-                for fk in inspector.get_foreign_keys(table_name)
-                if fk["referred_table"] in referred_targets
-            ]
-            if not fks_to_drop:
-                continue
-            detached_fks.append((table_name, fks_to_drop))
-            with op.batch_alter_table(
-                table_name, naming_convention=_SQLITE_FK_NAMING
-            ) as batch_op:
-                for fk in fks_to_drop:
-                    constraint_name = fk["name"] or (
-                        f"fk_{table_name}_{fk['constrained_columns'][0]}_"
-                        f"{fk['referred_table']}"
-                    )
-                    batch_op.drop_constraint(constraint_name, type_="foreignkey")
-
-        # Snapshot nodes + folders, then empty nodes so DROP TABLE cannot cascade into anything else.
-        saved_nodes = [
-            dict(row)
-            for row in connection.execute(
-                sa.text(
-                    "SELECT id, type, name, parent_id, inherit, status, status_operation_id "
-                    "FROM nodes"
-                )
-            )
-            .mappings()
-            .all()
-        ]
-        saved_folders = [
-            dict(row)
-            for row in connection.execute(
-                sa.text("SELECT id, created_time FROM folders")
-            )
-            .mappings()
-            .all()
-        ]
-        if saved_nodes:
-            connection.execute(sa.text("DELETE FROM nodes"))
+    snapshot = _detach_sqlite_node_dependents(connection) if is_sqlite else None
 
     with op.batch_alter_table("nodes", schema=None) as batch_op:
         if is_sqlite:
             batch_op.drop_constraint("uq_nodes_active_parent_name", type_="unique")
             batch_op.drop_column("active_name")
         if drop:
-            batch_op.drop_index(batch_op.f("ix_nodes_access_rule_set_id"))
             batch_op.drop_constraint(
                 batch_op.f("fk_nodes_access_rule_set_id_compiled_access_rule_sets"),
                 type_="foreignkey",
             )
+            batch_op.drop_index(batch_op.f("ix_nodes_access_rule_set_id"))
             batch_op.drop_column("access_rule_set_id")
         else:
             batch_op.add_column(
                 sa.Column("access_rule_set_id", sa.VARCHAR(length=32), nullable=True)
+            )
+            batch_op.create_index(
+                batch_op.f("ix_nodes_access_rule_set_id"),
+                ["access_rule_set_id"],
+                unique=False,
             )
             batch_op.create_foreign_key(
                 batch_op.f("fk_nodes_access_rule_set_id_compiled_access_rule_sets"),
                 "compiled_access_rule_sets",
                 ["access_rule_set_id"],
                 ["id"],
-            )
-            batch_op.create_index(
-                batch_op.f("ix_nodes_access_rule_set_id"),
-                ["access_rule_set_id"],
-                unique=False,
             )
         if is_sqlite:
             batch_op.add_column(
@@ -343,87 +454,8 @@ def _alter_nodes_access_rule_set_column(*, drop: bool) -> None:
                 "uq_nodes_active_parent_name", ["parent_id", "active_name"]
             )
 
-    if is_sqlite:
-        op.execute(
-            sa.text(
-                "CREATE INDEX IF NOT EXISTS ix_nodes_parent_status_lower_name_id "
-                "ON nodes (parent_id, status, lower(name), id)"
-            )
-        )
-        op.execute(
-            sa.text(
-                "CREATE INDEX IF NOT EXISTS ix_nodes_status_lower_name_id "
-                "ON nodes (status, lower(name), id)"
-            )
-        )
-
-        # Re-insert nodes & folders in parent-before-child order so mutual FKs stay valid.
-        if saved_nodes:
-            insert_node_sql = sa.text(
-                "INSERT INTO nodes (id, type, name, parent_id, inherit, status, status_operation_id) "
-                "VALUES (:id, :type, :name, :parent_id, :inherit, :status, :status_operation_id)"
-            )
-            insert_folder_sql = sa.text(
-                "INSERT INTO folders (id, created_time) VALUES (:id, :created_time)"
-            )
-            folders_by_id = {row["id"]: row for row in saved_folders}
-            folder_nodes = [row for row in saved_nodes if row["id"] in folders_by_id]
-            other_nodes = [row for row in saved_nodes if row["id"] not in folders_by_id]
-
-            inserted_folders: set[str] = set()
-            remaining_folders = list(folder_nodes)
-            while remaining_folders:
-                ready = [
-                    row
-                    for row in remaining_folders
-                    if row["parent_id"] is None or row["parent_id"] in inserted_folders
-                ]
-                if not ready:
-                    raise RuntimeError(
-                        "Unable to restore folder hierarchy during nodes migration: cycle detected"
-                    )
-                for row in ready:
-                    connection.execute(insert_node_sql, row)
-                    connection.execute(insert_folder_sql, folders_by_id[row["id"]])
-                    inserted_folders.add(row["id"])
-                remaining_folders = [
-                    row for row in remaining_folders if row["id"] not in inserted_folders
-                ]
-
-            for row in other_nodes:
-                connection.execute(insert_node_sql, row)
-
-        # Re-attach child FKs in parent-before-child order.
-        for table_name, fks in reversed(detached_fks):
-            with op.batch_alter_table(
-                table_name, naming_convention=_SQLITE_FK_NAMING
-            ) as batch_op:
-                for fk in fks:
-                    batch_op.create_foreign_key(
-                        fk["name"],
-                        fk["referred_table"],
-                        fk["constrained_columns"],
-                        fk["referred_columns"],
-                        referent_schema=fk["referred_schema"],
-                        **fk["options"],
-                    )
-
-        for rev_id, parent_rev_id in saved_parent_revisions:
-            connection.execute(
-                sa.text(
-                    "UPDATE document_revisions SET parent_revision_id = :parent_rev_id "
-                    "WHERE id = :rev_id"
-                ),
-                {"rev_id": rev_id, "parent_rev_id": parent_rev_id},
-            )
-
-        for doc_id, rev_id in saved_current_revisions:
-            connection.execute(
-                sa.text(
-                    "UPDATE documents SET current_revision_id = :rev_id WHERE id = :doc_id"
-                ),
-                {"doc_id": doc_id, "rev_id": rev_id},
-            )
+    if snapshot is not None:
+        _restore_sqlite_node_dependents(connection, snapshot)
 
 
 def upgrade() -> None:
@@ -546,39 +578,13 @@ def upgrade() -> None:
             unique=False,
         )
 
-    with op.batch_alter_table("compiled_access_rule_rights", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_compiled_access_rule_rights_group_id"))
-        batch_op.drop_index(batch_op.f("ix_compiled_access_rule_rights_permission"))
     op.drop_table("compiled_access_rule_rights")
-
-    with op.batch_alter_table(
-        "compiled_access_rule_memberships", schema=None
-    ) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_compiled_access_rule_memberships_group_id"))
-        batch_op.drop_index(
-            batch_op.f("ix_compiled_access_rule_memberships_group_name")
-        )
     op.drop_table("compiled_access_rule_memberships")
-
-    with op.batch_alter_table("compiled_access_rule_groups", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_compiled_access_rule_groups_rule_id"))
     op.drop_table("compiled_access_rule_groups")
-
-    with op.batch_alter_table("compiled_access_rules", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_compiled_access_rules_access_type"))
-        batch_op.drop_index(batch_op.f("ix_compiled_access_rules_rule_set_id"))
     op.drop_table("compiled_access_rules")
-
-    with op.batch_alter_table("compiled_access_rule_sets", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_compiled_access_rule_sets_node_id"))
     op.drop_table("compiled_access_rule_sets")
-
     op.drop_table("userblock_sub_entries")
     op.drop_table("userblock_entries")
-
-    with op.batch_alter_table("object_access_entries", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_object_access_entries_entity_identifier"))
-        batch_op.drop_index(batch_op.f("ix_object_access_entries_target_identifier"))
     op.drop_table("object_access_entries")
 
     connection = op.get_bind()
@@ -892,19 +898,8 @@ def downgrade() -> None:
             unique=False,
         )
 
-    with op.batch_alter_table("dacl_rule_atoms", schema=None) as batch_op:
-        batch_op.drop_index("ix_dacl_rule_atoms_principal")
-        batch_op.drop_index(batch_op.f("ix_dacl_rule_atoms_clause_id"))
     op.drop_table("dacl_rule_atoms")
-
-    with op.batch_alter_table("dacl_rule_clauses", schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f("ix_dacl_rule_clauses_rule_id"))
     op.drop_table("dacl_rule_clauses")
-
-    with op.batch_alter_table("dacl_rules", schema=None) as batch_op:
-        batch_op.drop_index("ix_dacl_rules_validity")
-        batch_op.drop_index(batch_op.f("ix_dacl_rules_node_id"))
-        batch_op.drop_index("ix_dacl_rules_node_effect_scope")
     op.drop_table("dacl_rules")
 
     _alter_nodes_access_rule_set_column(drop=False)

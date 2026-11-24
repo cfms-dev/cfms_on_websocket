@@ -1,16 +1,14 @@
 from contextlib import contextmanager
 lazy from collections.abc import Iterator
 
+from cacl_compiler import ObjectType
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 lazy from sqlalchemy.orm import Session
 
 from include.database.errors import is_unique_constraint_violation
 from include.database.models.documents import Document, EntityStatus, Folder, Node
-from include.domains.access.authorization.engine import (
-    DIRECTORY_VISIBILITY_MASK,
-    DOCUMENT_VISIBILITY_MASK,
-)
+from include.domains.access.authorization.engine import is_effective_mask_visible
 from include.domains.access.authorization.evaluation import (
     evaluate_node_effective_masks,
 )
@@ -118,12 +116,12 @@ def _describe_node_name_conflict_winner(
         raise TypeError(f"Unsupported conflicting node type: {winner.type!r}")
 
     masks = evaluate_node_effective_masks(session, user, winner)
-    required_mask = (
-        DIRECTORY_VISIBILITY_MASK
-        if isinstance(winner, Folder)
-        else DOCUMENT_VISIBILITY_MASK
+    obj_type = (
+        ObjectType.DIRECTORY if isinstance(winner, Folder) else ObjectType.DOCUMENT
     )
-    readable = masks.allowed_traverse and bool(masks.effective_mask & required_mask)
+    readable = masks.allowed_traverse and is_effective_mask_visible(
+        obj_type, masks.effective_mask
+    )
     visible_id = winner.id if readable else None
     if isinstance(winner, Document):
         payload = {"type": "document", "id": visible_id}

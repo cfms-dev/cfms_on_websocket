@@ -9,17 +9,18 @@ from dataclasses import dataclass
 from itertools import batched
 from typing import Self
 
-from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType
+from cacl_compiler import CompiledPolicy, ObjectType
 from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.models.documents import EntityStatus
 from include.database.models.identity import User
 from include.domains.access.authorization.engine import (
-    DIRECTORY_VISIBILITY_MASK,
-    DOCUMENT_VISIBILITY_MASK,
     InheritedDaclState,
+    ObjectState,
     Subject,
+    is_ancestor_dir_traversable,
+    is_effective_mask_visible,
     step_node_dacl,
 )
 from include.domains.access.authorization.evaluation import (
@@ -32,7 +33,6 @@ from include.domains.access.authorization.storage import (
     load_node_policies,
 )
 
-_TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
 _EMPTY_INHERITED_STATE = InheritedDaclState()
 
 
@@ -42,6 +42,7 @@ class VisibilityCandidate:
     parent_id: str | None
     object_type: ObjectType
     inherit: bool
+    status: int = EntityStatus.OK.value
 
 
 class BatchVisibilityEvaluator:
@@ -85,7 +86,7 @@ class BatchVisibilityEvaluator:
             if candidate.node_id not in self._node_meta:
                 self._node_meta[candidate.node_id] = AncestorNodeMeta(
                     parent_id=candidate.parent_id,
-                    status=EntityStatus.OK.value,
+                    status=candidate.status,
                     inherit=candidate.inherit,
                 )
 
@@ -241,13 +242,17 @@ class BatchVisibilityEvaluator:
                 inherited,
                 self._now_utc,
             )
-            if self._check_traverse:
-                eff_mask = own_allow & ~own_deny
-                node_accessible = meta.status != EntityStatus.DELETED.value and bool(
-                    eff_mask & _TRAVERSE_BIT
-                )
-            else:
-                node_accessible = True
+            ancestor_state = (
+                ObjectState.SOFT_DELETED
+                if meta.status == EntityStatus.DELETED.value
+                else ObjectState.NORMAL
+            )
+            node_accessible = is_ancestor_dir_traversable(
+                ancestor_state,
+                own_allow,
+                own_deny,
+                check_traverse=self._check_traverse,
+            )
             self._dir_state_cache[nid] = (node_accessible, next_inherited)
             accessible, inherited = node_accessible, next_inherited
 
@@ -275,10 +280,4 @@ class BatchVisibilityEvaluator:
             parent_inherited,
             self._now_utc,
         )
-        eff_mask = own_allow & ~own_deny
-        required_mask = (
-            DIRECTORY_VISIBILITY_MASK
-            if candidate.object_type is ObjectType.DIRECTORY
-            else DOCUMENT_VISIBILITY_MASK
-        )
-        return bool(eff_mask & required_mask)
+        return is_effective_mask_visible(candidate.object_type, own_allow & ~own_deny)

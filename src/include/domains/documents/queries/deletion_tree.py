@@ -30,12 +30,12 @@ class SubtreeNodeRow:
     inherit: bool
 
 
-def _fetch_subtree_rows(
+def _query_subtree_folders(
     session: Session,
     root_folder_id: str,
     *,
     include_deleted: bool,
-) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+) -> dict[str, SubtreeNodeRow]:
     node_table = Node.__table__
     anchor = select(
         node_table.c.id.label("id"),
@@ -97,10 +97,13 @@ def _fetch_subtree_rows(
                 status=int(status),
                 inherit=bool(inherit_flag),
             )
+    return folder_by_id
 
-    if not folder_by_id:
-        return [], []
 
+def _order_descendant_folders_bottom_up(
+    folder_by_id: dict[str, SubtreeNodeRow],
+    root_folder_id: str,
+) -> list[SubtreeNodeRow]:
     # Topological order from deepest leaf up to root so callers can delete bottom-up.
     children_map: dict[str, list[str]] = defaultdict(list)
     parent_map: dict[str, str | None] = {}
@@ -126,9 +129,18 @@ def _fetch_subtree_rows(
 
     if visited_count != len(folder_by_id):
         raise RuntimeError("Cycle detected in folder hierarchy.")
+    return ordered_descendant_folders
 
+
+def _query_subtree_documents(
+    session: Session,
+    folder_ids: list[str],
+    *,
+    include_deleted: bool,
+) -> list[SubtreeNodeRow]:
+    node_table = Node.__table__
     documents: list[SubtreeNodeRow] = []
-    for chunk in batched(list(folder_by_id.keys()), QUERY_CHUNK_SIZE):
+    for chunk in batched(folder_ids, QUERY_CHUNK_SIZE):
         doc_stmt = select(
             node_table.c.id,
             node_table.c.name,
@@ -155,7 +167,26 @@ def _fetch_subtree_rows(
                     inherit=bool(inherit_flag),
                 )
             )
+    return documents
 
+
+def _fetch_subtree_rows(
+    session: Session,
+    root_folder_id: str,
+    *,
+    include_deleted: bool,
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    folder_by_id = _query_subtree_folders(
+        session, root_folder_id, include_deleted=include_deleted
+    )
+    if not folder_by_id:
+        return [], []
+    ordered_descendant_folders = _order_descendant_folders_bottom_up(
+        folder_by_id, root_folder_id
+    )
+    documents = _query_subtree_documents(
+        session, list(folder_by_id.keys()), include_deleted=include_deleted
+    )
     return ordered_descendant_folders, documents
 
 

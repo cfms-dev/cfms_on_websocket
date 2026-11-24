@@ -56,14 +56,13 @@ from include.domains.access.authorization.engine import (
     ObjectState,
     Subject,
     SubtreeNode,
+    check_op_applicability,
     evaluate_access,
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_reparent,
     evaluate_restore,
     evaluate_soft_delete_subtree,
-    op_applies_to_object,
-    op_applies_to_state,
     simulate_policy_save_lockout,
 )
 from include.domains.access.authorization.storage import (
@@ -247,6 +246,11 @@ def _assemble_namespace_chains(
             chain.append(namespace_nodes[curr_id])
             curr_id = row.parent_id
         chain.reverse()
+        if not chain or chain[0].node_id != ROOT_DIRECTORY_ID:
+            raise RuntimeError(
+                f"Incomplete ancestor chain for node {target.id!r}: "
+                f"chain is not rooted at {ROOT_DIRECTORY_ID!r}"
+            )
         result[target.id] = chain
     return result
 
@@ -311,21 +315,9 @@ def _check_step1_invariants(
     target: Document | Folder,
     operation: AtomicOp,
 ) -> EvalDecision | None:
-    obj_type = node_to_object_type(target)
-    obj_state = node_to_object_state(target)
-    if not op_applies_to_object(operation, obj_type):
-        return EvalDecision(
-            allowed=False,
-            reason=f"Operation {operation.name} is not applicable to {obj_type.value}.",
-            step="1_lifecycle_and_type",
-        )
-    if not op_applies_to_state(operation, obj_state):
-        return EvalDecision(
-            allowed=False,
-            reason=f"Operation {operation.name} is not applicable in state {obj_state.value}.",
-            step="1_lifecycle_and_type",
-        )
-    return None
+    return check_op_applicability(
+        operation, node_to_object_type(target), node_to_object_state(target)
+    )
 
 
 def authorize_node_operation(

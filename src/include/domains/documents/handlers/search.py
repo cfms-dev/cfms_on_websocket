@@ -15,7 +15,8 @@ from pydantic import StringConstraints
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
-from include.domains.documents.queries.listing import (
+from include.domains.documents.queries.search import (
+    SearchQuerySpec,
     fetch_visible_search_candidate_rows,
     search_cursor_key,
 )
@@ -136,15 +137,17 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
             now = datetime.datetime.now(datetime.UTC)
             all_results = fetch_visible_search_candidate_rows(
                 session,
+                SearchQuerySpec(
+                    query=query,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    search_documents=search_documents,
+                    search_directories=search_directories,
+                    last_key=last_key,
+                    limit=page_size + 1,
+                ),
                 user=user,
                 now=now,
-                query=query,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                search_documents=search_documents,
-                search_directories=search_directories,
-                last_key=last_key,
-                limit=page_size + 1,
             )
 
             response_data = make_cursor_response(
