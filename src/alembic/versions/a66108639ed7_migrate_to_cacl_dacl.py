@@ -6,12 +6,14 @@ Create Date: 2026-11-24 16:20:40.698440
 
 """
 
+import operator
 import time
 from collections.abc import Sequence
+from functools import reduce
 
 import sqlalchemy as sa
 from alembic import op
-from cacl_compiler import AtomicOp, DEFAULT_PRESET_MACROS
+from cacl_compiler import DEFAULT_PRESET_MACROS, AtomicOp
 
 # revision identifiers, used by Alembic.
 revision: str = "a66108639ed7"
@@ -49,7 +51,7 @@ _REMOVED_PERMISSIONS = (
 )
 _ROOT_DIRECTORY_ID = "/"
 _PRESET_READ_MASK = DEFAULT_PRESET_MACROS["PRESET_READ"]
-_ALL_OPS_MASK = (1 << len(AtomicOp)) - 1
+_ALL_OPS_MASK = int(reduce(operator.or_, AtomicOp, 0))
 
 
 def _data_tables():
@@ -207,6 +209,7 @@ def _alter_nodes_access_rule_set_column(*, drop: bool) -> None:
     is_sqlite = connection.dialect.name == "sqlite"
 
     saved_current_revisions: list[tuple[str, str]] = []
+    saved_parent_revisions: list[tuple[str, str]] = []
     detached_fks: list[tuple[str, list[dict]]] = []
     saved_nodes: list[dict] = []
     saved_folders: list[dict] = []
@@ -229,6 +232,22 @@ def _alter_nodes_access_rule_set_column(*, drop: bool) -> None:
             if saved_current_revisions:
                 connection.execute(
                     sa.text("UPDATE documents SET current_revision_id = NULL")
+                )
+
+        # Save & clear self-referencing document_revisions.parent_revision_id before batch-altering document_revisions.
+        if "document_revisions" in existing_tables:
+            saved_parent_revisions = [
+                (row[0], row[1])
+                for row in connection.execute(
+                    sa.text(
+                        "SELECT id, parent_revision_id FROM document_revisions "
+                        "WHERE parent_revision_id IS NOT NULL"
+                    )
+                ).all()
+            ]
+            if saved_parent_revisions:
+                connection.execute(
+                    sa.text("UPDATE document_revisions SET parent_revision_id = NULL")
                 )
 
         # Detach non-cyclic child tables referencing documents/nodes in reverse dependency order.
@@ -388,6 +407,15 @@ def _alter_nodes_access_rule_set_column(*, drop: bool) -> None:
                         referent_schema=fk["referred_schema"],
                         **fk["options"],
                     )
+
+        for rev_id, parent_rev_id in saved_parent_revisions:
+            connection.execute(
+                sa.text(
+                    "UPDATE document_revisions SET parent_revision_id = :parent_rev_id "
+                    "WHERE id = :rev_id"
+                ),
+                {"rev_id": rev_id, "parent_rev_id": parent_rev_id},
+            )
 
         for doc_id, rev_id in saved_current_revisions:
             connection.execute(

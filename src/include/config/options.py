@@ -98,6 +98,13 @@ SERVER_NAME_OPTION = OptionDefinition(
     "CFMS WebSocket Server",
     setting=CORE_SETTING_METADATA["server"]["name"],
 )
+BYPASS_TRAVERSE_CHECKING_OPTION = OptionDefinition(
+    "bypass_traverse_checking",
+    1,
+    bool,
+    False,
+    setting=CORE_SETTING_METADATA["access"]["bypass_traverse_checking"],
+)
 _option_definitions: dict[tuple[str, str], OptionDefinition[Any]] = {}
 _option_owners: dict[tuple[str, str], str] = {}
 _option_validators: dict[str, OptionValidator] = {}
@@ -519,15 +526,7 @@ CORE_POLICY_TYPES = {
 }
 CORE_OPTIONS: dict[OptionNamespace, tuple[OptionDefinition[Any], ...]] = {
     "server": (SERVER_NAME_OPTION,),
-    "access": (
-        OptionDefinition(
-            "bypass_traverse_checking",
-            1,
-            bool,
-            False,
-            setting=CORE_SETTING_METADATA["access"]["bypass_traverse_checking"],
-        ),
-    ),
+    "access": (BYPASS_TRAVERSE_CHECKING_OPTION,),
 }
 for _namespace, _policy in CORE_POLICY_TYPES.items():
     _defaults = _policy()

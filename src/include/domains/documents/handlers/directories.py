@@ -41,6 +41,7 @@ from include.domains.documents.commands.name_conflicts import (
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.dacl import (
     DaclSource,
+    NodeDaclTargetSpec,
     handle_get_node_dacl,
     handle_set_node_dacl,
     prepare_initial_node_dacl,
@@ -265,6 +266,15 @@ class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
             return Result(code=0, target=directory_id, user_id=handler.user_id)
 
 
+_DIRECTORY_DACL_TARGET = NodeDaclTargetSpec(
+    model_cls=Folder,
+    target_type=ObjectType.DIRECTORY,
+    not_found_message=smsg.DIRECTORY_NOT_FOUND,
+    get_success_message="Directory DACL retrieved successfully",
+    set_success_message="Directory DACL updated successfully",
+)
+
+
 class RequestGetDirectoryDaclHandler(RequestHandler[_GetDirectoryDaclRequest]):
     """Handles the "core.directory.dacl.get" action."""
 
@@ -283,11 +293,9 @@ class RequestGetDirectoryDaclHandler(RequestHandler[_GetDirectoryDaclRequest]):
             return handle_get_node_dacl(
                 session,
                 handler,
-                model_cls=Folder,
+                spec=_DIRECTORY_DACL_TARGET,
                 target_id=request.directory_id,
                 annotate_users=annotate_users,
-                not_found_message=smsg.DIRECTORY_NOT_FOUND,
-                success_message="Directory DACL retrieved successfully",
             )
 
 
@@ -309,13 +317,10 @@ class RequestSetDirectoryDaclHandler(RequestHandler[_SetDirectoryDaclRequest]):
             return handle_set_node_dacl(
                 session,
                 handler,
-                model_cls=Folder,
-                target_type=ObjectType.DIRECTORY,
+                spec=_DIRECTORY_DACL_TARGET,
                 target_id=request.directory_id,
                 dacl_source=request.dacl,
                 allow_self_lockout=allow_self_lockout,
-                not_found_message=smsg.DIRECTORY_NOT_FOUND,
-                success_message="Directory DACL updated successfully",
             )
 
 

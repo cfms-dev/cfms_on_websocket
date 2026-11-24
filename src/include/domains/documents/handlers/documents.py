@@ -77,6 +77,7 @@ from include.domains.documents.download_limits import check_download_issue_limit
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
 from include.domains.documents.handlers.dacl import (
     DaclSource,
+    NodeDaclTargetSpec,
     handle_get_node_dacl,
     handle_set_node_dacl,
     prepare_initial_node_dacl,
@@ -296,6 +297,16 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
             return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
+_DOCUMENT_DACL_TARGET = NodeDaclTargetSpec(
+    model_cls=Document,
+    target_type=ObjectType.DOCUMENT,
+    not_found_message=smsg.DOCUMENT_NOT_FOUND,
+    get_success_message="Document DACL retrieved successfully",
+    set_success_message="Document DACL updated successfully",
+    on_before_commit=lambda doc, u: mark_document_modified(doc, u.id),
+)
+
+
 class RequestGetDocumentDaclHandler(RequestHandler[_GetDocumentDaclRequest]):
     """Handles the "core.document.dacl.get" action."""
 
@@ -314,11 +325,9 @@ class RequestGetDocumentDaclHandler(RequestHandler[_GetDocumentDaclRequest]):
             return handle_get_node_dacl(
                 session,
                 handler,
-                model_cls=Document,
+                spec=_DOCUMENT_DACL_TARGET,
                 target_id=request.document_id,
                 annotate_users=annotate_users,
-                not_found_message=smsg.DOCUMENT_NOT_FOUND,
-                success_message="Document DACL retrieved successfully",
             )
 
 
@@ -340,14 +349,10 @@ class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
             return handle_set_node_dacl(
                 session,
                 handler,
-                model_cls=Document,
-                target_type=ObjectType.DOCUMENT,
+                spec=_DOCUMENT_DACL_TARGET,
                 target_id=request.document_id,
                 dacl_source=request.dacl,
                 allow_self_lockout=allow_self_lockout,
-                not_found_message=smsg.DOCUMENT_NOT_FOUND,
-                success_message="Document DACL updated successfully",
-                on_before_commit=lambda doc, u: mark_document_modified(doc, u.id),
             )
 
 

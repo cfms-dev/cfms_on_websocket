@@ -1,11 +1,13 @@
 __all__ = [
     "DaclSource",
+    "NodeDaclTargetSpec",
     "handle_get_node_dacl",
     "handle_set_node_dacl",
     "prepare_initial_node_dacl",
 ]
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 from cacl_compiler import CompiledPolicy, ObjectType
@@ -34,22 +36,30 @@ lazy from include.transport.connection import ConnectionHandler
 DaclSource = Annotated[str, StringConstraints(max_length=DACL_SOURCE_MAX_LENGTH)]
 
 
-def handle_get_node_dacl(
+@dataclass(frozen=True, slots=True)
+class NodeDaclTargetSpec[NodeT: (Folder, Document)]:
+    model_cls: type[NodeT]
+    target_type: ObjectType
+    not_found_message: str
+    get_success_message: str
+    set_success_message: str
+    on_before_commit: Callable[[NodeT, User], None] | None = None
+
+
+def handle_get_node_dacl[NodeT: (Folder, Document)](
     session: OrmSession,
     handler: ConnectionHandler,
     *,
-    model_cls: type[Folder | Document],
+    spec: NodeDaclTargetSpec[NodeT],
     target_id: str,
     annotate_users: bool,
-    not_found_message: str,
-    success_message: str,
 ) -> Result:
     assert handler.user_id is not None
     user = User.get_existing(session, handler.user_id)
-    target = session.get(model_cls, target_id)
+    target = session.get(spec.model_cls, target_id)
 
     if target is None:
-        handler.conclude_request(404, {}, not_found_message)
+        handler.conclude_request(404, {}, spec.not_found_message)
         return Result(code=404, target=target_id, user_id=handler.user_id)
 
     allowed, policy = authorize_dacl_read(session, user, target)
@@ -67,7 +77,7 @@ def handle_get_node_dacl(
             policy, session=session, annotate_users=True
         )
 
-    handler.conclude_request(200, response_data, success_message)
+    handler.conclude_request(200, response_data, spec.get_success_message)
     return Result(code=0, target=target_id, user_id=handler.user_id)
 
 
@@ -75,24 +85,20 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
     session: OrmSession,
     handler: ConnectionHandler,
     *,
-    model_cls: type[NodeT],
-    target_type: ObjectType,
+    spec: NodeDaclTargetSpec[NodeT],
     target_id: str,
     dacl_source: str,
     allow_self_lockout: bool,
-    not_found_message: str,
-    success_message: str,
-    on_before_commit: Callable[[NodeT, User], None] | None = None,
 ) -> Result:
     assert handler.user_id is not None
     target = session.get(
-        model_cls,
+        spec.model_cls,
         target_id,
         with_for_update=True,
         populate_existing=True,
     )
     if target is None:
-        handler.conclude_request(404, {}, not_found_message)
+        handler.conclude_request(404, {}, spec.not_found_message)
         return Result(code=404, target=target_id, user_id=handler.user_id)
 
     user = User.get_existing(session, handler.user_id)
@@ -105,8 +111,9 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
     compiled = compile_policy_source(
         session,
         dacl_source,
-        target_type=target_type,
+        target_type=spec.target_type,
         strict_principals=False,
+        now_utc=write_check.eval_time_utc,
     )
     serialized_diags = [d.to_dict() for d in compiled.diagnostics]
     if not compiled.ok or compiled.policy is None:
@@ -136,8 +143,8 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
         return Result(code=409, target=target_id, user_id=handler.user_id)
 
     persist_node_policy(session, target, compiled.policy)
-    if on_before_commit is not None:
-        on_before_commit(target, user)
+    if spec.on_before_commit is not None:
+        spec.on_before_commit(target, user)
     session.commit()
 
     handler.conclude_request(
@@ -149,7 +156,7 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
             "diagnostics": serialized_diags,
             "self_lockout_warning": self_lockout_warning,
         },
-        success_message,
+        spec.set_success_message,
     )
     return Result(code=0, target=target_id, user_id=handler.user_id)
 
@@ -176,6 +183,7 @@ def prepare_initial_node_dacl(
         dacl_source,
         target_type=object_type,
         strict_principals=False,
+        now_utc=create_check.eval_time_utc,
     )
     serialized_diags = [d.to_dict() for d in compiled.diagnostics]
     if not compiled.ok or compiled.policy is None:

@@ -41,7 +41,10 @@ from include.domains.access.authorization.storage import (
     render_policy_text,
 )
 from include.domains.access.permissions import Permissions
-from include.domains.documents.handlers.dacl import handle_set_node_dacl
+from include.domains.documents.handlers.dacl import (
+    NodeDaclTargetSpec,
+    handle_set_node_dacl,
+)
 from include.domains.documents.queries.deletion_tree import (
     fetch_subtree_metadata_for_soft_delete,
 )
@@ -713,6 +716,15 @@ def test_soft_delete_root_check_directory_delete_child_bypass_and_missing_delete
     assert root_only_child.needs_descendant_check is False
 
 
+_TEST_FOLDER_DACL_TARGET = NodeDaclTargetSpec(
+    model_cls=models.Folder,
+    target_type=ObjectType.DIRECTORY,
+    not_found_message="not found",
+    get_success_message="ok",
+    set_success_message="ok",
+)
+
+
 class _RecordingDaclHandler:
     def __init__(self, user_id: str) -> None:
         self.user_id = user_id
@@ -790,13 +802,10 @@ def test_handle_set_node_dacl_acquires_lock_before_reading_user_or_policy(
             result = handle_set_node_dacl(
                 session,
                 cast(ConnectionHandler, recorder),
-                model_cls=models.Folder,
-                target_type=ObjectType.DIRECTORY,
+                spec=_TEST_FOLDER_DACL_TARGET,
                 target_id="f-lock-order",
                 dacl_source=f'inherit off; allow [WRITE_DACL, READ_METADATA] to user("{alice_id}");',
                 allow_self_lockout=False,
-                not_found_message="not found",
-                success_message="ok",
             )
     finally:
         event.remove(engine, "before_cursor_execute", _capture)
@@ -867,15 +876,12 @@ def test_handle_set_node_dacl_serializes_concurrent_revocation_and_soft_delete(
             result = handle_set_node_dacl(
                 worker_session,
                 cast(ConnectionHandler, recorder),
-                model_cls=models.Folder,
-                target_type=ObjectType.DIRECTORY,
+                spec=_TEST_FOLDER_DACL_TARGET,
                 target_id="f-race",
                 dacl_source=(
                     f'inherit off; allow [WRITE_DACL, LIST_DIRECTORY] to user("{alice_id}");'
                 ),
                 allow_self_lockout=False,
-                not_found_message="not found",
-                success_message="ok",
             )
             return result.code, recorder.responses[0][0]
 

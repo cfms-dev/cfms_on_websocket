@@ -15,6 +15,7 @@ __all__ = [
     "evaluate_effective_masks",
     "evaluate_path_masks",
     "evaluate_reparent",
+    "evaluate_restore",
     "evaluate_soft_delete_subtree",
     "op_applies_to_object",
     "op_applies_to_state",
@@ -763,6 +764,105 @@ def evaluate_reparent(
         allowed=True,
         reason=f"Composite reparent authorized (REPARENT on source + {dest_op.name} on destination).",
         step="5_composite_allowed",
+    )
+
+
+def evaluate_restore(
+    subject: Subject | None,
+    target_path: list[NamespaceNode],
+    dest_parent_path: list[NamespaceNode],
+    *,
+    reparenting: bool,
+    eval_time_utc: datetime.datetime | None = None,
+    check_ancestor_traverse: bool = True,
+    collect_traces: bool = True,
+) -> EvalDecision:
+    """Step 5: composite authorization for restoring a soft-deleted node."""
+    if not target_path:
+        raise ValueError("target_path must contain at least the target node.")
+    if not dest_parent_path:
+        raise ValueError(
+            "dest_parent_path must contain at least the destination parent."
+        )
+    if subject is None:
+        return EvalDecision(
+            allowed=False,
+            reason="Unauthenticated request: not a DACL principal.",
+            step="0_unauthenticated",
+        )
+
+    now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
+        datetime.UTC
+    )
+    target = target_path[-1]
+    dest_parent = dest_parent_path[-1]
+    if not op_applies_to_object(AtomicOp.RESTORE, target.object_type):
+        return EvalDecision(
+            allowed=False,
+            reason=f"Operation RESTORE is not applicable to {target.object_type.value}.",
+            step="1_lifecycle_and_type",
+        )
+    if not op_applies_to_state(AtomicOp.RESTORE, target.state):
+        return EvalDecision(
+            allowed=False,
+            reason=f"Operation RESTORE is not applicable in state {target.state.value}.",
+            step="1_lifecycle_and_type",
+        )
+    if dest_parent.state is not ObjectState.NORMAL:
+        return EvalDecision(
+            allowed=False,
+            reason="Target parent directory must be in the normal state.",
+            step="1_lifecycle_and_type",
+        )
+
+    if not reparenting:
+        return evaluate_access(
+            subject,
+            target_path,
+            AtomicOp.RESTORE,
+            now,
+            check_ancestor_traverse=check_ancestor_traverse,
+            collect_traces=collect_traces,
+        )
+
+    # When restoring into a different active parent, evaluate RESTORE on the
+    # target's existing DACL chain (skipping soft-deleted ancestors for traverse)
+    # and require CREATE_* on the chosen destination parent.
+    walk = _walk_path_dacl(
+        subject,
+        target_path,
+        now,
+        check_ancestor_traverse=check_ancestor_traverse,
+        track_parent=False,
+    )
+    if not walk.allowed_traverse:
+        return _build_traverse_denial_decision(
+            subject, target_path, walk, now, collect_traces=collect_traces
+        )
+
+    restore_decision = _build_mask_decision(
+        subject,
+        target_path,
+        AtomicOp.RESTORE,
+        walk,
+        now,
+        collect_traces=collect_traces,
+    )
+    if not restore_decision.allowed:
+        return restore_decision
+
+    dest_op = (
+        AtomicOp.CREATE_DOCUMENT
+        if target.object_type is ObjectType.DOCUMENT
+        else AtomicOp.CREATE_DIRECTORY
+    )
+    return evaluate_access(
+        subject,
+        dest_parent_path,
+        dest_op,
+        now,
+        check_ancestor_traverse=check_ancestor_traverse,
+        collect_traces=collect_traces,
     )
 
 

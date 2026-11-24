@@ -1,5 +1,6 @@
 import datetime
 from contextlib import closing
+from dataclasses import dataclass
 from itertools import batched
 from typing import Any
 lazy from collections.abc import Mapping, Sequence
@@ -52,24 +53,25 @@ def directory_cursor_key(item: dict[str, Any]) -> list[Any]:
     return [type_rank, _lowered(item["name"]), item["id"]]
 
 
+def _search_cursor_primary_value(item: dict[str, Any], sort_by: str) -> Any:
+    match sort_by:
+        case "name":
+            primary = item.get("name_sort_key")
+            return _lowered(item["name"]) if primary is None else primary
+        case "size":
+            return item.get("size", 0) or 0
+        case "last_modified":
+            primary = item.get("last_modified")
+            return item["created_time"] if primary is None else primary
+
+    return item["created_time"]
+
+
 def search_cursor_key(item: dict[str, Any], sort_by: str) -> list[Any]:
     if _CURSOR_KEY in item:
         return list(item[_CURSOR_KEY])
-    if sort_by == "name":
-        primary = item.get("name_sort_key")
-        if primary is None:
-            primary = _lowered(item["name"])
-    elif sort_by == "size":
-        primary = item.get("size", 0) or 0
-    elif sort_by == "last_modified":
-        primary = item.get("last_modified")
-        if primary is None:
-            primary = item["created_time"]
-    else:
-        primary = item["created_time"]
-
     type_rank = 0 if item["type"] == "directory" else 1
-    return [primary, type_rank, item["id"]]
+    return [_search_cursor_primary_value(item, sort_by), type_rank, item["id"]]
 
 
 def _directory_item_cursor_key(
@@ -82,18 +84,7 @@ def _search_item_cursor_key(
     item: dict[str, Any],
     sort_by: str,
 ) -> list[Any]:
-    if sort_by == "name":
-        primary = item["name_sort_key"]
-    elif sort_by == "size":
-        primary = item.get("size", 0) or 0
-    elif sort_by == "last_modified":
-        primary = item.get("last_modified")
-        if primary is None:
-            primary = item["created_time"]
-    else:
-        primary = item["created_time"]
-
-    return [primary, item["type_rank"], item["id"]]
+    return [_search_cursor_primary_value(item, sort_by), item["type_rank"], item["id"]]
 
 
 def _name_id_after_filter(name_expression, id_column, last_name: str, last_id: str):
@@ -1080,6 +1071,120 @@ class _SearchPageCollector:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class _SearchQuerySpec:
+    query: str
+    sort_by: str
+    sort_order: str
+    search_documents: bool
+    search_directories: bool
+    last_key: list[Any] | None
+    limit: int
+
+    @property
+    def needs_revision_in_sort(self) -> bool:
+        return self.sort_by in ("size", "last_modified")
+
+    @property
+    def lazy_hydrate_documents(self) -> bool:
+        return not self.needs_revision_in_sort and self.search_documents
+
+
+def _resolve_search_candidates(spec: _SearchQuerySpec, *, bypass_dacl: bool):
+    if spec.needs_revision_in_sort:
+        return _search_candidate_selectable(
+            query=spec.query,
+            search_documents=spec.search_documents,
+            search_directories=spec.search_directories,
+        )
+    return _search_lightweight_candidate_selectable(
+        query=spec.query,
+        search_documents=spec.search_documents,
+        search_directories=spec.search_directories,
+        require_active_document_revision=bypass_dacl,
+    )
+
+
+def _fetch_bypass_search_rows(
+    session,
+    candidates,
+    primary_column,
+    spec: _SearchQuerySpec,
+) -> list[dict[str, Any]]:
+    raw_rows = _execute_search_batch(
+        session,
+        candidates,
+        primary_column,
+        spec.last_key,
+        spec.sort_order,
+        spec.limit,
+        include_revision_details=spec.needs_revision_in_sort,
+    )
+    if spec.needs_revision_in_sort or not spec.search_documents:
+        return [_finalize_search_item(row, spec.sort_by) for row in raw_rows]
+    return _hydrate_lightweight_search_rows(session, raw_rows, spec.sort_by)
+
+
+def _fetch_filtered_search_rows(
+    session,
+    candidates,
+    primary_column,
+    spec: _SearchQuerySpec,
+    *,
+    user: User,
+    now_utc: datetime.datetime,
+    batch_strategy: KeysetBatchStrategy | None,
+) -> list[dict[str, Any]]:
+    evaluator = BatchVisibilityEvaluator.for_user(session, user, now_utc)
+    collector = _SearchPageCollector(
+        session,
+        evaluator,
+        sort_by=spec.sort_by,
+        limit=spec.limit,
+        lazy_hydrate_documents=spec.lazy_hydrate_documents,
+    )
+
+    probe_limit = max(spec.limit * _SEARCH_PROBE_MULTIPLIER, _SEARCH_MIN_PROBE_LIMIT)
+    probe_rows = _execute_search_batch(
+        session,
+        candidates,
+        primary_column,
+        spec.last_key,
+        spec.sort_order,
+        probe_limit,
+        include_revision_details=spec.needs_revision_in_sort,
+    )
+    if not probe_rows:
+        return []
+
+    collector.consume(probe_rows)
+    if collector.is_full or len(probe_rows) < probe_limit:
+        return collector.visible_rows
+
+    strategy = batch_strategy or default_keyset_batch_strategy(session)
+    with closing(
+        strategy.iter_batches(
+            session,
+            build_select=lambda batch_key, batch_limit: _build_search_select(
+                candidates,
+                primary_column,
+                batch_key,
+                spec.sort_order,
+                include_revision_details=spec.needs_revision_in_sort,
+                limit=batch_limit,
+            ),
+            cursor_key_of=lambda row: _search_item_cursor_key(row, spec.sort_by),
+            initial_last_key=_search_item_cursor_key(probe_rows[-1], spec.sort_by),
+        )
+    ) as batches:
+        for batch in batches:
+            collector.consume(batch)
+            if collector.is_full:
+                break
+
+    return collector.visible_rows
+
+
 def fetch_visible_search_candidate_rows(
     session,
     *,
@@ -1097,91 +1202,35 @@ def fetch_visible_search_candidate_rows(
     if limit <= 0:
         return []
 
-    needs_revision_in_sort = sort_by in ("size", "last_modified")
+    spec = _SearchQuerySpec(
+        query=query,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        search_documents=search_documents,
+        search_directories=search_directories,
+        last_key=last_key,
+        limit=limit,
+    )
     bypass_dacl = has_bypass_dacl(user)
-
-    if needs_revision_in_sort:
-        candidates = _search_candidate_selectable(
-            query=query,
-            search_documents=search_documents,
-            search_directories=search_directories,
-        )
-    else:
-        candidates = _search_lightweight_candidate_selectable(
-            query=query,
-            search_documents=search_documents,
-            search_directories=search_directories,
-            require_active_document_revision=bypass_dacl,
-        )
+    candidates = _resolve_search_candidates(spec, bypass_dacl=bypass_dacl)
     if candidates is None:
         return []
 
-    primary_column = _search_primary_column(candidates, sort_by)
-
+    primary_column = _search_primary_column(candidates, spec.sort_by)
     if bypass_dacl:
-        raw_rows = _execute_search_batch(
-            session,
-            candidates,
-            primary_column,
-            last_key,
-            sort_order,
-            limit,
-            include_revision_details=needs_revision_in_sort,
-        )
-        if needs_revision_in_sort or not search_documents:
-            return [_finalize_search_item(row, sort_by) for row in raw_rows]
-        return _hydrate_lightweight_search_rows(session, raw_rows, sort_by)
+        return _fetch_bypass_search_rows(session, candidates, primary_column, spec)
 
     now_utc = (
         datetime.datetime.fromtimestamp(now, tz=datetime.UTC)
         if isinstance(now, int | float)
         else now.astimezone(datetime.UTC)
     )
-    evaluator = BatchVisibilityEvaluator.for_user(session, user, now_utc)
-    collector = _SearchPageCollector(
-        session,
-        evaluator,
-        sort_by=sort_by,
-        limit=limit,
-        lazy_hydrate_documents=not needs_revision_in_sort and search_documents,
-    )
-
-    probe_limit = max(limit * _SEARCH_PROBE_MULTIPLIER, _SEARCH_MIN_PROBE_LIMIT)
-    probe_rows = _execute_search_batch(
+    return _fetch_filtered_search_rows(
         session,
         candidates,
         primary_column,
-        last_key,
-        sort_order,
-        probe_limit,
-        include_revision_details=needs_revision_in_sort,
+        spec,
+        user=user,
+        now_utc=now_utc,
+        batch_strategy=batch_strategy,
     )
-    if not probe_rows:
-        return []
-
-    collector.consume(probe_rows)
-    if collector.is_full or len(probe_rows) < probe_limit:
-        return collector.visible_rows
-
-    strategy = batch_strategy or default_keyset_batch_strategy(session)
-    with closing(
-        strategy.iter_batches(
-            session,
-            build_select=lambda batch_key, batch_limit: _build_search_select(
-                candidates,
-                primary_column,
-                batch_key,
-                sort_order,
-                include_revision_details=needs_revision_in_sort,
-                limit=batch_limit,
-            ),
-            cursor_key_of=lambda row: _search_item_cursor_key(row, sort_by),
-            initial_last_key=_search_item_cursor_key(probe_rows[-1], sort_by),
-        )
-    ) as batches:
-        for batch in batches:
-            collector.consume(batch)
-            if collector.is_full:
-                break
-
-    return collector.visible_rows

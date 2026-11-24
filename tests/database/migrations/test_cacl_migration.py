@@ -33,13 +33,50 @@ def test_cacl_migration_upgrade_and_downgrade_round_trip(sqlite_engine_factory):
             "userblock_sub_entries",
         } <= tables_before
 
-        # Seed representative pre-migration data.
+        # Seed representative pre-migration data including nested folders, documents,
+        # chained revisions, and metadata to verify SQLite FK-safe preservation.
+        for fid, name, parent_id, inherit, created_time in (
+            ("/", "/", None, 0, 1.0),
+            ("sub-dir", "SubDir", "/", 1, 2.0),
+            ("leaf-dir", "LeafDir", "sub-dir", 1, 3.0),
+        ):
+            connection.exec_driver_sql(
+                "INSERT INTO nodes (id, type, name, parent_id, inherit, status) "
+                "VALUES (?, 'directory', ?, ?, ?, 0)",
+                (fid, name, parent_id, inherit),
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO folders (id, created_time) VALUES (?, ?)",
+                (fid, created_time),
+            )
         connection.exec_driver_sql(
             "INSERT INTO nodes (id, type, name, parent_id, inherit, status) "
-            "VALUES ('/', 'directory', '/', NULL, 0, 0)"
+            "VALUES ('doc-1', 'document', 'Doc1', 'leaf-dir', 1, 0)"
         )
         connection.exec_driver_sql(
-            "INSERT INTO folders (id, created_time) VALUES ('/', 1.0)"
+            "INSERT INTO documents (id, created_time, current_revision_id) "
+            "VALUES ('doc-1', 4.0, NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO files (id, path, active, size, created_time) "
+            "VALUES ('file-1', '/f1', 1, 10, 1.0), ('file-2', '/f2', 1, 20, 2.0)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO document_revisions "
+            "(id, document_id, file_id, created_time, parent_revision_id, status) "
+            "VALUES "
+            "('rev-parent-z', 'doc-1', 'file-1', 4.0, NULL, 0), "
+            "('rev-child-a', 'doc-1', 'file-2', 5.0, 'rev-parent-z', 0)"
+        )
+        connection.exec_driver_sql(
+            "UPDATE documents SET current_revision_id = 'rev-child-a' WHERE id = 'doc-1'"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO document_metadata (document_id) VALUES ('doc-1')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO document_metadata_tags (document_id, tag, position) "
+            "VALUES ('doc-1', 'alpha', 0), ('doc-1', 'beta', 1)"
         )
         connection.exec_driver_sql(
             "INSERT INTO user_groups (group_name, group_display_name) "
@@ -122,6 +159,42 @@ def test_cacl_migration_upgrade_and_downgrade_round_trip(sqlite_engine_factory):
         ).fetchall()
         assert opt_rows == []
 
+        def _assert_content_preserved() -> None:
+            nodes_rows = set(
+                connection.exec_driver_sql(
+                    "SELECT id, type, parent_id FROM nodes"
+                ).fetchall()
+            )
+            assert nodes_rows == {
+                ("/", "directory", None),
+                ("sub-dir", "directory", "/"),
+                ("leaf-dir", "directory", "sub-dir"),
+                ("doc-1", "document", "leaf-dir"),
+            }
+            doc_rows = connection.exec_driver_sql(
+                "SELECT id, current_revision_id FROM documents"
+            ).fetchall()
+            assert doc_rows == [("doc-1", "rev-child-a")]
+            rev_rows = set(
+                connection.exec_driver_sql(
+                    "SELECT id, document_id, parent_revision_id FROM document_revisions"
+                ).fetchall()
+            )
+            assert rev_rows == {
+                ("rev-parent-z", "doc-1", None),
+                ("rev-child-a", "doc-1", "rev-parent-z"),
+            }
+            meta_rows = connection.exec_driver_sql(
+                "SELECT document_id FROM document_metadata"
+            ).fetchall()
+            assert meta_rows == [("doc-1",)]
+            tag_rows = connection.exec_driver_sql(
+                "SELECT document_id, tag, position FROM document_metadata_tags ORDER BY position"
+            ).fetchall()
+            assert tag_rows == [("doc-1", "alpha", 0), ("doc-1", "beta", 1)]
+
+        _assert_content_preserved()
+
         raw = connection.connection.driver_connection
         assert raw.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -143,8 +216,10 @@ def test_cacl_migration_upgrade_and_downgrade_round_trip(sqlite_engine_factory):
         )
         assert Permissions.BYPASS_DACL not in sysop_perms_down
         assert Permissions.BYPASS_TRAVERSE_CHECKING not in sysop_perms_down
+        _assert_content_preserved()
         assert raw.execute("PRAGMA foreign_key_check").fetchall() == []
 
         # Re-upgrade to head to verify repeatability.
         command.upgrade(config, "head")
+        _assert_content_preserved()
         assert raw.execute("PRAGMA foreign_key_check").fetchall() == []

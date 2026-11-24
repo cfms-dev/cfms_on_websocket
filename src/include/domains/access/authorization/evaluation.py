@@ -23,17 +23,23 @@ __all__ = [
 ]
 
 import datetime
+import operator
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import reduce
 from itertools import batched
 from typing import Any, Protocol
 
 from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType
-from sqlalchemy import literal, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session as OrmSession
 
-from include.config.constants import MAX_HIERARCHY_DEPTH, QUERY_CHUNK_SIZE
-from include.config.options import CORE_OPTIONS, read_option
+from include.config.constants import (
+    MAX_HIERARCHY_DEPTH,
+    QUERY_CHUNK_SIZE,
+    ROOT_DIRECTORY_ID,
+)
+from include.config.options import BYPASS_TRAVERSE_CHECKING_OPTION, read_option
 from include.database.models.documents import (
     Document,
     EntityStatus,
@@ -54,15 +60,19 @@ from include.domains.access.authorization.engine import (
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_reparent,
+    evaluate_restore,
     evaluate_soft_delete_subtree,
     op_applies_to_object,
     op_applies_to_state,
     simulate_policy_save_lockout,
 )
-from include.domains.access.authorization.storage import load_node_policies
+from include.domains.access.authorization.storage import (
+    build_ancestor_chain_cte,
+    load_node_policies,
+)
 from include.domains.access.permissions import Permissions
 
-_ALL_OPS_MASK = (1 << len(AtomicOp)) - 1
+_ALL_OPS_MASK = int(reduce(operator.or_, AtomicOp, 0))
 
 
 class _SubtreeNodeLike(Protocol):
@@ -133,7 +143,9 @@ def user_to_subject(user: User) -> Subject:
 def should_check_ancestor_traverse(session: OrmSession, user: User) -> bool:
     if Permissions.BYPASS_TRAVERSE_CHECKING in user.all_permissions:
         return False
-    bypass_option = read_option(session, "access", CORE_OPTIONS["access"][0]).value
+    bypass_option = read_option(
+        session, "access", BYPASS_TRAVERSE_CHECKING_OPTION
+    ).value
     return not bool(bypass_option)
 
 
@@ -153,40 +165,15 @@ def _fetch_ancestor_node_rows(
     session: OrmSession,
     target_ids: Sequence[str],
 ) -> dict[str, _AncestorNodeRow]:
-    node_table = Node.__table__
     all_node_rows: dict[str, _AncestorNodeRow] = {}
 
     for chunk in batched(target_ids, QUERY_CHUNK_SIZE):
-        chunk_ids = list(chunk)
-        anchor = select(
-            node_table.c.id.label("id"),
-            node_table.c.name.label("name"),
-            node_table.c.parent_id.label("parent_id"),
-            node_table.c.type.label("type"),
-            node_table.c.status.label("status"),
-            node_table.c.inherit.label("inherit"),
-            literal(0).label("depth"),
-        ).where(node_table.c.id.in_(chunk_ids))
-
-        ancestors = anchor.cte("cacl_ancestor_chain", recursive=True)
-        parent_node = node_table.alias("cacl_parent_node")
-        ancestors = ancestors.union(
-            select(
-                parent_node.c.id,
-                parent_node.c.name,
-                parent_node.c.parent_id,
-                parent_node.c.type,
-                parent_node.c.status,
-                parent_node.c.inherit,
-                (ancestors.c.depth + 1).label("depth"),
-            )
-            .select_from(
-                ancestors.join(parent_node, parent_node.c.id == ancestors.c.parent_id)
-            )
-            .where(
-                ancestors.c.parent_id.is_not(None),
-                ancestors.c.depth < MAX_HIERARCHY_DEPTH,
-            )
+        ancestors = build_ancestor_chain_cte(
+            list(chunk),
+            cte_name="cacl_ancestor_chain",
+            parent_alias_name="cacl_parent_node",
+            column_names=("id", "name", "parent_id", "type", "status", "inherit"),
+            max_depth=MAX_HIERARCHY_DEPTH,
         )
 
         rows = (
@@ -801,13 +788,6 @@ def authorize_restore(
             step="1_lifecycle_and_type",
         )
 
-    reparenting = (target.parent_id or "/") != target_parent.id
-    dest_op = (
-        AtomicOp.CREATE_DOCUMENT
-        if isinstance(target, Document)
-        else AtomicOp.CREATE_DIRECTORY
-    )
-
     if has_bypass_dacl(user):
         return EvalDecision(
             allowed=True,
@@ -815,61 +795,21 @@ def authorize_restore(
             step="0_bypass_dacl",
         )
 
+    reparenting = (target.parent_id or ROOT_DIRECTORY_ID) != target_parent.id
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    check_traverse = should_check_ancestor_traverse(session, user)
-    subject = user_to_subject(user)
     paths = load_ancestor_paths_for_nodes(
         session,
         [target, target_parent],
         exclude_expired_before=now,
         canonicalize=False,
     )
-    target_path = paths[target.id]
-
-    if not reparenting:
-        return evaluate_access(
-            subject,
-            target_path,
-            AtomicOp.RESTORE,
-            eval_time_utc=now,
-            check_ancestor_traverse=check_traverse,
-            collect_traces=False,
-        )
-
-    # When restoring into a different active parent, evaluate RESTORE on the
-    # target's existing DACL chain (skipping soft-deleted ancestors for traverse)
-    # and require CREATE_* on the chosen destination parent.
-    masks = evaluate_effective_masks(
-        subject,
-        target_path,
-        eval_time_utc=now,
-        check_ancestor_traverse=check_traverse,
-    )
-    if not masks.allowed_traverse:
-        return EvalDecision(
-            allowed=False,
-            reason=masks.denied_reason or "Missing TRAVERSE on ancestor.",
-            step=masks.denied_step or "2_path_traverse",
-            next_transition_at=masks.next_transition_at,
-        )
-    if not (masks.effective_mask & int(AtomicOp.RESTORE)):
-        return EvalDecision(
-            allowed=False,
-            reason="Missing RESTORE permission on target.",
-            step="4_deny_overrides"
-            if (masks.effective_deny_mask & int(AtomicOp.RESTORE))
-            else "4_default_deny",
-            effective_allow_mask=masks.effective_allow_mask,
-            effective_deny_mask=masks.effective_deny_mask,
-            next_transition_at=masks.next_transition_at,
-        )
-
-    return evaluate_access(
-        subject,
+    return evaluate_restore(
+        user_to_subject(user),
+        paths[target.id],
         paths[target_parent.id],
-        dest_op,
+        reparenting=reparenting,
         eval_time_utc=now,
-        check_ancestor_traverse=check_traverse,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
         collect_traces=False,
     )
 

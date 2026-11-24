@@ -218,7 +218,8 @@ class BatchVisibilityEvaluator:
             curr_id = meta.parent_id
 
         if curr_id is None:
-            accessible, inherited = True, _EMPTY_INHERITED_STATE
+            accessible = bool(uncomputed) and uncomputed[-1] == ROOT_DIRECTORY_ID
+            inherited = _EMPTY_INHERITED_STATE
         elif curr_id in self._dir_state_cache:
             accessible, inherited = self._dir_state_cache[curr_id]
         else:

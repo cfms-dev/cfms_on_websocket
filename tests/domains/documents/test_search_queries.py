@@ -1,8 +1,9 @@
 import datetime
+import uuid
 from types import SimpleNamespace
 
 import pytest
-from cacl_compiler import AtomicOp
+from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType, compile_cacl
 from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
@@ -10,6 +11,13 @@ from include.config.options import write_options
 from include.database.cursors import (
     StreamingCursorBatchStrategy,
     WindowedKeysetBatchStrategy,
+)
+from include.database.models.documents import EntityStatus
+from include.domains.access.authorization.engine import Subject
+from include.domains.access.authorization.storage import AncestorNodeMeta
+from include.domains.access.authorization.visibility import (
+    BatchVisibilityEvaluator,
+    VisibilityCandidate,
 )
 from include.domains.access.permissions import Permissions
 
@@ -1085,3 +1093,30 @@ def test_search_visibility_fails_closed_when_ancestor_chain_truncated(
         limit=10,
     )
     assert rows_bypassed == []
+
+
+@pytest.mark.unit
+def test_batch_visibility_evaluator_fails_closed_for_orphan_ancestor():
+    evaluator = BatchVisibilityEvaluator(
+        session=None,  # type: ignore[arg-type]
+        subject=Subject(user_id=uuid.uuid4()),
+        now_utc=_NOW_DT,
+        check_traverse=False,
+    )
+    evaluator._node_meta["orphan-dir"] = AncestorNodeMeta(
+        parent_id=None,
+        status=EntityStatus.OK.value,
+        inherit=False,
+    )
+    allow_read = compile_cacl("inherit off; allow [READ_CONTENT] to any;").policy
+    assert allow_read is not None
+    evaluator._node_policies["orphan-dir"] = CompiledPolicy(inherit=False, rules=())
+    evaluator._node_policies["child-doc"] = allow_read
+
+    candidate = VisibilityCandidate(
+        node_id="child-doc",
+        parent_id="orphan-dir",
+        object_type=ObjectType.DOCUMENT,
+        inherit=False,
+    )
+    assert evaluator.is_visible(candidate) is False

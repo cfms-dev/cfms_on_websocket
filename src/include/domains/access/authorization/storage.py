@@ -1,6 +1,7 @@
 __all__ = [
     "DEFAULT_ROOT_DACL_SOURCE",
     "AncestorNodeMeta",
+    "build_ancestor_chain_cte",
     "build_ancestors_and_active_policies_stmt",
     "compile_policy_source",
     "delete_node_dacl_rules_for_targets",
@@ -14,6 +15,7 @@ import datetime
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from itertools import batched
 from typing import Any
@@ -125,10 +127,8 @@ def _resolve_user_annotations(
 ) -> dict[str, str]:
     uuids: set[uuid.UUID] = set()
     for raw_uid in raw_user_ids:
-        try:
+        with suppress(ValueError):
             uuids.add(uuid.UUID(raw_uid))
-        except ValueError:
-            pass
 
     annotations: dict[str, str] = {}
     for chunk in batched(uuids, QUERY_CHUNK_SIZE):
@@ -358,32 +358,27 @@ def _assemble_rules_from_joined_rows(
     return rules_by_node
 
 
-def build_ancestors_and_active_policies_stmt(
-    missing_ancestors: Sequence[str],
-    candidate_ids: Sequence[str],
-    active_ref: datetime.datetime,
+def build_ancestor_chain_cte(
+    seed_ids: Sequence[str],
+    *,
+    cte_name: str,
+    parent_alias_name: str,
+    column_names: Sequence[str],
+    max_depth: int | None = None,
 ):
-    """Build a combined SQL query fetching ancestor metadata + active DACL rules for ancestors and candidates."""
+    """Build a bounded recursive CTE walking upward from seed_ids through nodes.parent_id."""
     node_table = Node.__table__
-    rule_table = NodeDaclRule.__table__
-    clause_table = NodeDaclClause.__table__
-    atom_table = NodeDaclAtom.__table__
-
+    depth_limit = MAX_HIERARCHY_DEPTH if max_depth is None else max_depth
     anchor = select(
-        node_table.c.id.label("id"),
-        node_table.c.parent_id.label("parent_id"),
-        node_table.c.status.label("status"),
-        node_table.c.inherit.label("inherit"),
+        *(node_table.c[col].label(col) for col in column_names),
         literal(0).label("depth"),
-    ).where(node_table.c.id.in_(list(missing_ancestors)))
-    ancestors = anchor.cte("search_anc_meta", recursive=True)
-    parent_node = node_table.alias("search_anc_parent")
-    ancestors = ancestors.union(
+    ).where(node_table.c.id.in_(list(seed_ids)))
+
+    ancestors = anchor.cte(cte_name, recursive=True)
+    parent_node = node_table.alias(parent_alias_name)
+    return ancestors.union(
         select(
-            parent_node.c.id,
-            parent_node.c.parent_id,
-            parent_node.c.status,
-            parent_node.c.inherit,
+            *(parent_node.c[col] for col in column_names),
             (ancestors.c.depth + 1).label("depth"),
         )
         .select_from(
@@ -391,8 +386,26 @@ def build_ancestors_and_active_policies_stmt(
         )
         .where(
             ancestors.c.parent_id.is_not(None),
-            ancestors.c.depth < MAX_HIERARCHY_DEPTH,
+            ancestors.c.depth < depth_limit,
         )
+    )
+
+
+def build_ancestors_and_active_policies_stmt(
+    missing_ancestors: Sequence[str],
+    candidate_ids: Sequence[str],
+    active_ref: datetime.datetime,
+):
+    """Build a combined SQL query fetching ancestor metadata + active DACL rules for ancestors and candidates."""
+    rule_table = NodeDaclRule.__table__
+    clause_table = NodeDaclClause.__table__
+    atom_table = NodeDaclAtom.__table__
+
+    ancestors = build_ancestor_chain_cte(
+        missing_ancestors,
+        cte_name="search_anc_meta",
+        parent_alias_name="search_anc_parent",
+        column_names=("id", "parent_id", "status", "inherit"),
     )
     distinct_ancestors = (
         select(

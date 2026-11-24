@@ -15,6 +15,7 @@ from include.domains.access.authorization.engine import (
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_reparent,
+    evaluate_restore,
     evaluate_soft_delete_subtree,
     simulate_policy_save_lockout,
 )
@@ -524,3 +525,70 @@ def test_path_masks_inherit_off_pruning_preserves_parent_masks(monkeypatch):
     assert em_pruned.allowed_traverse
     assert em_pruned.effective_mask == int(AtomicOp.READ_METADATA)
     assert em_pruned.next_transition_at is None
+
+
+def test_evaluate_restore_in_place_and_reparenting():
+    root = _node("root", D, "inherit off; allow [TRAVERSE, RESTORE] to any;")
+    dead_parent = _node(
+        "dead-parent",
+        D,
+        "inherit on;",
+        state=ObjectState.SOFT_DELETED,
+    )
+    dead_dir = _node(
+        "dead-dir",
+        D,
+        "inherit on;",
+        state=ObjectState.SOFT_DELETED,
+    )
+    dest_allow = _node("dest-ok", D, "inherit off; allow [CREATE_DIRECTORY] to any;")
+    dest_deny = _node("dest-no", D, "inherit off;")
+
+    # In-place restore fails when original parent is soft-deleted.
+    in_place_blocked = evaluate_restore(
+        ALICE,
+        [root, dead_parent, dead_dir],
+        [root, dead_parent],
+        reparenting=False,
+        eval_time_utc=NOW,
+    )
+    assert not in_place_blocked.allowed
+    assert in_place_blocked.step == "1_lifecycle_and_type"
+
+    # Reparenting into an active destination succeeds with RESTORE + CREATE_DIRECTORY.
+    reparent_ok = evaluate_restore(
+        ALICE,
+        [root, dead_parent, dead_dir],
+        [root, dest_allow],
+        reparenting=True,
+        eval_time_utc=NOW,
+    )
+    assert reparent_ok.allowed
+
+    # Reparenting without CREATE_DIRECTORY on destination fails.
+    reparent_no_create = evaluate_restore(
+        ALICE,
+        [root, dead_parent, dead_dir],
+        [root, dest_deny],
+        reparenting=True,
+        eval_time_utc=NOW,
+    )
+    assert not reparent_no_create.allowed
+    assert reparent_no_create.step == "4_default_deny"
+
+    # Reparenting fails with deny overrides when RESTORE is explicitly denied on target.
+    dead_dir_denied = _node(
+        "dead-dir-denied",
+        D,
+        "deny [RESTORE] to any;",
+        state=ObjectState.SOFT_DELETED,
+    )
+    reparent_denied_restore = evaluate_restore(
+        ALICE,
+        [root, dead_parent, dead_dir_denied],
+        [root, dest_allow],
+        reparenting=True,
+        eval_time_utc=NOW,
+    )
+    assert not reparent_denied_restore.allowed
+    assert reparent_denied_restore.step == "4_deny_overrides"
