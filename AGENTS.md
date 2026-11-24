@@ -28,6 +28,11 @@
 - If you need to create an Alembic upgrade/downgrade script, create the framework by running the command `uv run alembic revision --autogenerate`, and then modify the parts you want to change in the generated file, instead of creating a file from scratch.
 - If a pre-commit hook automatically formats the code, do not attempt to revert it, as I will end up having to format it again anyway.
 
+## Versioning
+- Increment `PROTOCOL_VERSION` (in `src/include/config/constants.py`) by 1 if and only if all of the following conditions are met:
+  1. A breaking change is introduced to an endpoint or API, preventing clients from completing certain communications with the server under the prior contract (internal implementation changes do not qualify).
+  2. The current `PROTOCOL_VERSION` has already appeared in at least one release since it was bumped; if it was bumped without ever being released, retain it without incrementing.
+
 ## Commit conventions
 - When the required changes are substantial, commit them in stages where appropriate to avoid difficulties during subsequent reviews.
 - Clearly specify the contents of this submission, ensuring no necessary information is omitted.
