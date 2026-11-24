@@ -1,6 +1,5 @@
 __all__ = [
     "DEFAULT_ROOT_DACL_SOURCE",
-    "DatabasePrincipalResolver",
     "compile_policy_source",
     "delete_node_dacl_rules_for_targets",
     "load_node_policies",
@@ -14,22 +13,25 @@ from collections.abc import Iterable, Sequence
 from itertools import batched
 
 from cacl_compiler import (
-    BatchPrincipalResolver,
     CompiledPolicy,
     CompiledRule,
     CompilerConfig,
     CompileResult,
     ConditionAtom,
     DecompileOptions,
+    Diagnostic,
     DNFClause,
     Effect,
     ObjectType,
     PredicateKind,
     Scope,
-    UserRenderMode,
-    compile_cacl,
+    Severity,
+    collect_principal_refs,
+    compile_ast,
     decompile_policy,
+    parse_cacl,
 )
+from cacl_compiler.ast_nodes import PolicyAST
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.orm import selectinload
@@ -51,68 +53,82 @@ DEFAULT_ROOT_DACL_SOURCE = (
 )
 
 
-class DatabasePrincipalResolver(BatchPrincipalResolver):
-    """Database-backed batch principal resolver for CACL compilation and annotations."""
+def _validate_ast_principals(
+    session: OrmSession,
+    ast: PolicyAST,
+    *,
+    strict_principals: bool,
+) -> list[Diagnostic]:
+    """Batch-validate AST user UUID and group references against the live database."""
+    refs = collect_principal_refs(ast)
+    if not refs:
+        return []
 
-    def __init__(self, session: OrmSession) -> None:
-        self._session = session
+    user_uuids = {
+        uuid.UUID(ref.value) for ref in refs if ref.kind is PredicateKind.USER
+    }
+    group_names = {ref.value for ref in refs if ref.kind is PredicateKind.GROUP}
 
-    def resolve_uuid_to_username(self, user_id: uuid.UUID) -> str | None:
-        return self._session.scalar(select(User.username).where(User.id == user_id))
-
-    def user_exists(self, user_id: uuid.UUID) -> bool:
-        return (
-            self._session.scalar(select(User.id).where(User.id == user_id)) is not None
+    existing_users: set[uuid.UUID] = set()
+    for chunk in batched(user_uuids, QUERY_CHUNK_SIZE):
+        existing_users.update(
+            session.scalars(select(User.id).where(User.id.in_(list(chunk)))).all()
         )
 
-    def group_exists(self, group_id: str) -> bool | None:
-        return (
-            self._session.scalar(
-                select(UserGroup.group_name).where(UserGroup.group_name == group_id)
-            )
-            is not None
-        )
-
-    def perm_exists(self, perm_name: str) -> bool | None:
-        # Core and extension-defined capabilities are both accepted in CFMS.
-        return None
-
-    def existing_users(self, user_ids: set[uuid.UUID]) -> set[uuid.UUID]:
-        found: set[uuid.UUID] = set()
-        for chunk in batched(user_ids, QUERY_CHUNK_SIZE):
-            found.update(
-                self._session.scalars(
-                    select(User.id).where(User.id.in_(list(chunk)))
-                ).all()
-            )
-        return found
-
-    def existing_groups(self, group_ids: set[str]) -> set[str] | None:
-        found: set[str] = set()
-        for chunk in batched(group_ids, QUERY_CHUNK_SIZE):
-            found.update(
-                self._session.scalars(
-                    select(UserGroup.group_name).where(
-                        UserGroup.group_name.in_(list(chunk))
-                    )
-                ).all()
-            )
-        return found
-
-    def existing_perms(self, perm_names: set[str]) -> set[str] | None:
-        return None
-
-    def resolve_uuids_to_usernames(
-        self, user_ids: set[uuid.UUID]
-    ) -> dict[uuid.UUID, str]:
-        resolved: dict[uuid.UUID, str] = {}
-        for chunk in batched(user_ids, QUERY_CHUNK_SIZE):
-            rows = self._session.execute(
-                select(User.id, User.username).where(User.id.in_(list(chunk)))
+    existing_groups: set[str] = set()
+    for chunk in batched(group_names, QUERY_CHUNK_SIZE):
+        existing_groups.update(
+            session.scalars(
+                select(UserGroup.group_name).where(
+                    UserGroup.group_name.in_(list(chunk))
+                )
             ).all()
-            for uid, username in rows:
-                resolved[uid] = username
-        return resolved
+        )
+
+    severity = Severity.ERROR if strict_principals else Severity.WARNING
+    diags: list[Diagnostic] = []
+    for ref in refs:
+        if ref.kind is PredicateKind.USER:
+            if uuid.UUID(ref.value) not in existing_users:
+                diags.append(
+                    Diagnostic(
+                        code="E301" if strict_principals else "W301",
+                        severity=severity,
+                        message=f"User UUID '{ref.value}' does not exist in principal directory.",
+                        span=ref.span,
+                    )
+                )
+        elif ref.kind is PredicateKind.GROUP and ref.value not in existing_groups:
+            diags.append(
+                Diagnostic(
+                    code="E303" if strict_principals else "W304",
+                    severity=severity,
+                    message=f"Group '{ref.value}' does not exist in principal directory.",
+                    span=ref.span,
+                )
+            )
+    return diags
+
+
+def _resolve_user_annotations(
+    session: OrmSession,
+    raw_user_ids: Iterable[str],
+) -> dict[str, str]:
+    uuids: set[uuid.UUID] = set()
+    for raw_uid in raw_user_ids:
+        try:
+            uuids.add(uuid.UUID(raw_uid))
+        except ValueError:
+            pass
+
+    annotations: dict[str, str] = {}
+    for chunk in batched(uuids, QUERY_CHUNK_SIZE):
+        rows = session.execute(
+            select(User.id, User.username).where(User.id.in_(list(chunk)))
+        ).all()
+        for uid, username in rows:
+            annotations[str(uid)] = username
+    return annotations
 
 
 def compile_policy_source(
@@ -123,14 +139,25 @@ def compile_policy_source(
     strict_principals: bool = False,
     now_utc: datetime.datetime | None = None,
 ) -> CompileResult:
-    """Compile CACL policy source using a database-backed batch principal resolver."""
+    """Compile CACL policy source and batch-validate referenced principals against the database."""
+    ast, parse_diags = parse_cacl(source)
+    if ast is None or any(d.severity is Severity.ERROR for d in parse_diags):
+        return CompileResult(policy=None, diagnostics=parse_diags)
+
     config = CompilerConfig(
-        resolver=DatabasePrincipalResolver(session),
-        strict_principal_existence=strict_principals,
         target_object_type=target_type,
         now_utc=now_utc or datetime.datetime.now(datetime.UTC),
     )
-    return compile_cacl(source, config=config)
+    compiled = compile_ast(ast, config=config)
+    principal_diags = _validate_ast_principals(
+        session, ast, strict_principals=strict_principals
+    )
+    all_diags = parse_diags + compiled.diagnostics + principal_diags
+    has_errors = any(d.severity is Severity.ERROR for d in all_diags)
+    return CompileResult(
+        policy=None if has_errors else compiled.policy,
+        diagnostics=all_diags,
+    )
 
 
 def render_policy_text(
@@ -140,15 +167,13 @@ def render_policy_text(
     annotate_users: bool = False,
 ) -> str:
     """Decompile a CompiledPolicy into canonical (or UUID-annotated) CACL text."""
+    annotations = (
+        _resolve_user_annotations(session, policy.referenced_users())
+        if (annotate_users and session is not None)
+        else None
+    )
     options = DecompileOptions(
-        resolver=DatabasePrincipalResolver(session)
-        if (annotate_users and session)
-        else None,
-        user_mode=(
-            UserRenderMode.UUID_ANNOTATED
-            if annotate_users and session is not None
-            else UserRenderMode.UUID
-        ),
+        user_annotations=annotations,
         fold_presets=False,
         prefer_to_syntax=True,
         omit_default_scope=True,

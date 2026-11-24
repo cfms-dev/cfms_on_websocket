@@ -11,28 +11,14 @@ __all__ = [
     "node_to_object_type",
     "should_check_ancestor_traverse",
     "user_to_subject",
+    "would_self_lockout_on_create",
 ]
 
 import datetime
 from collections.abc import Sequence
 from itertools import batched
 
-from cacl_compiler import (
-    AtomicOp,
-    CompiledPolicy,
-    EvalDecision,
-    NamespaceNode,
-    ObjectState,
-    ObjectType,
-    SaveAuthzResult,
-    Subject,
-    authorize_policy_save,
-    evaluate_access,
-    evaluate_effective_masks,
-    evaluate_reparent,
-    evaluate_soft_delete,
-)
-from cacl_compiler.permissions import op_applies_to_object, op_applies_to_state
+from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType
 from sqlalchemy import literal, select
 from sqlalchemy.orm import Session as OrmSession
 
@@ -46,6 +32,20 @@ from include.database.models.documents import (
     NodeType,
 )
 from include.database.models.identity import User
+from include.domains.access.authorization.engine import (
+    EvalDecision,
+    NamespaceNode,
+    ObjectState,
+    SaveAuthzResult,
+    Subject,
+    authorize_policy_save,
+    evaluate_access,
+    evaluate_effective_masks,
+    evaluate_reparent,
+    evaluate_soft_delete,
+    op_applies_to_object,
+    op_applies_to_state,
+)
 from include.domains.access.authorization.storage import load_node_policies
 from include.domains.access.permissions import Permissions
 
@@ -57,7 +57,6 @@ def has_bypass_dacl(user: User) -> bool:
 def user_to_subject(user: User) -> Subject:
     return Subject(
         user_id=user.id,
-        username=user.username,
         groups=frozenset(user.all_groups),
         perms=frozenset(str(perm) for perm in user.all_permissions),
     )
@@ -288,7 +287,6 @@ def authorize_reparent(
         paths[source.id],
         paths[dest_parent.id],
         eval_time_utc=now,
-        also_rename=False,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
     )
 
@@ -441,3 +439,36 @@ def authorize_dacl_save(
         eval_time_utc=now,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
     )
+
+
+def would_self_lockout_on_create(
+    session: OrmSession,
+    user: User,
+    parent: Folder,
+    object_type: ObjectType,
+    name: str,
+    proposed_policy: CompiledPolicy,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> bool:
+    """Return True if saving proposed_policy on a newly created child would revoke the actor's WRITE_DACL."""
+    if has_bypass_dacl(user):
+        return False
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    parent_path = load_ancestor_path(session, parent)
+    simulated_node = NamespaceNode(
+        node_id="__pending__",
+        name=name,
+        object_type=object_type,
+        state=ObjectState.NORMAL,
+        policy=proposed_policy,
+    )
+    post_check = evaluate_access(
+        user_to_subject(user),
+        [*parent_path, simulated_node],
+        AtomicOp.WRITE_DACL,
+        eval_time_utc=now,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    )
+    return not post_check.allowed

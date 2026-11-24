@@ -2,13 +2,7 @@ import secrets
 import time
 from itertools import batched
 
-from cacl_compiler import (
-    AtomicOp,
-    NamespaceNode,
-    ObjectState,
-    ObjectType,
-    evaluate_access,
-)
+from cacl_compiler import AtomicOp, ObjectType
 from pydantic import ConfigDict
 
 from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
@@ -26,9 +20,7 @@ from include.domains.access.authorization.evaluation import (
     authorize_reparent,
     authorize_restore,
     has_bypass_dacl,
-    load_ancestor_path,
-    should_check_ancestor_traverse,
-    user_to_subject,
+    would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
     compile_policy_source,
@@ -458,35 +450,23 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                     return Result(code=400, target=parent_id, user_id=handler.user_id)
                 compiled_policy = compiled.policy
 
-                if not has_bypass_dacl(this_user) and not allow_self_lockout:
-                    parent_path = load_ancestor_path(session, parent)
-                    simulated_node = NamespaceNode(
-                        node_id="__pending__",
-                        name=name,
-                        object_type=ObjectType.DIRECTORY,
-                        state=ObjectState.NORMAL,
-                        policy=compiled_policy,
+                if not allow_self_lockout and would_self_lockout_on_create(
+                    session,
+                    this_user,
+                    parent,
+                    ObjectType.DIRECTORY,
+                    name,
+                    compiled_policy,
+                ):
+                    handler.conclude_request(
+                        409,
+                        {
+                            "self_lockout_warning": True,
+                            "diagnostics": serialized_diags,
+                        },
+                        smsg.DACL_SELF_LOCKOUT,
                     )
-                    post_check = evaluate_access(
-                        user_to_subject(this_user),
-                        [*parent_path, simulated_node],
-                        AtomicOp.WRITE_DACL,
-                        check_ancestor_traverse=should_check_ancestor_traverse(
-                            session, this_user
-                        ),
-                    )
-                    if not post_check.allowed:
-                        handler.conclude_request(
-                            409,
-                            {
-                                "self_lockout_warning": True,
-                                "diagnostics": serialized_diags,
-                            },
-                            smsg.DACL_SELF_LOCKOUT,
-                        )
-                        return Result(
-                            code=409, target=parent_id, user_id=handler.user_id
-                        )
+                    return Result(code=409, target=parent_id, user_id=handler.user_id)
 
             folder = Folder(name=name, parent=parent)
             session.add(folder)

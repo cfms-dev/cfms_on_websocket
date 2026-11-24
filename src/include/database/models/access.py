@@ -3,11 +3,12 @@ __all__ = [
     "NodeDaclClause",
     "NodeDaclRule",
     "UtcEpochMicros",
+    "datetime_to_epoch_us",
+    "epoch_us_to_datetime",
 ]
 
 import datetime
 
-from cacl_compiler import datetime_to_epoch_us, epoch_us_to_datetime
 from sqlalchemy import (
     VARCHAR,
     BigInteger,
@@ -24,6 +25,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
 lazy from include.database.models.documents import Node
+
+_EPOCH_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.UTC)
+
+
+def datetime_to_epoch_us(dt: datetime.datetime) -> int:
+    if dt.tzinfo is None:
+        raise ValueError("Timestamp must be timezone-aware")
+    delta = dt.astimezone(datetime.UTC) - _EPOCH_UTC
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+
+def epoch_us_to_datetime(epoch_us: int) -> datetime.datetime:
+    return _EPOCH_UTC + datetime.timedelta(microseconds=epoch_us)
 
 
 class UtcEpochMicros(TypeDecorator[datetime.datetime]):

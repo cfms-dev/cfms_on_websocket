@@ -1,6 +1,10 @@
 __all__ = [
     "DEFAULT_ROOT_DACL_SOURCE",
-    "DatabasePrincipalResolver",
+    "EvalDecision",
+    "NamespaceNode",
+    "ObjectState",
+    "SaveAuthzResult",
+    "Subject",
     "authorize_dacl_save",
     "authorize_directory_soft_delete",
     "authorize_node_operation",
@@ -16,8 +20,16 @@ __all__ = [
     "render_policy_text",
     "should_check_ancestor_traverse",
     "user_to_subject",
+    "would_self_lockout_on_create",
 ]
 
+from include.domains.access.authorization.engine import (
+    EvalDecision,
+    NamespaceNode,
+    ObjectState,
+    SaveAuthzResult,
+    Subject,
+)
 from include.domains.access.authorization.evaluation import (
     authorize_dacl_save,
     authorize_directory_soft_delete,
@@ -29,10 +41,10 @@ from include.domains.access.authorization.evaluation import (
     load_ancestor_paths_for_nodes,
     should_check_ancestor_traverse,
     user_to_subject,
+    would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
     DEFAULT_ROOT_DACL_SOURCE,
-    DatabasePrincipalResolver,
     compile_policy_source,
     delete_node_dacl_rules_for_targets,
     load_node_policies,

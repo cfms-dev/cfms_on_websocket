@@ -21,13 +21,7 @@ import time
 import uuid
 from typing import Annotated, Any
 
-from cacl_compiler import (
-    AtomicOp,
-    NamespaceNode,
-    ObjectState,
-    ObjectType,
-    evaluate_access,
-)
+from cacl_compiler import AtomicOp, ObjectType
 from pydantic import ConfigDict, Field, StringConstraints
 lazy from sqlalchemy.orm import Session as ORMSession
 
@@ -56,10 +50,7 @@ from include.domains.access.authorization.evaluation import (
     authorize_node_operation,
     authorize_reparent,
     authorize_restore,
-    has_bypass_dacl,
-    load_ancestor_path,
-    should_check_ancestor_traverse,
-    user_to_subject,
+    would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
     compile_policy_source,
@@ -574,38 +565,28 @@ def _create_document_in_transaction(
                 )
             compiled_policy = compiled.policy
 
-            if not has_bypass_dacl(user) and not allow_self_lockout:
-                parent_path = load_ancestor_path(session, parent_folder)
-                simulated_doc = NamespaceNode(
-                    node_id="__pending__",
-                    name=title,
-                    object_type=ObjectType.DOCUMENT,
-                    state=ObjectState.NORMAL,
-                    policy=compiled_policy,
-                )
-                post_check = evaluate_access(
-                    user_to_subject(user),
-                    [*parent_path, simulated_doc],
-                    AtomicOp.WRITE_DACL,
-                    check_ancestor_traverse=should_check_ancestor_traverse(
-                        session, user
+            if not allow_self_lockout and would_self_lockout_on_create(
+                session,
+                user,
+                parent_folder,
+                ObjectType.DOCUMENT,
+                title,
+                compiled_policy,
+            ):
+                return (
+                    409,
+                    {
+                        "self_lockout_warning": True,
+                        "diagnostics": serialized_diags,
+                    },
+                    smsg.DACL_SELF_LOCKOUT,
+                    Result(
+                        code=409,
+                        target=folder_id,
+                        data=result_data,
+                        user_id=user_id,
                     ),
                 )
-                if not post_check.allowed:
-                    return (
-                        409,
-                        {
-                            "self_lockout_warning": True,
-                            "diagnostics": serialized_diags,
-                        },
-                        smsg.DACL_SELF_LOCKOUT,
-                        Result(
-                            code=409,
-                            target=folder_id,
-                            data=result_data,
-                            user_id=user_id,
-                        ),
-                    )
 
         limit_decision = check_document_creation_limits(
             session,
