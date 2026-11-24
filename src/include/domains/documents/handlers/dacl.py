@@ -15,8 +15,8 @@ lazy from sqlalchemy.orm import Session as OrmSession
 from include.config.constants import DACL_SOURCE_MAX_LENGTH
 from include.database.models.documents import Document, Folder
 from include.database.models.identity import User
-from include.domains.access.authorization.engine import NamespaceNode
 from include.domains.access.authorization.evaluation import (
+    CreateAuthzCheck,
     authorize_dacl_read,
     authorize_write_dacl_and_load_path,
     simulate_dacl_save_lockout,
@@ -157,15 +157,13 @@ def prepare_initial_node_dacl(
     object_type: ObjectType,
     name: str,
     dacl_source: str | None,
-    can_write_dacl: bool,
+    create_check: CreateAuthzCheck,
     allow_self_lockout: bool,
-    parent_path: list[NamespaceNode] | None,
-    check_ancestor_traverse: bool,
 ) -> tuple[CompiledPolicy | None, tuple[int, dict[str, Any], str] | None]:
     if dacl_source is None:
         return None, None
 
-    if not can_write_dacl:
+    if not create_check.can_write_dacl:
         return None, (403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
 
     compiled = compile_policy_source(
@@ -189,8 +187,7 @@ def prepare_initial_node_dacl(
         object_type,
         name,
         compiled.policy,
-        parent_path=parent_path,
-        check_ancestor_traverse=check_ancestor_traverse,
+        create_check=create_check,
     ):
         return None, (
             409,

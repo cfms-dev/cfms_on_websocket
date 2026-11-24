@@ -163,3 +163,21 @@ class TestRevisionOperations:
         response = await authenticated_client.list_revisions("invalid-doc-id-12345")
 
         assert_error(response, 404)
+
+    @pytest.mark.asyncio
+    async def test_delete_revision_checks_authorization_before_current_revision_state(
+        self,
+        authenticated_client: CFMSTestClient,
+        revision_history,
+        user_factory,
+        client_factory,
+    ):
+        current_revision_id = revision_history["current_revision_id"]
+        user = await user_factory()
+        client = await client_factory()
+        assert_success(await client.login(user["username"], user["password"]))
+
+        assert_error(await client.delete_revision(current_revision_id), 403)
+        assert_error(
+            await authenticated_client.delete_revision(current_revision_id), 400
+        )

@@ -9,10 +9,10 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from itertools import batched
 
-from sqlalchemy import select
+from sqlalchemy import literal, select
 from sqlalchemy.orm import Session
 
-from include.config.constants import QUERY_CHUNK_SIZE
+from include.config.constants import MAX_HIERARCHY_DEPTH, QUERY_CHUNK_SIZE
 from include.database.models.documents import (
     EntityStatus,
     Node,
@@ -44,13 +44,18 @@ def _fetch_subtree_rows(
         node_table.c.type.label("type"),
         node_table.c.status.label("status"),
         node_table.c.inherit.label("inherit"),
+        literal(0).label("depth"),
     ).where(
         node_table.c.id == root_folder_id,
         node_table.c.type == NodeType.DIRECTORY.value,
     )
     subtree = anchor.cte("deletion_subtree", recursive=True)
     child_node = node_table.alias("deletion_child_node")
-    recursive_filters = [child_node.c.type == NodeType.DIRECTORY.value]
+    recursive_filters = [
+        child_node.c.type == NodeType.DIRECTORY.value,
+        child_node.c.id != root_folder_id,
+        subtree.c.depth <= MAX_HIERARCHY_DEPTH,
+    ]
     if not include_deleted:
         recursive_filters.append(child_node.c.status == EntityStatus.OK.value)
     subtree = subtree.union_all(
@@ -61,13 +66,14 @@ def _fetch_subtree_rows(
             child_node.c.type,
             child_node.c.status,
             child_node.c.inherit,
+            (subtree.c.depth + 1).label("depth"),
         )
         .select_from(subtree.join(child_node, child_node.c.parent_id == subtree.c.id))
         .where(*recursive_filters)
     )
 
     folder_by_id: dict[str, SubtreeNodeRow] = {}
-    for nid, name, parent_id, node_type, status, inherit_flag in session.execute(
+    for nid, name, parent_id, node_type, status, inherit_flag, depth in session.execute(
         select(
             subtree.c.id,
             subtree.c.name,
@@ -75,8 +81,13 @@ def _fetch_subtree_rows(
             subtree.c.type,
             subtree.c.status,
             subtree.c.inherit,
+            subtree.c.depth,
         )
     ).all():
+        if int(depth) > MAX_HIERARCHY_DEPTH:
+            raise RuntimeError(
+                f"Directory subtree depth exceeded limit ({MAX_HIERARCHY_DEPTH})."
+            )
         if nid not in folder_by_id:
             folder_by_id[nid] = SubtreeNodeRow(
                 id=nid,

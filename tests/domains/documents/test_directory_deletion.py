@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 pytestmark = pytest.mark.component
@@ -171,3 +172,51 @@ def test_document_task_cancellation_uses_remaining_file_reachability(
         )
 
     _clear_file_references_cache()
+
+
+def test_fetch_subtree_guards_against_cycle_and_depth_limit(
+    sqlite_engine_factory, monkeypatch
+):
+    from include.database import models
+    from include.database.session import Base
+    from include.domains.documents.queries import deletion_tree as deletion_tree_mod
+
+    engine = sqlite_engine_factory(":memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal() as session:
+        session.add(models.Folder(id="/", name="/", inherit=False))
+        session.flush()
+        f1 = models.Folder(id="cyc-1", name="c1", parent_id="/")
+        session.add(f1)
+        session.flush()
+        f2 = models.Folder(id="cyc-2", name="c2", parent_id="cyc-1")
+        session.add(f2)
+        session.commit()
+
+        # Introduce a corrupted cycle cyc-1 <-> cyc-2 directly in SQL.
+        session.execute(text("UPDATE nodes SET parent_id = 'cyc-2' WHERE id = 'cyc-1'"))
+        session.commit()
+
+        with pytest.raises(RuntimeError, match="Cycle detected"):
+            deletion_tree_mod.fetch_subtree_metadata_for_soft_delete(session, "cyc-1")
+
+    with SessionLocal() as session:
+        parent_id = "/"
+        for idx in range(5):
+            node = models.Folder(
+                id=f"deep-sub-{idx}",
+                name=f"d{idx}",
+                parent_id=parent_id,
+            )
+            session.add(node)
+            session.flush()
+            parent_id = node.id
+        session.commit()
+
+        monkeypatch.setattr(deletion_tree_mod, "MAX_HIERARCHY_DEPTH", 2)
+        with pytest.raises(RuntimeError, match="depth exceeded"):
+            deletion_tree_mod.fetch_subtree_metadata_for_soft_delete(
+                session, "deep-sub-0"
+            )

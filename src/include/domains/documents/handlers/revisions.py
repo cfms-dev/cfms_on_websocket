@@ -267,13 +267,6 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
 
             document = revision.document
             if (
-                document.current_revision_id == revision.id
-                or len(document.revisions) == 1  # backward compatibility
-            ):
-                handler.conclude_request(400, {}, "Cannot delete the current revision")
-                return Result(code=400, target=revision_id, user_id=handler.user_id)
-
-            if (
                 Permissions.DELETE_REVISION not in user.all_permissions
                 or not authorize_node_operation(
                     session, user, document, AtomicOp.DELETE_REVISION
@@ -281,6 +274,13 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
             ):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, user_id=handler.user_id)
+
+            if (
+                document.current_revision_id == revision.id
+                or len(document.revisions) == 1  # backward compatibility
+            ):
+                handler.conclude_request(400, {}, "Cannot delete the current revision")
+                return Result(code=400, target=revision_id, user_id=handler.user_id)
 
             with session.no_autoflush:
                 # Try to connect parent and child revisions directly

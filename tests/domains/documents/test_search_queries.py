@@ -7,6 +7,10 @@ from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 from include.config.options import write_options
+from include.database.cursors import (
+    StreamingCursorBatchStrategy,
+    WindowedKeysetBatchStrategy,
+)
 from include.domains.access.permissions import Permissions
 
 _NOW_DT = datetime.datetime(2026, 6, 15, 12, 0, 0, tzinfo=datetime.UTC)
@@ -833,8 +837,10 @@ def test_search_active_revision_resolution_parity_across_sort_modes(
 def test_search_statements_compile_across_supported_dialects(dialect_name: str):
     from sqlalchemy.dialects import mysql, postgresql, sqlite
 
+    from include.domains.access.authorization.storage import (
+        build_ancestors_and_active_policies_stmt,
+    )
     from include.domains.documents.queries.listing import (
-        _build_combined_ancestors_and_policies_stmt,
         _build_search_select,
         _search_candidate_selectable,
         _search_lightweight_candidate_selectable,
@@ -886,9 +892,130 @@ def test_search_statements_compile_across_supported_dialects(dialect_name: str):
     assert "search_current_chain" in full_sql
 
     combined_sql = str(
-        _build_combined_ancestors_and_policies_stmt(
+        build_ancestors_and_active_policies_stmt(
             ["folder-1"], ["doc-1", "doc-2"], _NOW_DT
         ).compile(dialect=dialect)
     )
     assert "search_anc_meta" in combined_sql
     assert "dacl_rule_atoms" in combined_sql
+
+
+@pytest.mark.component
+def test_windowed_keyset_batch_strategy_matches_streaming_parity(search_query_context):
+    context = search_query_context
+    user = _make_user(context, username="alice_windowed")
+    query = "WindowParity"
+
+    for idx in range(180):
+        _make_folder(
+            context,
+            f"wp-hidden-{idx:03d}",
+            f"{query}A{idx:03d}",
+            dacl="inherit off;",
+        )
+    expected_visible_ids: list[str] = []
+    for idx in range(6):
+        folder = _make_folder(
+            context,
+            f"wp-visible-{idx:03d}",
+            f"{query}Z{idx:03d}",
+        )
+        expected_visible_ids.append(folder.id)
+    context.session.commit()
+
+    def _collect_all(strategy):
+        collected: list[str] = []
+        last_key = None
+        while True:
+            page = context.fetch_visible_search_candidate_rows(
+                context.session,
+                user=user,
+                now=_NOW,
+                query=query,
+                sort_by="name",
+                sort_order="asc",
+                search_documents=False,
+                search_directories=True,
+                last_key=last_key,
+                limit=2,
+                batch_strategy=strategy,
+            )
+            if not page:
+                break
+            collected.extend(item["id"] for item in page)
+            if len(page) < 2:
+                break
+            last_key = page[-1]["_cursor_key"]
+        return collected
+
+    streaming_ids = _collect_all(StreamingCursorBatchStrategy(chunk_size=16))
+    windowed_ids = _collect_all(WindowedKeysetBatchStrategy(window_sizes=(20, 40)))
+    assert streaming_ids == expected_visible_ids
+    assert windowed_ids == expected_visible_ids
+
+
+@pytest.mark.component
+def test_search_visibility_fails_closed_when_ancestor_chain_truncated(
+    search_query_context, monkeypatch
+):
+    from include.domains.access.authorization import storage as storage_mod
+
+    context = search_query_context
+    user = _make_user(context, username="alice_deep_search")
+
+    parent_id = "/"
+    for idx in range(5):
+        folder = _make_folder(
+            context,
+            f"deep-search-{idx}",
+            f"DeepSearchDir{idx}",
+            parent_id=parent_id,
+        )
+        parent_id = folder.id
+    _make_document(
+        context,
+        "deep-search-doc",
+        "DeepSearchTargetDoc",
+        folder_id=parent_id,
+    )
+    context.session.commit()
+
+    monkeypatch.setattr(storage_mod, "MAX_HIERARCHY_DEPTH", 2)
+
+    # Fails closed with normal traverse checking.
+    rows = context.fetch_visible_search_candidate_rows(
+        context.session,
+        user=user,
+        now=_NOW,
+        query="DeepSearchTargetDoc",
+        sort_by="name",
+        sort_order="asc",
+        search_documents=True,
+        search_directories=False,
+        last_key=None,
+        limit=10,
+    )
+    assert rows == []
+
+    # Still fails closed even when bypass_traverse_checking is enabled.
+    write_options(
+        context.session,
+        "access",
+        {"bypass_traverse_checking": True},
+        expected_revisions={"bypass_traverse_checking": 0},
+    )
+    context.session.commit()
+
+    rows_bypassed = context.fetch_visible_search_candidate_rows(
+        context.session,
+        user=user,
+        now=_NOW,
+        query="DeepSearchTargetDoc",
+        sort_by="name",
+        sort_order="asc",
+        search_documents=True,
+        search_directories=False,
+        last_key=None,
+        limit=10,
+    )
+    assert rows_bypassed == []

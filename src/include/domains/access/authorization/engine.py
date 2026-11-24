@@ -15,12 +15,10 @@ __all__ = [
     "evaluate_effective_masks",
     "evaluate_path_masks",
     "evaluate_reparent",
-    "evaluate_soft_delete",
     "evaluate_soft_delete_subtree",
     "op_applies_to_object",
     "op_applies_to_state",
     "rule_active_at",
-    "rule_next_transition_after",
     "scope_matches",
     "simulate_policy_save_lockout",
     "step_node_dacl",
@@ -213,16 +211,6 @@ def _rule_next_transition_utc(
     return None
 
 
-def rule_next_transition_after(
-    rule: CompiledRule,
-    at_utc: datetime.datetime,
-) -> datetime.datetime | None:
-    """Earliest temporal validity boundary strictly after ``at_utc``."""
-    if at_utc.tzinfo is None:
-        raise ValueError("at_utc must be timezone-aware")
-    return _rule_next_transition_utc(rule, at_utc.astimezone(datetime.UTC))
-
-
 def _eval_atom(atom: ConditionAtom, subject: Subject) -> bool:
     if atom.kind is PredicateKind.USER:
         matched = atom.value == subject._user_id_str
@@ -240,6 +228,23 @@ def eval_dnf(clauses: tuple[DNFClause, ...], subject: Subject) -> bool:
         if all(_eval_atom(atom, subject) for atom in clause.atoms):
             return True
     return False
+
+
+def _merge_rule_mask(
+    allow: int,
+    deny: int,
+    next_t: datetime.datetime | None,
+    mask: int,
+    is_deny: bool,
+    nt: datetime.datetime | None,
+) -> tuple[int, int, datetime.datetime | None]:
+    next_t = _min_transition(next_t, nt)
+    if mask:
+        if is_deny:
+            deny |= mask
+        else:
+            allow |= mask
+    return allow, deny, next_t
 
 
 def step_node_dacl(
@@ -261,45 +266,32 @@ def step_node_dacl(
     self_deny = 0
     self_next: datetime.datetime | None = None
 
-    if policy.rules:
-        for rule in policy.rules:
-            if not eval_dnf(rule.dnf_clauses, subject):
-                continue
-            nt = _rule_next_transition_utc(rule, eval_time_utc)
-            mask = rule.permission_mask if rule_active_at(rule, eval_time_utc) else 0
-            is_deny = rule.effect is Effect.DENY
-            scope = rule.scope
-            if scope is Scope.SELF:
-                self_next = _min_transition(self_next, nt)
-                if mask:
-                    if is_deny:
-                        self_deny |= mask
-                    else:
-                        self_allow |= mask
-            elif scope is Scope.DIRS:
-                dir_next = _min_transition(dir_next, nt)
-                if mask:
-                    if is_deny:
-                        dir_deny |= mask
-                    else:
-                        dir_allow |= mask
-            elif scope is Scope.DOCS:
-                doc_next = _min_transition(doc_next, nt)
-                if mask:
-                    if is_deny:
-                        doc_deny |= mask
-                    else:
-                        doc_allow |= mask
-            else:
-                dir_next = _min_transition(dir_next, nt)
-                doc_next = _min_transition(doc_next, nt)
-                if mask:
-                    if is_deny:
-                        dir_deny |= mask
-                        doc_deny |= mask
-                    else:
-                        dir_allow |= mask
-                        doc_allow |= mask
+    for rule in policy.rules:
+        if not eval_dnf(rule.dnf_clauses, subject):
+            continue
+        nt = _rule_next_transition_utc(rule, eval_time_utc)
+        mask = rule.permission_mask if rule_active_at(rule, eval_time_utc) else 0
+        is_deny = rule.effect is Effect.DENY
+        scope = rule.scope
+        if scope is Scope.SELF:
+            self_allow, self_deny, self_next = _merge_rule_mask(
+                self_allow, self_deny, self_next, mask, is_deny, nt
+            )
+        elif scope is Scope.DIRS:
+            dir_allow, dir_deny, dir_next = _merge_rule_mask(
+                dir_allow, dir_deny, dir_next, mask, is_deny, nt
+            )
+        elif scope is Scope.DOCS:
+            doc_allow, doc_deny, doc_next = _merge_rule_mask(
+                doc_allow, doc_deny, doc_next, mask, is_deny, nt
+            )
+        else:
+            dir_allow, dir_deny, dir_next = _merge_rule_mask(
+                dir_allow, dir_deny, dir_next, mask, is_deny, nt
+            )
+            doc_allow, doc_deny, doc_next = _merge_rule_mask(
+                doc_allow, doc_deny, doc_next, mask, is_deny, nt
+            )
 
     if object_type is ObjectType.DIRECTORY:
         own_allow = dir_allow | self_allow
@@ -537,31 +529,11 @@ def evaluate_effective_masks(
     ).target
 
 
-def evaluate_access(
-    subject: Subject | None,
-    path_root_to_target: list[NamespaceNode],
+def _check_access_preconditions(
+    target: NamespaceNode,
     operation: AtomicOp,
-    eval_time_utc: datetime.datetime | None = None,
-    check_ancestor_traverse: bool = True,
-    *,
-    collect_traces: bool = True,
-) -> EvalDecision:
-    """CEP 2 Section 6 deterministic runtime evaluation pipeline in O(D * R)."""
-    if not path_root_to_target:
-        raise ValueError("path_root_to_target must contain at least the target node.")
-
-    if subject is None:
-        return EvalDecision(
-            allowed=False,
-            reason="Unauthenticated request: not a DACL principal.",
-            step="0_unauthenticated",
-        )
-
-    now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
-        datetime.UTC
-    )
-    target = path_root_to_target[-1]
-
+    path_root_to_target: list[NamespaceNode],
+) -> EvalDecision | None:
     if not op_applies_to_object(operation, target.object_type):
         return EvalDecision(
             allowed=False,
@@ -585,35 +557,18 @@ def evaluate_access(
             reason="Cannot restore a directory whose parent directory is not in the normal state.",
             step="1_lifecycle_and_type",
         )
+    return None
 
-    walk = _walk_path_dacl(
-        subject,
-        path_root_to_target,
-        now,
-        check_ancestor_traverse=check_ancestor_traverse,
-        track_parent=False,
-    )
-    if not walk.allowed_traverse:
-        if walk.denied_traverse_ancestor_idx is not None:
-            if collect_traces:
-                denies, allows = _collect_op_traces_on_chain(
-                    subject,
-                    path_root_to_target[: walk.denied_traverse_ancestor_idx + 1],
-                    AtomicOp.TRAVERSE,
-                    now,
-                )
-            else:
-                denies, allows = [], []
-            return EvalDecision(
-                allowed=False,
-                reason=walk.denied_reason or "Missing TRAVERSE permission on ancestor.",
-                step="2_path_traverse",
-                matched_denies=tuple(denies),
-                matched_allows=tuple(allows),
-                effective_allow_mask=walk.allow_mask,
-                effective_deny_mask=walk.deny_mask,
-                next_transition_at=walk.next_transition_at,
-            )
+
+def _build_traverse_denial_decision(
+    subject: Subject,
+    path_root_to_target: list[NamespaceNode],
+    walk: _PathWalkResult,
+    now: datetime.datetime,
+    *,
+    collect_traces: bool,
+) -> EvalDecision:
+    if walk.denied_traverse_ancestor_idx is None:
         return EvalDecision(
             allowed=False,
             reason=walk.denied_reason or "Ancestor is not in normal state.",
@@ -621,16 +576,46 @@ def evaluate_access(
             next_transition_at=walk.next_transition_at,
         )
 
+    denies: list[MatchedRuleTrace] = []
+    allows: list[MatchedRuleTrace] = []
+    if collect_traces:
+        denies, allows = _collect_op_traces_on_chain(
+            subject,
+            path_root_to_target[: walk.denied_traverse_ancestor_idx + 1],
+            AtomicOp.TRAVERSE,
+            now,
+        )
+    return EvalDecision(
+        allowed=False,
+        reason=walk.denied_reason or "Missing TRAVERSE permission on ancestor.",
+        step="2_path_traverse",
+        matched_denies=tuple(denies),
+        matched_allows=tuple(allows),
+        effective_allow_mask=walk.allow_mask,
+        effective_deny_mask=walk.deny_mask,
+        next_transition_at=walk.next_transition_at,
+    )
+
+
+def _build_mask_decision(
+    subject: Subject,
+    path_root_to_target: list[NamespaceNode],
+    operation: AtomicOp,
+    walk: _PathWalkResult,
+    now: datetime.datetime,
+    *,
+    collect_traces: bool,
+) -> EvalDecision:
     a_mask = walk.allow_mask
     d_mask = walk.deny_mask
     next_transition = walk.next_transition_at
     op_bit = int(operation)
+    denies: list[MatchedRuleTrace] = []
+    allows: list[MatchedRuleTrace] = []
     if collect_traces and ((d_mask & op_bit) or (a_mask & op_bit)):
         denies, allows = _collect_op_traces_on_chain(
             subject, path_root_to_target, operation, now
         )
-    else:
-        denies, allows = [], []
 
     if d_mask & op_bit:
         return EvalDecision(
@@ -668,6 +653,57 @@ def evaluate_access(
         effective_allow_mask=a_mask,
         effective_deny_mask=d_mask,
         next_transition_at=next_transition,
+    )
+
+
+def evaluate_access(
+    subject: Subject | None,
+    path_root_to_target: list[NamespaceNode],
+    operation: AtomicOp,
+    eval_time_utc: datetime.datetime | None = None,
+    check_ancestor_traverse: bool = True,
+    *,
+    collect_traces: bool = True,
+) -> EvalDecision:
+    """CEP 2 Section 6 deterministic runtime evaluation pipeline in O(D * R)."""
+    if not path_root_to_target:
+        raise ValueError("path_root_to_target must contain at least the target node.")
+
+    if subject is None:
+        return EvalDecision(
+            allowed=False,
+            reason="Unauthenticated request: not a DACL principal.",
+            step="0_unauthenticated",
+        )
+
+    now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
+        datetime.UTC
+    )
+    precondition_denial = _check_access_preconditions(
+        path_root_to_target[-1], operation, path_root_to_target
+    )
+    if precondition_denial is not None:
+        return precondition_denial
+
+    walk = _walk_path_dacl(
+        subject,
+        path_root_to_target,
+        now,
+        check_ancestor_traverse=check_ancestor_traverse,
+        track_parent=False,
+    )
+    if not walk.allowed_traverse:
+        return _build_traverse_denial_decision(
+            subject, path_root_to_target, walk, now, collect_traces=collect_traces
+        )
+
+    return _build_mask_decision(
+        subject,
+        path_root_to_target,
+        operation,
+        walk,
+        now,
+        collect_traces=collect_traces,
     )
 
 
@@ -730,6 +766,80 @@ def evaluate_reparent(
     )
 
 
+def _evaluate_descendant_delete(
+    subject: Subject,
+    child: SubtreeNode,
+    parent_inherited: InheritedDaclState,
+    now: datetime.datetime,
+    *,
+    has_children: bool,
+    check_ancestor_traverse: bool,
+) -> tuple[EvalDecision | None, InheritedDaclState]:
+    if not op_applies_to_object(AtomicOp.DELETE, child.object_type):
+        return (
+            EvalDecision(
+                allowed=False,
+                reason=(
+                    "Missing DIRECTORY_DELETE_CHILD on target and DELETE is not applicable "
+                    f"to descendant '{child.name}' ({child.node_id})."
+                ),
+                step="5_composite_delete_descendant",
+            ),
+            _EMPTY_INHERITED_STATE,
+        )
+    if not op_applies_to_state(AtomicOp.DELETE, child.state):
+        return (
+            EvalDecision(
+                allowed=False,
+                reason=(
+                    "Missing DIRECTORY_DELETE_CHILD on target and DELETE is not applicable "
+                    f"in state {child.state.value} on descendant '{child.name}' ({child.node_id})."
+                ),
+                step="5_composite_delete_descendant",
+            ),
+            _EMPTY_INHERITED_STATE,
+        )
+
+    own_allow, own_deny, _, child_inherited = step_node_dacl(
+        subject, child.policy, child.object_type, parent_inherited, now
+    )
+    eff_mask = own_allow & ~own_deny
+    if not (eff_mask & _DELETE_BIT):
+        return (
+            EvalDecision(
+                allowed=False,
+                reason=(
+                    "Missing DIRECTORY_DELETE_CHILD on target and DELETE denied on descendant "
+                    f"'{child.name}' ({child.node_id})."
+                ),
+                step="5_composite_delete_descendant",
+                effective_allow_mask=own_allow,
+                effective_deny_mask=own_deny,
+            ),
+            child_inherited,
+        )
+
+    if (
+        has_children
+        and check_ancestor_traverse
+        and (child.state is not ObjectState.NORMAL or not (eff_mask & _TRAVERSE_BIT))
+    ):
+        return (
+            EvalDecision(
+                allowed=False,
+                reason=(
+                    "Missing DIRECTORY_DELETE_CHILD on target and TRAVERSE denied on descendant "
+                    f"directory '{child.name}' ({child.node_id})."
+                ),
+                step="5_composite_delete_descendant",
+                effective_allow_mask=own_allow,
+                effective_deny_mask=own_deny,
+            ),
+            child_inherited,
+        )
+    return None, child_inherited
+
+
 def evaluate_soft_delete_subtree(
     subject: Subject | None,
     target_node_id: str,
@@ -778,59 +888,21 @@ def evaluate_soft_delete_subtree(
         parent_id, parent_inherited = queue.popleft()
         for child in children_by_parent.get(parent_id, ()):
             visited += 1
-            if not op_applies_to_object(AtomicOp.DELETE, child.object_type):
-                return EvalDecision(
-                    allowed=False,
-                    reason=(
-                        "Missing DIRECTORY_DELETE_CHILD on target and DELETE is not applicable "
-                        f"to descendant '{child.name}' ({child.node_id})."
-                    ),
-                    step="5_composite_delete_descendant",
-                )
-            if not op_applies_to_state(AtomicOp.DELETE, child.state):
-                return EvalDecision(
-                    allowed=False,
-                    reason=(
-                        "Missing DIRECTORY_DELETE_CHILD on target and DELETE is not applicable "
-                        f"in state {child.state.value} on descendant '{child.name}' ({child.node_id})."
-                    ),
-                    step="5_composite_delete_descendant",
-                )
-
-            own_allow, own_deny, _, child_inherited = step_node_dacl(
-                subject, child.policy, child.object_type, parent_inherited, now
-            )
-            eff_mask = own_allow & ~own_deny
-            if not (eff_mask & _DELETE_BIT):
-                return EvalDecision(
-                    allowed=False,
-                    reason=(
-                        "Missing DIRECTORY_DELETE_CHILD on target and DELETE denied on descendant "
-                        f"'{child.name}' ({child.node_id})."
-                    ),
-                    step="5_composite_delete_descendant",
-                    effective_allow_mask=own_allow,
-                    effective_deny_mask=own_deny,
-                )
-
-            if (
+            has_children = (
                 child.object_type is ObjectType.DIRECTORY
                 and child.node_id in children_by_parent
-            ):
-                if check_ancestor_traverse and (
-                    child.state is not ObjectState.NORMAL
-                    or not (eff_mask & _TRAVERSE_BIT)
-                ):
-                    return EvalDecision(
-                        allowed=False,
-                        reason=(
-                            "Missing DIRECTORY_DELETE_CHILD on target and TRAVERSE denied on descendant "
-                            f"directory '{child.name}' ({child.node_id})."
-                        ),
-                        step="5_composite_delete_descendant",
-                        effective_allow_mask=own_allow,
-                        effective_deny_mask=own_deny,
-                    )
+            )
+            denial, child_inherited = _evaluate_descendant_delete(
+                subject,
+                child,
+                parent_inherited,
+                now,
+                has_children=has_children,
+                check_ancestor_traverse=check_ancestor_traverse,
+            )
+            if denial is not None:
+                return denial
+            if has_children:
                 queue.append((child.node_id, child_inherited))
 
     if visited != len(descendants):
@@ -838,81 +910,6 @@ def evaluate_soft_delete_subtree(
             "Subtree descendants could not all be reached from target directory."
         )
 
-    return EvalDecision(
-        allowed=True,
-        reason="DELETE granted on target and on every affected descendant.",
-        step="5_composite_allowed",
-    )
-
-
-def evaluate_soft_delete(
-    subject: Subject | None,
-    target_path: list[NamespaceNode],
-    descendant_paths: Sequence[list[NamespaceNode]] = (),
-    eval_time_utc: datetime.datetime | None = None,
-    check_ancestor_traverse: bool = True,
-    *,
-    collect_traces: bool = True,
-) -> EvalDecision:
-    """Step 5: soft-deleting an object, including non-empty directories."""
-    now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
-        datetime.UTC
-    )
-    own = evaluate_access(
-        subject,
-        target_path,
-        AtomicOp.DELETE,
-        now,
-        check_ancestor_traverse=check_ancestor_traverse,
-        collect_traces=collect_traces,
-    )
-    if not own.allowed:
-        return EvalDecision(
-            allowed=False,
-            reason=f"DELETE on target failed: {own.reason}",
-            step="5_composite_delete_target",
-            matched_denies=own.matched_denies,
-            matched_allows=own.matched_allows,
-        )
-    if not descendant_paths:
-        return EvalDecision(
-            allowed=True,
-            reason="DELETE granted on target (no non-deleted descendants).",
-            step="5_composite_allowed",
-        )
-
-    delete_child_bit = int(AtomicOp.DIRECTORY_DELETE_CHILD)
-    if (
-        target_path[-1].object_type is ObjectType.DIRECTORY
-        and target_path[-1].state is ObjectState.NORMAL
-        and (own.effective_allow_mask & delete_child_bit)
-        and not (own.effective_deny_mask & delete_child_bit)
-    ):
-        return EvalDecision(
-            allowed=True,
-            reason="DELETE on target plus DIRECTORY_DELETE_CHILD (per-descendant checks bypassed).",
-            step="5_composite_allowed",
-        )
-    for path in descendant_paths:
-        child = evaluate_access(
-            subject,
-            path,
-            AtomicOp.DELETE,
-            now,
-            check_ancestor_traverse=check_ancestor_traverse,
-            collect_traces=collect_traces,
-        )
-        if not child.allowed:
-            return EvalDecision(
-                allowed=False,
-                reason=(
-                    "Missing DIRECTORY_DELETE_CHILD on target and DELETE denied on descendant "
-                    f"'{path[-1].name}' ({path[-1].node_id}): {child.reason}"
-                ),
-                step="5_composite_delete_descendant",
-                matched_denies=child.matched_denies,
-                matched_allows=child.matched_allows,
-            )
     return EvalDecision(
         allowed=True,
         reason="DELETE granted on target and on every affected descendant.",

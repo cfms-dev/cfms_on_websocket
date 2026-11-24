@@ -11,13 +11,21 @@ from include.config.constants import DACL_MAX_RULES_PER_NODE
 from include.database import models
 from include.database.models.access import datetime_to_epoch_us, epoch_us_to_datetime
 from include.database.session import Base
+from include.domains.access.authorization import (
+    evaluation as eval_mod,
+)
+from include.domains.access.authorization import (
+    storage as storage_mod,
+)
 from include.domains.access.authorization.evaluation import (
+    authorize_create_on_parent,
     authorize_dacl_read,
     authorize_directory_access_with_parent,
     authorize_node_operation,
     authorize_soft_delete_descendants,
     authorize_write_dacl_and_load_path,
     check_directory_soft_delete_root,
+    load_ancestor_paths_for_nodes,
     simulate_dacl_save_lockout,
     would_self_lockout_on_create,
 )
@@ -548,3 +556,152 @@ def test_load_node_policies_uses_single_join_query_and_preserves_fingerprint(
     assert "dacl_rule_atoms" in statements[0]
     assert loaded[folder_id].fingerprint() == compiled.policy.fingerprint()
     assert len(loaded["/"].rules) == 2
+
+
+def test_load_ancestor_paths_fails_closed_when_depth_limit_exceeded(
+    cacl_session, monkeypatch
+):
+    parent_id = "/"
+    deepest: models.Folder | None = None
+    for idx in range(5):
+        folder = models.Folder(
+            id=f"deep-f-{idx}",
+            name=f"Deep{idx}",
+            parent_id=parent_id,
+            inherit=True,
+        )
+        cacl_session.add(folder)
+        cacl_session.flush()
+        parent_id = folder.id
+        deepest = folder
+    cacl_session.commit()
+    assert deepest is not None
+
+    monkeypatch.setattr(eval_mod, "MAX_HIERARCHY_DEPTH", 2)
+    with pytest.raises(RuntimeError, match="Incomplete ancestor chain"):
+        load_ancestor_paths_for_nodes(cacl_session, [deepest])
+
+
+def test_authorize_create_on_parent_fails_closed_on_write_dacl_step1_failure(
+    cacl_session, monkeypatch
+):
+    alice = models.User(
+        username="alice_create_fail_closed",
+        nickname="Alice",
+        created_time=1.0,
+        status=0,
+        secret_key="s" * 64,
+    )
+    folder = models.Folder(
+        id="f-create-boundary",
+        name="Boundary",
+        parent_id="/",
+        inherit=True,
+    )
+    cacl_session.add_all([alice, folder])
+    cacl_session.commit()
+
+    orig_step1 = eval_mod._check_step1_invariants
+
+    def _fail_write_dacl_step1(target, operation):
+        if operation is AtomicOp.WRITE_DACL:
+            return eval_mod.EvalDecision(
+                allowed=False,
+                reason="Synthetic Step 1 failure",
+                step="1_lifecycle_and_type",
+            )
+        return orig_step1(target, operation)
+
+    monkeypatch.setattr(eval_mod, "_check_step1_invariants", _fail_write_dacl_step1)
+
+    check = authorize_create_on_parent(
+        cacl_session,
+        alice,
+        folder,
+        AtomicOp.CREATE_DOCUMENT,
+        require_write_dacl=True,
+    )
+    assert check.can_create is False
+    assert check.can_write_dacl is False
+    assert check.parent_path is None
+
+
+def test_dacl_validity_predicates_reject_mutually_exclusive_refs(cacl_session):
+    now = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        storage_mod._dacl_rule_validity_predicates(
+            models.NodeDaclRule.__table__,
+            active_ref=now,
+            expired_ref=now,
+        )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_node_policies(
+            cacl_session,
+            [],
+            active_at_utc=now,
+            exclude_expired_before=now,
+        )
+
+
+def test_soft_delete_root_check_directory_delete_child_bypass_and_missing_delete(
+    cacl_session,
+):
+    alice = models.User(
+        username="alice_soft_delete_bypass",
+        nickname="Alice",
+        created_time=1.0,
+        status=0,
+        secret_key="s" * 64,
+    )
+    cacl_session.add(alice)
+    cacl_session.flush()
+
+    bypass_dir = models.Folder(id="sd-bypass", name="Bypass", parent_id="/")
+    only_child_perm_dir = models.Folder(
+        id="sd-only-child", name="OnlyChildPerm", parent_id="/"
+    )
+    cacl_session.add_all([bypass_dir, only_child_perm_dir])
+    cacl_session.flush()
+    denied_child = models.Document(
+        id="sd-denied-child", title="DeniedChild", folder_id="sd-bypass"
+    )
+    cacl_session.add(denied_child)
+    cacl_session.flush()
+
+    bypass_policy = compile_policy_source(
+        cacl_session,
+        "inherit off; allow [TRAVERSE, DELETE, DIRECTORY_DELETE_CHILD] to any;",
+    ).policy
+    deny_policy = compile_policy_source(
+        cacl_session, "inherit on; deny [DELETE] to any;"
+    ).policy
+    only_child_policy = compile_policy_source(
+        cacl_session,
+        "inherit off; allow [TRAVERSE, DIRECTORY_DELETE_CHILD] to any;",
+    ).policy
+    assert bypass_policy is not None
+    assert deny_policy is not None
+    assert only_child_policy is not None
+    persist_node_policy(cacl_session, bypass_dir, bypass_policy)
+    persist_node_policy(cacl_session, denied_child, deny_policy)
+    persist_node_policy(cacl_session, only_child_perm_dir, only_child_policy)
+    cacl_session.commit()
+
+    root_bypass = check_directory_soft_delete_root(cacl_session, alice, bypass_dir)
+    assert root_bypass.allowed is True
+    assert root_bypass.needs_descendant_check is False
+    sub_folders, sub_docs = fetch_subtree_metadata_for_soft_delete(
+        cacl_session, bypass_dir.id
+    )
+    assert (
+        authorize_soft_delete_descendants(
+            cacl_session, alice, bypass_dir.id, [*sub_folders, *sub_docs], root_bypass
+        ).allowed
+        is True
+    )
+
+    root_only_child = check_directory_soft_delete_root(
+        cacl_session, alice, only_child_perm_dir
+    )
+    assert root_only_child.allowed is False
+    assert root_only_child.needs_descendant_check is False

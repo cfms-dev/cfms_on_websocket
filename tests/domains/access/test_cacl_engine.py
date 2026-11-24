@@ -15,7 +15,6 @@ from include.domains.access.authorization.engine import (
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_reparent,
-    evaluate_soft_delete,
     evaluate_soft_delete_subtree,
     simulate_policy_save_lockout,
 )
@@ -178,18 +177,34 @@ def test_reparent_composite():
 
 def test_soft_delete_non_empty_directory():
     base = "allow [TRAVERSE] to any;\n"
-    target = [_node("d", D, base + "allow [DELETE] to any;")]
-    child = target + [_node("c", F, "deny [DELETE] to any;")]
-    assert not evaluate_soft_delete(ALICE, target, [child], NOW).allowed
+    deny_delete_policy = _compile("deny [DELETE] to any;").policy
+    assert deny_delete_policy is not None
 
-    with_bypass = [
-        _node("d", D, base + "allow [DELETE, DIRECTORY_DELETE_CHILD] to any;")
-    ]
-    child2 = with_bypass + [_node("c", F, "deny [DELETE] to any;")]
-    assert evaluate_soft_delete(ALICE, with_bypass, [child2], NOW).allowed
+    target_node = _node("d", D, base + "allow [DELETE] to any;")
+    target_masks = evaluate_path_masks(ALICE, [target_node], NOW)
+    assert target_masks.target.allowed_traverse
+    assert target_masks.target.effective_mask & int(AtomicOp.DELETE)
+    assert not (
+        target_masks.target.effective_mask & int(AtomicOp.DIRECTORY_DELETE_CHILD)
+    )
+    denied_child = SubtreeNode("c", "d", "c", F, ObjectState.NORMAL, deny_delete_policy)
+    assert not evaluate_soft_delete_subtree(
+        ALICE,
+        "d",
+        target_masks.target.effective_mask,
+        target_masks.target_inherited,
+        [denied_child],
+        NOW,
+    ).allowed
 
-    only_bypass = [_node("d", D, base + "allow [DIRECTORY_DELETE_CHILD] to any;")]
-    assert not evaluate_soft_delete(ALICE, only_bypass, [], NOW).allowed
+    with_bypass = _node("d", D, base + "allow [DELETE, DIRECTORY_DELETE_CHILD] to any;")
+    bypass_masks = evaluate_path_masks(ALICE, [with_bypass], NOW)
+    assert bypass_masks.target.effective_mask & int(AtomicOp.DELETE)
+    assert bypass_masks.target.effective_mask & int(AtomicOp.DIRECTORY_DELETE_CHILD)
+
+    only_bypass = _node("d", D, base + "allow [DIRECTORY_DELETE_CHILD] to any;")
+    only_bypass_masks = evaluate_path_masks(ALICE, [only_bypass], NOW)
+    assert not (only_bypass_masks.target.effective_mask & int(AtomicOp.DELETE))
 
 
 def test_composite_evaluators_forward_bypass_traverse():

@@ -1,9 +1,10 @@
 __all__ = [
     "DEFAULT_ROOT_DACL_SOURCE",
-    "assemble_rules_from_joined_rows",
+    "AncestorNodeMeta",
+    "build_ancestors_and_active_policies_stmt",
     "compile_policy_source",
-    "dacl_rule_validity_predicates",
     "delete_node_dacl_rules_for_targets",
+    "load_ancestors_and_active_policies",
     "load_node_policies",
     "persist_node_policy",
     "render_policy_text",
@@ -13,6 +14,7 @@ import datetime
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from itertools import batched
 from typing import Any
 
@@ -36,11 +38,12 @@ from cacl_compiler import (
     parse_cacl,
 )
 from cacl_compiler.ast_nodes import PolicyAST
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, exists, literal, null, or_, select, union_all
 from sqlalchemy.orm import Session as OrmSession
 
 from include.config.constants import (
     DACL_MAX_RULES_PER_NODE,
+    MAX_HIERARCHY_DEPTH,
     QUERY_CHUNK_SIZE,
 )
 from include.database.models.access import (
@@ -203,12 +206,49 @@ def render_policy_text(
     return decompile_policy(policy, opts=options)
 
 
-def dacl_rule_validity_predicates(
+@dataclass(frozen=True, slots=True)
+class AncestorNodeMeta:
+    parent_id: str | None
+    status: int
+    inherit: bool
+
+
+def _dacl_rule_join_columns(
+    rule_table: Any,
+    clause_table: Any,
+    atom_table: Any,
+    *,
+    include_node_id: bool = True,
+) -> tuple[Any, ...]:
+    cols: list[Any] = [rule_table.c.id.label("rule_id")]
+    if include_node_id:
+        cols.append(rule_table.c.node_id.label("node_id"))
+    cols.extend(
+        (
+            rule_table.c.effect.label("effect"),
+            rule_table.c.permission_mask.label("permission_mask"),
+            rule_table.c.scope.label("scope"),
+            rule_table.c.valid_from.label("valid_from"),
+            rule_table.c.valid_until.label("valid_until"),
+            rule_table.c.remark.label("remark"),
+            clause_table.c.id.label("clause_id"),
+            atom_table.c.id.label("atom_id"),
+            atom_table.c.predicate_kind.label("predicate_kind"),
+            atom_table.c.predicate_value.label("predicate_value"),
+            atom_table.c.is_negated.label("is_negated"),
+        )
+    )
+    return tuple(cols)
+
+
+def _dacl_rule_validity_predicates(
     rule_table: Any,
     *,
     active_ref: datetime.datetime | None = None,
     expired_ref: datetime.datetime | None = None,
 ) -> tuple[Any, ...]:
+    if active_ref is not None and expired_ref is not None:
+        raise ValueError("active_ref and expired_ref are mutually exclusive.")
     if active_ref is not None:
         return (
             or_(
@@ -230,8 +270,8 @@ def dacl_rule_validity_predicates(
     return ()
 
 
-def assemble_rules_from_joined_rows(
-    rows: Iterable[tuple[Any, ...]],
+def _assemble_rules_from_joined_rows(
+    rows: Iterable[Mapping[Any, Any]],
     *,
     canonicalize: bool,
 ) -> dict[str, list[CompiledRule]]:
@@ -250,38 +290,27 @@ def assemble_rules_from_joined_rows(
     clauses_by_rule: dict[int, dict[int, None]] = defaultdict(dict)
     atoms_by_clause: dict[int, dict[int, ConditionAtom]] = defaultdict(dict)
 
-    for (
-        rule_id,
-        node_id,
-        effect,
-        permission_mask,
-        scope,
-        valid_from,
-        valid_until,
-        remark,
-        clause_id,
-        atom_id,
-        predicate_kind,
-        predicate_value,
-        is_negated,
-    ) in rows:
+    for row in rows:
+        rule_id = row["rule_id"]
         if rule_id not in rule_meta:
             rule_meta[rule_id] = (
-                node_id,
-                effect,
-                permission_mask,
-                scope,
-                valid_from,
-                valid_until,
-                remark,
+                row["node_id"],
+                row["effect"],
+                row["permission_mask"],
+                row["scope"],
+                row["valid_from"],
+                row["valid_until"],
+                row["remark"],
             )
+        clause_id = row["clause_id"]
         if clause_id is not None:
             clauses_by_rule[rule_id][clause_id] = None
+            atom_id = row["atom_id"]
             if atom_id is not None:
                 atoms_by_clause[clause_id][atom_id] = ConditionAtom(
-                    kind=PredicateKind(predicate_kind),
-                    value=predicate_value,
-                    negated=bool(is_negated),
+                    kind=PredicateKind(row["predicate_kind"]),
+                    value=row["predicate_value"],
+                    negated=bool(row["is_negated"]),
                 )
 
     rules_by_node: dict[str, list[CompiledRule]] = defaultdict(list)
@@ -329,6 +358,154 @@ def assemble_rules_from_joined_rows(
     return rules_by_node
 
 
+def build_ancestors_and_active_policies_stmt(
+    missing_ancestors: Sequence[str],
+    candidate_ids: Sequence[str],
+    active_ref: datetime.datetime,
+):
+    """Build a combined SQL query fetching ancestor metadata + active DACL rules for ancestors and candidates."""
+    node_table = Node.__table__
+    rule_table = NodeDaclRule.__table__
+    clause_table = NodeDaclClause.__table__
+    atom_table = NodeDaclAtom.__table__
+
+    anchor = select(
+        node_table.c.id.label("id"),
+        node_table.c.parent_id.label("parent_id"),
+        node_table.c.status.label("status"),
+        node_table.c.inherit.label("inherit"),
+        literal(0).label("depth"),
+    ).where(node_table.c.id.in_(list(missing_ancestors)))
+    ancestors = anchor.cte("search_anc_meta", recursive=True)
+    parent_node = node_table.alias("search_anc_parent")
+    ancestors = ancestors.union(
+        select(
+            parent_node.c.id,
+            parent_node.c.parent_id,
+            parent_node.c.status,
+            parent_node.c.inherit,
+            (ancestors.c.depth + 1).label("depth"),
+        )
+        .select_from(
+            ancestors.join(parent_node, parent_node.c.id == ancestors.c.parent_id)
+        )
+        .where(
+            ancestors.c.parent_id.is_not(None),
+            ancestors.c.depth < MAX_HIERARCHY_DEPTH,
+        )
+    )
+    distinct_ancestors = (
+        select(
+            ancestors.c.id,
+            ancestors.c.parent_id,
+            ancestors.c.status,
+            ancestors.c.inherit,
+        )
+        .distinct()
+        .cte("search_anc_distinct")
+    )
+
+    anc_rule_table = rule_table.alias("search_anc_rule")
+    anc_clause_table = clause_table.alias("search_anc_clause")
+    anc_atom_table = atom_table.alias("search_anc_atom")
+    anc_validity = _dacl_rule_validity_predicates(anc_rule_table, active_ref=active_ref)
+
+    anc_branch = select(
+        literal(0).label("row_kind"),
+        distinct_ancestors.c.id.label("node_id"),
+        distinct_ancestors.c.parent_id.label("parent_id"),
+        distinct_ancestors.c.status.label("status"),
+        distinct_ancestors.c.inherit.label("inherit"),
+        *_dacl_rule_join_columns(
+            anc_rule_table,
+            anc_clause_table,
+            anc_atom_table,
+            include_node_id=False,
+        ),
+    ).select_from(
+        distinct_ancestors.outerjoin(
+            anc_rule_table,
+            and_(anc_rule_table.c.node_id == distinct_ancestors.c.id, *anc_validity),
+        )
+        .outerjoin(anc_clause_table, anc_clause_table.c.rule_id == anc_rule_table.c.id)
+        .outerjoin(anc_atom_table, anc_atom_table.c.clause_id == anc_clause_table.c.id)
+    )
+
+    if not candidate_ids:
+        return anc_branch
+
+    cand_validity = _dacl_rule_validity_predicates(rule_table, active_ref=active_ref)
+    cand_branch = (
+        select(
+            literal(1).label("row_kind"),
+            rule_table.c.node_id.label("node_id"),
+            null().label("parent_id"),
+            null().label("status"),
+            null().label("inherit"),
+            *_dacl_rule_join_columns(
+                rule_table,
+                clause_table,
+                atom_table,
+                include_node_id=False,
+            ),
+        )
+        .select_from(
+            rule_table.outerjoin(
+                clause_table, clause_table.c.rule_id == rule_table.c.id
+            ).outerjoin(atom_table, atom_table.c.clause_id == clause_table.c.id)
+        )
+        .where(
+            rule_table.c.node_id.in_(list(candidate_ids)),
+            *cand_validity,
+            ~exists(select(1).where(distinct_ancestors.c.id == rule_table.c.node_id)),
+        )
+    )
+    return union_all(anc_branch, cand_branch)
+
+
+def load_ancestors_and_active_policies(
+    session: OrmSession,
+    missing_ancestors: Sequence[str],
+    candidate_ids: Sequence[str],
+    *,
+    active_at_utc: datetime.datetime,
+) -> tuple[dict[str, AncestorNodeMeta], dict[str, list[CompiledRule]], set[str]]:
+    """Execute the combined ancestor-metadata + active-DACL-rule query using named row mappings."""
+    active_ref = active_at_utc.astimezone(datetime.UTC)
+    rows = (
+        session.execute(
+            build_ancestors_and_active_policies_stmt(
+                missing_ancestors, candidate_ids, active_ref
+            )
+        )
+        .mappings()
+        .all()
+    )
+
+    ancestor_meta: dict[str, AncestorNodeMeta] = {}
+    loaded_node_ids: set[str] = set(candidate_ids)
+    rule_rows: list[Mapping[Any, Any]] = []
+    for row in rows:
+        node_id: str = row["node_id"]
+        if row["row_kind"] == 0:
+            loaded_node_ids.add(node_id)
+            if node_id not in ancestor_meta:
+                ancestor_meta[node_id] = AncestorNodeMeta(
+                    parent_id=row["parent_id"],
+                    status=int(row["status"]),
+                    inherit=bool(row["inherit"]),
+                )
+        if row["rule_id"] is not None:
+            rule_rows.append(row)
+
+    rules_by_node = (
+        _assemble_rules_from_joined_rows(rule_rows, canonicalize=False)
+        if rule_rows
+        else {}
+    )
+    return ancestor_meta, rules_by_node, loaded_node_ids
+
+
 def load_node_policies(
     session: OrmSession,
     node_ids: Sequence[str] | Iterable[str],
@@ -340,6 +517,11 @@ def load_node_policies(
     canonicalize: bool = True,
 ) -> dict[str, CompiledPolicy]:
     """Bulk-load CompiledPolicy objects for the requested node IDs using scalar Core queries."""
+    if active_at_utc is not None and exclude_expired_before is not None:
+        raise ValueError(
+            "active_at_utc and exclude_expired_before are mutually exclusive."
+        )
+
     unique_ids = list(dict.fromkeys(node_ids))
     if not unique_ids:
         return {}
@@ -375,7 +557,7 @@ def load_node_policies(
     rule_table = NodeDaclRule.__table__
     clause_table = NodeDaclClause.__table__
     atom_table = NodeDaclAtom.__table__
-    validity_predicates = dacl_rule_validity_predicates(
+    validity_predicates = _dacl_rule_validity_predicates(
         rule_table,
         active_ref=active_ref,
         expired_ref=expired_ref,
@@ -386,34 +568,24 @@ def load_node_policies(
 
     for chunk in batched(existing_ids, QUERY_CHUNK_SIZE):
         chunk_ids = list(chunk)
-        joined_rows = session.execute(
-            select(
-                rule_table.c.id,
-                rule_table.c.node_id,
-                rule_table.c.effect,
-                rule_table.c.permission_mask,
-                rule_table.c.scope,
-                rule_table.c.valid_from,
-                rule_table.c.valid_until,
-                rule_table.c.remark,
-                clause_table.c.id.label("clause_id"),
-                atom_table.c.id.label("atom_id"),
-                atom_table.c.predicate_kind,
-                atom_table.c.predicate_value,
-                atom_table.c.is_negated,
+        joined_rows = (
+            session.execute(
+                select(*_dacl_rule_join_columns(rule_table, clause_table, atom_table))
+                .select_from(joined_rules)
+                .where(rule_table.c.node_id.in_(chunk_ids), *validity_predicates)
+                .order_by(
+                    rule_table.c.id.asc(),
+                    clause_table.c.id.asc(),
+                    atom_table.c.id.asc(),
+                )
             )
-            .select_from(joined_rules)
-            .where(rule_table.c.node_id.in_(chunk_ids), *validity_predicates)
-            .order_by(
-                rule_table.c.id.asc(),
-                clause_table.c.id.asc(),
-                atom_table.c.id.asc(),
-            )
-        ).all()
+            .mappings()
+            .all()
+        )
         if not joined_rows:
             continue
 
-        chunk_rules = assemble_rules_from_joined_rows(
+        chunk_rules = _assemble_rules_from_joined_rows(
             joined_rows,
             canonicalize=canonicalize,
         )

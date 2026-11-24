@@ -106,6 +106,29 @@ class TestDocumentOperations:
         assert "info_code" not in info
 
     @pytest.mark.asyncio
+    async def test_get_document_info_checks_authorization_before_active_revision_state(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        document = await document_factory(
+            f"PendingUpload {secrets.token_hex(4)}", upload_file=None
+        )
+        document_id = document["document_id"]
+        assert_success(
+            await authenticated_client.set_document_dacl(document_id, "inherit off;")
+        )
+
+        user = await user_factory()
+        client = await client_factory()
+        assert_success(await client.login(user["username"], user["password"]))
+
+        assert_error(await client.get_document_info(document_id), 403)
+        assert_error(await authenticated_client.get_document_info(document_id), 404)
+
+    @pytest.mark.asyncio
     async def test_set_document_tags_requires_write_metadata_permission(
         self,
         authenticated_client: CFMSTestClient,

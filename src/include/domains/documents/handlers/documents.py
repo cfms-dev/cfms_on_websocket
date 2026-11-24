@@ -267,6 +267,12 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.READ_METADATA
+            ).allowed:
+                handler.conclude_access_denial()
+                return Result(code=403, target=document_id, user_id=handler.user_id)
+
             latest_revision = fetch_latest_active_revisions_by_document(
                 session, [document.id]
             ).get(document.id)
@@ -275,12 +281,6 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
                     404, {}, "No active revisions found for this document"
                 )
                 return Result(code=404, target=document_id, user_id=handler.user_id)
-
-            if not authorize_node_operation(
-                session, user, document, AtomicOp.READ_METADATA
-            ).allowed:
-                handler.conclude_access_denial()
-                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             data = {
                 "document_id": document.id,
@@ -458,16 +458,14 @@ def _create_document_in_transaction(
                 ),
             )
 
-        can_create, can_write_dacl, parent_path, check_traverse = (
-            authorize_create_on_parent(
-                session,
-                user,
-                parent_folder,
-                AtomicOp.CREATE_DOCUMENT,
-                require_write_dacl=dacl_source is not None,
-            )
+        create_check = authorize_create_on_parent(
+            session,
+            user,
+            parent_folder,
+            AtomicOp.CREATE_DOCUMENT,
+            require_write_dacl=dacl_source is not None,
         )
-        if not can_create:
+        if not create_check.can_create:
             return (
                 403,
                 {},
@@ -487,10 +485,8 @@ def _create_document_in_transaction(
             object_type=ObjectType.DOCUMENT,
             name=title,
             dacl_source=dacl_source,
-            can_write_dacl=can_write_dacl,
+            create_check=create_check,
             allow_self_lockout=allow_self_lockout,
-            parent_path=parent_path,
-            check_ancestor_traverse=check_traverse,
         )
         if dacl_error is not None:
             code, error_data, message = dacl_error
@@ -1026,7 +1022,7 @@ class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
                 return
 
             if not authorize_node_operation(
-                session, user, document, AtomicOp.PURGE, include_deleted=True
+                session, user, document, AtomicOp.PURGE
             ).allowed:
                 handler.conclude_access_denial()
                 return

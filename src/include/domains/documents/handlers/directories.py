@@ -346,16 +346,14 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=parent_id, user_id=handler.user_id)
 
-            can_create, can_write_dacl, parent_path, check_traverse = (
-                authorize_create_on_parent(
-                    session,
-                    this_user,
-                    parent,
-                    AtomicOp.CREATE_DIRECTORY,
-                    require_write_dacl=dacl_source is not None,
-                )
+            create_check = authorize_create_on_parent(
+                session,
+                this_user,
+                parent,
+                AtomicOp.CREATE_DIRECTORY,
+                require_write_dacl=dacl_source is not None,
             )
-            if not can_create:
+            if not create_check.can_create:
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, user_id=handler.user_id)
 
@@ -366,10 +364,8 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                 object_type=ObjectType.DIRECTORY,
                 name=name,
                 dacl_source=dacl_source,
-                can_write_dacl=can_write_dacl,
+                create_check=create_check,
                 allow_self_lockout=allow_self_lockout,
-                parent_path=parent_path,
-                check_ancestor_traverse=check_traverse,
             )
             if dacl_error is not None:
                 code, error_data, message = dacl_error
@@ -653,7 +649,7 @@ class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
                 return Result(code=400, target=folder_id, user_id=handler.user_id)
 
             if not authorize_node_operation(
-                session, user, folder, AtomicOp.PURGE, include_deleted=True
+                session, user, folder, AtomicOp.PURGE
             ).allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
@@ -814,7 +810,6 @@ class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
                 user,
                 parent_folder,
                 AtomicOp.LIST_DELETED,
-                include_deleted=True,
             ).allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, user_id=handler.user_id)

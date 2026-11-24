@@ -1,9 +1,10 @@
 import datetime
+from contextlib import closing
 from itertools import batched
 from typing import Any
 lazy from collections.abc import Mapping, Sequence
 
-from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType
+from cacl_compiler import ObjectType
 from sqlalchemy import (
     and_,
     case,
@@ -18,11 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import joinedload, raiseload
 
 from include.config.constants import QUERY_CHUNK_SIZE
-from include.database.models.access import (
-    NodeDaclAtom,
-    NodeDaclClause,
-    NodeDaclRule,
-)
+from include.database.cursors import KeysetBatchStrategy, default_keyset_batch_strategy
 from include.database.models.documents import (
     Document,
     DocumentRevision,
@@ -32,22 +29,10 @@ from include.database.models.documents import (
     NodeType,
 )
 from include.database.models.files import File
-from include.domains.access.authorization.engine import (
-    DIRECTORY_VISIBILITY_MASK,
-    DOCUMENT_VISIBILITY_MASK,
-    InheritedDaclState,
-    Subject,
-    step_node_dacl,
-)
-from include.domains.access.authorization.evaluation import (
-    has_bypass_dacl,
-    should_check_ancestor_traverse,
-    user_to_subject,
-)
-from include.domains.access.authorization.storage import (
-    assemble_rules_from_joined_rows,
-    dacl_rule_validity_predicates,
-    load_node_policies,
+from include.domains.access.authorization.evaluation import has_bypass_dacl
+from include.domains.access.authorization.visibility import (
+    BatchVisibilityEvaluator,
+    VisibilityCandidate,
 )
 lazy from include.database.models.identity import User
 
@@ -737,10 +722,6 @@ def _search_primary_column(selectable, sort_by: str):
     return selectable.c.created_time
 
 
-_TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
-_EMPTY_INHERITED_STATE = InheritedDaclState()
-
-
 def _search_lightweight_candidate_selectable(
     *,
     query: str,
@@ -901,351 +882,6 @@ def _search_candidate_selectable(
     return union_all(*selects).subquery("search_candidates")
 
 
-def _build_combined_ancestors_and_policies_stmt(
-    missing_ancestors: Sequence[str],
-    candidate_ids: Sequence[str],
-    active_ref: datetime.datetime,
-):
-    node_table = Node.__table__
-    rule_table = NodeDaclRule.__table__
-    clause_table = NodeDaclClause.__table__
-    atom_table = NodeDaclAtom.__table__
-
-    anchor = select(
-        node_table.c.id.label("id"),
-        node_table.c.parent_id.label("parent_id"),
-        node_table.c.status.label("status"),
-        node_table.c.inherit.label("inherit"),
-        literal(0).label("depth"),
-    ).where(node_table.c.id.in_(list(missing_ancestors)))
-    ancestors = anchor.cte("search_anc_meta", recursive=True)
-    parent_node = node_table.alias("search_anc_parent")
-    ancestors = ancestors.union(
-        select(
-            parent_node.c.id,
-            parent_node.c.parent_id,
-            parent_node.c.status,
-            parent_node.c.inherit,
-            (ancestors.c.depth + 1).label("depth"),
-        )
-        .select_from(
-            ancestors.join(parent_node, parent_node.c.id == ancestors.c.parent_id)
-        )
-        .where(ancestors.c.parent_id.is_not(None), ancestors.c.depth < 128)
-    )
-    distinct_ancestors = (
-        select(
-            ancestors.c.id,
-            ancestors.c.parent_id,
-            ancestors.c.status,
-            ancestors.c.inherit,
-        )
-        .distinct()
-        .cte("search_anc_distinct")
-    )
-
-    anc_rule_table = rule_table.alias("search_anc_rule")
-    anc_clause_table = clause_table.alias("search_anc_clause")
-    anc_atom_table = atom_table.alias("search_anc_atom")
-    anc_validity = dacl_rule_validity_predicates(anc_rule_table, active_ref=active_ref)
-
-    anc_branch = select(
-        literal(0).label("row_kind"),
-        distinct_ancestors.c.id.label("node_id"),
-        distinct_ancestors.c.parent_id.label("parent_id"),
-        distinct_ancestors.c.status.label("status"),
-        distinct_ancestors.c.inherit.label("inherit"),
-        anc_rule_table.c.id.label("rule_id"),
-        anc_rule_table.c.effect.label("effect"),
-        anc_rule_table.c.permission_mask.label("permission_mask"),
-        anc_rule_table.c.scope.label("scope"),
-        anc_rule_table.c.valid_from.label("valid_from"),
-        anc_rule_table.c.valid_until.label("valid_until"),
-        anc_rule_table.c.remark.label("remark"),
-        anc_clause_table.c.id.label("clause_id"),
-        anc_atom_table.c.id.label("atom_id"),
-        anc_atom_table.c.predicate_kind.label("predicate_kind"),
-        anc_atom_table.c.predicate_value.label("predicate_value"),
-        anc_atom_table.c.is_negated.label("is_negated"),
-    ).select_from(
-        distinct_ancestors.outerjoin(
-            anc_rule_table,
-            and_(anc_rule_table.c.node_id == distinct_ancestors.c.id, *anc_validity),
-        )
-        .outerjoin(anc_clause_table, anc_clause_table.c.rule_id == anc_rule_table.c.id)
-        .outerjoin(anc_atom_table, anc_atom_table.c.clause_id == anc_clause_table.c.id)
-    )
-
-    if not candidate_ids:
-        return anc_branch
-
-    cand_validity = dacl_rule_validity_predicates(rule_table, active_ref=active_ref)
-    cand_branch = (
-        select(
-            literal(1).label("row_kind"),
-            rule_table.c.node_id.label("node_id"),
-            null().label("parent_id"),
-            null().label("status"),
-            null().label("inherit"),
-            rule_table.c.id.label("rule_id"),
-            rule_table.c.effect.label("effect"),
-            rule_table.c.permission_mask.label("permission_mask"),
-            rule_table.c.scope.label("scope"),
-            rule_table.c.valid_from.label("valid_from"),
-            rule_table.c.valid_until.label("valid_until"),
-            rule_table.c.remark.label("remark"),
-            clause_table.c.id.label("clause_id"),
-            atom_table.c.id.label("atom_id"),
-            atom_table.c.predicate_kind.label("predicate_kind"),
-            atom_table.c.predicate_value.label("predicate_value"),
-            atom_table.c.is_negated.label("is_negated"),
-        )
-        .select_from(
-            rule_table.outerjoin(
-                clause_table, clause_table.c.rule_id == rule_table.c.id
-            ).outerjoin(atom_table, atom_table.c.clause_id == clause_table.c.id)
-        )
-        .where(
-            rule_table.c.node_id.in_(list(candidate_ids)),
-            *cand_validity,
-            ~exists(select(1).where(distinct_ancestors.c.id == rule_table.c.node_id)),
-        )
-    )
-    return union_all(anc_branch, cand_branch)
-
-
-class _SearchVisibilityEvaluator:
-    """Request-scoped memoized CACL evaluator for batched search candidates."""
-
-    def __init__(
-        self,
-        session,
-        subject: Subject,
-        now_utc: datetime.datetime,
-        *,
-        check_traverse: bool,
-    ) -> None:
-        self._session = session
-        self._subject = subject
-        self._now_utc = now_utc
-        self._check_traverse = check_traverse
-        self._node_meta: dict[str, tuple[str | None, int, bool]] = {}
-        self._node_policies: dict[str, CompiledPolicy] = {}
-        self._dir_state_cache: dict[str, tuple[bool, InheritedDaclState]] = {}
-
-    def ensure_loaded(self, batch_items: Sequence[dict[str, Any]]) -> None:
-        for item in batch_items:
-            nid: str = item["id"]
-            if nid not in self._node_meta:
-                self._node_meta[nid] = (
-                    item["parent_id"],
-                    EntityStatus.OK.value,
-                    bool(item["inherit"]),
-                )
-
-        missing_ancestors: list[str] = []
-        seen_missing: set[str] = set()
-        new_candidate_ids: list[str] = []
-        seen_candidate: set[str] = set()
-
-        for item in batch_items:
-            nid = item["id"]
-            parent_id: str | None = item["parent_id"]
-            if (
-                parent_id is not None
-                and parent_id not in self._node_meta
-                and parent_id not in seen_missing
-            ):
-                seen_missing.add(parent_id)
-                missing_ancestors.append(parent_id)
-
-            if self._check_traverse and parent_id is not None:
-                parent_state = self._dir_state_cache.get(parent_id)
-                if parent_state is not None and not parent_state[0]:
-                    continue
-
-            if nid not in self._node_policies and nid not in seen_candidate:
-                seen_candidate.add(nid)
-                new_candidate_ids.append(nid)
-
-        if not missing_ancestors and not new_candidate_ids:
-            return
-
-        remaining_candidates = new_candidate_ids
-        cand_offset = 0
-
-        if missing_ancestors:
-            for anc_chunk in batched(missing_ancestors, QUERY_CHUNK_SIZE):
-                anc_ids = list(anc_chunk)
-                cand_budget = max(0, QUERY_CHUNK_SIZE - len(anc_ids))
-                cand_slice = remaining_candidates[
-                    cand_offset : cand_offset + cand_budget
-                ]
-                cand_offset += len(cand_slice)
-
-                rows = self._session.execute(
-                    _build_combined_ancestors_and_policies_stmt(
-                        anc_ids, cand_slice, self._now_utc
-                    )
-                ).all()
-
-                loaded_node_ids: set[str] = set(cand_slice)
-                rule_rows: list[tuple[Any, ...]] = []
-                for row in rows:
-                    row_kind = row[0]
-                    node_id = row[1]
-                    if row_kind == 0:
-                        loaded_node_ids.add(node_id)
-                        if node_id not in self._node_meta:
-                            self._node_meta[node_id] = (
-                                row[2],
-                                int(row[3]),
-                                bool(row[4]),
-                            )
-                    rule_id = row[5]
-                    if rule_id is not None:
-                        rule_rows.append(
-                            (
-                                rule_id,
-                                node_id,
-                                row[6],
-                                row[7],
-                                row[8],
-                                row[9],
-                                row[10],
-                                row[11],
-                                row[12],
-                                row[13],
-                                row[14],
-                                row[15],
-                                row[16],
-                            )
-                        )
-
-                rules_by_node = (
-                    assemble_rules_from_joined_rows(rule_rows, canonicalize=False)
-                    if rule_rows
-                    else {}
-                )
-                for nid in loaded_node_ids:
-                    if nid in self._node_policies:
-                        continue
-                    default_inherit = (
-                        self._node_meta[nid][2] if nid in self._node_meta else True
-                    )
-                    self._node_policies[nid] = CompiledPolicy(
-                        inherit=default_inherit,
-                        rules=tuple(rules_by_node.get(nid, ())),
-                    )
-
-        leftover_candidates = [
-            nid
-            for nid in remaining_candidates[cand_offset:]
-            if nid not in self._node_policies
-        ]
-        if leftover_candidates:
-            preloaded_inherit = {
-                nid: self._node_meta[nid][2]
-                for nid in leftover_candidates
-                if nid in self._node_meta
-            }
-            loaded = load_node_policies(
-                self._session,
-                leftover_candidates,
-                include_deleted=True,
-                preloaded_inherit=preloaded_inherit,
-                active_at_utc=self._now_utc,
-                canonicalize=False,
-            )
-            for nid in leftover_candidates:
-                default_inherit = (
-                    self._node_meta[nid][2] if nid in self._node_meta else True
-                )
-                self._node_policies[nid] = loaded.get(
-                    nid, CompiledPolicy(inherit=default_inherit, rules=())
-                )
-
-    def _resolve_ancestor_dir(self, dir_id: str) -> tuple[bool, InheritedDaclState]:
-        cached = self._dir_state_cache.get(dir_id)
-        if cached is not None:
-            return cached
-
-        uncomputed: list[str] = []
-        visited: set[str] = set()
-        curr_id: str | None = dir_id
-        while curr_id is not None and curr_id not in self._dir_state_cache:
-            if curr_id in visited:
-                raise RuntimeError(f"Cycle detected in folder hierarchy at {curr_id!r}")
-            visited.add(curr_id)
-            meta = self._node_meta.get(curr_id)
-            if meta is None:
-                break
-            uncomputed.append(curr_id)
-            curr_id = meta[0]
-
-        if curr_id is not None and curr_id in self._dir_state_cache:
-            traverse_ok, inherited = self._dir_state_cache[curr_id]
-        else:
-            traverse_ok, inherited = True, _EMPTY_INHERITED_STATE
-
-        for nid in reversed(uncomputed):
-            if self._check_traverse and not traverse_ok:
-                self._dir_state_cache[nid] = (False, _EMPTY_INHERITED_STATE)
-                continue
-            _parent_id, status, inherit_flag = self._node_meta[nid]
-            policy = self._node_policies.get(
-                nid, CompiledPolicy(inherit=inherit_flag, rules=())
-            )
-            own_allow, own_deny, _, next_inherited = step_node_dacl(
-                self._subject,
-                policy,
-                ObjectType.DIRECTORY,
-                inherited,
-                self._now_utc,
-            )
-            if self._check_traverse:
-                eff_mask = own_allow & ~own_deny
-                node_traverse_ok = (
-                    traverse_ok
-                    and status != EntityStatus.DELETED.value
-                    and bool(eff_mask & _TRAVERSE_BIT)
-                )
-            else:
-                node_traverse_ok = True
-            self._dir_state_cache[nid] = (node_traverse_ok, next_inherited)
-            traverse_ok, inherited = node_traverse_ok, next_inherited
-
-        return self._dir_state_cache.get(dir_id, (False, _EMPTY_INHERITED_STATE))
-
-    def is_visible(self, item: dict[str, Any]) -> bool:
-        parent_id: str | None = item["parent_id"]
-        if parent_id is not None:
-            traverse_ok, parent_inherited = self._resolve_ancestor_dir(parent_id)
-            if not traverse_ok:
-                return False
-        else:
-            parent_inherited = _EMPTY_INHERITED_STATE
-
-        nid: str = item["id"]
-        is_dir = item["type"] == "directory"
-        obj_type = ObjectType.DIRECTORY if is_dir else ObjectType.DOCUMENT
-        policy = self._node_policies.get(
-            nid, CompiledPolicy(inherit=bool(item["inherit"]), rules=())
-        )
-        own_allow, own_deny, _, _ = step_node_dacl(
-            self._subject,
-            policy,
-            obj_type,
-            parent_inherited,
-            self._now_utc,
-        )
-        eff_mask = own_allow & ~own_deny
-        required_mask = (
-            DIRECTORY_VISIBILITY_MASK if is_dir else DOCUMENT_VISIBILITY_MASK
-        )
-        return bool(eff_mask & required_mask)
-
-
 def _build_search_select(
     candidates,
     primary_column,
@@ -1358,6 +994,90 @@ def _hydrate_lightweight_search_rows(
     return hydrated
 
 
+class _SearchPageCollector:
+    """Filter candidate search rows for visibility and hydrate document revisions on demand."""
+
+    def __init__(
+        self,
+        session,
+        evaluator: BatchVisibilityEvaluator,
+        *,
+        sort_by: str,
+        limit: int,
+        lazy_hydrate_documents: bool,
+    ) -> None:
+        self._session = session
+        self._evaluator = evaluator
+        self._sort_by = sort_by
+        self._limit = limit
+        self._lazy_hydrate_documents = lazy_hydrate_documents
+        self.visible_rows: list[dict[str, Any]] = []
+
+    @property
+    def is_full(self) -> bool:
+        return len(self.visible_rows) >= self._limit
+
+    def consume(self, raw_rows: Sequence[dict[str, Any]]) -> None:
+        for sub_chunk in batched(raw_rows, QUERY_CHUNK_SIZE):
+            if self.is_full:
+                return
+            chunk_list = list(sub_chunk)
+            candidates = [
+                VisibilityCandidate(
+                    node_id=row["id"],
+                    parent_id=row["parent_id"],
+                    object_type=(
+                        ObjectType.DIRECTORY
+                        if row["type"] == "directory"
+                        else ObjectType.DOCUMENT
+                    ),
+                    inherit=bool(row["inherit"]),
+                )
+                for row in chunk_list
+            ]
+            self._evaluator.preload(candidates)
+
+            if not self._lazy_hydrate_documents:
+                self._collect_eager(chunk_list, candidates)
+            else:
+                self._collect_with_lazy_hydration(chunk_list, candidates)
+
+    def _collect_eager(
+        self,
+        chunk_list: Sequence[dict[str, Any]],
+        candidates: Sequence[VisibilityCandidate],
+    ) -> None:
+        for raw_item, candidate in zip(chunk_list, candidates, strict=True):
+            if self._evaluator.is_visible(candidate):
+                self.visible_rows.append(_finalize_search_item(raw_item, self._sort_by))
+                if self.is_full:
+                    return
+
+    def _collect_with_lazy_hydration(
+        self,
+        chunk_list: Sequence[dict[str, Any]],
+        candidates: Sequence[VisibilityCandidate],
+    ) -> None:
+        pos = 0
+        chunk_len = len(chunk_list)
+        while pos < chunk_len and not self.is_full:
+            needed = self._limit - len(self.visible_rows)
+            pending_visible: list[dict[str, Any]] = []
+            while pos < chunk_len and len(pending_visible) < needed:
+                raw_item = chunk_list[pos]
+                candidate = candidates[pos]
+                pos += 1
+                if self._evaluator.is_visible(candidate):
+                    pending_visible.append(raw_item)
+            if not pending_visible:
+                break
+            self.visible_rows.extend(
+                _hydrate_lightweight_search_rows(
+                    self._session, pending_visible, self._sort_by
+                )
+            )
+
+
 def fetch_visible_search_candidate_rows(
     session,
     *,
@@ -1370,6 +1090,7 @@ def fetch_visible_search_candidate_rows(
     search_directories: bool,
     last_key: list[Any] | None,
     limit: int,
+    batch_strategy: KeysetBatchStrategy | None = None,
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
@@ -1414,45 +1135,14 @@ def fetch_visible_search_candidate_rows(
         if isinstance(now, int | float)
         else now.astimezone(datetime.UTC)
     )
-    evaluator = _SearchVisibilityEvaluator(
+    evaluator = BatchVisibilityEvaluator.for_user(session, user, now_utc)
+    collector = _SearchPageCollector(
         session,
-        user_to_subject(user),
-        now_utc,
-        check_traverse=should_check_ancestor_traverse(session, user),
+        evaluator,
+        sort_by=sort_by,
+        limit=limit,
+        lazy_hydrate_documents=not needs_revision_in_sort and search_documents,
     )
-
-    visible_rows: list[dict[str, Any]] = []
-
-    def _consume_rows(raw_rows: Sequence[dict[str, Any]]) -> None:
-        for sub_chunk in batched(raw_rows, QUERY_CHUNK_SIZE):
-            if len(visible_rows) >= limit:
-                return
-            chunk_list = list(sub_chunk)
-            evaluator.ensure_loaded(chunk_list)
-
-            if needs_revision_in_sort or not search_documents:
-                for raw_item in chunk_list:
-                    if evaluator.is_visible(raw_item):
-                        visible_rows.append(_finalize_search_item(raw_item, sort_by))
-                        if len(visible_rows) >= limit:
-                            return
-                continue
-
-            pos = 0
-            chunk_len = len(chunk_list)
-            while pos < chunk_len and len(visible_rows) < limit:
-                needed = limit - len(visible_rows)
-                pending_visible: list[dict[str, Any]] = []
-                while pos < chunk_len and len(pending_visible) < needed:
-                    raw_item = chunk_list[pos]
-                    pos += 1
-                    if evaluator.is_visible(raw_item):
-                        pending_visible.append(raw_item)
-                if not pending_visible:
-                    break
-                visible_rows.extend(
-                    _hydrate_lightweight_search_rows(session, pending_visible, sort_by)
-                )
 
     probe_limit = max(limit * 2, 128)
     probe_rows = _execute_search_batch(
@@ -1467,54 +1157,29 @@ def fetch_visible_search_candidate_rows(
     if not probe_rows:
         return []
 
-    _consume_rows(probe_rows)
-    if len(visible_rows) >= limit or len(probe_rows) < probe_limit:
-        return visible_rows
+    collector.consume(probe_rows)
+    if collector.is_full or len(probe_rows) < probe_limit:
+        return collector.visible_rows
 
-    batch_last_key = _search_item_cursor_key(probe_rows[-1], sort_by)
-    bind = session.get_bind()
-    if bind is not None and bind.dialect.name == "sqlite":
-        stream_query = _build_search_select(
-            candidates,
-            primary_column,
-            batch_last_key,
-            sort_order,
-            include_revision_details=needs_revision_in_sort,
-            limit=None,
-        )
-        result = session.execute(stream_query)
-        try:
-            mappings = result.mappings()
-            while len(visible_rows) < limit:
-                fetched = mappings.fetchmany(QUERY_CHUNK_SIZE)
-                if not fetched:
-                    break
-                _consume_rows(
-                    [{str(key): value for key, value in row.items()} for row in fetched]
-                )
-        finally:
-            result.close()
-        return visible_rows
-
-    window_sizes = (2048, 8192)
-    window_index = 0
-    while len(visible_rows) < limit:
-        window_limit = window_sizes[min(window_index, len(window_sizes) - 1)]
-        window_index += 1
-        raw_rows = _execute_search_batch(
+    strategy = batch_strategy or default_keyset_batch_strategy(session)
+    with closing(
+        strategy.iter_batches(
             session,
-            candidates,
-            primary_column,
-            batch_last_key,
-            sort_order,
-            window_limit,
-            include_revision_details=needs_revision_in_sort,
+            build_select=lambda batch_key, batch_limit: _build_search_select(
+                candidates,
+                primary_column,
+                batch_key,
+                sort_order,
+                include_revision_details=needs_revision_in_sort,
+                limit=batch_limit,
+            ),
+            cursor_key_of=lambda row: _search_item_cursor_key(row, sort_by),
+            initial_last_key=_search_item_cursor_key(probe_rows[-1], sort_by),
         )
-        if not raw_rows:
-            break
-        _consume_rows(raw_rows)
-        if len(raw_rows) < window_limit:
-            break
-        batch_last_key = _search_item_cursor_key(raw_rows[-1], sort_by)
+    ) as batches:
+        for batch in batches:
+            collector.consume(batch)
+            if collector.is_full:
+                break
 
-    return visible_rows
+    return collector.visible_rows

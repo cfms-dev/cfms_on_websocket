@@ -12,6 +12,7 @@ __all__ = [
     "FILE_TASK_EVENT_CHANNEL",
     "GLOBAL_BROADCAST_EVENT_CHANNEL",
     "LOGIN_GUARD_EVENT_CHANNEL",
+    "MAX_HIERARCHY_DEPTH",
     "MAX_PARAM_SIZE",
     "NONCE_MIN_LENGTH",
     "PAGINATION_DEFAULT_PAGE_SIZE",
@@ -57,6 +58,7 @@ NONCE_MIN_LENGTH = 16  # Minimum length of a nonce string
 
 # Root directory virtual folder ID — used to store access rules for the root directory
 ROOT_DIRECTORY_ID = "/"
+MAX_HIERARCHY_DEPTH = 128  # Maximum recursive ancestor/subtree traversal depth
 
 # CACL DACL Limits
 DACL_SOURCE_MAX_LENGTH = 65_536  # 64 KiB max raw CACL policy source per request
