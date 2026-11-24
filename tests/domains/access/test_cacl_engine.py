@@ -381,3 +381,46 @@ def test_evaluate_soft_delete_subtree_linear_traversal_and_edge_cases():
         NOW,
         check_ancestor_traverse=False,
     ).allowed
+
+
+def test_evaluate_access_collect_traces_false_skips_trace_pass(monkeypatch):
+    from include.domains.access.authorization import engine as engine_mod
+
+    root_allow = _node(
+        "root",
+        D,
+        'inherit off; allow [TRAVERSE, READ_CONTENT] to any until "2026-12-10T00:00:00Z";',
+    )
+    doc_allow = _node("doc-allow", F)
+    doc_deny = _node(
+        "doc-deny",
+        F,
+        'deny [READ_CONTENT] to any until "2026-11-26T00:00:00Z";',
+    )
+    root_no_traverse = _node("root-nt", D, "inherit off;")
+    doc_default_deny = _node("doc-dd", F, "inherit off;")
+
+    cases = [
+        ([root_allow, doc_allow], AtomicOp.READ_CONTENT),
+        ([root_allow, doc_deny], AtomicOp.READ_CONTENT),
+        ([root_allow, doc_default_deny], AtomicOp.READ_CONTENT),
+        ([root_no_traverse, doc_allow], AtomicOp.READ_CONTENT),
+    ]
+    with_traces = [
+        evaluate_access(ALICE, path, op, NOW, collect_traces=True) for path, op in cases
+    ]
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("_collect_op_traces_on_chain should not be called")
+
+    monkeypatch.setattr(engine_mod, "_collect_op_traces_on_chain", _fail_if_called)
+
+    for (path, op), expected in zip(cases, with_traces, strict=True):
+        fast = evaluate_access(ALICE, path, op, NOW, collect_traces=False)
+        assert fast.allowed == expected.allowed
+        assert fast.step == expected.step
+        assert fast.effective_allow_mask == expected.effective_allow_mask
+        assert fast.effective_deny_mask == expected.effective_deny_mask
+        assert fast.next_transition_at == expected.next_transition_at
+        assert fast.matched_allows == ()
+        assert fast.matched_denies == ()

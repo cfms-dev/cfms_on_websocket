@@ -394,3 +394,57 @@ def test_sql_regression_single_pass_and_expired_rule_filtering(cacl_session):
         assert [s for s in statements if "cacl_ancestor_chain" in s] == []
     finally:
         event.remove(engine, "before_cursor_execute", _capture)
+
+
+def test_load_node_policies_uses_single_join_query_and_preserves_fingerprint(
+    cacl_session,
+):
+    alice = models.User(
+        username="alice_join",
+        nickname="Alice",
+        created_time=1.0,
+        status=0,
+        secret_key="s" * 64,
+    )
+    eng = models.UserGroup(group_name="eng_join", group_display_name="Engineering")
+    cacl_session.add_all([alice, eng])
+    cacl_session.flush()
+
+    folder = models.Folder(id="join-f1", name="JoinF1", parent_id="/", inherit=False)
+    cacl_session.add(folder)
+    cacl_session.flush()
+
+    source = (
+        "inherit off;\n"
+        "allow [TRAVERSE] to any;\n"
+        f'allow [READ_CONTENT, READ_METADATA] on docs when (user("{alice.id}") or (group("eng_join") and not group("interns")));\n'
+        f'deny [WRITE_CONTENT] on self to user("{alice.id}");\n'
+    )
+    compiled = compile_policy_source(cacl_session, source)
+    assert compiled.policy is not None
+    persist_node_policy(cacl_session, folder, compiled.policy)
+    folder_id = folder.id
+    cacl_session.commit()
+
+    engine = cacl_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        loaded = load_node_policies(
+            cacl_session,
+            ["/", folder_id],
+            preloaded_inherit={"/": False, folder_id: False},
+            canonicalize=True,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert len(statements) == 1
+    assert "dacl_rule_clauses" in statements[0]
+    assert "dacl_rule_atoms" in statements[0]
+    assert loaded[folder_id].fingerprint() == compiled.policy.fingerprint()
+    assert len(loaded["/"].rules) == 2

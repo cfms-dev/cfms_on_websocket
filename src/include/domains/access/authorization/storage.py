@@ -1,6 +1,8 @@
 __all__ = [
     "DEFAULT_ROOT_DACL_SOURCE",
+    "assemble_rules_from_joined_rows",
     "compile_policy_source",
+    "dacl_rule_validity_predicates",
     "delete_node_dacl_rules_for_targets",
     "load_node_policies",
     "persist_node_policy",
@@ -12,6 +14,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from itertools import batched
+from typing import Any
 
 from cacl_compiler import (
     CompiledPolicy,
@@ -200,46 +203,130 @@ def render_policy_text(
     return decompile_policy(policy, opts=options)
 
 
-def _build_compiled_rule(
-    effect: str,
-    permission_mask: int,
-    scope: str,
-    valid_from: datetime.datetime | None,
-    valid_until: datetime.datetime | None,
-    remark: str | None,
-    clause_ids: Sequence[int],
-    atoms_by_clause: Mapping[int, list[ConditionAtom]],
+def dacl_rule_validity_predicates(
+    rule_table: Any,
+    *,
+    active_ref: datetime.datetime | None = None,
+    expired_ref: datetime.datetime | None = None,
+) -> tuple[Any, ...]:
+    if active_ref is not None:
+        return (
+            or_(
+                rule_table.c.valid_from.is_(None),
+                rule_table.c.valid_from <= active_ref,
+            ),
+            or_(
+                rule_table.c.valid_until.is_(None),
+                rule_table.c.valid_until > active_ref,
+            ),
+        )
+    if expired_ref is not None:
+        return (
+            or_(
+                rule_table.c.valid_until.is_(None),
+                rule_table.c.valid_until > expired_ref,
+            ),
+        )
+    return ()
+
+
+def assemble_rules_from_joined_rows(
+    rows: Iterable[tuple[Any, ...]],
     *,
     canonicalize: bool,
-) -> CompiledRule:
-    if canonicalize:
-        clauses = tuple(
-            DNFClause(
-                atoms=tuple(
-                    sorted(
-                        atoms_by_clause.get(cid, ()),
-                        key=lambda a: a.sort_key(),
+) -> dict[str, list[CompiledRule]]:
+    rule_meta: dict[
+        int,
+        tuple[
+            str,
+            str,
+            int,
+            str,
+            datetime.datetime | None,
+            datetime.datetime | None,
+            str | None,
+        ],
+    ] = {}
+    clauses_by_rule: dict[int, dict[int, None]] = defaultdict(dict)
+    atoms_by_clause: dict[int, dict[int, ConditionAtom]] = defaultdict(dict)
+
+    for (
+        rule_id,
+        node_id,
+        effect,
+        permission_mask,
+        scope,
+        valid_from,
+        valid_until,
+        remark,
+        clause_id,
+        atom_id,
+        predicate_kind,
+        predicate_value,
+        is_negated,
+    ) in rows:
+        if rule_id not in rule_meta:
+            rule_meta[rule_id] = (
+                node_id,
+                effect,
+                permission_mask,
+                scope,
+                valid_from,
+                valid_until,
+                remark,
+            )
+        if clause_id is not None:
+            clauses_by_rule[rule_id][clause_id] = None
+            if atom_id is not None:
+                atoms_by_clause[clause_id][atom_id] = ConditionAtom(
+                    kind=PredicateKind(predicate_kind),
+                    value=predicate_value,
+                    negated=bool(is_negated),
+                )
+
+    rules_by_node: dict[str, list[CompiledRule]] = defaultdict(list)
+    for rule_id, (
+        node_id,
+        effect,
+        permission_mask,
+        scope,
+        valid_from,
+        valid_until,
+        remark,
+    ) in rule_meta.items():
+        clause_ids = tuple(clauses_by_rule.get(rule_id, ()))
+        if canonicalize:
+            clauses = tuple(
+                DNFClause(
+                    atoms=tuple(
+                        sorted(
+                            atoms_by_clause.get(cid, {}).values(),
+                            key=lambda a: a.sort_key(),
+                        )
                     )
                 )
+                for cid in clause_ids
             )
-            for cid in clause_ids
+            final_clauses = tuple(
+                sorted(clauses, key=lambda c: tuple(a.sort_key() for a in c.atoms))
+            )
+        else:
+            final_clauses = tuple(
+                DNFClause(atoms=tuple(atoms_by_clause.get(cid, {}).values()))
+                for cid in clause_ids
+            )
+        rules_by_node[node_id].append(
+            CompiledRule(
+                effect=Effect(effect),
+                permission_mask=int(permission_mask),
+                scope=Scope(scope),
+                dnf_clauses=final_clauses,
+                valid_from=valid_from,
+                valid_until=valid_until,
+                remark=remark,
+            )
         )
-        final_clauses = tuple(
-            sorted(clauses, key=lambda c: tuple(a.sort_key() for a in c.atoms))
-        )
-    else:
-        final_clauses = tuple(
-            DNFClause(atoms=tuple(atoms_by_clause.get(cid, ()))) for cid in clause_ids
-        )
-    return CompiledRule(
-        effect=Effect(effect),
-        permission_mask=int(permission_mask),
-        scope=Scope(scope),
-        dnf_clauses=final_clauses,
-        valid_from=valid_from,
-        valid_until=valid_until,
-        remark=remark,
-    )
+    return rules_by_node
 
 
 def load_node_policies(
@@ -285,104 +372,53 @@ def load_node_policies(
 
     existing_ids = [nid for nid in unique_ids if nid in inherit_by_node]
     rules_by_node: dict[str, list[CompiledRule]] = {nid: [] for nid in existing_ids}
+    rule_table = NodeDaclRule.__table__
+    clause_table = NodeDaclClause.__table__
+    atom_table = NodeDaclAtom.__table__
+    validity_predicates = dacl_rule_validity_predicates(
+        rule_table,
+        active_ref=active_ref,
+        expired_ref=expired_ref,
+    )
+    joined_rules = rule_table.outerjoin(
+        clause_table, clause_table.c.rule_id == rule_table.c.id
+    ).outerjoin(atom_table, atom_table.c.clause_id == clause_table.c.id)
 
     for chunk in batched(existing_ids, QUERY_CHUNK_SIZE):
         chunk_ids = list(chunk)
-        rule_stmt = (
+        joined_rows = session.execute(
             select(
-                NodeDaclRule.id,
-                NodeDaclRule.node_id,
-                NodeDaclRule.effect,
-                NodeDaclRule.permission_mask,
-                NodeDaclRule.scope,
-                NodeDaclRule.valid_from,
-                NodeDaclRule.valid_until,
-                NodeDaclRule.remark,
+                rule_table.c.id,
+                rule_table.c.node_id,
+                rule_table.c.effect,
+                rule_table.c.permission_mask,
+                rule_table.c.scope,
+                rule_table.c.valid_from,
+                rule_table.c.valid_until,
+                rule_table.c.remark,
+                clause_table.c.id.label("clause_id"),
+                atom_table.c.id.label("atom_id"),
+                atom_table.c.predicate_kind,
+                atom_table.c.predicate_value,
+                atom_table.c.is_negated,
             )
-            .where(NodeDaclRule.node_id.in_(chunk_ids))
-            .order_by(NodeDaclRule.id.asc())
-        )
-        if active_ref is not None:
-            rule_stmt = rule_stmt.where(
-                or_(
-                    NodeDaclRule.valid_from.is_(None),
-                    NodeDaclRule.valid_from <= active_ref,
-                ),
-                or_(
-                    NodeDaclRule.valid_until.is_(None),
-                    NodeDaclRule.valid_until > active_ref,
-                ),
+            .select_from(joined_rules)
+            .where(rule_table.c.node_id.in_(chunk_ids), *validity_predicates)
+            .order_by(
+                rule_table.c.id.asc(),
+                clause_table.c.id.asc(),
+                atom_table.c.id.asc(),
             )
-        elif expired_ref is not None:
-            rule_stmt = rule_stmt.where(
-                or_(
-                    NodeDaclRule.valid_until.is_(None),
-                    NodeDaclRule.valid_until > expired_ref,
-                ),
-            )
-
-        rule_rows = session.execute(rule_stmt).all()
-        if not rule_rows:
+        ).all()
+        if not joined_rows:
             continue
 
-        rule_ids = [row[0] for row in rule_rows]
-        clauses_by_rule: dict[int, list[int]] = defaultdict(list)
-        all_clause_ids: list[int] = []
-        for rule_chunk in batched(rule_ids, QUERY_CHUNK_SIZE):
-            clause_rows = session.execute(
-                select(NodeDaclClause.id, NodeDaclClause.rule_id)
-                .where(NodeDaclClause.rule_id.in_(list(rule_chunk)))
-                .order_by(NodeDaclClause.id.asc())
-            ).all()
-            for clause_id, rule_id in clause_rows:
-                clauses_by_rule[rule_id].append(clause_id)
-                all_clause_ids.append(clause_id)
-
-        atoms_by_clause: dict[int, list[ConditionAtom]] = defaultdict(list)
-        if all_clause_ids:
-            for clause_chunk in batched(all_clause_ids, QUERY_CHUNK_SIZE):
-                atom_rows = session.execute(
-                    select(
-                        NodeDaclAtom.clause_id,
-                        NodeDaclAtom.predicate_kind,
-                        NodeDaclAtom.predicate_value,
-                        NodeDaclAtom.is_negated,
-                    )
-                    .where(NodeDaclAtom.clause_id.in_(list(clause_chunk)))
-                    .order_by(NodeDaclAtom.id.asc())
-                ).all()
-                for clause_id, kind, value, is_negated in atom_rows:
-                    atoms_by_clause[clause_id].append(
-                        ConditionAtom(
-                            kind=PredicateKind(kind),
-                            value=value,
-                            negated=bool(is_negated),
-                        )
-                    )
-
-        for (
-            rule_id,
-            node_id,
-            effect,
-            permission_mask,
-            scope,
-            valid_from,
-            valid_until,
-            remark,
-        ) in rule_rows:
-            rules_by_node[node_id].append(
-                _build_compiled_rule(
-                    effect,
-                    permission_mask,
-                    scope,
-                    valid_from,
-                    valid_until,
-                    remark,
-                    clauses_by_rule.get(rule_id, ()),
-                    atoms_by_clause,
-                    canonicalize=canonicalize,
-                )
-            )
+        chunk_rules = assemble_rules_from_joined_rows(
+            joined_rows,
+            canonicalize=canonicalize,
+        )
+        for nid, compiled_rules in chunk_rules.items():
+            rules_by_node[nid].extend(compiled_rules)
 
     return {
         nid: CompiledPolicy(

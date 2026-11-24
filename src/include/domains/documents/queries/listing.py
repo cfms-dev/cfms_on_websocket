@@ -1,14 +1,16 @@
 import datetime
 from itertools import batched
 from typing import Any
-lazy from collections.abc import Sequence
+lazy from collections.abc import Mapping, Sequence
 
 from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType
 from sqlalchemy import (
     and_,
+    case,
     exists,
     func,
     literal,
+    null,
     or_,
     select,
     union_all,
@@ -16,12 +18,18 @@ from sqlalchemy import (
 from sqlalchemy.orm import joinedload, raiseload
 
 from include.config.constants import QUERY_CHUNK_SIZE
+from include.database.models.access import (
+    NodeDaclAtom,
+    NodeDaclClause,
+    NodeDaclRule,
+)
 from include.database.models.documents import (
     Document,
     DocumentRevision,
     EntityStatus,
     Folder,
     Node,
+    NodeType,
 )
 from include.database.models.files import File
 from include.domains.access.authorization.engine import (
@@ -34,7 +42,11 @@ from include.domains.access.authorization.evaluation import (
     should_check_ancestor_traverse,
     user_to_subject,
 )
-from include.domains.access.authorization.storage import load_node_policies
+from include.domains.access.authorization.storage import (
+    assemble_rules_from_joined_rows,
+    dacl_rule_validity_predicates,
+    load_node_policies,
+)
 lazy from include.database.models.identity import User
 
 _CURSOR_KEY = "_cursor_key"
@@ -102,13 +114,23 @@ def _name_id_after_filter(name_expression, id_column, last_name: str, last_id: s
     )
 
 
-def _active_revision_exists():
+def _active_revision_exists_for(document_id_column):
+    revision_table = DocumentRevision.__table__
+    file_table = File.__table__
     return exists(
         select(1)
-        .select_from(DocumentRevision)
-        .join(File, DocumentRevision.file_id == File.id)
-        .where(DocumentRevision.document_id == Document.id, File.active.is_(True))
+        .select_from(
+            revision_table.join(file_table, revision_table.c.file_id == file_table.c.id)
+        )
+        .where(
+            revision_table.c.document_id == document_id_column,
+            file_table.c.active.is_(True),
+        )
     )
+
+
+def _active_revision_exists():
+    return _active_revision_exists_for(Document.id)
 
 
 def count_active_directory_children(session, folder_id: str) -> int:
@@ -445,12 +467,14 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
 
     current_chain_anchor = select(
         matched_documents.c.id.label("document_id"),
-        revision_table.c.id.label("revision_id"),
+        matched_documents.c.name.label("name"),
+        matched_documents.c.parent_id.label("parent_id"),
+        matched_documents.c.created_time.label("created_time"),
+        matched_documents.c.inherit.label("inherit"),
         revision_table.c.created_time.label("revision_created_time"),
-        revision_table.c.file_id.label("file_id"),
+        file_table.c.size.label("file_size"),
         revision_table.c.parent_revision_id.label("parent_revision_id"),
         file_table.c.active.label("file_active"),
-        literal(0).label("depth"),
     ).select_from(
         matched_documents.join(
             revision_table,
@@ -458,118 +482,220 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
         ).join(file_table, revision_table.c.file_id == file_table.c.id)
     )
     current_chain = current_chain_anchor.cte("search_current_chain", recursive=True)
-    parent_revision = revision_table.alias("search_parent_revision")
+    parent_rev = revision_table.alias("search_parent_rev")
     parent_file = file_table.alias("search_parent_file")
     current_chain = current_chain.union_all(
         select(
             current_chain.c.document_id,
-            parent_revision.c.id,
-            parent_revision.c.created_time,
-            parent_revision.c.file_id,
-            parent_revision.c.parent_revision_id,
+            current_chain.c.name,
+            current_chain.c.parent_id,
+            current_chain.c.created_time,
+            current_chain.c.inherit,
+            parent_rev.c.created_time,
+            parent_file.c.size,
+            parent_rev.c.parent_revision_id,
             parent_file.c.active,
-            (current_chain.c.depth + 1).label("depth"),
         )
         .select_from(
             current_chain.join(
-                parent_revision,
-                current_chain.c.parent_revision_id == parent_revision.c.id,
-            ).join(parent_file, parent_revision.c.file_id == parent_file.c.id)
+                parent_rev,
+                current_chain.c.parent_revision_id == parent_rev.c.id,
+            ).join(parent_file, parent_rev.c.file_id == parent_file.c.id)
         )
         .where(current_chain.c.file_active.is_(False))
     )
 
-    current_ranked = (
-        select(
-            current_chain.c.document_id,
-            current_chain.c.revision_id,
-            current_chain.c.revision_created_time,
-            current_chain.c.file_id,
-            literal(0).label("source_rank"),
-            func.row_number()
-            .over(
-                partition_by=current_chain.c.document_id,
-                order_by=current_chain.c.depth.asc(),
-            )
-            .label("source_row_number"),
-        )
-        .where(current_chain.c.file_active.is_(True))
-        .subquery()
-    )
-    current_first = select(
-        current_ranked.c.document_id,
-        current_ranked.c.revision_id,
-        current_ranked.c.revision_created_time,
-        current_ranked.c.file_id,
-        current_ranked.c.source_rank,
-    ).where(current_ranked.c.source_row_number == 1)
+    current_active = select(
+        current_chain.c.document_id.label("id"),
+        current_chain.c.name.label("name"),
+        func.lower(current_chain.c.name).label("name_sort_key"),
+        current_chain.c.parent_id.label("parent_id"),
+        current_chain.c.created_time.label("created_time"),
+        current_chain.c.inherit.label("inherit"),
+        current_chain.c.revision_created_time.label("last_modified"),
+        current_chain.c.file_size.label("size"),
+        literal("document").label("type"),
+        literal(1).label("type_rank"),
+    ).where(current_chain.c.file_active.is_(True))
 
+    fallback_rev = revision_table.alias("search_fallback_rev")
+    fallback_file = file_table.alias("search_fallback_file")
     fallback_ranked = (
-        select(
-            revision_table.c.document_id,
-            revision_table.c.id.label("revision_id"),
-            revision_table.c.created_time.label("revision_created_time"),
-            revision_table.c.file_id,
-            literal(1).label("source_rank"),
-            func.row_number()
-            .over(
-                partition_by=revision_table.c.document_id,
-                order_by=revision_table.c.created_time.desc(),
-            )
-            .label("source_row_number"),
-        )
-        .select_from(
-            matched_documents.join(
-                revision_table, matched_documents.c.id == revision_table.c.document_id
-            ).join(file_table, revision_table.c.file_id == file_table.c.id)
-        )
-        .where(file_table.c.active.is_(True))
-        .subquery()
-    )
-    fallback_first = select(
-        fallback_ranked.c.document_id,
-        fallback_ranked.c.revision_id,
-        fallback_ranked.c.revision_created_time,
-        fallback_ranked.c.file_id,
-        fallback_ranked.c.source_rank,
-    ).where(fallback_ranked.c.source_row_number == 1)
-
-    active_choices = union_all(current_first, fallback_first).subquery()
-    effective_ranked = select(
-        active_choices.c.document_id,
-        active_choices.c.revision_id,
-        active_choices.c.revision_created_time,
-        active_choices.c.file_id,
-        func.row_number()
-        .over(
-            partition_by=active_choices.c.document_id,
-            order_by=active_choices.c.source_rank.asc(),
-        )
-        .label("effective_row_number"),
-    ).subquery()
-
-    return (
         select(
             matched_documents.c.id.label("id"),
             matched_documents.c.name.label("name"),
-            func.lower(matched_documents.c.name).label("name_sort_key"),
             matched_documents.c.parent_id.label("parent_id"),
             matched_documents.c.created_time.label("created_time"),
             matched_documents.c.inherit.label("inherit"),
-            effective_ranked.c.revision_created_time.label("last_modified"),
-            file_table.c.size.label("size"),
-            literal("document").label("type"),
-            literal(1).label("type_rank"),
+            fallback_rev.c.created_time.label("last_modified"),
+            fallback_file.c.size.label("size"),
+            func.row_number()
+            .over(
+                partition_by=matched_documents.c.id,
+                order_by=fallback_rev.c.created_time.desc(),
+            )
+            .label("source_row_number"),
         )
         .select_from(
             matched_documents.join(
-                effective_ranked,
-                matched_documents.c.id == effective_ranked.c.document_id,
-            ).join(file_table, effective_ranked.c.file_id == file_table.c.id)
+                fallback_rev, matched_documents.c.id == fallback_rev.c.document_id
+            ).join(fallback_file, fallback_rev.c.file_id == fallback_file.c.id)
         )
-        .where(effective_ranked.c.effective_row_number == 1)
+        .where(
+            fallback_file.c.active.is_(True),
+            ~exists(
+                select(1).where(
+                    current_chain.c.document_id == matched_documents.c.id,
+                    current_chain.c.file_active.is_(True),
+                )
+            ),
+        )
         .subquery()
     )
+    fallback_active = select(
+        fallback_ranked.c.id,
+        fallback_ranked.c.name,
+        func.lower(fallback_ranked.c.name).label("name_sort_key"),
+        fallback_ranked.c.parent_id,
+        fallback_ranked.c.created_time,
+        fallback_ranked.c.inherit,
+        fallback_ranked.c.last_modified,
+        fallback_ranked.c.size,
+        literal("document").label("type"),
+        literal(1).label("type_rank"),
+    ).where(fallback_ranked.c.source_row_number == 1)
+
+    return union_all(current_active, fallback_active).subquery()
+
+
+def _fetch_active_revision_details_by_document(
+    session,
+    doc_current_rev_ids: Mapping[str, str | None],
+) -> dict[str, tuple[float, int | None]]:
+    """Resolve (last_modified, size) for active documents via current_revision_id fast path."""
+    if not doc_current_rev_ids:
+        return {}
+
+    revision_table = DocumentRevision.__table__
+    file_table = File.__table__
+    details_by_doc: dict[str, tuple[float, int | None]] = {}
+    inactive_parent_revs: dict[str, str] = {}
+
+    current_rev_ids = list(
+        dict.fromkeys(rid for rid in doc_current_rev_ids.values() if rid is not None)
+    )
+    for chunk in batched(current_rev_ids, QUERY_CHUNK_SIZE):
+        rows = session.execute(
+            select(
+                revision_table.c.id,
+                revision_table.c.document_id,
+                revision_table.c.created_time,
+                file_table.c.size,
+                file_table.c.active,
+                revision_table.c.parent_revision_id,
+            )
+            .select_from(
+                revision_table.join(
+                    file_table, revision_table.c.file_id == file_table.c.id
+                )
+            )
+            .where(revision_table.c.id.in_(list(chunk)))
+        ).all()
+        for rev_id, doc_id, created_time, file_size, is_active, parent_rev_id in rows:
+            if doc_current_rev_ids.get(doc_id) != rev_id:
+                continue
+            if is_active:
+                details_by_doc[doc_id] = (created_time, file_size)
+            elif parent_rev_id is not None:
+                inactive_parent_revs[doc_id] = parent_rev_id
+
+    if inactive_parent_revs:
+        parent_rev_ids = list(dict.fromkeys(inactive_parent_revs.values()))
+        for chunk in batched(parent_rev_ids, QUERY_CHUNK_SIZE):
+            anchor = (
+                select(
+                    revision_table.c.document_id.label("document_id"),
+                    revision_table.c.created_time.label("created_time"),
+                    file_table.c.size.label("file_size"),
+                    revision_table.c.parent_revision_id.label("parent_revision_id"),
+                    file_table.c.active.label("file_active"),
+                )
+                .select_from(
+                    revision_table.join(
+                        file_table, revision_table.c.file_id == file_table.c.id
+                    )
+                )
+                .where(revision_table.c.id.in_(list(chunk)))
+            )
+            chain = anchor.cte("search_hydrate_rev_chain", recursive=True)
+            parent_rev = revision_table.alias("search_hydrate_parent_rev")
+            parent_file = file_table.alias("search_hydrate_parent_file")
+            chain = chain.union_all(
+                select(
+                    chain.c.document_id,
+                    parent_rev.c.created_time,
+                    parent_file.c.size,
+                    parent_rev.c.parent_revision_id,
+                    parent_file.c.active,
+                )
+                .select_from(
+                    chain.join(
+                        parent_rev,
+                        chain.c.parent_revision_id == parent_rev.c.id,
+                    ).join(parent_file, parent_rev.c.file_id == parent_file.c.id)
+                )
+                .where(chain.c.file_active.is_(False))
+            )
+            chain_rows = session.execute(
+                select(
+                    chain.c.document_id,
+                    chain.c.created_time,
+                    chain.c.file_size,
+                ).where(chain.c.file_active.is_(True))
+            ).all()
+            for doc_id, created_time, file_size in chain_rows:
+                if doc_id in inactive_parent_revs:
+                    details_by_doc[doc_id] = (created_time, file_size)
+
+    fallback_doc_ids = [
+        doc_id for doc_id in doc_current_rev_ids if doc_id not in details_by_doc
+    ]
+    if fallback_doc_ids:
+        for chunk in batched(fallback_doc_ids, QUERY_CHUNK_SIZE):
+            ranked = (
+                select(
+                    revision_table.c.document_id.label("document_id"),
+                    revision_table.c.created_time.label("created_time"),
+                    file_table.c.size.label("file_size"),
+                    func.row_number()
+                    .over(
+                        partition_by=revision_table.c.document_id,
+                        order_by=revision_table.c.created_time.desc(),
+                    )
+                    .label("row_number"),
+                )
+                .select_from(
+                    revision_table.join(
+                        file_table, revision_table.c.file_id == file_table.c.id
+                    )
+                )
+                .where(
+                    revision_table.c.document_id.in_(list(chunk)),
+                    file_table.c.active.is_(True),
+                )
+                .subquery()
+            )
+            fallback_rows = session.execute(
+                select(
+                    ranked.c.document_id,
+                    ranked.c.created_time,
+                    ranked.c.file_size,
+                ).where(ranked.c.row_number == 1)
+            ).all()
+            for doc_id, created_time, file_size in fallback_rows:
+                details_by_doc[doc_id] = (created_time, file_size)
+
+    return details_by_doc
 
 
 def _apply_search_cursor_filter(selectable, primary_column, last_key, sort_order: str):
@@ -620,6 +746,109 @@ _TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
 _EMPTY_INHERITED_STATE = InheritedDaclState()
 
 
+def _search_lightweight_candidate_selectable(
+    *,
+    query: str,
+    search_documents: bool,
+    search_directories: bool,
+    require_active_document_revision: bool,
+):
+    node_table = Node.__table__
+    folder_table = Folder.__table__
+    document_table = Document.__table__
+    name_expression = func.lower(node_table.c.name)
+
+    if search_directories and search_documents:
+        filters: list[Any] = [
+            node_table.c.status != EntityStatus.DELETED,
+            node_table.c.name.icontains(query, autoescape=True),
+            node_table.c.type.in_((NodeType.DIRECTORY.value, NodeType.DOCUMENT.value)),
+        ]
+        if require_active_document_revision:
+            filters.append(
+                or_(
+                    node_table.c.type == NodeType.DIRECTORY.value,
+                    _active_revision_exists_for(document_table.c.id),
+                )
+            )
+        return (
+            select(
+                node_table.c.id.label("id"),
+                node_table.c.name.label("name"),
+                name_expression.label("name_sort_key"),
+                node_table.c.parent_id.label("parent_id"),
+                func.coalesce(
+                    folder_table.c.created_time, document_table.c.created_time
+                ).label("created_time"),
+                node_table.c.type.label("type"),
+                case(
+                    (node_table.c.type == NodeType.DIRECTORY.value, 0),
+                    else_=1,
+                ).label("type_rank"),
+                node_table.c.inherit.label("inherit"),
+                document_table.c.current_revision_id.label("current_revision_id"),
+            )
+            .select_from(
+                node_table.outerjoin(
+                    folder_table, folder_table.c.id == node_table.c.id
+                ).outerjoin(document_table, document_table.c.id == node_table.c.id)
+            )
+            .where(*filters)
+            .subquery("search_candidates")
+        )
+
+    if search_directories:
+        return (
+            select(
+                node_table.c.id.label("id"),
+                node_table.c.name.label("name"),
+                name_expression.label("name_sort_key"),
+                node_table.c.parent_id.label("parent_id"),
+                folder_table.c.created_time.label("created_time"),
+                literal("directory").label("type"),
+                literal(0).label("type_rank"),
+                node_table.c.inherit.label("inherit"),
+                null().label("current_revision_id"),
+            )
+            .select_from(
+                node_table.join(folder_table, folder_table.c.id == node_table.c.id)
+            )
+            .where(
+                node_table.c.status != EntityStatus.DELETED,
+                node_table.c.name.icontains(query, autoescape=True),
+            )
+            .subquery("search_candidates")
+        )
+
+    if search_documents:
+        doc_filters: list[Any] = [
+            node_table.c.status != EntityStatus.DELETED,
+            node_table.c.name.icontains(query, autoescape=True),
+        ]
+        if require_active_document_revision:
+            doc_filters.append(_active_revision_exists_for(document_table.c.id))
+        return (
+            select(
+                node_table.c.id.label("id"),
+                node_table.c.name.label("name"),
+                name_expression.label("name_sort_key"),
+                node_table.c.parent_id.label("parent_id"),
+                document_table.c.created_time.label("created_time"),
+                literal("document").label("type"),
+                literal(1).label("type_rank"),
+                node_table.c.inherit.label("inherit"),
+                document_table.c.current_revision_id.label("current_revision_id"),
+            )
+            .select_from(
+                node_table.join(document_table, document_table.c.id == node_table.c.id)
+            )
+            .where(*doc_filters)
+            .subquery("search_candidates")
+        )
+
+    return None
+
+
 def _search_candidate_selectable(
     *,
     query: str,
@@ -637,7 +866,7 @@ def _search_candidate_selectable(
                 name_expression.label("name_sort_key"),
                 Folder.parent_id.label("parent_id"),
                 Folder.created_time.label("created_time"),
-                literal(None).label("last_modified"),
+                null().label("last_modified"),
                 literal(0).label("size"),
                 literal("directory").label("type"),
                 literal(0).label("type_rank"),
@@ -677,6 +906,119 @@ def _search_candidate_selectable(
     return union_all(*selects).subquery("search_candidates")
 
 
+def _build_combined_ancestors_and_policies_stmt(
+    missing_ancestors: Sequence[str],
+    candidate_ids: Sequence[str],
+    active_ref: datetime.datetime,
+):
+    node_table = Node.__table__
+    rule_table = NodeDaclRule.__table__
+    clause_table = NodeDaclClause.__table__
+    atom_table = NodeDaclAtom.__table__
+
+    anchor = select(
+        node_table.c.id.label("id"),
+        node_table.c.parent_id.label("parent_id"),
+        node_table.c.status.label("status"),
+        node_table.c.inherit.label("inherit"),
+        literal(0).label("depth"),
+    ).where(node_table.c.id.in_(list(missing_ancestors)))
+    ancestors = anchor.cte("search_anc_meta", recursive=True)
+    parent_node = node_table.alias("search_anc_parent")
+    ancestors = ancestors.union(
+        select(
+            parent_node.c.id,
+            parent_node.c.parent_id,
+            parent_node.c.status,
+            parent_node.c.inherit,
+            (ancestors.c.depth + 1).label("depth"),
+        )
+        .select_from(
+            ancestors.join(parent_node, parent_node.c.id == ancestors.c.parent_id)
+        )
+        .where(ancestors.c.parent_id.is_not(None), ancestors.c.depth < 128)
+    )
+    distinct_ancestors = (
+        select(
+            ancestors.c.id,
+            ancestors.c.parent_id,
+            ancestors.c.status,
+            ancestors.c.inherit,
+        )
+        .distinct()
+        .cte("search_anc_distinct")
+    )
+
+    anc_rule_table = rule_table.alias("search_anc_rule")
+    anc_clause_table = clause_table.alias("search_anc_clause")
+    anc_atom_table = atom_table.alias("search_anc_atom")
+    anc_validity = dacl_rule_validity_predicates(anc_rule_table, active_ref=active_ref)
+
+    anc_branch = select(
+        literal(0).label("row_kind"),
+        distinct_ancestors.c.id.label("node_id"),
+        distinct_ancestors.c.parent_id.label("parent_id"),
+        distinct_ancestors.c.status.label("status"),
+        distinct_ancestors.c.inherit.label("inherit"),
+        anc_rule_table.c.id.label("rule_id"),
+        anc_rule_table.c.effect.label("effect"),
+        anc_rule_table.c.permission_mask.label("permission_mask"),
+        anc_rule_table.c.scope.label("scope"),
+        anc_rule_table.c.valid_from.label("valid_from"),
+        anc_rule_table.c.valid_until.label("valid_until"),
+        anc_rule_table.c.remark.label("remark"),
+        anc_clause_table.c.id.label("clause_id"),
+        anc_atom_table.c.id.label("atom_id"),
+        anc_atom_table.c.predicate_kind.label("predicate_kind"),
+        anc_atom_table.c.predicate_value.label("predicate_value"),
+        anc_atom_table.c.is_negated.label("is_negated"),
+    ).select_from(
+        distinct_ancestors.outerjoin(
+            anc_rule_table,
+            and_(anc_rule_table.c.node_id == distinct_ancestors.c.id, *anc_validity),
+        )
+        .outerjoin(anc_clause_table, anc_clause_table.c.rule_id == anc_rule_table.c.id)
+        .outerjoin(anc_atom_table, anc_atom_table.c.clause_id == anc_clause_table.c.id)
+    )
+
+    if not candidate_ids:
+        return anc_branch
+
+    cand_validity = dacl_rule_validity_predicates(rule_table, active_ref=active_ref)
+    cand_branch = (
+        select(
+            literal(1).label("row_kind"),
+            rule_table.c.node_id.label("node_id"),
+            null().label("parent_id"),
+            null().label("status"),
+            null().label("inherit"),
+            rule_table.c.id.label("rule_id"),
+            rule_table.c.effect.label("effect"),
+            rule_table.c.permission_mask.label("permission_mask"),
+            rule_table.c.scope.label("scope"),
+            rule_table.c.valid_from.label("valid_from"),
+            rule_table.c.valid_until.label("valid_until"),
+            rule_table.c.remark.label("remark"),
+            clause_table.c.id.label("clause_id"),
+            atom_table.c.id.label("atom_id"),
+            atom_table.c.predicate_kind.label("predicate_kind"),
+            atom_table.c.predicate_value.label("predicate_value"),
+            atom_table.c.is_negated.label("is_negated"),
+        )
+        .select_from(
+            rule_table.outerjoin(
+                clause_table, clause_table.c.rule_id == rule_table.c.id
+            ).outerjoin(atom_table, atom_table.c.clause_id == clause_table.c.id)
+        )
+        .where(
+            rule_table.c.node_id.in_(list(candidate_ids)),
+            *cand_validity,
+            ~exists(select(1).where(distinct_ancestors.c.id == rule_table.c.node_id)),
+        )
+    )
+    return union_all(anc_branch, cand_branch)
+
+
 class _SearchVisibilityEvaluator:
     """Request-scoped memoized CACL evaluator for batched search candidates."""
 
@@ -697,23 +1039,23 @@ class _SearchVisibilityEvaluator:
         self._dir_state_cache: dict[str, tuple[bool, InheritedDaclState]] = {}
 
     def ensure_loaded(self, batch_items: Sequence[dict[str, Any]]) -> None:
-        missing_ancestors: list[str] = []
-        seen_missing: set[str] = set()
-        new_policy_ids: list[str] = []
-        seen_policy: set[str] = set()
-
         for item in batch_items:
             nid: str = item["id"]
-            parent_id: str | None = item["parent_id"]
             if nid not in self._node_meta:
                 self._node_meta[nid] = (
-                    parent_id,
+                    item["parent_id"],
                     EntityStatus.OK.value,
                     bool(item["inherit"]),
                 )
-            if nid not in self._node_policies and nid not in seen_policy:
-                seen_policy.add(nid)
-                new_policy_ids.append(nid)
+
+        missing_ancestors: list[str] = []
+        seen_missing: set[str] = set()
+        new_candidate_ids: list[str] = []
+        seen_candidate: set[str] = set()
+
+        for item in batch_items:
+            nid = item["id"]
+            parent_id: str | None = item["parent_id"]
             if (
                 parent_id is not None
                 and parent_id not in self._node_meta
@@ -722,68 +1064,105 @@ class _SearchVisibilityEvaluator:
                 seen_missing.add(parent_id)
                 missing_ancestors.append(parent_id)
 
-        if missing_ancestors:
-            node_table = Node.__table__
-            for chunk in batched(missing_ancestors, QUERY_CHUNK_SIZE):
-                chunk_ids = list(chunk)
-                anchor = select(
-                    node_table.c.id.label("id"),
-                    node_table.c.parent_id.label("parent_id"),
-                    node_table.c.status.label("status"),
-                    node_table.c.inherit.label("inherit"),
-                    literal(0).label("depth"),
-                ).where(node_table.c.id.in_(chunk_ids))
-                ancestors = anchor.cte("search_anc_meta", recursive=True)
-                parent_node = node_table.alias("search_anc_parent")
-                ancestors = ancestors.union(
-                    select(
-                        parent_node.c.id,
-                        parent_node.c.parent_id,
-                        parent_node.c.status,
-                        parent_node.c.inherit,
-                        (ancestors.c.depth + 1).label("depth"),
-                    )
-                    .select_from(
-                        ancestors.join(
-                            parent_node, parent_node.c.id == ancestors.c.parent_id
-                        )
-                    )
-                    .where(ancestors.c.parent_id.is_not(None), ancestors.c.depth < 128)
-                )
-                rows = self._session.execute(
-                    select(
-                        ancestors.c.id,
-                        ancestors.c.parent_id,
-                        ancestors.c.status,
-                        ancestors.c.inherit,
-                    ).distinct()
-                ).all()
-                for nid, parent_id, status, inherit_flag in rows:
-                    if nid not in self._node_meta:
-                        self._node_meta[nid] = (
-                            parent_id,
-                            int(status),
-                            bool(inherit_flag),
-                        )
-                    if nid not in self._node_policies and nid not in seen_policy:
-                        seen_policy.add(nid)
-                        new_policy_ids.append(nid)
+            if self._check_traverse and parent_id is not None:
+                parent_state = self._dir_state_cache.get(parent_id)
+                if parent_state is not None and not parent_state[0]:
+                    continue
 
-        if new_policy_ids:
+            if nid not in self._node_policies and nid not in seen_candidate:
+                seen_candidate.add(nid)
+                new_candidate_ids.append(nid)
+
+        if not missing_ancestors and not new_candidate_ids:
+            return
+
+        remaining_candidates = new_candidate_ids
+        cand_offset = 0
+
+        if missing_ancestors:
+            for anc_chunk in batched(missing_ancestors, QUERY_CHUNK_SIZE):
+                anc_ids = list(anc_chunk)
+                cand_budget = max(0, QUERY_CHUNK_SIZE - len(anc_ids))
+                cand_slice = remaining_candidates[
+                    cand_offset : cand_offset + cand_budget
+                ]
+                cand_offset += len(cand_slice)
+
+                rows = self._session.execute(
+                    _build_combined_ancestors_and_policies_stmt(
+                        anc_ids, cand_slice, self._now_utc
+                    )
+                ).all()
+
+                loaded_node_ids: set[str] = set(cand_slice)
+                rule_rows: list[tuple[Any, ...]] = []
+                for row in rows:
+                    row_kind = row[0]
+                    node_id = row[1]
+                    if row_kind == 0:
+                        loaded_node_ids.add(node_id)
+                        if node_id not in self._node_meta:
+                            self._node_meta[node_id] = (
+                                row[2],
+                                int(row[3]),
+                                bool(row[4]),
+                            )
+                    rule_id = row[5]
+                    if rule_id is not None:
+                        rule_rows.append(
+                            (
+                                rule_id,
+                                node_id,
+                                row[6],
+                                row[7],
+                                row[8],
+                                row[9],
+                                row[10],
+                                row[11],
+                                row[12],
+                                row[13],
+                                row[14],
+                                row[15],
+                                row[16],
+                            )
+                        )
+
+                rules_by_node = (
+                    assemble_rules_from_joined_rows(rule_rows, canonicalize=False)
+                    if rule_rows
+                    else {}
+                )
+                for nid in loaded_node_ids:
+                    if nid in self._node_policies:
+                        continue
+                    default_inherit = (
+                        self._node_meta[nid][2] if nid in self._node_meta else True
+                    )
+                    self._node_policies[nid] = CompiledPolicy(
+                        inherit=default_inherit,
+                        rules=tuple(rules_by_node.get(nid, ())),
+                    )
+
+        leftover_candidates = [
+            nid
+            for nid in remaining_candidates[cand_offset:]
+            if nid not in self._node_policies
+        ]
+        if leftover_candidates:
             preloaded_inherit = {
                 nid: self._node_meta[nid][2]
-                for nid in new_policy_ids
+                for nid in leftover_candidates
                 if nid in self._node_meta
             }
             loaded = load_node_policies(
                 self._session,
-                new_policy_ids,
+                leftover_candidates,
                 include_deleted=True,
                 preloaded_inherit=preloaded_inherit,
                 active_at_utc=self._now_utc,
                 canonicalize=False,
             )
-            for nid in new_policy_ids:
+            for nid in leftover_candidates:
                 default_inherit = (
                     self._node_meta[nid][2] if nid in self._node_meta else True
                 )
@@ -815,6 +1194,9 @@ class _SearchVisibilityEvaluator:
             traverse_ok, inherited = True, _EMPTY_INHERITED_STATE
 
         for nid in reversed(uncomputed):
+            if self._check_traverse and not traverse_ok:
+                self._dir_state_cache[nid] = (False, _EMPTY_INHERITED_STATE)
+                continue
             _parent_id, status, inherit_flag = self._node_meta[nid]
             policy = self._node_policies.get(
                 nid, CompiledPolicy(inherit=inherit_flag, rules=())
@@ -867,26 +1249,40 @@ class _SearchVisibilityEvaluator:
         return bool(eff_mask & required_mask)
 
 
-def _execute_search_batch(
-    session,
+def _build_search_select(
     candidates,
     primary_column,
     last_key: list[Any] | None,
     sort_order: str,
-    limit: int,
-) -> list[dict[str, Any]]:
-    search_query = select(
-        candidates.c.id,
-        candidates.c.name,
-        candidates.c.name_sort_key,
-        candidates.c.parent_id,
-        candidates.c.created_time,
-        candidates.c.last_modified,
-        candidates.c.size,
-        candidates.c.type,
-        candidates.c.type_rank,
-        candidates.c.inherit,
-    )
+    *,
+    include_revision_details: bool,
+    limit: int | None = None,
+):
+    if include_revision_details:
+        search_query = select(
+            candidates.c.id,
+            candidates.c.name,
+            candidates.c.name_sort_key,
+            candidates.c.parent_id,
+            candidates.c.created_time,
+            candidates.c.last_modified,
+            candidates.c.size,
+            candidates.c.type,
+            candidates.c.type_rank,
+            candidates.c.inherit,
+        )
+    else:
+        search_query = select(
+            candidates.c.id,
+            candidates.c.name,
+            candidates.c.name_sort_key,
+            candidates.c.parent_id,
+            candidates.c.created_time,
+            candidates.c.type,
+            candidates.c.type_rank,
+            candidates.c.inherit,
+            candidates.c.current_revision_id,
+        )
     cursor_filter = _apply_search_cursor_filter(
         candidates, primary_column, last_key, sort_order
     )
@@ -894,7 +1290,30 @@ def _execute_search_batch(
         search_query = search_query.where(cursor_filter)
     search_query = search_query.order_by(
         *_search_ordering(candidates, primary_column, sort_order)
-    ).limit(limit)
+    )
+    if limit is not None:
+        search_query = search_query.limit(limit)
+    return search_query
+
+
+def _execute_search_batch(
+    session,
+    candidates,
+    primary_column,
+    last_key: list[Any] | None,
+    sort_order: str,
+    limit: int,
+    *,
+    include_revision_details: bool,
+) -> list[dict[str, Any]]:
+    search_query = _build_search_select(
+        candidates,
+        primary_column,
+        last_key,
+        sort_order,
+        include_revision_details=include_revision_details,
+        limit=limit,
+    )
     return [
         {str(key): value for key, value in row.items()}
         for row in session.execute(search_query).mappings()
@@ -906,10 +1325,40 @@ def _finalize_search_item(raw_item: dict[str, Any], sort_by: str) -> dict[str, A
     item[_CURSOR_KEY] = _search_item_cursor_key(raw_item, sort_by)
     item.pop("name_sort_key", None)
     item.pop("inherit", None)
+    item.pop("current_revision_id", None)
     if item["type"] == "directory":
         item.pop("last_modified", None)
         item.pop("size", None)
     return item
+
+
+def _hydrate_lightweight_search_rows(
+    session,
+    raw_rows: Sequence[dict[str, Any]],
+    sort_by: str,
+) -> list[dict[str, Any]]:
+    doc_current_rev_ids = {
+        row["id"]: row.get("current_revision_id")
+        for row in raw_rows
+        if row["type"] == "document"
+    }
+    rev_details = (
+        _fetch_active_revision_details_by_document(session, doc_current_rev_ids)
+        if doc_current_rev_ids
+        else {}
+    )
+    hydrated: list[dict[str, Any]] = []
+    for raw_item in raw_rows:
+        if raw_item["type"] == "document":
+            details = rev_details.get(raw_item["id"])
+            if details is None:
+                continue
+            enriched = dict(raw_item)
+            enriched["last_modified"], enriched["size"] = details
+            hydrated.append(_finalize_search_item(enriched, sort_by))
+        else:
+            hydrated.append(_finalize_search_item(raw_item, sort_by))
+    return hydrated
 
 
 def fetch_visible_search_candidate_rows(
@@ -928,21 +1377,40 @@ def fetch_visible_search_candidate_rows(
     if limit <= 0:
         return []
 
-    candidates = _search_candidate_selectable(
-        query=query,
-        search_documents=search_documents,
-        search_directories=search_directories,
-    )
+    needs_revision_in_sort = sort_by in ("size", "last_modified")
+    bypass_dacl = has_bypass_dacl(user)
+
+    if needs_revision_in_sort:
+        candidates = _search_candidate_selectable(
+            query=query,
+            search_documents=search_documents,
+            search_directories=search_directories,
+        )
+    else:
+        candidates = _search_lightweight_candidate_selectable(
+            query=query,
+            search_documents=search_documents,
+            search_directories=search_directories,
+            require_active_document_revision=bypass_dacl,
+        )
     if candidates is None:
         return []
 
     primary_column = _search_primary_column(candidates, sort_by)
 
-    if has_bypass_dacl(user):
+    if bypass_dacl:
         raw_rows = _execute_search_batch(
-            session, candidates, primary_column, last_key, sort_order, limit
+            session,
+            candidates,
+            primary_column,
+            last_key,
+            sort_order,
+            limit,
+            include_revision_details=needs_revision_in_sort,
         )
-        return [_finalize_search_item(row, sort_by) for row in raw_rows]
+        if needs_revision_in_sort or not search_documents:
+            return [_finalize_search_item(row, sort_by) for row in raw_rows]
+        return _hydrate_lightweight_search_rows(session, raw_rows, sort_by)
 
     now_utc = (
         datetime.datetime.fromtimestamp(now, tz=datetime.UTC)
@@ -956,33 +1424,99 @@ def fetch_visible_search_candidate_rows(
         check_traverse=should_check_ancestor_traverse(session, user),
     )
 
-    batch_sizes = (max(limit * 2, 128), 512, 2048, 4096)
-    batch_index = 0
-    batch_last_key = last_key
     visible_rows: list[dict[str, Any]] = []
 
+    def _consume_rows(raw_rows: Sequence[dict[str, Any]]) -> None:
+        for sub_chunk in batched(raw_rows, QUERY_CHUNK_SIZE):
+            if len(visible_rows) >= limit:
+                return
+            chunk_list = list(sub_chunk)
+            evaluator.ensure_loaded(chunk_list)
+
+            if needs_revision_in_sort or not search_documents:
+                for raw_item in chunk_list:
+                    if evaluator.is_visible(raw_item):
+                        visible_rows.append(_finalize_search_item(raw_item, sort_by))
+                        if len(visible_rows) >= limit:
+                            return
+                continue
+
+            pos = 0
+            chunk_len = len(chunk_list)
+            while pos < chunk_len and len(visible_rows) < limit:
+                needed = limit - len(visible_rows)
+                pending_visible: list[dict[str, Any]] = []
+                while pos < chunk_len and len(pending_visible) < needed:
+                    raw_item = chunk_list[pos]
+                    pos += 1
+                    if evaluator.is_visible(raw_item):
+                        pending_visible.append(raw_item)
+                if not pending_visible:
+                    break
+                visible_rows.extend(
+                    _hydrate_lightweight_search_rows(session, pending_visible, sort_by)
+                )
+
+    probe_limit = max(limit * 2, 128)
+    probe_rows = _execute_search_batch(
+        session,
+        candidates,
+        primary_column,
+        last_key,
+        sort_order,
+        probe_limit,
+        include_revision_details=needs_revision_in_sort,
+    )
+    if not probe_rows:
+        return []
+
+    _consume_rows(probe_rows)
+    if len(visible_rows) >= limit or len(probe_rows) < probe_limit:
+        return visible_rows
+
+    batch_last_key = _search_item_cursor_key(probe_rows[-1], sort_by)
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "sqlite":
+        stream_query = _build_search_select(
+            candidates,
+            primary_column,
+            batch_last_key,
+            sort_order,
+            include_revision_details=needs_revision_in_sort,
+            limit=None,
+        )
+        result = session.execute(stream_query)
+        try:
+            mappings = result.mappings()
+            while len(visible_rows) < limit:
+                fetched = mappings.fetchmany(QUERY_CHUNK_SIZE)
+                if not fetched:
+                    break
+                _consume_rows(
+                    [{str(key): value for key, value in row.items()} for row in fetched]
+                )
+        finally:
+            result.close()
+        return visible_rows
+
+    window_sizes = (2048, 8192)
+    window_index = 0
     while len(visible_rows) < limit:
-        batch_limit = batch_sizes[min(batch_index, len(batch_sizes) - 1)]
-        batch_index += 1
+        window_limit = window_sizes[min(window_index, len(window_sizes) - 1)]
+        window_index += 1
         raw_rows = _execute_search_batch(
             session,
             candidates,
             primary_column,
             batch_last_key,
             sort_order,
-            batch_limit,
+            window_limit,
+            include_revision_details=needs_revision_in_sort,
         )
         if not raw_rows:
             break
-
-        evaluator.ensure_loaded(raw_rows)
-        for raw_item in raw_rows:
-            if evaluator.is_visible(raw_item):
-                visible_rows.append(_finalize_search_item(raw_item, sort_by))
-                if len(visible_rows) >= limit:
-                    break
-
-        if len(raw_rows) < batch_limit:
+        _consume_rows(raw_rows)
+        if len(raw_rows) < window_limit:
             break
         batch_last_key = _search_item_cursor_key(raw_rows[-1], sort_by)
 

@@ -307,6 +307,7 @@ def authorize_node_operation(
     *,
     include_deleted: bool = False,
     eval_time_utc: datetime.datetime | None = None,
+    collect_traces: bool = False,
 ) -> EvalDecision:
     """Evaluate CEP-0002 access for a single operation on a Document or Folder."""
     step1_denial = _check_step1_invariants(target, operation)
@@ -334,6 +335,7 @@ def authorize_node_operation(
         operation,
         eval_time_utc=now,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+        collect_traces=collect_traces,
     )
 
 
@@ -448,6 +450,7 @@ def authorize_dacl_read(
         AtomicOp.READ_DACL,
         eval_time_utc=now,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+        collect_traces=False,
     )
     if not decision.allowed:
         return False, None
@@ -482,6 +485,7 @@ def authorize_write_dacl_and_load_path(
         AtomicOp.WRITE_DACL,
         eval_time_utc=now,
         check_ancestor_traverse=check_traverse,
+        collect_traces=False,
     )
     if not decision.allowed:
         return False, None, check_traverse
@@ -515,6 +519,7 @@ def simulate_dacl_save_lockout(
         AtomicOp.WRITE_DACL,
         eval_time_utc=now,
         check_ancestor_traverse=check_ancestor_traverse,
+        collect_traces=False,
     )
     return not post_check.allowed
 
@@ -606,6 +611,7 @@ def authorize_reparent(
         paths[dest_parent.id],
         eval_time_utc=now,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+        collect_traces=False,
     )
 
 
@@ -789,16 +795,14 @@ def authorize_restore(
     target_path = paths[target.id]
 
     if not reparenting:
-        restore_decision = evaluate_access(
+        return evaluate_access(
             subject,
             target_path,
             AtomicOp.RESTORE,
             eval_time_utc=now,
             check_ancestor_traverse=check_traverse,
+            collect_traces=False,
         )
-        if not restore_decision.allowed:
-            return restore_decision
-        return restore_decision
 
     # When restoring into a different active parent, evaluate RESTORE on the
     # target's existing DACL chain (skipping soft-deleted ancestors for traverse)
@@ -834,6 +838,7 @@ def authorize_restore(
         dest_op,
         eval_time_utc=now,
         check_ancestor_traverse=check_traverse,
+        collect_traces=False,
     )
 
 
@@ -914,5 +919,6 @@ def would_self_lockout_on_create(
         AtomicOp.WRITE_DACL,
         eval_time_utc=now,
         check_ancestor_traverse=check_traverse,
+        collect_traces=False,
     )
     return not post_check.allowed

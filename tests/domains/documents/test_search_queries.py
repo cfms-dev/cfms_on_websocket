@@ -562,3 +562,333 @@ def test_visible_search_query_hides_items_under_soft_deleted_ancestor(
         limit=10,
     )
     assert [item["id"] for item in rows_bypassed] == [child.id]
+
+
+@pytest.mark.component
+def test_low_selectivity_document_search_avoids_repeated_revision_subquery_and_splits(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_low_sel")
+    query = "LowSelDoc"
+
+    blocked_parent = _make_folder(
+        context,
+        "low-sel-blocked-parent",
+        "BlockedParent",
+        dacl="inherit off;",
+    )
+    # 400 docs hidden via blocked parent (traverse denied) + 250 docs hidden via own inherit off.
+    for idx in range(400):
+        doc = _make_document(
+            context,
+            f"ls-parent-hidden-{idx:03d}",
+            f"{query}A{idx:03d}",
+            folder_id=blocked_parent.id,
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 100 + idx
+    for idx in range(250):
+        doc = _make_document(
+            context,
+            f"ls-self-hidden-{idx:03d}",
+            f"{query}B{idx:03d}",
+            dacl="inherit off;",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 1000 + idx
+
+    expected_visible_ids: list[str] = []
+    for idx in range(5):
+        doc = _make_document(
+            context,
+            f"ls-visible-{idx:03d}",
+            f"{query}Z{idx:03d}",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 5000 + idx
+        expected_visible_ids.append(doc.id)
+    context.session.commit()
+
+    _ = user.all_permissions
+    _ = user.all_groups
+
+    engine = context.session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        # 1. Default sort_by="name": no search_current_chain / row_number at all,
+        # and blocked parent pruning keeps total SQL count very low.
+        statements.clear()
+        name_rows = context.fetch_visible_search_candidate_rows(
+            context.session,
+            user=user,
+            now=_NOW,
+            query=query,
+            sort_by="name",
+            sort_order="asc",
+            search_documents=True,
+            search_directories=False,
+            last_key=None,
+            limit=5,
+        )
+        name_stmts = list(statements)
+
+        # 2. sort_by="size": SQLite Phase 2 uses a single streaming cursor, so the
+        # candidate query runs at most twice (Phase 1 probe + Phase 2 stream), and
+        # no standalone clause/atom queries are emitted.
+        statements.clear()
+        size_rows = context.fetch_visible_search_candidate_rows(
+            context.session,
+            user=user,
+            now=_NOW,
+            query=query,
+            sort_by="size",
+            sort_order="asc",
+            search_documents=True,
+            search_directories=False,
+            last_key=None,
+            limit=5,
+        )
+        size_stmts = list(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert [item["id"] for item in name_rows] == expected_visible_ids
+    assert [item["size"] for item in name_rows] == [5000, 5001, 5002, 5003, 5004]
+    assert all("current_revision_id" not in item for item in name_rows)
+    assert all("search_current_chain" not in stmt for stmt in name_stmts)
+    assert all("row_number" not in stmt.lower() for stmt in name_stmts)
+    assert not any(
+        "FROM dacl_rule_clauses" in stmt or "FROM dacl_rule_atoms" in stmt
+        for stmt in name_stmts
+    )
+
+    assert [item["id"] for item in size_rows] == expected_visible_ids
+    assert [item["size"] for item in size_rows] == [5000, 5001, 5002, 5003, 5004]
+    candidate_size_stmts = [stmt for stmt in size_stmts if "search_candidates" in stmt]
+    assert len(candidate_size_stmts) <= 2
+    assert not any(
+        "FROM dacl_rule_clauses" in stmt or "FROM dacl_rule_atoms" in stmt
+        for stmt in size_stmts
+    )
+
+
+@pytest.mark.component
+@pytest.mark.parametrize("sort_by", ["name", "created_time", "size", "last_modified"])
+@pytest.mark.parametrize("use_bypass", [False, True])
+def test_search_active_revision_resolution_parity_across_sort_modes(
+    search_query_context,
+    sort_by: str,
+    use_bypass: bool,
+):
+    context = search_query_context
+    user = _make_user(
+        context,
+        permissions=(Permissions.BYPASS_DACL,) if use_bypass else (),
+        username=f"rev_user_{sort_by}_{use_bypass}",
+    )
+    query = "RevParityDoc"
+
+    # 1. Direct active current_revision
+    doc_direct = context.models.Document(
+        id="rev-direct", title=f"{query}1Direct", folder_id="/", created_time=_NOW + 1
+    )
+    f_direct = context.models.File(
+        id="f-rev-direct", path="/tmp/direct", sha256="a" * 64, active=True
+    )
+    f_direct.size = 300
+    r_direct = context.models.DocumentRevision(
+        id="r-rev-direct",
+        document_id=doc_direct.id,
+        file_id=f_direct.id,
+        created_time=_NOW + 10,
+    )
+    context.session.add_all([doc_direct, f_direct, r_direct])
+    context.session.flush()
+    doc_direct.current_revision_id = r_direct.id
+
+    # 2. Inactive current_revision falling back along parent_revision_id chain
+    doc_chain = context.models.Document(
+        id="rev-chain", title=f"{query}2Chain", folder_id="/", created_time=_NOW + 2
+    )
+    f_chain_old = context.models.File(
+        id="f-chain-old", path="/tmp/chain-old", sha256="b" * 64, active=True
+    )
+    f_chain_old.size = 100
+    f_chain_new = context.models.File(
+        id="f-chain-new", path="/tmp/chain-new", sha256="c" * 64, active=False
+    )
+    f_chain_new.size = 999
+    r_chain_old = context.models.DocumentRevision(
+        id="r-chain-old",
+        document_id=doc_chain.id,
+        file_id=f_chain_old.id,
+        created_time=_NOW + 30,
+    )
+    r_chain_new = context.models.DocumentRevision(
+        id="r-chain-new",
+        document_id=doc_chain.id,
+        file_id=f_chain_new.id,
+        parent_revision_id=r_chain_old.id,
+        created_time=_NOW + 40,
+    )
+    context.session.add_all(
+        [doc_chain, f_chain_old, f_chain_new, r_chain_old, r_chain_new]
+    )
+    context.session.flush()
+    doc_chain.current_revision_id = r_chain_new.id
+
+    # 3. current_revision_id is None -> fallback to latest active revision by created_time
+    doc_fallback = context.models.Document(
+        id="rev-fallback",
+        title=f"{query}3Fallback",
+        folder_id="/",
+        created_time=_NOW + 3,
+    )
+    f_fb_1 = context.models.File(
+        id="f-fb-1", path="/tmp/fb1", sha256="d" * 64, active=True
+    )
+    f_fb_1.size = 150
+    f_fb_2 = context.models.File(
+        id="f-fb-2", path="/tmp/fb2", sha256="e" * 64, active=True
+    )
+    f_fb_2.size = 200
+    r_fb_1 = context.models.DocumentRevision(
+        id="r-fb-1",
+        document_id=doc_fallback.id,
+        file_id=f_fb_1.id,
+        created_time=_NOW + 5,
+    )
+    r_fb_2 = context.models.DocumentRevision(
+        id="r-fb-2",
+        document_id=doc_fallback.id,
+        file_id=f_fb_2.id,
+        created_time=_NOW + 20,
+    )
+    context.session.add_all([doc_fallback, f_fb_1, f_fb_2, r_fb_1, r_fb_2])
+    context.session.flush()
+    doc_fallback.current_revision_id = None
+
+    # 4. Document with NO active revision (must be excluded without shortening limit)
+    doc_inactive = context.models.Document(
+        id="rev-inactive",
+        title=f"{query}0Inactive",
+        folder_id="/",
+        created_time=_NOW,
+    )
+    f_inactive = context.models.File(
+        id="f-inactive", path="/tmp/inactive", sha256="f" * 64, active=False
+    )
+    f_inactive.size = 50
+    r_inactive = context.models.DocumentRevision(
+        id="r-inactive",
+        document_id=doc_inactive.id,
+        file_id=f_inactive.id,
+        created_time=_NOW + 1,
+    )
+    context.session.add_all([doc_inactive, f_inactive, r_inactive])
+    context.session.flush()
+    doc_inactive.current_revision_id = r_inactive.id
+    context.session.commit()
+
+    rows = context.fetch_visible_search_candidate_rows(
+        context.session,
+        user=user,
+        now=_NOW,
+        query=query,
+        sort_by=sort_by,
+        sort_order="asc",
+        search_documents=True,
+        search_directories=False,
+        last_key=None,
+        limit=3,
+    )
+
+    by_id = {row["id"]: (row["last_modified"], row["size"]) for row in rows}
+    assert by_id == {
+        "rev-direct": (_NOW + 10, 300),
+        "rev-chain": (_NOW + 30, 100),
+        "rev-fallback": (_NOW + 20, 200),
+    }
+
+    expected_order = {
+        "name": ["rev-direct", "rev-chain", "rev-fallback"],
+        "created_time": ["rev-direct", "rev-chain", "rev-fallback"],
+        "size": ["rev-chain", "rev-fallback", "rev-direct"],
+        "last_modified": ["rev-direct", "rev-fallback", "rev-chain"],
+    }[sort_by]
+    assert [row["id"] for row in rows] == expected_order
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dialect_name", ["sqlite", "postgresql", "mysql"])
+def test_search_statements_compile_across_supported_dialects(dialect_name: str):
+    from sqlalchemy.dialects import mysql, postgresql, sqlite
+
+    from include.domains.documents.queries.listing import (
+        _build_combined_ancestors_and_policies_stmt,
+        _build_search_select,
+        _search_candidate_selectable,
+        _search_lightweight_candidate_selectable,
+        _search_primary_column,
+    )
+
+    dialect = {
+        "sqlite": sqlite.dialect(),
+        "postgresql": postgresql.dialect(),
+        "mysql": mysql.dialect(),
+    }[dialect_name]
+
+    lightweight = _search_lightweight_candidate_selectable(
+        query="demo",
+        search_documents=True,
+        search_directories=True,
+        require_active_document_revision=False,
+    )
+    assert lightweight is not None
+    lw_sql = str(
+        _build_search_select(
+            lightweight,
+            _search_primary_column(lightweight, "name"),
+            ["a", 0, "id-1"],
+            "asc",
+            include_revision_details=False,
+            limit=128,
+        ).compile(dialect=dialect)
+    )
+    assert "search_candidates" in lw_sql
+
+    full = _search_candidate_selectable(
+        query="demo",
+        search_documents=True,
+        search_directories=True,
+    )
+    assert full is not None
+    full_sql = str(
+        _build_search_select(
+            full,
+            _search_primary_column(full, "size"),
+            [100, 1, "id-1"],
+            "desc",
+            include_revision_details=True,
+            limit=128,
+        ).compile(dialect=dialect)
+    )
+    assert "matched_documents" in full_sql
+    assert "search_current_chain" in full_sql
+
+    combined_sql = str(
+        _build_combined_ancestors_and_policies_stmt(
+            ["folder-1"], ["doc-1", "doc-2"], _NOW_DT
+        ).compile(dialect=dialect)
+    )
+    assert "search_anc_meta" in combined_sql
+    assert "dacl_rule_atoms" in combined_sql

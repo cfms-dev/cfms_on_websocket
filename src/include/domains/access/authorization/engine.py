@@ -474,6 +474,8 @@ def evaluate_access(
     operation: AtomicOp,
     eval_time_utc: datetime.datetime | None = None,
     check_ancestor_traverse: bool = True,
+    *,
+    collect_traces: bool = True,
 ) -> EvalDecision:
     """CEP 2 Section 6 deterministic runtime evaluation pipeline in O(D * R)."""
     if not path_root_to_target:
@@ -545,12 +547,15 @@ def evaluate_access(
                 continue
             next_transition = _min_transition(next_transition, own_next)
             if not ((own_allow & _TRAVERSE_BIT) and not (own_deny & _TRAVERSE_BIT)):
-                denies, allows = _collect_op_traces_on_chain(
-                    subject,
-                    path_root_to_target[: idx + 1],
-                    AtomicOp.TRAVERSE,
-                    now,
-                )
+                if collect_traces:
+                    denies, allows = _collect_op_traces_on_chain(
+                        subject,
+                        path_root_to_target[: idx + 1],
+                        AtomicOp.TRAVERSE,
+                        now,
+                    )
+                else:
+                    denies, allows = [], []
                 return EvalDecision(
                     allowed=False,
                     reason=f"Missing TRAVERSE permission on ancestor '{ancestor.name}' ({ancestor.node_id}).",
@@ -567,7 +572,7 @@ def evaluate_access(
     )
     next_transition = _min_transition(next_transition, target_next)
     op_bit = int(operation)
-    if (d_mask & op_bit) or (a_mask & op_bit):
+    if collect_traces and ((d_mask & op_bit) or (a_mask & op_bit)):
         denies, allows = _collect_op_traces_on_chain(
             subject, path_root_to_target, operation, now
         )
@@ -577,7 +582,11 @@ def evaluate_access(
     if d_mask & op_bit:
         return EvalDecision(
             allowed=False,
-            reason=f"Explicitly denied by {len(denies)} matching deny rule(s).",
+            reason=(
+                f"Explicitly denied by {len(denies)} matching deny rule(s)."
+                if collect_traces
+                else "Explicitly denied by matching deny rule."
+            ),
             step="4_deny_overrides",
             matched_denies=tuple(denies),
             matched_allows=tuple(allows),
@@ -588,7 +597,11 @@ def evaluate_access(
     if a_mask & op_bit:
         return EvalDecision(
             allowed=True,
-            reason=f"Allowed by {len(allows)} matching allow rule(s) with no overriding deny.",
+            reason=(
+                f"Allowed by {len(allows)} matching allow rule(s) with no overriding deny."
+                if collect_traces
+                else "Allowed by matching allow rule with no overriding deny."
+            ),
             step="4_allow_matched",
             matched_allows=tuple(allows),
             effective_allow_mask=a_mask,
@@ -611,6 +624,8 @@ def evaluate_reparent(
     dest_parent_path: list[NamespaceNode],
     eval_time_utc: datetime.datetime | None = None,
     check_ancestor_traverse: bool = True,
+    *,
+    collect_traces: bool = True,
 ) -> EvalDecision:
     """Step 5: composite authorization for reparenting (REPARENT on source + CREATE_* on dest)."""
     now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
@@ -622,6 +637,7 @@ def evaluate_reparent(
         AtomicOp.REPARENT,
         now,
         check_ancestor_traverse=check_ancestor_traverse,
+        collect_traces=collect_traces,
     )
     if not src_decision.allowed:
         return EvalDecision(
@@ -644,6 +660,7 @@ def evaluate_reparent(
         dest_op,
         now,
         check_ancestor_traverse=check_ancestor_traverse,
+        collect_traces=collect_traces,
     )
     if not dst_decision.allowed:
         return EvalDecision(
@@ -781,6 +798,8 @@ def evaluate_soft_delete(
     descendant_paths: Sequence[list[NamespaceNode]] = (),
     eval_time_utc: datetime.datetime | None = None,
     check_ancestor_traverse: bool = True,
+    *,
+    collect_traces: bool = True,
 ) -> EvalDecision:
     """Step 5: soft-deleting an object, including non-empty directories."""
     now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
@@ -792,6 +811,7 @@ def evaluate_soft_delete(
         AtomicOp.DELETE,
         now,
         check_ancestor_traverse=check_ancestor_traverse,
+        collect_traces=collect_traces,
     )
     if not own.allowed:
         return EvalDecision(
@@ -827,6 +847,7 @@ def evaluate_soft_delete(
             AtomicOp.DELETE,
             now,
             check_ancestor_traverse=check_ancestor_traverse,
+            collect_traces=collect_traces,
         )
         if not child.allowed:
             return EvalDecision(
@@ -863,6 +884,7 @@ def authorize_policy_save(
         AtomicOp.WRITE_DACL,
         now,
         check_ancestor_traverse=check_ancestor_traverse,
+        collect_traces=False,
     )
     if not check.allowed:
         return SaveAuthzResult(
@@ -883,6 +905,7 @@ def authorize_policy_save(
         AtomicOp.WRITE_DACL,
         now,
         check_ancestor_traverse=check_ancestor_traverse,
+        collect_traces=False,
     )
     return SaveAuthzResult(
         authorized=True,
