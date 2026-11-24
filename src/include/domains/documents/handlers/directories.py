@@ -1,11 +1,16 @@
 import secrets
 import time
 from itertools import batched
+from typing import Annotated
 
 from cacl_compiler import AtomicOp, ObjectType
-from pydantic import ConfigDict
+from pydantic import ConfigDict, StringConstraints
 
-from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
+from include.config.constants import (
+    DACL_SOURCE_MAX_LENGTH,
+    QUERY_CHUNK_SIZE,
+    ROOT_DIRECTORY_ID,
+)
 from include.database.models.documents import (
     EntityStatus,
     Folder,
@@ -14,18 +19,21 @@ from include.database.models.documents import (
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import (
-    authorize_dacl_save,
-    authorize_directory_soft_delete,
+    authorize_create_on_parent,
+    authorize_dacl_read,
+    authorize_directory_access_with_parent,
     authorize_node_operation,
     authorize_reparent,
     authorize_restore,
-    has_bypass_dacl,
+    authorize_soft_delete_descendants,
+    authorize_write_dacl_and_load_path,
+    check_directory_soft_delete_root,
+    simulate_dacl_save_lockout,
     would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
     compile_policy_source,
     delete_node_dacl_rules_for_targets,
-    load_node_policies,
     persist_node_policy,
     render_policy_text,
 )
@@ -44,7 +52,8 @@ from include.domains.documents.handlers.name_conflict_responses import (
 )
 from include.domains.documents.queries.deletion_tree import (
     fetch_subtree_for_purge,
-    fetch_subtree_for_soft_delete,
+    fetch_subtree_ids_for_soft_delete,
+    fetch_subtree_metadata_for_soft_delete,
 )
 from include.domains.documents.queries.file_references import (
     find_unreachable_document_file_ids,
@@ -73,6 +82,8 @@ from include.transport.request_handler import (
 )
 lazy from include.types import NonEmptyString
 
+_DaclSource = Annotated[str, StringConstraints(max_length=DACL_SOURCE_MAX_LENGTH)]
+
 
 class _ListDirectoryRequest(RequestDataModel):
     folder_id: str | None
@@ -91,7 +102,7 @@ class _GetDirectoryDaclRequest(RequestDataModel):
 
 class _SetDirectoryDaclRequest(RequestDataModel):
     directory_id: NonEmptyString
-    dacl: str
+    dacl: _DaclSource
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
 
 
@@ -104,7 +115,7 @@ class _CreateDirectoryRequest(RequestDataModel):
 
     parent_id: str | None = None
     name: NonEmptyString
-    dacl: Omittable[str] = REQUEST_UNSET
+    dacl: Omittable[_DaclSource] = REQUEST_UNSET
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
     exists_ok: Omittable[bool] = REQUEST_UNSET
 
@@ -146,19 +157,6 @@ def _mark_nodes_deleted(session, node_ids, operation_id: str) -> None:
         )
 
 
-def _visible_parent_id(session, user: User, directory: Folder) -> str | None:
-    if directory.parent_id is None:
-        return None
-    if has_bypass_dacl(user):
-        return directory.parent_id
-    parent = session.get(Folder, directory.parent_id)
-    if parent is None:
-        return None
-    if authorize_node_operation(session, user, parent, AtomicOp.LIST_DIRECTORY).allowed:
-        return directory.parent_id
-    return None
-
-
 class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
     request_model = _ListDirectoryRequest
 
@@ -181,13 +179,12 @@ class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
+            allowed, parent_id = authorize_directory_access_with_parent(
                 session, this_user, folder, AtomicOp.LIST_DIRECTORY
-            ).allowed:
+            )
+            if not allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
-
-            parent_id = _visible_parent_id(session, this_user, folder)
 
             filters = {"folder_id": folder_id}
             sort = "type_name_id:asc"
@@ -251,13 +248,13 @@ class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=directory_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
+            allowed, parent_id = authorize_directory_access_with_parent(
                 session, user, directory, AtomicOp.READ_METADATA
-            ).allowed:
+            )
+            if not allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=directory_id, user_id=handler.user_id)
 
-            parent_id = _visible_parent_id(session, user, directory)
             data = {
                 "directory_id": directory.id,
                 "count_of_child": count_active_directory_children(
@@ -295,13 +292,11 @@ class RequestGetDirectoryDaclHandler(RequestHandler[_GetDirectoryDaclRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=directory_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
-                session, user, directory, AtomicOp.READ_DACL
-            ).allowed:
+            allowed, policy = authorize_dacl_read(session, user, directory)
+            if not allowed or policy is None:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_READ_DACL)
                 return Result(code=403, target=directory_id, user_id=handler.user_id)
 
-            policy = load_node_policies(session, [directory.id])[directory.id]
             response_data: dict = {
                 "dacl": render_policy_text(policy),
                 "inherit": policy.inherit,
@@ -344,6 +339,13 @@ class RequestSetDirectoryDaclHandler(RequestHandler[_SetDirectoryDaclRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=directory_id, user_id=handler.user_id)
 
+            authorized, current_path, check_traverse = (
+                authorize_write_dacl_and_load_path(session, user, directory)
+            )
+            if not authorized:
+                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
+                return Result(code=403, target=directory_id, user_id=handler.user_id)
+
             compiled = compile_policy_source(
                 session,
                 dacl_source,
@@ -359,12 +361,13 @@ class RequestSetDirectoryDaclHandler(RequestHandler[_SetDirectoryDaclRequest]):
                 )
                 return Result(code=400, target=directory_id, user_id=handler.user_id)
 
-            save_authz = authorize_dacl_save(session, user, directory, compiled.policy)
-            if not save_authz.authorized:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
-                return Result(code=403, target=directory_id, user_id=handler.user_id)
-
-            if save_authz.self_lockout_warning and not allow_self_lockout:
+            self_lockout_warning = simulate_dacl_save_lockout(
+                user,
+                current_path,
+                compiled.policy,
+                check_ancestor_traverse=check_traverse,
+            )
+            if self_lockout_warning and not allow_self_lockout:
                 handler.conclude_request(
                     409,
                     {
@@ -385,7 +388,7 @@ class RequestSetDirectoryDaclHandler(RequestHandler[_SetDirectoryDaclRequest]):
                     "inherit": compiled.policy.inherit,
                     "fingerprint": compiled.policy.fingerprint(),
                     "diagnostics": serialized_diags,
-                    "self_lockout_warning": save_authz.self_lockout_warning,
+                    "self_lockout_warning": self_lockout_warning,
                 },
                 "Directory DACL updated successfully",
             )
@@ -419,18 +422,23 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=parent_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
-                session, this_user, parent, AtomicOp.CREATE_DIRECTORY
-            ).allowed:
+            can_create, can_write_dacl, parent_path, check_traverse = (
+                authorize_create_on_parent(
+                    session,
+                    this_user,
+                    parent,
+                    AtomicOp.CREATE_DIRECTORY,
+                    require_write_dacl=dacl_source is not None,
+                )
+            )
+            if not can_create:
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, user_id=handler.user_id)
 
             compiled_policy = None
             serialized_diags: list[dict] = []
             if dacl_source is not None:
-                if not authorize_node_operation(
-                    session, this_user, parent, AtomicOp.WRITE_DACL
-                ).allowed:
+                if not can_write_dacl:
                     handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
                     return Result(code=403, target=parent_id, user_id=handler.user_id)
 
@@ -457,6 +465,8 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                     ObjectType.DIRECTORY,
                     name,
                     compiled_policy,
+                    parent_path=parent_path,
+                    check_ancestor_traverse=check_traverse,
                 ):
                     handler.conclude_request(
                         409,
@@ -533,24 +543,36 @@ class RequestDeleteDirectoryHandler(RequestHandler[_FolderIDRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
 
-            descendant_folders, descendant_docs = fetch_subtree_for_soft_delete(
-                session, folder_id
-            )
-            decision = authorize_directory_soft_delete(
-                session,
-                this_user,
-                folder,
-                [*descendant_folders, *descendant_docs],
-            )
-            if not decision.allowed:
+            root_check = check_directory_soft_delete_root(session, this_user, folder)
+            if not root_check.allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
 
+            if root_check.needs_descendant_check:
+                descendant_folders, descendant_docs = (
+                    fetch_subtree_metadata_for_soft_delete(session, folder_id)
+                )
+                decision = authorize_soft_delete_descendants(
+                    session,
+                    this_user,
+                    folder.id,
+                    [*descendant_folders, *descendant_docs],
+                    root_check,
+                )
+                if not decision.allowed:
+                    handler.conclude_access_denial()
+                    return Result(code=403, target=folder_id, user_id=handler.user_id)
+                descendant_folder_ids = [f.id for f in descendant_folders]
+                descendant_doc_ids = [doc.id for doc in descendant_docs]
+            else:
+                descendant_folder_ids, descendant_doc_ids = (
+                    fetch_subtree_ids_for_soft_delete(session, folder_id)
+                )
+
             operation_id = f"OP_DEL_{secrets.token_hex(8)}_{int(time.time())}"
-            descendant_doc_ids = [doc.id for doc in descendant_docs]
             all_node_ids = {
                 folder.id,
-                *(f.id for f in descendant_folders),
+                *descendant_folder_ids,
                 *descendant_doc_ids,
             }
             _mark_nodes_deleted(session, all_node_ids, operation_id)

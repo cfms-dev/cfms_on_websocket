@@ -26,6 +26,7 @@ from pydantic import ConfigDict, Field, StringConstraints
 lazy from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import (
+    DACL_SOURCE_MAX_LENGTH,
     DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
     DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
     FILE_TASK_DEFAULT_DURATION_SECONDS,
@@ -46,16 +47,18 @@ from include.database.models.files import File, FileTask, FileTaskStatus, Transf
 from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import (
-    authorize_dacl_save,
+    authorize_create_on_parent,
+    authorize_dacl_read,
     authorize_node_operation,
     authorize_reparent,
     authorize_restore,
+    authorize_write_dacl_and_load_path,
+    simulate_dacl_save_lockout,
     would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
     compile_policy_source,
     delete_node_dacl_rules_for_targets,
-    load_node_policies,
     persist_node_policy,
     render_policy_text,
 )
@@ -68,7 +71,6 @@ from include.domains.documents.commands.file_tasks import (
 from include.domains.documents.commands.name_conflicts import (
     NodeNameConflictError,
     describe_node_name_conflict,
-    get_target_folder_and_check_create,
     node_name_mutation,
 )
 from include.domains.documents.commands.revision_deletion import (
@@ -105,6 +107,7 @@ lazy from include.domains.documents.types import RevisionID
 _Sha256 = Annotated[str, StringConstraints(pattern="^[0-9A-Fa-f]{64}$")]
 _Tag = Annotated[str, StringConstraints(min_length=1, max_length=255)]
 _NonNegativeInteger = Annotated[JsonInteger, Field(ge=0)]
+_DaclSource = Annotated[str, StringConstraints(max_length=DACL_SOURCE_MAX_LENGTH)]
 
 
 class _DocumentInfoRequest(RequestDataModel):
@@ -128,14 +131,14 @@ class _GetDocumentDaclRequest(RequestDataModel):
 
 class _SetDocumentDaclRequest(RequestDataModel):
     document_id: NonEmptyString
-    dacl: str
+    dacl: _DaclSource
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
 
 
 class _CreateDocumentRequest(RequestDataModel):
     folder_id: str | None = None
     title: NonEmptyString
-    dacl: Omittable[str] = REQUEST_UNSET
+    dacl: Omittable[_DaclSource] = REQUEST_UNSET
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
 
 
@@ -318,13 +321,11 @@ class RequestGetDocumentDaclHandler(RequestHandler[_GetDocumentDaclRequest]):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
-                session, user, document, AtomicOp.READ_DACL
-            ).allowed:
+            allowed, policy = authorize_dacl_read(session, user, document)
+            if not allowed or policy is None:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_READ_DACL)
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 
-            policy = load_node_policies(session, [document.id])[document.id]
             response_data: dict[str, Any] = {
                 "dacl": render_policy_text(policy),
                 "inherit": policy.inherit,
@@ -367,6 +368,13 @@ class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
+            authorized, current_path, check_traverse = (
+                authorize_write_dacl_and_load_path(session, user, document)
+            )
+            if not authorized:
+                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
+                return Result(code=403, target=document_id, user_id=handler.user_id)
+
             compiled = compile_policy_source(
                 session,
                 dacl_source,
@@ -382,12 +390,13 @@ class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
                 )
                 return Result(code=400, target=document_id, user_id=handler.user_id)
 
-            save_authz = authorize_dacl_save(session, user, document, compiled.policy)
-            if not save_authz.authorized:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
-                return Result(code=403, target=document_id, user_id=handler.user_id)
-
-            if save_authz.self_lockout_warning and not allow_self_lockout:
+            self_lockout_warning = simulate_dacl_save_lockout(
+                user,
+                current_path,
+                compiled.policy,
+                check_ancestor_traverse=check_traverse,
+            )
+            if self_lockout_warning and not allow_self_lockout:
                 handler.conclude_request(
                     409,
                     {
@@ -409,7 +418,7 @@ class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
                     "inherit": compiled.policy.inherit,
                     "fingerprint": compiled.policy.fingerprint(),
                     "diagnostics": serialized_diags,
-                    "self_lockout_warning": save_authz.self_lockout_warning,
+                    "self_lockout_warning": self_lockout_warning,
                 },
                 "Document DACL updated successfully",
             )
@@ -509,19 +518,36 @@ def _create_document_in_transaction(
     with risk_control_transaction(session):
         user = User.get_existing(session, user_id)
 
-        parent_folder, error_code, error_message = get_target_folder_and_check_create(
-            session,
-            user,
-            folder_id,
-            AtomicOp.CREATE_DOCUMENT,
-        )
-        if error_code != 0 or parent_folder is None:
+        parent_folder = session.get(Folder, folder_id or ROOT_DIRECTORY_ID)
+        if parent_folder is None:
             return (
-                error_code,
+                404,
                 {},
-                error_message,
+                smsg.TARGET_DIRECTORY_NOT_FOUND,
                 Result(
-                    code=error_code,
+                    code=404,
+                    target=folder_id,
+                    data=result_data,
+                    user_id=user_id,
+                ),
+            )
+
+        can_create, can_write_dacl, parent_path, check_traverse = (
+            authorize_create_on_parent(
+                session,
+                user,
+                parent_folder,
+                AtomicOp.CREATE_DOCUMENT,
+                require_write_dacl=dacl_source is not None,
+            )
+        )
+        if not can_create:
+            return (
+                403,
+                {},
+                smsg.ACCESS_DENIED_WRITE_DIRECTORY,
+                Result(
+                    code=403,
                     target=folder_id,
                     data=result_data,
                     user_id=user_id,
@@ -530,9 +556,7 @@ def _create_document_in_transaction(
 
         compiled_policy = None
         if dacl_source is not None:
-            if not authorize_node_operation(
-                session, user, parent_folder, AtomicOp.WRITE_DACL
-            ).allowed:
+            if not can_write_dacl:
                 return (
                     403,
                     {},
@@ -572,6 +596,8 @@ def _create_document_in_transaction(
                 ObjectType.DOCUMENT,
                 title,
                 compiled_policy,
+                parent_path=parent_path,
+                check_ancestor_traverse=check_traverse,
             ):
                 return (
                     409,

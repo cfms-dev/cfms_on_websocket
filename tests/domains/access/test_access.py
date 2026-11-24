@@ -430,3 +430,33 @@ class TestCaclAuthorizationSemantics:
 
         # After reparent, doc inherits target's DACL so observer loses access.
         assert_error(await observer_client.get_document_info(doc["document_id"]), 403)
+
+    @pytest.mark.asyncio
+    async def test_set_dacl_authorizes_before_compiling_invalid_source(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        user = await user_factory()
+        directory = await directory_factory()
+        doc = await document_factory("AuthBeforeCompileDoc")
+
+        user_client = await client_factory()
+        assert_success(await user_client.login(user["username"], user["password"]))
+
+        # User lacks WRITE_DACL -> must return 403 even when CACL syntax is invalid.
+        assert_error(
+            await user_client.set_directory_dacl(
+                directory["folder_id"], "allow [INVALID_OP] to any;"
+            ),
+            403,
+        )
+        assert_error(
+            await user_client.set_document_dacl(
+                doc["document_id"], "allow [INVALID_OP] to any;"
+            ),
+            403,
+        )

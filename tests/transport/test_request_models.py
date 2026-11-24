@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from include.config.constants import (
+    DACL_SOURCE_MAX_LENGTH,
     DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
     PAGINATION_MAX_PAGE_SIZE,
 )
@@ -16,6 +17,7 @@ from include.domains.documents.handlers.directories import (
     RequestSetDirectoryDaclHandler,
 )
 from include.domains.documents.handlers.documents import (
+    RequestCreateDocumentHandler,
     RequestDownloadFileHandler,
     RequestGetDocumentDaclHandler,
     RequestGetDocumentHandler,
@@ -357,6 +359,29 @@ def test_set_dacl_requests_accept_empty_policy_and_allow_self_lockout():
     )
     assert dir_req.dacl == "inherit off;"
     assert "allow_self_lockout" not in dir_req.model_fields_set
+
+    oversized_dacl = "a" * (DACL_SOURCE_MAX_LENGTH + 1)
+    for model_cls, payload in (
+        (
+            RequestSetDocumentDaclHandler.request_model,
+            {"document_id": "doc-1", "dacl": oversized_dacl},
+        ),
+        (
+            RequestSetDirectoryDaclHandler.request_model,
+            {"directory_id": "dir-1", "dacl": oversized_dacl},
+        ),
+        (
+            RequestCreateDocumentHandler.request_model,
+            {"title": "doc.txt", "dacl": oversized_dacl},
+        ),
+        (
+            RequestCreateDirectoryHandler.request_model,
+            {"name": "dir", "dacl": oversized_dacl},
+        ),
+    ):
+        with pytest.raises(ValidationError) as exc:
+            model_cls.model_validate(payload)
+        assert exc.value.errors()[0]["type"] == "string_too_long"
 
 
 def test_get_dacl_and_reparent_requests_validate_fields():

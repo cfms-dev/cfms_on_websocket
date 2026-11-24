@@ -1,75 +1,106 @@
 __all__ = [
+    "SubtreeNodeRow",
     "fetch_subtree_for_purge",
-    "fetch_subtree_for_soft_delete",
+    "fetch_subtree_ids_for_soft_delete",
+    "fetch_subtree_metadata_for_soft_delete",
 ]
 
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from itertools import batched
 
-from sqlalchemy import text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.models.documents import (
-    Document,
     EntityStatus,
-    Folder,
+    Node,
+    NodeType,
 )
 
 
-def _fetch_subtree_nodes(
+@dataclass(frozen=True, slots=True)
+class SubtreeNodeRow:
+    id: str
+    name: str
+    parent_id: str | None
+    type: str
+    status: int
+    inherit: bool
+
+
+def _fetch_subtree_rows(
     session: Session,
     root_folder_id: str,
     *,
     include_deleted: bool,
-) -> tuple[list[Folder], list[Document]]:
-    exec_opts = {"include_deleted": True} if include_deleted else {}
-    status_filter = "" if include_deleted else f"AND n.status = {EntityStatus.OK.value}"
-
-    subtree_sql = text(f"""
-        WITH RECURSIVE subtree(id, parent_id, status) AS (
-            SELECT f.id, n.parent_id, n.status
-            FROM folders f
-            INNER JOIN nodes n ON n.id = f.id
-            WHERE f.id = :root_id
-
-            UNION ALL
-
-            SELECT f.id, n.parent_id, n.status
-            FROM folders f
-            INNER JOIN nodes n ON n.id = f.id
-            INNER JOIN subtree s ON n.parent_id = s.id
-            WHERE 1=1 {status_filter}
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    node_table = Node.__table__
+    anchor = select(
+        node_table.c.id.label("id"),
+        node_table.c.name.label("name"),
+        node_table.c.parent_id.label("parent_id"),
+        node_table.c.type.label("type"),
+        node_table.c.status.label("status"),
+        node_table.c.inherit.label("inherit"),
+    ).where(
+        node_table.c.id == root_folder_id,
+        node_table.c.type == NodeType.DIRECTORY.value,
+    )
+    subtree = anchor.cte("deletion_subtree", recursive=True)
+    child_node = node_table.alias("deletion_child_node")
+    recursive_filters = [child_node.c.type == NodeType.DIRECTORY.value]
+    if not include_deleted:
+        recursive_filters.append(child_node.c.status == EntityStatus.OK.value)
+    subtree = subtree.union_all(
+        select(
+            child_node.c.id,
+            child_node.c.name,
+            child_node.c.parent_id,
+            child_node.c.type,
+            child_node.c.status,
+            child_node.c.inherit,
         )
-        SELECT id FROM subtree WHERE id != :root_id
-    """)
-    descendant_folder_ids = [
-        row[0]
-        for row in session.execute(subtree_sql, {"root_id": root_folder_id}).fetchall()
-    ]
-    all_folder_ids = list(dict.fromkeys([root_folder_id, *descendant_folder_ids]))
+        .select_from(subtree.join(child_node, child_node.c.parent_id == subtree.c.id))
+        .where(*recursive_filters)
+    )
 
-    folders: list[Folder] = []
-    for chunk in batched(all_folder_ids, QUERY_CHUNK_SIZE):
-        folders.extend(
-            session.query(Folder)
-            .execution_options(**exec_opts)
-            .filter(Folder.id.in_(list(chunk)))
-            .all()
+    folder_by_id: dict[str, SubtreeNodeRow] = {}
+    for nid, name, parent_id, node_type, status, inherit_flag in session.execute(
+        select(
+            subtree.c.id,
+            subtree.c.name,
+            subtree.c.parent_id,
+            subtree.c.type,
+            subtree.c.status,
+            subtree.c.inherit,
         )
-    folder_by_id = {f.id: f for f in folders}
+    ).all():
+        if nid not in folder_by_id:
+            folder_by_id[nid] = SubtreeNodeRow(
+                id=nid,
+                name=name,
+                parent_id=parent_id,
+                type=node_type,
+                status=int(status),
+                inherit=bool(inherit_flag),
+            )
+
+    if not folder_by_id:
+        return [], []
 
     # Topological order from deepest leaf up to root so callers can delete bottom-up.
     children_map: dict[str, list[str]] = defaultdict(list)
     parent_map: dict[str, str | None] = {}
-    for folder in folders:
-        parent_map[folder.id] = folder.parent_id
+    for fid, folder in folder_by_id.items():
+        parent_map[fid] = folder.parent_id
         if folder.parent_id and folder.parent_id in folder_by_id:
-            children_map[folder.parent_id].append(folder.id)
+            children_map[folder.parent_id].append(fid)
 
     in_degree = {fid: len(children_map[fid]) for fid in folder_by_id}
     queue = deque([fid for fid in folder_by_id if in_degree[fid] == 0])
-    ordered_descendant_folders: list[Folder] = []
+    ordered_descendant_folders: list[SubtreeNodeRow] = []
     visited_count = 0
     while queue:
         fid = queue.popleft()
@@ -85,26 +116,55 @@ def _fetch_subtree_nodes(
     if visited_count != len(folder_by_id):
         raise RuntimeError("Cycle detected in folder hierarchy.")
 
-    documents: list[Document] = []
+    documents: list[SubtreeNodeRow] = []
     for chunk in batched(list(folder_by_id.keys()), QUERY_CHUNK_SIZE):
-        query = (
-            session.query(Document)
-            .execution_options(**exec_opts)
-            .filter(Document.folder_id.in_(list(chunk)))
+        doc_stmt = select(
+            node_table.c.id,
+            node_table.c.name,
+            node_table.c.parent_id,
+            node_table.c.type,
+            node_table.c.status,
+            node_table.c.inherit,
+        ).where(
+            node_table.c.parent_id.in_(list(chunk)),
+            node_table.c.type == NodeType.DOCUMENT.value,
         )
         if not include_deleted:
-            query = query.filter(Document.status == EntityStatus.OK)
-        documents.extend(query.all())
+            doc_stmt = doc_stmt.where(node_table.c.status == EntityStatus.OK.value)
+        for nid, name, parent_id, node_type, status, inherit_flag in session.execute(
+            doc_stmt
+        ).all():
+            documents.append(
+                SubtreeNodeRow(
+                    id=nid,
+                    name=name,
+                    parent_id=parent_id,
+                    type=node_type,
+                    status=int(status),
+                    inherit=bool(inherit_flag),
+                )
+            )
 
     return ordered_descendant_folders, documents
 
 
-def fetch_subtree_for_soft_delete(
+def fetch_subtree_metadata_for_soft_delete(
     session: Session,
     root_folder_id: str,
-) -> tuple[list[Folder], list[Document]]:
-    """Return all non-deleted descendant folders (deepest first) and documents."""
-    return _fetch_subtree_nodes(session, root_folder_id, include_deleted=False)
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    """Return lightweight metadata for all non-deleted descendant folders (deepest first) and documents."""
+    return _fetch_subtree_rows(session, root_folder_id, include_deleted=False)
+
+
+def fetch_subtree_ids_for_soft_delete(
+    session: Session,
+    root_folder_id: str,
+) -> tuple[list[str], list[str]]:
+    """Return all non-deleted descendant folder IDs (deepest first) and document IDs."""
+    folders, documents = _fetch_subtree_rows(
+        session, root_folder_id, include_deleted=False
+    )
+    return [f.id for f in folders], [d.id for d in documents]
 
 
 def fetch_subtree_for_purge(
@@ -112,7 +172,7 @@ def fetch_subtree_for_purge(
     root_folder_id: str,
 ) -> tuple[list[str], list[str]]:
     """Return all descendant folder IDs (deepest first) and document IDs for cascading purge."""
-    folders, documents = _fetch_subtree_nodes(
+    folders, documents = _fetch_subtree_rows(
         session, root_folder_id, include_deleted=True
     )
     return [f.id for f in folders], [d.id for d in documents]

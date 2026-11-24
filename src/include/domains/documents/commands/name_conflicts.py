@@ -9,7 +9,10 @@ lazy from sqlalchemy.orm import Session
 from include.config.constants import ROOT_DIRECTORY_ID
 from include.database.errors import is_unique_constraint_violation
 from include.database.models.documents import Document, EntityStatus, Folder, Node
-from include.domains.access.authorization.evaluation import authorize_node_operation
+from include.domains.access.authorization.evaluation import (
+    authorize_node_operation,
+    evaluate_node_effective_masks,
+)
 from include.messages import Messages as smsg
 lazy from include.database.models.identity import User
 
@@ -133,26 +136,13 @@ def _describe_node_name_conflict_winner(
     if not isinstance(winner, Document | Folder):
         raise TypeError(f"Unsupported conflicting node type: {winner.type!r}")
 
-    readable = (
-        authorize_node_operation(
-            session,
-            user,
-            winner,
-            AtomicOp.READ_METADATA,
-        ).allowed
-        or (
-            isinstance(winner, Folder)
-            and authorize_node_operation(
-                session, user, winner, AtomicOp.LIST_DIRECTORY
-            ).allowed
-        )
-        or (
-            isinstance(winner, Document)
-            and authorize_node_operation(
-                session, user, winner, AtomicOp.READ_CONTENT
-            ).allowed
-        )
+    masks = evaluate_node_effective_masks(session, user, winner)
+    required_mask = (
+        int(AtomicOp.READ_METADATA | AtomicOp.LIST_DIRECTORY)
+        if isinstance(winner, Folder)
+        else int(AtomicOp.READ_METADATA | AtomicOp.READ_CONTENT)
     )
+    readable = masks.allowed_traverse and bool(masks.effective_mask & required_mask)
     visible_id = winner.id if readable else None
     if isinstance(winner, Document):
         payload = {"type": "document", "id": visible_id}
