@@ -4,30 +4,19 @@ from enum import StrEnum
 
 
 class Permissions(StrEnum):
-    # File and directory operations
-    MOVE = "move"
-    CREATE_DOCUMENT = "create_document"
-    DELETE_DOCUMENT = "delete_document"
-    RENAME_DOCUMENT = "rename_document"
-    CREATE_DIRECTORY = "create_directory"
-    DELETE_DIRECTORY = "delete_directory"
-    RENAME_DIRECTORY = "rename_directory"
-
-    LIST_DELETED_ITEMS = "list_deleted_items"
-    """permission to view the list of deleted documents/directories in a directory."""
+    # Global file/tree gates (operations not purely delegated to CACL)
     PURGE = "purge"
-    """permission to permanently delete documents/directories."""
-    RESTORE = "restore"
-    """permission to restore documents/directories from deletion."""
-
+    """Global gate to permanently destroy soft-deleted documents/directories."""
+    DELETE_REVISION = "delete_revision"
+    """Global gate to permanently destroy historical document revisions."""
     SEARCH = "search"
-    """permission to search for documents/directories."""
+    """Global gate to search for documents/directories."""
 
-    # Super operations
-    SUPER_CREATE_DOCUMENT = "super_create_document"
-    SUPER_CREATE_DIRECTORY = "super_create_directory"
-    SUPER_LIST_DIRECTORY = "super_list_directory"
-    SUPER_SET_USER_AVATAR = "super_set_user_avatar"
+    # CACL global capability bypasses (CEP-0002)
+    BYPASS_DACL = "bypass_dacl"
+    """Super-administrator recovery capability bypassing per-node CACL DACL checks and anti-lockout."""
+    BYPASS_TRAVERSE_CHECKING = "bypass_traverse_checking"
+    """Subject-level bypass for ancestor directory TRAVERSE checks."""
 
     # System and management
     SHUTDOWN = "shutdown"
@@ -51,7 +40,7 @@ class Permissions(StrEnum):
     SUPER_LIST_USER_AUTH_METHODS = "super_list_user_auth_methods"
     SET_USER_PERMISSIONS = "set_user_permissions"
     SET_USER_AVATAR = "set_user_avatar"
-
+    SUPER_SET_USER_AVATAR = "super_set_user_avatar"
     SUPER_SET_NICKNAME = "super_set_nickname"
     SUPER_SET_USERNAME = "super_set_username"
 
@@ -64,32 +53,19 @@ class Permissions(StrEnum):
     CHANGE_USER_GROUPS = "change_user_groups"
     SET_GROUP_PERMISSIONS = "set_group_permissions"
 
-    # Access control and lockdown
-    VIEW_ACCESS_RULES = "view_access_rules"
-    SET_ACCESS_RULES = "set_access_rules"
-    VIEW_METADATA = "view_metadata"
-    SET_METADATA_TAGS = "set_metadata_tags"
-    MANAGE_ACCESS = "manage_access"
-    VIEW_ACCESS_ENTRIES = "view_access_entries"
+    # Lockdown, rate limits, and network/auth security
     APPLY_LOCKDOWN = "apply_lockdown"
     BYPASS_LOCKDOWN = "bypass_lockdown"
     BYPASS_DOCUMENT_CREATION_RATE_LIMIT = "bypass_document_creation_rate_limit"
     BYPASS_DOCUMENT_DOWNLOAD_RATE_LIMIT = "bypass_document_download_rate_limit"
     BYPASS_REQUEST_RATE_LIMIT = "bypass_request_rate_limit"
-    BLOCK = "block"
-    UNBLOCK = "unblock"
-    LIST_USER_BLOCKS = "list_user_blocks"
     LIST_BANNED_SUBNETS = "list_banned_subnets"
     MANAGE_BANNED_SUBNETS = "manage_banned_subnets"
     LIST_AUTH_LOCKOUTS = "list_auth_lockouts"
     UNLOCK_AUTH_LOCKOUTS = "unlock_auth_lockouts"
 
-    # Logs and version control
+    # Audit logs
     VIEW_AUDIT_LOGS = "view_audit_logs"
-    LIST_REVISIONS = "list_revisions"
-    VIEW_REVISION = "view_revision"
-    SET_CURRENT_REVISION = "set_current_revision"
-    DELETE_REVISION = "delete_revision"
 
     # Key management
     MANAGE_KEYRINGS = "manage_keyrings"

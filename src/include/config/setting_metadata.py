@@ -73,9 +73,9 @@ _CORE_SETTING_TEXT = {
         "name": ("Server name", "Display name returned by the server information API."),
     },
     "access": {
-        "enable_access_recursive_check": (
-            "Check ancestor access rules",
-            "Include ancestor rules when evaluating access to a document or directory.",
+        "bypass_traverse_checking": (
+            "Bypass ancestor traverse checking",
+            "Skip ancestor directory TRAVERSE checks when evaluating access to a document or directory.",
         ),
     },
     "security.password": {

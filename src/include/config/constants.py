@@ -1,6 +1,4 @@
 __all__ = [
-    "AVAILABLE_ACCESS_TYPES",
-    "AVAILABLE_BLOCK_TYPES",
     "CORE_VERSION",
     "DEFAULT_SSL_CERT_VALIDITY_DAYS",
     "DEFAULT_TOKEN_EXPIRY_SECONDS",
@@ -29,15 +27,12 @@ __all__ = [
 from include.config.version import Version
 
 CORE_VERSION = Version("0.14.0")
-PROTOCOL_VERSION = 31
+PROTOCOL_VERSION = 32
 
 # Event bus channels
 GLOBAL_BROADCAST_EVENT_CHANNEL = "system:broadcast"
 LOGIN_GUARD_EVENT_CHANNEL = "security:login_guard"
 FILE_TASK_EVENT_CHANNEL = "documents:file_tasks"
-
-AVAILABLE_ACCESS_TYPES = ["read", "write", "move", "manage"]
-AVAILABLE_BLOCK_TYPES: set = {"read", "write", "move"}
 
 # Authentication and Security Constants
 DEFAULT_TOKEN_EXPIRY_SECONDS = 3600  # 1 hour

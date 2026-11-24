@@ -521,11 +521,11 @@ CORE_OPTIONS: dict[OptionNamespace, tuple[OptionDefinition[Any], ...]] = {
     "server": (SERVER_NAME_OPTION,),
     "access": (
         OptionDefinition(
-            "enable_access_recursive_check",
+            "bypass_traverse_checking",
             1,
             bool,
-            True,
-            setting=CORE_SETTING_METADATA["access"]["enable_access_recursive_check"],
+            False,
+            setting=CORE_SETTING_METADATA["access"]["bypass_traverse_checking"],
         ),
     ),
 }

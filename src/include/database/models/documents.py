@@ -35,7 +35,7 @@ from include.config.constants import (
 )
 from include.database.session import Base
 from include.exceptions.misc import NoActiveRevisionsError
-lazy from include.database.models.access import CompiledAccessRuleSet
+lazy from include.database.models.access import NodeDaclRule
 lazy from include.database.models.files import File
 lazy from include.database.models.identity import User
 
@@ -116,8 +116,7 @@ class Node(Base):
         ),
     )
 
-    # Whether to inherit access rules from parent folders.
-    # Useful when enabling recursion check.
+    # Whether to inherit DACL rules from ancestor folders (CEP-0002 inherit on | off).
     inherit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     status: Mapped[EntityStatus] = mapped_column(
@@ -126,28 +125,11 @@ class Node(Base):
     status_operation_id: Mapped[str | None] = mapped_column(
         VARCHAR(255), nullable=True, index=True
     )
-    access_rule_set_id: Mapped[str | None] = mapped_column(
-        VARCHAR(32),
-        ForeignKey(
-            "compiled_access_rule_sets.id",
-            name="fk_nodes_access_rule_set_id_compiled_access_rule_sets",
-            use_alter=True,
-        ),
-        nullable=True,
-        index=True,
-    )
-    access_rule_set: Mapped["CompiledAccessRuleSet | None"] = relationship(
-        "CompiledAccessRuleSet",
-        foreign_keys=[access_rule_set_id],
-        post_update=True,
-        uselist=False,
-    )
-    access_rule_sets: Mapped[list["CompiledAccessRuleSet"]] = relationship(
-        "CompiledAccessRuleSet",
+    dacl_rules: Mapped[list["NodeDaclRule"]] = relationship(
+        "NodeDaclRule",
         back_populates="node",
         cascade="all, delete-orphan",
-        foreign_keys="CompiledAccessRuleSet.node_id",
-        order_by="CompiledAccessRuleSet.created_at",
+        order_by="NodeDaclRule.id",
     )
 
     __mapper_args__: ClassVar = {
