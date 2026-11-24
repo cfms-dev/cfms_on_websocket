@@ -1,38 +1,28 @@
 __all__ = [
-    "RequestBlockUserHandler",
     "RequestChangeUserGroupsHandler",
     "RequestChangeUserPermissionsHandler",
     "RequestCreateUserHandler",
     "RequestDeleteUserHandler",
     "RequestGetUserAvatarHandler",
     "RequestGetUserInfoHandler",
-    "RequestListUserBlocksHandler",
     "RequestListUsersHandler",
     "RequestManageUserStatusHandler",
     "RequestSetNicknameHandler",
     "RequestSetPasswdHandler",
     "RequestSetUserAvatarHandler",
     "RequestSetUsernameHandler",
-    "RequestUnblockUserHandler",
-    "RequestUpdateUserBlockHandler",
 ]
 
-import time
-from typing import Annotated, Literal, Self
+from typing import Literal, Self
 
 import filetype
-from pydantic import Field, model_validator
-from sqlalchemy import and_, func, or_, select
+from cacl_compiler import AtomicOp
+from pydantic import model_validator
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
 
-from include.config.constants import AVAILABLE_BLOCK_TYPES
 from include.config.validation import PasswordPolicy
 from include.database.errors import is_unique_constraint_violation
-from include.database.models.access import (
-    UserBlockEntry,
-    UserBlockSubEntry,
-)
 from include.database.models.auth import UserPasswordCredential
 from include.database.models.documents import Document
 from include.database.models.files import TransferMode
@@ -42,7 +32,7 @@ from include.database.models.identity import (
     UserStatus,
 )
 from include.database.session import Session
-from include.domains.access.authorization.evaluation import check_access_requirements
+from include.domains.access.authorization.evaluation import authorize_node_operation
 from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.documents import create_file_task
 from include.domains.identity.auth.flows import get_login_progress
@@ -66,15 +56,7 @@ from include.domains.operations.comments import (
     OperationReason,
     reason_change_audit_data,
 )
-from include.domains.pagination import (
-    CursorError,
-    PaginationCursor,
-    PaginationCursorToken,
-    PaginationPageSize,
-    get_offset_pagination,
-    get_page_size,
-    make_cursor_response,
-)
+from include.domains.pagination import get_offset_pagination
 from include.messages import Messages as smsg
 from include.transport.request_handler import (
     REQUEST_UNSET,
@@ -84,7 +66,7 @@ from include.transport.request_handler import (
     Result,
 )
 lazy from include.domains.identity.types import RequestUserID, RequestUsername
-lazy from include.types import NonEmptyString, NonNegativeFloat
+lazy from include.types import NonEmptyString
 
 
 class _TimedGroup(RequestDataModel):
@@ -124,33 +106,6 @@ class _SetUsernameRequest(_UserIDRequest):
     username: RequestUsername
 
 
-class _BlockTarget(RequestDataModel):
-    type: Literal["all", "directory", "document"]
-    id: Omittable[NonEmptyString] = REQUEST_UNSET
-
-
-class _BlockUserRequest(_UserIDRequest):
-    target: _BlockTarget
-    block_types: Annotated[list[str], Field(min_length=1)]
-    not_before: Omittable[NonNegativeFloat] = REQUEST_UNSET
-    not_after: Omittable[float] = REQUEST_UNSET
-    reason: OperationReason | None = None
-
-
-class _BlockIDRequest(RequestDataModel):
-    block_id: NonEmptyString
-
-
-class _UpdateUserBlockRequest(RequestDataModel):
-    block_id: NonEmptyString
-    reason: OperationReason | None
-
-
-class _ListUserBlocksRequest(_UserIDRequest):
-    page_size: Omittable[PaginationPageSize] = REQUEST_UNSET
-    cursor: PaginationCursorToken | None = None
-
-
 class _SetUserAvatarRequest(_UserIDRequest):
     document_id: NonEmptyString
 
@@ -179,20 +134,6 @@ class _ManageUserStatusRequest(_UserIDRequest):
         if self.status == "active" and "reason" in self.model_fields_set:
             raise ValueError("reason is not allowed when activating a user")
         return self
-
-
-def _serialize_user_block(entry: UserBlockEntry) -> dict:
-    return {
-        "block_id": entry.block_id,
-        "user_id": str(entry.user_id),
-        "timestamp": entry.timestamp,
-        "not_before": entry.not_before,
-        "not_after": entry.not_after,
-        "target_type": entry.target_type,
-        "target_id": entry.target_id,
-        "block_types": [sub_entry.block_type for sub_entry in entry.sub_entries],
-        "reason": entry.reason,
-    }
 
 
 class RequestListUsersHandler(RequestHandler[OffsetPaginationRequest]):
@@ -403,12 +344,6 @@ class RequestDeleteUserHandler(RequestHandler[_UserIDRequest]):
             for membership in user_to_delete.groups:
                 session.delete(membership)
 
-            for block_entry in user_to_delete.block_entries:
-                for sub_entry in block_entry.sub_entries:
-                    session.delete(sub_entry)
-
-                session.delete(block_entry)
-
             session.delete(user_to_delete)
             session.commit()
 
@@ -552,316 +487,6 @@ class RequestSetUsernameHandler(RequestHandler[_SetUsernameRequest]):
                 return respond(400, "Username already exists")
 
         return respond(200, "Username updated successfully")
-
-
-class RequestBlockUserHandler(RequestHandler[_BlockUserRequest]):
-    """
-    Handler for action `block_user`.
-
-    This operation accepts only one block at a time, and if there are multiple blocks
-    (NOT multiple block types), it should be requested in installments.
-    """
-
-    request_model = _BlockUserRequest
-
-    requires_auth = True
-    rate_limit_cost = 3
-
-    def handle(self, handler, request):
-
-        target_user_id = request.user_id
-        block_types: list[str] = request.block_types
-
-        not_before: int | float = (
-            request.not_before if request.not_before is not REQUEST_UNSET else 0
-        )
-        not_after: int | float = (
-            request.not_after if request.not_after is not REQUEST_UNSET else -1
-        )
-        reason: str | None = request.reason
-
-        target_type: str = request.target.type
-        target_id: str | None = (
-            request.target.id if request.target.id is not REQUEST_UNSET else None
-        )
-
-        if not set(block_types).issubset(AVAILABLE_BLOCK_TYPES):
-            handler.conclude_request(400, {}, "Unsupported block type(s)")
-            return Result(code=400, target=str(target_user_id), user_id=handler.user_id)
-
-        if not_after >= 0 and not_after <= not_before:
-            handler.conclude_request(
-                400, {}, "`not_after` must be later than `not_before`"
-            )
-            return Result(code=400, target=str(target_user_id), user_id=handler.user_id)
-
-        audit_data = {}
-        with Session() as session:
-            this_user = User.get_existing(session, handler.user_id)
-
-            if Permissions.BLOCK not in this_user.all_permissions:
-                handler.conclude_request(
-                    403, {}, "You do not have permission to block users"
-                )
-                return Result(
-                    code=403,
-                    target=str(target_user_id),
-                    data=audit_data or None,
-                    user_id=handler.user_id,
-                )
-
-            target_user = session.get(User, target_user_id)
-            if target_user is None:
-                handler.conclude_request(404, {}, smsg.USER_DOES_NOT_EXIST)
-                return Result(
-                    code=404,
-                    target=str(target_user_id),
-                    data=audit_data or None,
-                    user_id=handler.user_id,
-                )
-
-            audit_data["target_username"] = target_user.username
-
-            # Create the parent entry.
-            now = time.time()
-            block_entry = UserBlockEntry(
-                user_id=target_user.id,
-                timestamp=now,
-                not_before=not_before,
-                not_after=not_after,
-                target_type=target_type,
-                target_id=target_id,
-                reason_comment_id=(
-                    CommentStore.get_or_create_id(session, reason)
-                    if reason is not None
-                    else None
-                ),
-            )
-            session.add(block_entry)
-
-            for each_type in block_types:
-                new_sub_entry = UserBlockSubEntry(
-                    block_type=each_type, parent_entry=block_entry
-                )
-                session.add(new_sub_entry)
-
-            session.flush()
-            response_data = _serialize_user_block(block_entry)
-            session.commit()
-
-        handler.conclude_request(200, response_data, "User blocked")
-        return Result(
-            code=200,
-            target=str(target_user_id),
-            data={
-                **audit_data,
-                "block_id": response_data["block_id"],
-                **reason_change_audit_data(None, response_data["reason"]),
-            },
-            user_id=handler.user_id,
-        )
-
-
-class RequestUnblockUserHandler(RequestHandler[_BlockIDRequest]):
-    """
-    Handler for action `unblock_user`.
-    """
-
-    request_model = _BlockIDRequest
-
-    requires_auth = True
-    rate_limit_cost = 2
-
-    def handle(self, handler, request):
-
-        block_id: str = request.block_id
-
-        with Session() as session:
-            this_user = User.get_existing(session, handler.user_id)
-
-            if Permissions.UNBLOCK not in this_user.all_permissions:
-                handler.conclude_request(
-                    403, {}, "You do not have permission to unblock users"
-                )
-                return Result(code=403, target=block_id, user_id=handler.user_id)
-
-            block_entry = session.get(UserBlockEntry, block_id)
-            if not block_entry:
-                handler.conclude_request(404, {}, "Specified entry not found")
-                return Result(code=404, target=block_id, user_id=handler.user_id)
-
-            if 0 <= block_entry.not_after < time.time():
-                handler.conclude_request(400, {}, "The specified block has ended")
-                return Result(code=400, target=block_id, user_id=handler.user_id)
-
-            # Currently, the operation of unblocking is to remove entries from
-            # the database. However, an alternative approach is to set their
-            # expiration time to the present.
-            target_user_id = str(block_entry.user_id)
-            session.delete(block_entry)
-            session.commit()
-
-        handler.conclude_request(200, {}, "Unblocked user")
-        return Result(
-            code=200,
-            target=block_id,
-            data={"target_user_id": target_user_id},
-            user_id=handler.user_id,
-        )
-
-
-class RequestUpdateUserBlockHandler(RequestHandler[_UpdateUserBlockRequest]):
-    request_model = _UpdateUserBlockRequest
-    requires_auth = True
-    rate_limit_cost = 3
-
-    def handle(self, handler, request):
-        block_id: str = request.block_id
-        reason: str | None = request.reason
-
-        with Session() as session:
-            this_user = User.get_existing(session, handler.user_id)
-            if Permissions.BLOCK not in this_user.all_permissions:
-                handler.conclude_request(
-                    403, {}, "You do not have permission to update user blocks"
-                )
-                return Result(code=403, target=block_id, user_id=handler.user_id)
-
-            block_entry = session.get(
-                UserBlockEntry,
-                block_id,
-                options=(selectinload(UserBlockEntry.sub_entries),),
-            )
-            if block_entry is None:
-                handler.conclude_request(404, {}, "Specified entry not found")
-                return Result(code=404, target=block_id, user_id=handler.user_id)
-
-            previous_reason = block_entry.reason
-            if previous_reason != reason:
-                block_entry.reason_comment_id = (
-                    CommentStore.get_or_create_id(session, reason)
-                    if reason is not None
-                    else None
-                )
-            session.flush()
-            response_data = {
-                **_serialize_user_block(block_entry),
-                "reason": reason,
-            }
-            target_username = block_entry.user.username
-            target_user_id = str(block_entry.user_id)
-            session.commit()
-
-        handler.conclude_request(200, response_data, "User block updated")
-        return Result(
-            code=200,
-            target=block_id,
-            data={
-                "target_username": target_username,
-                "target_user_id": target_user_id,
-                **reason_change_audit_data(previous_reason, reason),
-            },
-            user_id=handler.user_id,
-        )
-
-
-class RequestListUserBlocksHandler(RequestHandler[_ListUserBlocksRequest]):
-    request_model = _ListUserBlocksRequest
-
-    requires_auth = True
-    rate_limit_cost = 3
-
-    def handle(self, handler, request):
-
-        target_user_id = request.user_id
-        page_size = get_page_size(request.model_dump(mode="json", exclude_unset=True))
-        cursor = request.cursor
-
-        with Session() as session:
-            this_user = User.get_existing(session, handler.user_id)
-
-            if (
-                Permissions.LIST_USER_BLOCKS not in this_user.all_permissions
-                and target_user_id != this_user.id
-            ):
-                handler.conclude_request(
-                    403, {}, "You do not have permission to list user blocks"
-                )
-                return Result(
-                    code=403, target=str(target_user_id), user_id=handler.user_id
-                )
-
-            target_user = session.get(User, target_user_id)
-            audit_data = (
-                {"target_username": target_user.username} if target_user else None
-            )
-
-            filters = {"user_id": str(target_user_id)}
-            sort = "timestamp_block_id:desc"
-            try:
-                decoded_cursor = PaginationCursor.decode(
-                    cursor,
-                    action="core.user.block.list",
-                    sort=sort,
-                    filters=filters,
-                    value_types=[(int, float), str],
-                )
-                last_key = None if decoded_cursor is None else decoded_cursor.last
-            except CursorError as exc:
-                handler.conclude_request(400, {}, str(exc))
-                return Result(
-                    code=400,
-                    target=str(target_user_id),
-                    data=audit_data,
-                    user_id=handler.user_id,
-                )
-
-            block_query = (
-                session.query(UserBlockEntry)
-                .options(
-                    selectinload(UserBlockEntry.sub_entries),
-                    selectinload(UserBlockEntry.reason_comment),
-                )
-                .filter(UserBlockEntry.user_id == target_user_id)
-            )
-            if last_key is not None:
-                last_timestamp, last_block_id = last_key
-                block_query = block_query.filter(
-                    or_(
-                        UserBlockEntry.timestamp < last_timestamp,
-                        and_(
-                            UserBlockEntry.timestamp == last_timestamp,
-                            UserBlockEntry.block_id < last_block_id,
-                        ),
-                    )
-                )
-
-            block_entries = (
-                block_query.order_by(
-                    UserBlockEntry.timestamp.desc(), UserBlockEntry.block_id.desc()
-                )
-                .limit(page_size + 1)
-                .all()
-            )
-
-            blocks_data = [_serialize_user_block(entry) for entry in block_entries]
-
-            response_data = make_cursor_response(
-                blocks_data,
-                page_size=page_size,
-                action="core.user.block.list",
-                sort=sort,
-                filters=filters,
-                cursor_key=lambda item: [item["timestamp"], item["block_id"]],
-            )
-
-        handler.conclude_request(200, response_data, "List of user blocks")
-        return Result(
-            code=200,
-            target=str(target_user_id),
-            data=audit_data,
-            user_id=handler.user_id,
-        )
 
 
 class RequestGetUserInfoHandler(RequestHandler[_GetUserInfoRequest]):
@@ -1088,7 +713,9 @@ class RequestSetUserAvatarHandler(RequestHandler[_SetUserAvatarRequest]):
                     user_id=handler.user_id,
                 )
 
-            if not check_access_requirements(session, user_to_update, document, "read"):
+            if not authorize_node_operation(
+                session, user_to_update, document, AtomicOp.READ_CONTENT
+            ).allowed:
                 handler.conclude_request(
                     403, {}, "User does not have access to the specified document"
                 )

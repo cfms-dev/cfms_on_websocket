@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 lazy from collections.abc import Iterator
 
+from cacl_compiler import AtomicOp
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 lazy from sqlalchemy.orm import Session
@@ -8,7 +9,7 @@ lazy from sqlalchemy.orm import Session
 from include.config.constants import ROOT_DIRECTORY_ID
 from include.database.errors import is_unique_constraint_violation
 from include.database.models.documents import Document, EntityStatus, Folder, Node
-from include.domains.access.authorization.evaluation import check_access_requirements
+from include.domains.access.authorization.evaluation import authorize_node_operation
 from include.messages import Messages as smsg
 lazy from include.database.models.identity import User
 
@@ -44,14 +45,13 @@ def node_name_mutation(session: Session, parent_id: str, name: str) -> Iterator[
         raise NodeNameConflictError(parent_id, name) from exc
 
 
-def get_target_folder_and_check_write(
-    session: Session, user: User, target_folder_id: str | None, super_permission: str
+def get_target_folder_and_check_create(
+    session: Session,
+    user: User,
+    target_folder_id: str | None,
+    operation: AtomicOp,
 ) -> tuple[Folder | None, int, str]:
-    """
-    Looks up the target folder and checks write access.
-    Returns (folder_object, error_code, error_message).
-    If valid, error_code is 0.
-    """
+    """Look up target folder and verify CREATE_DOCUMENT or CREATE_DIRECTORY access."""
     if not target_folder_id:
         target_folder_id = ROOT_DIRECTORY_ID
 
@@ -59,12 +59,7 @@ def get_target_folder_and_check_write(
     if not target_folder:
         return None, 404, smsg.TARGET_DIRECTORY_NOT_FOUND
 
-    if not check_access_requirements(session, user, target_folder, "write"):
-        if (
-            target_folder_id == ROOT_DIRECTORY_ID
-            and super_permission in user.all_permissions
-        ):
-            return target_folder, 0, ""
+    if not authorize_node_operation(session, user, target_folder, operation).allowed:
         return None, 403, smsg.ACCESS_DENIED_WRITE_DIRECTORY
 
     return target_folder, 0, ""
@@ -138,7 +133,26 @@ def _describe_node_name_conflict_winner(
     if not isinstance(winner, Document | Folder):
         raise TypeError(f"Unsupported conflicting node type: {winner.type!r}")
 
-    readable = check_access_requirements(session, user, winner, "read")
+    readable = (
+        authorize_node_operation(
+            session,
+            user,
+            winner,
+            AtomicOp.READ_METADATA,
+        ).allowed
+        or (
+            isinstance(winner, Folder)
+            and authorize_node_operation(
+                session, user, winner, AtomicOp.LIST_DIRECTORY
+            ).allowed
+        )
+        or (
+            isinstance(winner, Document)
+            and authorize_node_operation(
+                session, user, winner, AtomicOp.READ_CONTENT
+            ).allowed
+        )
+    )
     visible_id = winner.id if readable else None
     if isinstance(winner, Document):
         payload = {"type": "document", "id": visible_id}

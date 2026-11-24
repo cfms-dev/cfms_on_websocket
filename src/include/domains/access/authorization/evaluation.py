@@ -1,301 +1,443 @@
-import time
-from dataclasses import dataclass
-from enum import IntEnum
+__all__ = [
+    "authorize_dacl_save",
+    "authorize_directory_soft_delete",
+    "authorize_node_operation",
+    "authorize_reparent",
+    "authorize_restore",
+    "has_bypass_dacl",
+    "load_ancestor_path",
+    "load_ancestor_paths_for_nodes",
+    "node_to_object_state",
+    "node_to_object_type",
+    "should_check_ancestor_traverse",
+    "user_to_subject",
+]
 
-from sqlalchemy.orm.session import object_session
-lazy from sqlalchemy.orm import Session
+import datetime
+from collections.abc import Sequence
+from itertools import batched
 
-from include.config.constants import AVAILABLE_ACCESS_TYPES
+from cacl_compiler import (
+    AtomicOp,
+    CompiledPolicy,
+    EvalDecision,
+    NamespaceNode,
+    ObjectState,
+    ObjectType,
+    SaveAuthzResult,
+    Subject,
+    authorize_policy_save,
+    evaluate_access,
+    evaluate_effective_masks,
+    evaluate_reparent,
+    evaluate_soft_delete,
+)
+from cacl_compiler.permissions import op_applies_to_object, op_applies_to_state
+from sqlalchemy import literal, select
+from sqlalchemy.orm import Session as OrmSession
+
+from include.config.constants import QUERY_CHUNK_SIZE
 from include.config.options import CORE_OPTIONS, read_option
-from include.database.models.documents import Document, Folder
-from include.domains.access.authorization.compiled_rules import (
-    CompiledRuleMap,
-    TargetType,
-    compiled_rules_allow,
-    compiled_rules_allow_from_map,
-    fetch_compiled_access_rules_for_targets,
+from include.database.models.documents import (
+    Document,
+    EntityStatus,
+    Folder,
+    Node,
+    NodeType,
 )
-from include.domains.access.authorization.grants import prefetch_user_blocks
-from include.domains.access.authorization.searchable_tree import (
-    load_document_access_context,
-    load_user_folder_access_context,
-)
-lazy from include.database.models.access import ObjectAccessEntry
-lazy from include.database.models.identity import User
+from include.database.models.identity import User
+from include.domains.access.authorization.storage import load_node_policies
+from include.domains.access.permissions import Permissions
 
 
-class SingleNodeCheckResult(IntEnum):
-    ALLOWED_OAE = 2
-    ALLOWED = 1
-    DENIED = 0
+def has_bypass_dacl(user: User) -> bool:
+    return Permissions.BYPASS_DACL in user.all_permissions
 
 
-def check_access_requirements(
-    session: Session,
+def user_to_subject(user: User) -> Subject:
+    return Subject(
+        user_id=user.id,
+        username=user.username,
+        groups=frozenset(user.all_groups),
+        perms=frozenset(str(perm) for perm in user.all_permissions),
+    )
+
+
+def should_check_ancestor_traverse(session: OrmSession, user: User) -> bool:
+    if Permissions.BYPASS_TRAVERSE_CHECKING in user.all_permissions:
+        return False
+    bypass_option = read_option(session, "access", CORE_OPTIONS["access"][0]).value
+    return not bool(bypass_option)
+
+
+def node_to_object_type(node: Document | Folder | Node) -> ObjectType:
+    if isinstance(node, Document) or node.type == NodeType.DOCUMENT.value:
+        return ObjectType.DOCUMENT
+    return ObjectType.DIRECTORY
+
+
+def node_to_object_state(node: Document | Folder | Node) -> ObjectState:
+    if node.status == EntityStatus.DELETED:
+        return ObjectState.SOFT_DELETED
+    return ObjectState.NORMAL
+
+
+def load_ancestor_paths_for_nodes(
+    session: OrmSession,
+    targets: Sequence[Document | Folder],
+    *,
+    include_deleted: bool = False,
+) -> dict[str, list[NamespaceNode]]:
+    """Bulk-load root-to-node NamespaceNode paths for a batch of targets."""
+    if not targets:
+        return {}
+
+    target_ids = list(dict.fromkeys(t.id for t in targets))
+    node_table = Node.__table__
+    all_node_rows: dict[str, tuple[str, str, str | None, str, int]] = {}
+
+    for chunk in batched(target_ids, QUERY_CHUNK_SIZE):
+        chunk_ids = list(chunk)
+        anchor = select(
+            node_table.c.id.label("id"),
+            node_table.c.name.label("name"),
+            node_table.c.parent_id.label("parent_id"),
+            node_table.c.type.label("type"),
+            node_table.c.status.label("status"),
+            literal(0).label("depth"),
+        ).where(node_table.c.id.in_(chunk_ids))
+
+        ancestors = anchor.cte("cacl_ancestor_chain", recursive=True)
+        parent_node = node_table.alias("cacl_parent_node")
+        ancestors = ancestors.union(
+            select(
+                parent_node.c.id,
+                parent_node.c.name,
+                parent_node.c.parent_id,
+                parent_node.c.type,
+                parent_node.c.status,
+                (ancestors.c.depth + 1).label("depth"),
+            )
+            .select_from(
+                ancestors.join(parent_node, parent_node.c.id == ancestors.c.parent_id)
+            )
+            .where(ancestors.c.parent_id.is_not(None), ancestors.c.depth < 128)
+        )
+
+        rows = session.execute(
+            select(
+                ancestors.c.id,
+                ancestors.c.name,
+                ancestors.c.parent_id,
+                ancestors.c.type,
+                ancestors.c.status,
+            ).distinct()
+        ).all()
+        for nid, name, parent_id, node_type, status in rows:
+            all_node_rows[nid] = (nid, name, parent_id, node_type, status)
+
+    # Ensure in-memory unflushed target state (e.g. newly created or modified nodes) is authoritative.
+    for target in targets:
+        all_node_rows[target.id] = (
+            target.id,
+            target.name,
+            target.parent_id,
+            target.type,
+            int(target.status),
+        )
+
+    policies = load_node_policies(
+        session, list(all_node_rows.keys()), include_deleted=True
+    )
+
+    namespace_nodes: dict[str, NamespaceNode] = {}
+    for nid, (_id, name, _parent_id, node_type, status) in all_node_rows.items():
+        obj_type = (
+            ObjectType.DOCUMENT
+            if node_type == NodeType.DOCUMENT.value
+            else ObjectType.DIRECTORY
+        )
+        obj_state = (
+            ObjectState.SOFT_DELETED
+            if status == EntityStatus.DELETED.value
+            else ObjectState.NORMAL
+        )
+        policy = policies.get(nid, CompiledPolicy(inherit=True, rules=()))
+        namespace_nodes[nid] = NamespaceNode(
+            node_id=nid,
+            name=name,
+            object_type=obj_type,
+            state=obj_state,
+            policy=policy,
+        )
+
+    result: dict[str, list[NamespaceNode]] = {}
+    for target in targets:
+        chain: list[NamespaceNode] = []
+        visited: set[str] = set()
+        curr_id: str | None = target.id
+        while curr_id is not None:
+            if curr_id in visited:
+                raise RuntimeError(f"Cycle detected in folder hierarchy at {curr_id!r}")
+            visited.add(curr_id)
+            row = all_node_rows.get(curr_id)
+            if row is None:
+                break
+            chain.append(namespace_nodes[curr_id])
+            curr_id = row[2]
+        chain.reverse()
+        result[target.id] = chain
+    return result
+
+
+def load_ancestor_path(
+    session: OrmSession,
+    target: Document | Folder,
+    *,
+    include_deleted: bool = False,
+) -> list[NamespaceNode]:
+    return load_ancestor_paths_for_nodes(
+        session, [target], include_deleted=include_deleted
+    )[target.id]
+
+
+def _check_step1_invariants(
+    target: Document | Folder,
+    operation: AtomicOp,
+) -> EvalDecision | None:
+    obj_type = node_to_object_type(target)
+    obj_state = node_to_object_state(target)
+    if not op_applies_to_object(operation, obj_type):
+        return EvalDecision(
+            allowed=False,
+            reason=f"Operation {operation.name} is not applicable to {obj_type.value}.",
+            step="1_lifecycle_and_type",
+        )
+    if not op_applies_to_state(operation, obj_state):
+        return EvalDecision(
+            allowed=False,
+            reason=f"Operation {operation.name} is not applicable in state {obj_state.value}.",
+            step="1_lifecycle_and_type",
+        )
+    return None
+
+
+def authorize_node_operation(
+    session: OrmSession,
     user: User,
     target: Document | Folder,
-    access_type: str = "read",
+    operation: AtomicOp,
     *,
-    recursive: bool | None = None,
-) -> bool:
-    if recursive is None:
-        recursive = read_option(session, "access", CORE_OPTIONS["access"][0]).value
+    include_deleted: bool = False,
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    """Evaluate CEP-0002 access for a single operation on a Document or Folder."""
+    step1_denial = _check_step1_invariants(target, operation)
+    if step1_denial is not None:
+        return step1_denial
 
-    assert recursive is not None, "Recursive check must be explicitly set or configured"
-
-    now = time.time()
-    if isinstance(target, Document):
-        folders, oae_by_target = load_document_access_context(
-            session, [target], now=now
+    if has_bypass_dacl(user):
+        return EvalDecision(
+            allowed=True,
+            reason="Allowed by global BYPASS_DACL capability.",
+            step="0_bypass_dacl",
         )
-        target_type: TargetType = "document"
-    else:
-        ancestors, oae_by_target = load_user_folder_access_context(
-            session,
-            [target],
-            user,
-            access_type,
-            now=now,
-        )
-        folders = [target, *ancestors]
-        target_type = "directory"
 
-    folder_map = {folder.id: folder for folder in folders}
-    compiled_rules_by_target = fetch_compiled_access_rules_for_targets(
-        session,
-        [
-            (target_type, target.id),
-            *(("directory", folder.id) for folder in folders),
-        ],
-        access_type=access_type,
-    )
-    is_globally_blocked, blocked_ids = prefetch_user_blocks(
-        session, user, access_type, now
-    )
-    return check_access_for_object(
-        target,
-        user,
-        access_type,
-        all_folders=folders,
-        oae_by_target=oae_by_target,
-        recursive=recursive,
-        compiled_rules_by_target=compiled_rules_by_target,
-        folder_map=folder_map,
-        is_globally_blocked=is_globally_blocked,
-        blocked_ids=blocked_ids,
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = load_ancestor_path(session, target, include_deleted=include_deleted)
+    return evaluate_access(
+        user_to_subject(user),
+        path,
+        operation,
+        eval_time_utc=now,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
     )
 
 
-@dataclass(slots=True)
-class FolderAccessEvaluationContext:
-    user: User
-    access_type: str
-    folders: list[Folder]
-    oae_by_target: dict
-    compiled_rules_by_target: CompiledRuleMap
-    folder_map: dict[str, Folder]
-    is_globally_blocked: bool
-    blocked_ids: set[str]
-
-    def allows(self, folder: Folder) -> bool:
-        return check_access_for_object(
-            folder,
-            self.user,
-            self.access_type,
-            all_folders=self.folders,
-            oae_by_target=self.oae_by_target,
-            compiled_rules_by_target=self.compiled_rules_by_target,
-            folder_map=self.folder_map,
-            is_globally_blocked=self.is_globally_blocked,
-            blocked_ids=self.blocked_ids,
-        )
-
-
-def load_folder_access_evaluation_context(
-    session: Session,
-    folders: list[Folder],
+def authorize_reparent(
+    session: OrmSession,
     user: User,
-    access_type: str,
+    source: Document | Folder,
+    dest_parent: Folder,
     *,
-    preload_all_rule_types: bool = False,
-) -> FolderAccessEvaluationContext:
-    now = time.time()
-    ancestors, oae_by_target = load_user_folder_access_context(
-        session,
-        folders,
-        user,
-        access_type,
-        now,
-    )
-    all_folders = [*folders, *ancestors]
-    folder_map = {folder.id: folder for folder in all_folders}
-    compiled_rules_by_target = fetch_compiled_access_rules_for_targets(
-        session,
-        (("directory", folder.id) for folder in all_folders),
-        access_type=None if preload_all_rule_types else access_type,
-    )
-    is_globally_blocked, blocked_ids = prefetch_user_blocks(
-        session, user, access_type, now
-    )
-    return FolderAccessEvaluationContext(
-        user=user,
-        access_type=access_type,
-        folders=all_folders,
-        oae_by_target=oae_by_target,
-        compiled_rules_by_target=compiled_rules_by_target,
-        folder_map=folder_map,
-        is_globally_blocked=is_globally_blocked,
-        blocked_ids=blocked_ids,
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    """Evaluate CEP-0002 Step 5 composite reparent (REPARENT on source + CREATE_* on dest)."""
+    if has_bypass_dacl(user):
+        src_step1 = _check_step1_invariants(source, AtomicOp.REPARENT)
+        if src_step1 is not None:
+            return src_step1
+        dest_op = (
+            AtomicOp.CREATE_DOCUMENT
+            if isinstance(source, Document)
+            else AtomicOp.CREATE_DIRECTORY
+        )
+        dst_step1 = _check_step1_invariants(dest_parent, dest_op)
+        if dst_step1 is not None:
+            return dst_step1
+        return EvalDecision(
+            allowed=True,
+            reason="Allowed by global BYPASS_DACL capability.",
+            step="0_bypass_dacl",
+        )
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    paths = load_ancestor_paths_for_nodes(session, [source, dest_parent])
+    return evaluate_reparent(
+        user_to_subject(user),
+        paths[source.id],
+        paths[dest_parent.id],
+        eval_time_utc=now,
+        also_rename=False,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
     )
 
 
-def check_access_for_object(
-    obj: Document | Folder,
+def authorize_directory_soft_delete(
+    session: OrmSession,
     user: User,
-    access_type: str,
-    all_folders: list[Folder],
-    oae_by_target: dict,
-    recursive: bool = True,
-    compiled_rules_by_target: CompiledRuleMap | None = None,
-    folder_map: dict[str, Folder] | None = None,
-    is_globally_blocked: bool = False,
-    blocked_ids: set[str] | None = None,
-) -> bool:
+    target: Folder,
+    descendants: Sequence[Document | Folder],
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    """Evaluate CEP-0002 Step 5 atomic soft-delete for a directory and its descendants."""
+    step1_denial = _check_step1_invariants(target, AtomicOp.DELETE)
+    if step1_denial is not None:
+        return step1_denial
 
-    if access_type not in AVAILABLE_ACCESS_TYPES:
-        raise ValueError(f"Invalid access type: {access_type}")
+    if has_bypass_dacl(user):
+        return EvalDecision(
+            allowed=True,
+            reason="Allowed by global BYPASS_DACL capability.",
+            step="0_bypass_dacl",
+        )
 
-    session = object_session(user)
-    if session is None:
-        raise RuntimeError("No active session found for user")
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    all_nodes: list[Document | Folder] = [target, *descendants]
+    paths = load_ancestor_paths_for_nodes(session, all_nodes)
+    return evaluate_soft_delete(
+        user_to_subject(user),
+        paths[target.id],
+        [paths[node.id] for node in descendants],
+        eval_time_utc=now,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    )
 
-    if folder_map is None:
-        folder_map = {f.id: f for f in all_folders}
-    if blocked_ids is None:
-        blocked_ids = set()
-    if is_globally_blocked:
-        return False
 
-    def _check_single_node(node: Document | Folder) -> SingleNodeCheckResult:
-        """
-        Check if the current user has the specified access type to a single node (document or folder).
-        This function performs a three-step access control check:
-        1. **Object Access Entry (OAE) Check**: Evaluates special authorization rules with highest priority.
-           - First checks if the user has a direct OAE matching the target node, access type, and entity type.
-           - Then checks if any of the user's groups have a matching OAE.
-           - Returns True immediately if a matching OAE is found.
-        2. **Default Allow Rule**: If no access rules are defined on the node, access is granted by default.
-        3. **Access Rules Validation**: Iterates through all access rules defined on the node.
-           - Filters rules based on the requested access_type (read, write, move, manage).
-           - Checks if the user matches the compiled rule requirements.
-           - Returns False if any rule fails the matching check.
-        Args:
-            node: A Document or Folder object to check access permissions for.
-        Returns:
-            bool: True if the user has the specified access type to the node, False otherwise.
-        Raises:
-            NotImplementedError: If an unsupported access_type is encountered.
-        Note:
-            This function relies on external context: `user`, `access_type`, `oae_by_target`,
-            and the helper function `_match_primary_sub_group`.
-        """
+def authorize_restore(
+    session: OrmSession,
+    user: User,
+    target: Document | Folder,
+    target_parent: Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    """Evaluate CEP-0002 RESTORE on a soft-deleted node (and CREATE_* if reparenting)."""
+    step1_denial = _check_step1_invariants(target, AtomicOp.RESTORE)
+    if step1_denial is not None:
+        return step1_denial
 
-        _TARGET_TYPE_MAPPING: dict[str, TargetType] = {
-            "folders": "directory",
-            "documents": "document",
-        }
-        target_type = _TARGET_TYPE_MAPPING[node.__tablename__]
+    if target_parent.status != EntityStatus.OK:
+        return EvalDecision(
+            allowed=False,
+            reason="Target parent directory must be in the normal state.",
+            step="1_lifecycle_and_type",
+        )
 
-        if node.id in blocked_ids:
-            return SingleNodeCheckResult.DENIED
+    reparenting = (target.parent_id or "/") != target_parent.id
+    dest_op = (
+        AtomicOp.CREATE_DOCUMENT
+        if isinstance(target, Document)
+        else AtomicOp.CREATE_DIRECTORY
+    )
 
-        # check OAE first (highest priority)
-        entries: list[ObjectAccessEntry] = oae_by_target.get(node.id, [])
+    if has_bypass_dacl(user):
+        return EvalDecision(
+            allowed=True,
+            reason="Allowed by global BYPASS_DACL capability.",
+            step="0_bypass_dacl",
+        )
 
-        # check user's direct OAE
-        for entry in entries:
-            if (
-                entry.entity_type == "user"
-                and entry.entity_identifier == str(user.id)
-                and entry.target_type == target_type
-                and entry.access_type == access_type
-            ):
-                return SingleNodeCheckResult.ALLOWED_OAE
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    check_traverse = should_check_ancestor_traverse(session, user)
+    subject = user_to_subject(user)
+    paths = load_ancestor_paths_for_nodes(
+        session, [target, target_parent], include_deleted=True
+    )
+    target_path = paths[target.id]
 
-        # check user's group OAE
-        user_groups = user.all_groups  # set[str]
-        for entry in entries:
-            if (
-                entry.entity_type == "group"
-                and entry.entity_identifier in user_groups
-                and entry.target_type == target_type
-                and entry.access_type == access_type
-            ):
-                return SingleNodeCheckResult.ALLOWED_OAE
+    if not reparenting:
+        restore_decision = evaluate_access(
+            subject,
+            target_path,
+            AtomicOp.RESTORE,
+            eval_time_utc=now,
+            check_ancestor_traverse=check_traverse,
+        )
+        if not restore_decision.allowed:
+            return restore_decision
+        return restore_decision
 
-        if compiled_rules_by_target is None:
-            allowed_by_rules = compiled_rules_allow(
-                session,
-                target_type=target_type,
-                target_id=node.id,
-                user=user,
-                access_type=access_type,
-            )
-        else:
-            allowed_by_rules = compiled_rules_allow_from_map(
-                compiled_rules_by_target,
-                target_type=target_type,
-                target_id=node.id,
-                user=user,
-                access_type=access_type,
-            )
+    # When restoring into a different active parent, evaluate RESTORE on the
+    # target's existing DACL chain (skipping soft-deleted ancestors for traverse)
+    # and require CREATE_* on the chosen destination parent.
+    masks = evaluate_effective_masks(
+        subject,
+        target_path,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
+    if not masks.allowed_traverse:
+        return EvalDecision(
+            allowed=False,
+            reason=masks.denied_reason or "Missing TRAVERSE on ancestor.",
+            step=masks.denied_step or "2_path_traverse",
+            next_transition_at=masks.next_transition_at,
+        )
+    if not (masks.effective_mask & int(AtomicOp.RESTORE)):
+        return EvalDecision(
+            allowed=False,
+            reason="Missing RESTORE permission on target.",
+            step="4_deny_overrides"
+            if (masks.effective_deny_mask & int(AtomicOp.RESTORE))
+            else "4_default_deny",
+            effective_allow_mask=masks.effective_allow_mask,
+            effective_deny_mask=masks.effective_deny_mask,
+            next_transition_at=masks.next_transition_at,
+        )
 
-        if allowed_by_rules:
-            return SingleNodeCheckResult.ALLOWED
-        return SingleNodeCheckResult.DENIED
+    return evaluate_access(
+        subject,
+        paths[target_parent.id],
+        dest_op,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
 
-    # check the object itself first
-    match _check_single_node(obj):
-        case SingleNodeCheckResult.ALLOWED_OAE:
-            return True  # OAE grants access immediately, no need to check further
-        case SingleNodeCheckResult.ALLOWED:
-            pass  # continue to check parent folders if necessary
-        case SingleNodeCheckResult.DENIED:
-            return False  # explicit denial, no need to check further
-        case _:
-            raise RuntimeError("Unexpected SingleNodeCheckResult value")
 
-    # if not recursive or the object does not inherit permissions, stop here
-    if not recursive or not obj.inherit:
-        return True
+def authorize_dacl_save(
+    session: OrmSession,
+    user: User,
+    target: Document | Folder,
+    proposed_policy: CompiledPolicy,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> SaveAuthzResult:
+    """Evaluate CEP-0002 Section 5.2 WRITE_DACL + anti-lockout simulation."""
+    if has_bypass_dacl(user):
+        return SaveAuthzResult(
+            authorized=True,
+            reason="Actor holds global BYPASS_DACL capability.",
+            self_lockout_warning=False,
+        )
 
-    if isinstance(obj, Document):
-        current_folder_id = obj.folder_id
-    else:  # Folder
-        current_folder_id = obj.parent_id
-
-    visited_ids = set()  # prevent potential cycles in folder hierarchy
-
-    while current_folder_id is not None:
-        if current_folder_id in visited_ids:
-            raise RuntimeError("Cycle detected in folder hierarchy")
-        visited_ids.add(current_folder_id)
-
-        current_folder = folder_map.get(current_folder_id)
-        if current_folder is None:
-            # This should not happen if the folder hierarchy is consistent,
-            # but we handle it gracefully just in case
-            break
-
-        # check access for the current folder node
-        if not _check_single_node(current_folder):
-            return False
-
-        # If the current folder does not inherit permissions, stop checking
-        # further up the hierarchy
-        if not current_folder.inherit:
-            break
-
-        current_folder_id = current_folder.parent_id
-
-    return True
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = load_ancestor_path(session, target)
+    return authorize_policy_save(
+        user_to_subject(user),
+        path,
+        proposed_policy,
+        eval_time_utc=now,
+        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
+    )

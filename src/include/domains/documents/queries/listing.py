@@ -1,20 +1,28 @@
+import datetime
 from itertools import batched
 from typing import Any
 lazy from collections.abc import Sequence
 
-from sqlalchemy import and_, exists, false, func, literal, not_, or_, select, union_all
-from sqlalchemy.orm import aliased, joinedload, raiseload
+from cacl_compiler import AtomicOp
+from sqlalchemy import (
+    and_,
+    exists,
+    false,
+    func,
+    literal,
+    not_,
+    or_,
+    select,
+    true,
+    union_all,
+)
+from sqlalchemy.orm import joinedload, raiseload
 
 from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.models.access import (
-    CompiledAccessRule,
-    CompiledAccessRuleGroup,
-    CompiledAccessRuleMembership,
-    CompiledAccessRuleRight,
-    CompiledAccessRuleSet,
-    ObjectAccessEntry,
-    UserBlockEntry,
-    UserBlockSubEntry,
+    NodeDaclAtom,
+    NodeDaclClause,
+    NodeDaclRule,
 )
 from include.database.models.documents import (
     Document,
@@ -24,10 +32,10 @@ from include.database.models.documents import (
     Node,
 )
 from include.database.models.files import File
-from include.domains.access.authorization.compiled_rules import (
-    active_compiled_rule_filter,
+from include.domains.access.authorization.evaluation import (
+    has_bypass_dacl,
+    should_check_ancestor_traverse,
 )
-from include.domains.access.permissions import Permissions
 lazy from include.database.models.identity import User
 
 _CURSOR_KEY = "_cursor_key"
@@ -613,180 +621,93 @@ def _in_values(column, values: Sequence[str]):
     return column.in_(list(values))
 
 
-def _active_oae_exists(target_type_column, target_id_column, user: User, now: float):
-    group_names = list(user.all_groups)
-    entity_match = or_(
+def _sql_rule_matches_subject(
+    rule_table,
+    user_id_str: str,
+    user_groups: Sequence[str],
+    user_perms: Sequence[str],
+):
+    atom_matches_positive = or_(
         and_(
-            ObjectAccessEntry.entity_type == "user",
-            ObjectAccessEntry.entity_identifier == str(user.id),
+            NodeDaclAtom.predicate_kind == "user",
+            NodeDaclAtom.predicate_value == user_id_str,
         ),
         and_(
-            ObjectAccessEntry.entity_type == "group",
-            _in_values(ObjectAccessEntry.entity_identifier, group_names),
+            NodeDaclAtom.predicate_kind == "group",
+            _in_values(NodeDaclAtom.predicate_value, user_groups),
         ),
+        and_(
+            NodeDaclAtom.predicate_kind == "perm",
+            _in_values(NodeDaclAtom.predicate_value, user_perms),
+        ),
+    )
+    atom_fails = or_(
+        and_(NodeDaclAtom.is_negated == False, not_(atom_matches_positive)),
+        and_(NodeDaclAtom.is_negated == True, atom_matches_positive),
     )
     return exists(
         select(1).where(
-            ObjectAccessEntry.target_type == target_type_column,
-            ObjectAccessEntry.target_identifier == target_id_column,
-            ObjectAccessEntry.access_type == "read",
-            ObjectAccessEntry.start_time <= now,
-            or_(
-                ObjectAccessEntry.end_time == None,
-                ObjectAccessEntry.end_time >= now,
-            ),
-            entity_match,
-        )
-    )
-
-
-def _compiled_group_matches(group_alias, user_permissions: Sequence[str], user_groups):
-    missing_right = exists(
-        select(1).where(
-            CompiledAccessRuleRight.group_id == group_alias.id,
-            not_(_in_values(CompiledAccessRuleRight.permission, user_permissions)),
-        )
-    )
-    any_required_right = exists(
-        select(1).where(CompiledAccessRuleRight.group_id == group_alias.id)
-    )
-    present_right = exists(
-        select(1).where(
-            CompiledAccessRuleRight.group_id == group_alias.id,
-            _in_values(CompiledAccessRuleRight.permission, user_permissions),
-        )
-    )
-    rights_match = or_(
-        group_alias.rights_empty == True,
-        not_(any_required_right),
-        and_(group_alias.rights_match_mode == "all", not_(missing_right)),
-        and_(group_alias.rights_match_mode == "any", present_right),
-    )
-
-    missing_group = exists(
-        select(1).where(
-            CompiledAccessRuleMembership.group_id == group_alias.id,
-            not_(_in_values(CompiledAccessRuleMembership.group_name, user_groups)),
-        )
-    )
-    any_required_group = exists(
-        select(1).where(CompiledAccessRuleMembership.group_id == group_alias.id)
-    )
-    present_group = exists(
-        select(1).where(
-            CompiledAccessRuleMembership.group_id == group_alias.id,
-            _in_values(CompiledAccessRuleMembership.group_name, user_groups),
-        )
-    )
-    groups_match = or_(
-        group_alias.groups_empty == True,
-        not_(any_required_group),
-        and_(group_alias.groups_match_mode == "all", not_(missing_group)),
-        and_(group_alias.groups_match_mode == "any", present_group),
-    )
-
-    return or_(
-        and_(group_alias.match_mode == "any", or_(rights_match, groups_match)),
-        and_(group_alias.match_mode == "all", rights_match, groups_match),
-    )
-
-
-def _compiled_rule_matches(rule_alias, user_permissions: Sequence[str], user_groups):
-    matching_group = aliased(CompiledAccessRuleGroup)
-    nonmatching_group = aliased(CompiledAccessRuleGroup)
-    return or_(
-        and_(
-            rule_alias.match_mode == "any",
-            exists(
-                select(1).where(
-                    matching_group.rule_id == rule_alias.id,
-                    _compiled_group_matches(
-                        matching_group, user_permissions, user_groups
-                    ),
-                )
-            ),
-        ),
-        and_(
-            rule_alias.match_mode == "all",
+            NodeDaclClause.rule_id == rule_table.c.id,
             not_(
                 exists(
                     select(1).where(
-                        nonmatching_group.rule_id == rule_alias.id,
-                        not_(
-                            _compiled_group_matches(
-                                nonmatching_group, user_permissions, user_groups
-                            )
-                        ),
+                        NodeDaclAtom.clause_id == NodeDaclClause.id,
+                        atom_fails,
                     )
                 )
             ),
-        ),
-    )
-
-
-def _node_rules_allow(target_type_column, target_id_column, user: User):
-    user_permissions = [str(permission) for permission in user.all_permissions]
-    user_groups = list(user.all_groups)
-    rule = aliased(CompiledAccessRule)
-    rule_set = aliased(CompiledAccessRuleSet)
-    target_node = aliased(Node)
-    relevant_rule = and_(
-        active_compiled_rule_filter(
-            rule=rule,
-            rule_set=rule_set,
-            node=target_node,
-            target_type=target_type_column,
-            target_id=target_id_column,
-        ),
-        rule.access_type == "read",
-    )
-    no_read_rules = not_(exists(select(1).where(relevant_rule)))
-    failing_rule = exists(
-        select(1).where(
-            relevant_rule,
-            not_(_compiled_rule_matches(rule, user_permissions, user_groups)),
         )
     )
-    return or_(no_read_rules, not_(failing_rule))
 
 
-def _target_is_blocked(target_id_column, user: User, now: float):
-    return exists(
-        select(1)
-        .select_from(
-            UserBlockEntry.__table__.join(
-                UserBlockSubEntry.__table__,
-                UserBlockSubEntry.parent_id == UserBlockEntry.block_id,
+def _sql_chain_op_allowed(
+    chain_cte,
+    *,
+    target_id_col,
+    target_type_expr,
+    op_bit: int,
+    now_utc: datetime.datetime,
+    user_id_str: str,
+    user_groups: Sequence[str],
+    user_perms: Sequence[str],
+    match_target_type_on_chain: bool,
+):
+    def _effect_exists(effect: str):
+        rule_tbl = NodeDaclRule.__table__.alias(f"cacl_r_{effect}_{op_bit}")
+        chain_filters = [chain_cte.c.target_id == target_id_col]
+        if match_target_type_on_chain:
+            chain_filters.append(chain_cte.c.target_type == target_type_expr)
+        scope_match = or_(
+            rule_tbl.c.scope == "all",
+            and_(rule_tbl.c.scope == "self", chain_cte.c.distance == 0),
+            and_(rule_tbl.c.scope == "dirs", target_type_expr == "directory"),
+            and_(rule_tbl.c.scope == "docs", target_type_expr == "document"),
+        )
+        return exists(
+            select(1)
+            .select_from(
+                chain_cte.join(rule_tbl, rule_tbl.c.node_id == chain_cte.c.origin_id)
+            )
+            .where(
+                *chain_filters,
+                rule_tbl.c.effect == effect,
+                rule_tbl.c.permission_mask.op("&")(op_bit) != 0,
+                scope_match,
+                or_(
+                    rule_tbl.c.valid_from.is_(None),
+                    rule_tbl.c.valid_from <= now_utc,
+                ),
+                or_(
+                    rule_tbl.c.valid_until.is_(None),
+                    rule_tbl.c.valid_until > now_utc,
+                ),
+                _sql_rule_matches_subject(
+                    rule_tbl, user_id_str, user_groups, user_perms
+                ),
             )
         )
-        .where(
-            UserBlockEntry.user_id == user.id,
-            UserBlockEntry.not_before <= now,
-            or_(UserBlockEntry.not_after == -1, UserBlockEntry.not_after >= now),
-            UserBlockSubEntry.block_type == "read",
-            UserBlockEntry.target_type != "all",
-            UserBlockEntry.target_id == target_id_column,
-        )
-    )
 
-
-def _user_is_globally_blocked(user: User, now: float):
-    return exists(
-        select(1)
-        .select_from(
-            UserBlockEntry.__table__.join(
-                UserBlockSubEntry.__table__,
-                UserBlockSubEntry.parent_id == UserBlockEntry.block_id,
-            )
-        )
-        .where(
-            UserBlockEntry.user_id == user.id,
-            UserBlockEntry.not_before <= now,
-            or_(UserBlockEntry.not_after == -1, UserBlockEntry.not_after >= now),
-            UserBlockSubEntry.block_type == "read",
-            UserBlockEntry.target_type == "all",
-        )
-    )
+    return and_(_effect_exists("allow"), not_(_effect_exists("deny")))
 
 
 def _search_candidate_selectable(
@@ -846,81 +767,200 @@ def _search_candidate_selectable(
     return union_all(*selects).subquery("search_candidates")
 
 
-def _search_ancestor_cte(candidates):
-    folder_table = Folder.__table__
+def _search_effective_chain_cte(candidates):
     node_table = Node.__table__
-    anchor = (
-        select(
-            candidates.c.type.label("object_type"),
-            candidates.c.id.label("object_id"),
-            folder_table.c.id.label("node_id"),
-            node_table.c.parent_id.label("parent_id"),
-            node_table.c.inherit.label("inherit"),
-        )
-        .select_from(
-            folder_table.join(
-                candidates, folder_table.c.id == candidates.c.parent_id
-            ).join(node_table, node_table.c.id == folder_table.c.id)
-        )
-        .where(candidates.c.inherit == True, candidates.c.parent_id != None)
+    anchor = select(
+        candidates.c.type.label("target_type"),
+        candidates.c.id.label("target_id"),
+        candidates.c.id.label("origin_id"),
+        literal(0).label("distance"),
+        candidates.c.parent_id.label("parent_id"),
+        candidates.c.inherit.label("inherit"),
     )
-    ancestors = anchor.cte("search_visible_ancestors", recursive=True)
-    parent_folder = folder_table.alias("search_visible_parent")
-    parent_node = node_table.alias("search_visible_parent_node")
-    ancestors = ancestors.union_all(
+    chain = anchor.cte("search_effective_chain", recursive=True)
+    parent_node = node_table.alias("search_eff_parent")
+    chain = chain.union_all(
         select(
-            ancestors.c.object_type,
-            ancestors.c.object_id,
-            parent_folder.c.id,
+            chain.c.target_type,
+            chain.c.target_id,
+            parent_node.c.id,
+            (chain.c.distance + 1).label("distance"),
             parent_node.c.parent_id,
             parent_node.c.inherit,
         )
-        .select_from(
-            ancestors.join(
-                parent_folder, parent_folder.c.id == ancestors.c.parent_id
-            ).join(parent_node, parent_node.c.id == parent_folder.c.id)
+        .select_from(chain.join(parent_node, parent_node.c.id == chain.c.parent_id))
+        .where(chain.c.inherit == True, chain.c.parent_id.is_not(None))
+    )
+    return chain
+
+
+def _search_all_ancestors_cte(candidates):
+    node_table = Node.__table__
+    parent_anchor = node_table.alias("search_anc_seed")
+    anchor = (
+        select(
+            candidates.c.type.label("target_type"),
+            candidates.c.id.label("target_id"),
+            parent_anchor.c.id.label("ancestor_id"),
+            parent_anchor.c.parent_id.label("parent_id"),
+            parent_anchor.c.status.label("ancestor_status"),
+            parent_anchor.c.inherit.label("ancestor_inherit"),
         )
-        .where(ancestors.c.inherit == True, ancestors.c.parent_id != None)
+        .select_from(
+            candidates.join(parent_anchor, parent_anchor.c.id == candidates.c.parent_id)
+        )
+        .where(candidates.c.parent_id.is_not(None))
+    )
+    ancestors = anchor.cte("search_all_ancestors", recursive=True)
+    parent_step = node_table.alias("search_anc_step")
+    ancestors = ancestors.union_all(
+        select(
+            ancestors.c.target_type,
+            ancestors.c.target_id,
+            parent_step.c.id,
+            parent_step.c.parent_id,
+            parent_step.c.status,
+            parent_step.c.inherit,
+        )
+        .select_from(
+            ancestors.join(parent_step, parent_step.c.id == ancestors.c.parent_id)
+        )
+        .where(ancestors.c.parent_id.is_not(None))
     )
     return ancestors
 
 
-def _visible_search_filter(candidates, user: User, now: float):
-    target_oae = _active_oae_exists(candidates.c.type, candidates.c.id, user, now)
-    target_rules_allow = _node_rules_allow(candidates.c.type, candidates.c.id, user)
+def _ancestor_effective_chain_cte(all_ancestors_cte):
+    node_table = Node.__table__
+    distinct_ancestors = select(
+        all_ancestors_cte.c.ancestor_id.label("target_id"),
+        all_ancestors_cte.c.ancestor_id.label("origin_id"),
+        literal(0).label("distance"),
+        all_ancestors_cte.c.parent_id.label("parent_id"),
+        all_ancestors_cte.c.ancestor_inherit.label("inherit"),
+    ).distinct()
+    chain = distinct_ancestors.cte("search_anc_effective_chain", recursive=True)
+    parent_node = node_table.alias("search_anc_eff_parent")
+    chain = chain.union_all(
+        select(
+            chain.c.target_id,
+            parent_node.c.id,
+            (chain.c.distance + 1).label("distance"),
+            parent_node.c.parent_id,
+            parent_node.c.inherit,
+        )
+        .select_from(chain.join(parent_node, parent_node.c.id == chain.c.parent_id))
+        .where(chain.c.inherit == True, chain.c.parent_id.is_not(None))
+    )
+    return chain
 
-    ancestors = _search_ancestor_cte(candidates)
+
+def _visible_search_filter(
+    session,
+    candidates,
+    user: User,
+    now_utc: datetime.datetime,
+):
+    if has_bypass_dacl(user):
+        return true()
+
+    user_id_str = str(user.id)
+    user_groups = list(user.all_groups)
+    user_perms = [str(permission) for permission in user.all_permissions]
+
+    effective_chain = _search_effective_chain_cte(candidates)
+
+    dir_visible = and_(
+        candidates.c.type == "directory",
+        or_(
+            _sql_chain_op_allowed(
+                effective_chain,
+                target_id_col=candidates.c.id,
+                target_type_expr=candidates.c.type,
+                op_bit=int(AtomicOp.LIST_DIRECTORY),
+                now_utc=now_utc,
+                user_id_str=user_id_str,
+                user_groups=user_groups,
+                user_perms=user_perms,
+                match_target_type_on_chain=True,
+            ),
+            _sql_chain_op_allowed(
+                effective_chain,
+                target_id_col=candidates.c.id,
+                target_type_expr=candidates.c.type,
+                op_bit=int(AtomicOp.READ_METADATA),
+                now_utc=now_utc,
+                user_id_str=user_id_str,
+                user_groups=user_groups,
+                user_perms=user_perms,
+                match_target_type_on_chain=True,
+            ),
+        ),
+    )
+    doc_visible = and_(
+        candidates.c.type == "document",
+        or_(
+            _sql_chain_op_allowed(
+                effective_chain,
+                target_id_col=candidates.c.id,
+                target_type_expr=candidates.c.type,
+                op_bit=int(AtomicOp.READ_CONTENT),
+                now_utc=now_utc,
+                user_id_str=user_id_str,
+                user_groups=user_groups,
+                user_perms=user_perms,
+                match_target_type_on_chain=True,
+            ),
+            _sql_chain_op_allowed(
+                effective_chain,
+                target_id_col=candidates.c.id,
+                target_type_expr=candidates.c.type,
+                op_bit=int(AtomicOp.READ_METADATA),
+                now_utc=now_utc,
+                user_id_str=user_id_str,
+                user_groups=user_groups,
+                user_perms=user_perms,
+                match_target_type_on_chain=True,
+            ),
+        ),
+    )
+    target_visible = or_(dir_visible, doc_visible)
+
+    if not should_check_ancestor_traverse(session, user):
+        return target_visible
+
+    all_ancestors = _search_all_ancestors_cte(candidates)
+    anc_eff_chain = _ancestor_effective_chain_cte(all_ancestors)
     blocked_ancestor = exists(
         select(1).where(
-            ancestors.c.object_type == candidates.c.type,
-            ancestors.c.object_id == candidates.c.id,
-            not_(
-                or_(
-                    _active_oae_exists(
-                        literal("directory"), ancestors.c.node_id, user, now
-                    ),
-                    _node_rules_allow(literal("directory"), ancestors.c.node_id, user),
-                )
+            all_ancestors.c.target_type == candidates.c.type,
+            all_ancestors.c.target_id == candidates.c.id,
+            or_(
+                all_ancestors.c.ancestor_status == EntityStatus.DELETED.value,
+                not_(
+                    _sql_chain_op_allowed(
+                        anc_eff_chain,
+                        target_id_col=all_ancestors.c.ancestor_id,
+                        target_type_expr=literal("directory"),
+                        op_bit=int(AtomicOp.TRAVERSE),
+                        now_utc=now_utc,
+                        user_id_str=user_id_str,
+                        user_groups=user_groups,
+                        user_perms=user_perms,
+                        match_target_type_on_chain=False,
+                    )
+                ),
             ),
         )
     )
-    visible = or_(target_oae, and_(target_rules_allow, not_(blocked_ancestor)))
-
-    if Permissions.SUPER_LIST_DIRECTORY in user.all_permissions:
-        return visible
-
-    return and_(
-        visible,
-        not_(_user_is_globally_blocked(user, now)),
-        not_(_target_is_blocked(candidates.c.id, user, now)),
-    )
+    return and_(target_visible, not_(blocked_ancestor))
 
 
 def fetch_visible_search_candidate_rows(
     session,
     *,
     user: User,
-    now: float,
+    now: datetime.datetime | float,
     query: str,
     sort_by: str,
     sort_order: str,
@@ -937,6 +977,12 @@ def fetch_visible_search_candidate_rows(
     if candidates is None:
         return []
 
+    now_utc = (
+        datetime.datetime.fromtimestamp(now, tz=datetime.UTC)
+        if isinstance(now, int | float)
+        else now.astimezone(datetime.UTC)
+    )
+
     primary_column = _search_primary_column(candidates, sort_by)
     search_query = select(
         candidates.c.id,
@@ -949,7 +995,7 @@ def fetch_visible_search_candidate_rows(
         candidates.c.type,
         candidates.c.type_rank,
         candidates.c.inherit,
-    ).where(_visible_search_filter(candidates, user, now))
+    ).where(_visible_search_filter(session, candidates, user, now_utc))
     cursor_filter = _apply_search_cursor_filter(
         candidates, primary_column, last_key, sort_order
     )

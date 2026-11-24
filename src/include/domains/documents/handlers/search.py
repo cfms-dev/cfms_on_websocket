@@ -7,7 +7,7 @@ with permission filtering, result limiting, and sorting capabilities.
 
 __all__ = ["RequestSearchHandler"]
 
-import time
+import datetime
 from typing import Annotated, Literal
 
 from pydantic import StringConstraints
@@ -133,7 +133,7 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
                 )
                 return Result(code=403, target=query, user_id=handler.user_id)
 
-            now = time.time()
+            now = datetime.datetime.now(datetime.UTC)
             all_results = fetch_visible_search_candidate_rows(
                 session,
                 user=user,
