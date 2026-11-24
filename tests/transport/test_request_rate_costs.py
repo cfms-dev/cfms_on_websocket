@@ -37,10 +37,10 @@ EXPECTED_CORE_ACTION_COSTS = {
     "core.document.restore": 3,
     "core.document.purge": 10,
     "core.document.rename": 3,
-    "core.document.move": 3,
+    "core.document.reparent": 3,
     "core.document.info.get": 3,
-    "core.document.access_rule.get": 2,
-    "core.document.access_rule.set": 5,
+    "core.document.dacl.get": 2,
+    "core.document.dacl.set": 5,
     "core.document.tag.set": 3,
     "core.document.revision.list": 2,
     "core.document.revision.get": 3,
@@ -50,21 +50,17 @@ EXPECTED_CORE_ACTION_COSTS = {
     "core.file.upload": 5,
     "core.directory.list": 3,
     "core.directory.info.get": 3,
-    "core.directory.access_rule.get": 2,
-    "core.directory.access_rule.set": 5,
+    "core.directory.dacl.get": 2,
+    "core.directory.dacl.set": 5,
     "core.directory.create": 3,
     "core.directory.delete": 10,
     "core.directory.restore": 10,
     "core.directory.purge": 20,
     "core.directory.rename": 3,
-    "core.directory.move": 3,
+    "core.directory.reparent": 3,
     "core.directory.deleted_item.list": 3,
     "core.search.query": 3,
     "core.user.status.set": 3,
-    "core.user.block.create": 3,
-    "core.user.block.update": 3,
-    "core.user.block.delete": 2,
-    "core.user.block.list": 3,
     "core.user.list": 3,
     "core.user.create": 5,
     "core.user.delete": 5,
@@ -82,9 +78,6 @@ EXPECTED_CORE_ACTION_COSTS = {
     "core.group.rename": 5,
     "core.group.info.get": 3,
     "core.group.permission.change": 3,
-    "core.access.entry.grant": 3,
-    "core.access.entry.revoke": 2,
-    "core.access.entry.list": 3,
     "core.server.lockdown.set": 10,
     "core.audit.entry.list": 3,
     "core.schedule.task_type.list": 1,
@@ -173,7 +166,7 @@ def test_all_known_costs_fit_default_request_buckets():
         *EXPECTED_EXTRA_HANDLER_COSTS.values(),
     )
 
-    assert len(all_costs) == 96
+    assert len(all_costs) == 89
     assert set(all_costs) == {1, 2, 3, 5, 10, 20}
     assert all(0 < cost <= capacity for cost in all_costs)
 

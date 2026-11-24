@@ -246,18 +246,18 @@ def test_pre_upgrade_cursor_is_rejected_for_new_request_name(pagination):
 )
 def test_cursor_rejects_incorrect_key_types_or_arity(pagination, last):
     token = pagination.PaginationCursor(
-        action="core.access.entry.list",
+        action="core.audit.entry.list",
         sort="id:asc",
-        filters={"object_type": "user", "object_identifier": "alice"},
+        filters={"filters": []},
         last=last,
     ).encode()
 
     with pytest.raises(pagination.CursorError, match="Invalid cursor"):
         pagination.PaginationCursor.decode(
             token,
-            action="core.access.entry.list",
+            action="core.audit.entry.list",
             sort="id:asc",
-            filters={"object_type": "user", "object_identifier": "alice"},
+            filters={"filters": []},
             value_types=[int],
         )
 

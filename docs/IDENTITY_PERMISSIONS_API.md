@@ -126,7 +126,7 @@ For example:
         "end_time": null
       },
       {
-        "permission": "delete_document",
+        "permission": "search",
         "granted": false,
         "start_time": 1787200000.0,
         "end_time": 1787800000.0

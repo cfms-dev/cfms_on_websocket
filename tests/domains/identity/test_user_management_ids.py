@@ -97,40 +97,30 @@ async def test_stale_id_cannot_manage_same_named_replacement(
     assert info["username"] == old["username"]
 
 
-async def test_deleted_user_access_listing_hides_orphaned_grants(
+async def test_deleted_user_dacl_does_not_grant_access_to_same_named_replacement(
     authenticated_client,
     user_factory,
     document_factory,
+    client_factory,
 ):
     old = await user_factory()
     document = await document_factory()
     assert_success(
-        await authenticated_client.grant_access(
-            entity_type="user",
-            entity_identifier=old["user_id"],
-            target_type="document",
-            target_identifier=document["document_id"],
-            access_types=["read"],
-            start_time=0,
+        await authenticated_client.set_document_dacl(
+            document["document_id"],
+            f'inherit off; allow [READ_METADATA] to user("{old["user_id"]}");',
         )
     )
     assert_success(await authenticated_client.delete_user(old["user_id"]))
-    missing = assert_success(
-        await authenticated_client.view_access_entries(
-            object_type="user",
-            object_identifier=old["user_id"],
-        )
-    )
-    assert missing["items"] == []
-    assert missing["has_more"] is False
     replacement = await user_factory(username=old["username"])
-    current = assert_success(
-        await authenticated_client.view_access_entries(
-            object_type="user",
-            object_identifier=replacement["user_id"],
-        )
+    replacement_client = await client_factory()
+    assert_success(
+        await replacement_client.login(replacement["username"], replacement["password"])
     )
-    assert current["items"] == []
+    assert_error(
+        await replacement_client.get_document_info(document["document_id"]),
+        403,
+    )
 
 
 async def test_self_protection_compares_uuid_values(authenticated_client):
@@ -139,42 +129,6 @@ async def test_self_protection_compares_uuid_values(authenticated_client):
     assert_error(
         await authenticated_client.update_user_status(user_id, "disabled"), 400
     )
-
-
-async def test_block_cursor_binds_canonical_user_id(
-    authenticated_client, test_user, user_factory
-):
-    user_id = test_user["user_id"]
-    other = await user_factory()
-    for block_type in ("read", "write"):
-        block = assert_success(
-            await authenticated_client.block_user(user_id, "all", [block_type])
-        )
-        assert block["user_id"] == user_id
-    first = assert_success(
-        await authenticated_client.send_request(
-            "core.user.block.list",
-            {"user_id": user_id.upper().replace("-", ""), "page_size": 1},
-        )
-    )
-    data = {"user_id": user_id, "page_size": 1, "cursor": first["next_cursor"]}
-    second = assert_success(
-        await authenticated_client.send_request("core.user.block.list", data)
-    )
-    assert second["items"][0]["block_id"] != first["items"][0]["block_id"]
-    assert second["items"][0]["user_id"] == user_id
-    assert_error(
-        await authenticated_client.send_request(
-            "core.user.block.list", {**data, "user_id": other["user_id"]}
-        ),
-        400,
-    )
-    missing = assert_success(
-        await authenticated_client.send_request(
-            "core.user.block.list", {"user_id": str(uuid.uuid4())}
-        )
-    )
-    assert missing["items"] == []
 
 
 async def test_administrator_manages_keyring_by_user_id(

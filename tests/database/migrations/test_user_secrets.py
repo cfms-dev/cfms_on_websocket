@@ -68,7 +68,15 @@ def test_secret_migration_preserves_data_and_round_trips(
     if extension_tables:
         extra.create_all(engine)
     tables = {**Base.metadata.tables, **OIDCBase.metadata.tables}
-    tables.pop("options")  # Absent at the historical secret-key migration boundary.
+    for future_table in (
+        "options",
+        "dacl_rules",
+        "dacl_rule_clauses",
+        "dacl_rule_atoms",
+    ):
+        tables.pop(
+            future_table, None
+        )  # Absent at the historical secret-key migration boundary.
     if extension_tables:
         tables.update(extra.tables)
     config = Config(_ALEMBIC_INI)
@@ -143,9 +151,9 @@ def test_secret_migration_preserves_data_and_round_trips(
         generated_keys = None
 
         for revision, nullable in (
-            ("head", False),
+            ("3815ba18197b", False),
             ("b2ea9cac8462", True),
-            ("head", False),
+            ("3815ba18197b", False),
         ):
             if nullable:
                 command.downgrade(config, revision)

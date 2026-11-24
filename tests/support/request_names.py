@@ -1,4 +1,20 @@
-"""Independent protocol 31 request-name and handler contract."""
+"""Independent protocol 32 request-name and handler contract."""
+
+REMOVED_PROTOCOL_31_ACTIONS = (
+    "core.document.move",
+    "core.directory.move",
+    "core.document.access_rule.get",
+    "core.document.access_rule.set",
+    "core.directory.access_rule.get",
+    "core.directory.access_rule.set",
+    "core.access.entry.grant",
+    "core.access.entry.revoke",
+    "core.access.entry.list",
+    "core.user.block.create",
+    "core.user.block.delete",
+    "core.user.block.update",
+    "core.user.block.list",
+)
 
 REQUEST_RENAMES = (
     (
@@ -133,8 +149,8 @@ REQUEST_RENAMES = (
     ),
     (
         "move_document",
-        "core.document.move",
-        "include.domains.documents.handlers.documents.RequestMoveDocumentHandler",
+        "core.document.reparent",
+        "include.domains.documents.handlers.documents.RequestReparentDocumentHandler",
     ),
     (
         "get_document_info",
@@ -143,13 +159,13 @@ REQUEST_RENAMES = (
     ),
     (
         "get_document_access_rules",
-        "core.document.access_rule.get",
-        "include.domains.documents.handlers.documents.RequestGetDocumentAccessRulesHandler",
+        "core.document.dacl.get",
+        "include.domains.documents.handlers.documents.RequestGetDocumentDaclHandler",
     ),
     (
         "set_document_rules",
-        "core.document.access_rule.set",
-        "include.domains.documents.handlers.documents.RequestSetDocumentRulesHandler",
+        "core.document.dacl.set",
+        "include.domains.documents.handlers.documents.RequestSetDocumentDaclHandler",
     ),
     (
         "set_document_tags",
@@ -198,13 +214,13 @@ REQUEST_RENAMES = (
     ),
     (
         "get_directory_access_rules",
-        "core.directory.access_rule.get",
-        "include.domains.documents.handlers.directories.RequestGetDirectoryAccessRulesHandler",
+        "core.directory.dacl.get",
+        "include.domains.documents.handlers.directories.RequestGetDirectoryDaclHandler",
     ),
     (
         "set_directory_rules",
-        "core.directory.access_rule.set",
-        "include.domains.documents.handlers.directories.RequestSetDirectoryRulesHandler",
+        "core.directory.dacl.set",
+        "include.domains.documents.handlers.directories.RequestSetDirectoryDaclHandler",
     ),
     (
         "create_directory",
@@ -233,8 +249,8 @@ REQUEST_RENAMES = (
     ),
     (
         "move_directory",
-        "core.directory.move",
-        "include.domains.documents.handlers.directories.RequestMoveDirectoryHandler",
+        "core.directory.reparent",
+        "include.domains.documents.handlers.directories.RequestReparentDirectoryHandler",
     ),
     (
         "list_deleted_items",
@@ -250,26 +266,6 @@ REQUEST_RENAMES = (
         "manage_user_status",
         "core.user.status.set",
         "include.domains.identity.handlers.users.RequestManageUserStatusHandler",
-    ),
-    (
-        "block_user",
-        "core.user.block.create",
-        "include.domains.identity.handlers.users.RequestBlockUserHandler",
-    ),
-    (
-        "unblock_user",
-        "core.user.block.delete",
-        "include.domains.identity.handlers.users.RequestUnblockUserHandler",
-    ),
-    (
-        "update_user_block",
-        "core.user.block.update",
-        "include.domains.identity.handlers.users.RequestUpdateUserBlockHandler",
-    ),
-    (
-        "list_user_blocks",
-        "core.user.block.list",
-        "include.domains.identity.handlers.users.RequestListUserBlocksHandler",
     ),
     (
         "list_users",
@@ -350,21 +346,6 @@ REQUEST_RENAMES = (
         "change_group_permissions",
         "core.group.permission.change",
         "include.domains.identity.handlers.groups.RequestChangeGroupPermissionsHandler",
-    ),
-    (
-        "grant_access",
-        "core.access.entry.grant",
-        "include.domains.access.handlers.RequestGrantAccessHandler",
-    ),
-    (
-        "revoke_access",
-        "core.access.entry.revoke",
-        "include.domains.access.handlers.RequestRevokeAccessHandler",
-    ),
-    (
-        "view_access_entries",
-        "core.access.entry.list",
-        "include.domains.access.handlers.RequestViewAccessEntriesHandler",
     ),
     (
         "lockdown",

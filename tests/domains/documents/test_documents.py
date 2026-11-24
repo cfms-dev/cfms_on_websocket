@@ -67,7 +67,7 @@ class TestDocumentOperations:
         assert info["metadata"]["last_modified_by"] == authenticated_client.user_id
 
     @pytest.mark.asyncio
-    async def test_get_document_info_omits_metadata_without_permission(
+    async def test_get_document_info_requires_read_metadata_permission(
         self,
         authenticated_client: CFMSTestClient,
         test_document: dict,
@@ -76,32 +76,37 @@ class TestDocumentOperations:
     ):
         document_id = test_document["document_id"]
 
-        set_response = await authenticated_client.set_document_tags(
-            document_id, ["restricted"]
+        assert_success(
+            await authenticated_client.set_document_tags(document_id, ["restricted"])
         )
-        assert_success(set_response)
 
         user = await user_factory()
-        grant_response = await authenticated_client.grant_access(
-            entity_type="user",
-            entity_identifier=user["user_id"],
-            target_type="document",
-            target_identifier=document_id,
-            access_types=["read"],
-            start_time=0.0,
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                document_id,
+                f'inherit off; allow [READ_CONTENT] to user("{user["user_id"]}");',
+            )
         )
-        assert_success(grant_response)
 
         client = await client_factory()
-        login_response = await client.login(user["username"], user["password"])
-        assert_success(login_response)
+        assert_success(await client.login(user["username"], user["password"]))
 
-        info_response = await client.get_document_info(document_id)
-        info = assert_success(info_response)
-        assert "metadata" not in info
+        assert_error(await client.get_document_info(document_id), 403)
+        assert_success(await client.get_document(document_id))
+
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                document_id,
+                f'inherit off; allow [READ_METADATA] to user("{user["user_id"]}");',
+            )
+        )
+        info = assert_success(await client.get_document_info(document_id))
+        assert info["metadata"]["tags"] == ["restricted"]
+        assert "access_rules" not in info
+        assert "info_code" not in info
 
     @pytest.mark.asyncio
-    async def test_set_document_tags_requires_permission(
+    async def test_set_document_tags_requires_write_metadata_permission(
         self,
         authenticated_client: CFMSTestClient,
         test_document: dict,
@@ -110,19 +115,26 @@ class TestDocumentOperations:
     ):
         user = await user_factory(nickname="Metadata User")
         document_id = test_document["document_id"]
-        grant_response = await authenticated_client.grant_access(
-            entity_type="user",
-            entity_identifier=user["user_id"],
-            target_type="document",
-            target_identifier=document_id,
-            access_types=["write"],
-            start_time=0.0,
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                document_id,
+                f'inherit off; allow [READ_CONTENT, WRITE_CONTENT] to user("{user["user_id"]}");',
+            )
         )
-        assert_success(grant_response)
         client = await client_factory()
         assert_success(await client.login(user["username"], user["password"]))
-        set_response = await client.set_document_tags(document_id, ["blocked"])
-        assert_error(set_response, 403)
+        assert_error(await client.set_document_tags(document_id, ["blocked"]), 403)
+
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                document_id,
+                f'inherit off; allow [WRITE_METADATA] to user("{user["user_id"]}");',
+            )
+        )
+        updated = assert_success(
+            await client.set_document_tags(document_id, ["allowed"])
+        )
+        assert updated["tags"] == ["allowed"]
 
     @pytest.mark.asyncio
     async def test_rename_document(
@@ -175,22 +187,19 @@ class TestDocumentOperations:
         assert error["data"]["duplicate_id"] == existing_document["document_id"]
 
     @pytest.mark.asyncio
-    async def test_invalid_access_rules_roll_back_document_creation(
+    async def test_invalid_dacl_rolls_back_document_creation(
         self,
         authenticated_client: CFMSTestClient,
         document_factory,
     ):
-        title = f"Invalid Access Rules {secrets.token_hex(4)}"
+        title = f"Invalid DACL {secrets.token_hex(4)}"
 
-        response = await authenticated_client.send_request(
-            "core.document.create",
-            {
-                "title": title,
-                "access_rules": {"read": None},
-            },
+        response = await authenticated_client.create_document(
+            title, dacl="allow [UNKNOWN_OP] to any;"
         )
 
-        assert_error(response, 400)
+        error = assert_error(response, 400)
+        assert error["data"]["diagnostics"]
         created_document = await document_factory(title, upload_file=None)
         assert created_document["title"] == title
 
@@ -255,12 +264,11 @@ class TestDocumentOperations:
         )
         owned_entities["directories"].append(move_winner["id"])
 
-        move_response = await authenticated_client.send_request(
-            "core.document.move",
-            {"document_id": document_id, "target_folder_id": target["id"]},
+        reparent_response = await authenticated_client.reparent_document(
+            document_id, target["id"]
         )
-        assert_error(move_response, 409)
-        assert move_response["data"]["duplicate_id"] == move_winner["id"]
+        assert_error(reparent_response, 409)
+        assert reparent_response["data"]["duplicate_id"] == move_winner["id"]
 
         rename_title = f"Rename Winner {suffix}"
         rename_winner = assert_success(

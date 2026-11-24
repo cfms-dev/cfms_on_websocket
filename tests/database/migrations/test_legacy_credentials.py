@@ -54,6 +54,10 @@ def test_real_legacy_schema_preserves_credentials_and_references(sqlite_engine_f
         config = Config(_ROOT / "src/alembic.ini")
         config.attributes["connection"] = connection
         command.stamp(config, "0460356a5ba6")
+        command.upgrade(config, "e952c02c1454")
+        assert connection.exec_driver_sql(
+            "SELECT parent_id FROM userblock_sub_entries"
+        ).scalars().all() == ["legacy-block"]
         command.upgrade(config, "head")
         with sessionmaker(bind=connection)() as session:
             user = session.scalar(select(User).where(User.username == "alice"))
@@ -94,9 +98,8 @@ def test_real_legacy_schema_preserves_credentials_and_references(sqlite_engine_f
         assert connection.exec_driver_sql(
             "SELECT tag FROM document_metadata_tags"
         ).scalars().all() == ["retained"]
-        assert connection.exec_driver_sql(
-            "SELECT parent_id FROM userblock_sub_entries"
-        ).scalars().all() == ["legacy-block"]
+        assert "userblock_sub_entries" not in inspect(connection).get_table_names()
+        assert "dacl_rules" in inspect(connection).get_table_names()
         assert connection.exec_driver_sql(
             "SELECT id FROM schedule_executions"
         ).scalars().all() == ["legacy-execution"]

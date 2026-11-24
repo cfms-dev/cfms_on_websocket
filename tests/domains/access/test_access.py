@@ -1,317 +1,432 @@
-"""
-Tests for access management operations.
-"""
+"""Integration tests for CACL DACL authorization, reparenting, and atomic directory deletion."""
 
-import secrets
+from pathlib import Path
 
 import pytest
 
+from include.domains.access.permissions import Permissions
 from tests.support.client import CFMSTestClient
-from tests.support.utils import assert_success
+from tests.support.utils import assert_error, assert_success, permission_entry
 
 pytestmark = pytest.mark.integration
 
 
-class TestAccessManagement:
-    """Test access grant and revoke operations."""
+class TestCaclDaclEndpoints:
+    """Test CACL DACL inspection, updates, diagnostics, and anti-lockout."""
 
     @pytest.mark.asyncio
-    async def test_grant_and_revoke_access(
-        self, authenticated_client: CFMSTestClient, owned_entities
+    async def test_document_and_directory_dacl_round_trip_and_annotations(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
     ):
-        """Test granting and revoking access to a document."""
-        # Create a test user
-        test_username = f"test_user_access_{secrets.token_hex(6)}"
-        test_password = "TestPassword123!"
+        user = await user_factory()
+        directory = await directory_factory()
+        document = await document_factory(folder_id=directory["folder_id"])
 
-        user_response = await authenticated_client.create_user(
-            username=test_username, password=test_password
+        dir_policy = (
+            "inherit off;\n"
+            f'allow [TRAVERSE, LIST_DIRECTORY, READ_METADATA] to user("{user["user_id"]}");\n'
         )
-        assert user_response["code"] == 200, f"Failed to create user: {user_response}"
-        owned_entities["users"].append(user_response["data"]["user_id"])
+        set_dir = assert_success(
+            await authenticated_client.set_directory_dacl(
+                directory["folder_id"], dir_policy
+            )
+        )
+        assert set_dir["inherit"] is False
+        assert set_dir["diagnostics"] == []
 
-        # Create a test document
-        doc_response = await authenticated_client.create_document(
-            title=f"Test Document {secrets.token_hex(6)}"
+        get_dir = assert_success(
+            await authenticated_client.get_directory_dacl(
+                directory["folder_id"], annotate_users=True
+            )
         )
-        assert doc_response["code"] == 200, f"Failed to create document: {doc_response}"
-        owned_entities["documents"].append(doc_response["data"]["document_id"])
-        document_id = doc_response["data"]["document_id"]
+        assert get_dir["inherit"] is False
+        assert user["user_id"] in get_dir["dacl"]
+        assert user["username"] not in get_dir["dacl"]
+        assert user["username"] in get_dir["annotated_dacl"]
+        assert get_dir["fingerprint"] == set_dir["fingerprint"]
 
-        # Grant access to the user for the document
-        grant_response = await authenticated_client.grant_access(
-            entity_type="user",
-            entity_identifier=user_response["data"]["user_id"],
-            target_type="document",
-            target_identifier=document_id,
-            access_types=["read"],
-            start_time=0.0,
+        doc_policy = (
+            f'allow [READ_CONTENT, READ_METADATA] to user("{user["user_id"]}");\n'
+            'allow [READ_METADATA] to user("00000000-0000-4000-8000-000000000099");\n'
         )
-        assert grant_response["code"] == 200, (
-            f"Failed to grant access: {grant_response}"
+        set_doc = assert_success(
+            await authenticated_client.set_document_dacl(
+                document["document_id"], doc_policy
+            )
         )
+        assert set_doc["inherit"] is True
+        assert any(d["code"] == "W301" for d in set_doc["diagnostics"])
 
-        # View access entries for the user
-        view_response = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=user_response["data"]["user_id"]
+        get_doc = assert_success(
+            await authenticated_client.get_document_dacl(document["document_id"])
         )
-        assert view_response["code"] == 200, (
-            f"Failed to view access entries: {view_response}"
+        assert get_doc["inherit"] is True
+        assert "00000000-0000-4000-8000-000000000099" in get_doc["dacl"]
+
+        invalid = await authenticated_client.set_document_dacl(
+            document["document_id"], "allow [BOGUS_OP] to any;"
         )
-        assert "items" in view_response["data"], "Response missing 'items'"
-
-        entries = view_response["data"]["items"]
-        assert len(entries) == 1, f"Expected 1 access entry, got {len(entries)}"
-
-        entry = entries[0]
-        assert "id" in entry, "Access entry missing 'id' field"
-        assert entry["entity_type"] == "user"
-        target_info = assert_success(
-            await authenticated_client.get_user_info(username=test_username)
+        err = assert_error(invalid, 400)
+        assert err["data"]["diagnostics"]
+        # Failed save must not mutate the persisted DACL.
+        after_invalid = assert_success(
+            await authenticated_client.get_document_dacl(document["document_id"])
         )
-        assert entry["entity_identifier"] == target_info["user_id"]
-        assert entry["target_type"] == "document"
-        assert entry["target_identifier"] == document_id
-        assert entry["access_type"] == "read"
-
-        entry_id = entry["id"]
-
-        # Revoke the access
-        revoke_response = await authenticated_client.revoke_access(entry_id)
-        assert revoke_response["code"] == 200, (
-            f"Failed to revoke access: {revoke_response}"
-        )
-
-        # Verify the access was revoked
-        view_after_revoke = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=user_response["data"]["user_id"]
-        )
-        assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["items"]
-        assert len(entries_after) == 0, (
-            f"Expected 0 access entries after revoke, got {len(entries_after)}"
-        )
-
-        # Clean up
-        await authenticated_client.delete_document(document_id)
-        await authenticated_client.delete_user(user_response["data"]["user_id"])
+        assert after_invalid["dacl"] == get_doc["dacl"]
 
     @pytest.mark.asyncio
-    async def test_revoke_nonexistent_entry(self, authenticated_client: CFMSTestClient):
-        """Test revoking a non-existent access entry."""
-        # Try to revoke an entry that doesn't exist
-        revoke_response = await authenticated_client.revoke_access(999999)
-        assert revoke_response["code"] == 404, (
-            "Should return 404 for non-existent entry"
-        )
-
-    @pytest.mark.asyncio
-    async def test_grant_multiple_access_types(
-        self, authenticated_client: CFMSTestClient, user_factory, owned_entities
+    async def test_soft_anti_lockout_and_explicit_override(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        user_factory,
+        client_factory,
     ):
-        """Test granting multiple access types and revoking them individually."""
-        # Create a test user
-        test_username = f"test_user_multi_{secrets.token_hex(6)}"
-        test_password = "TestPassword123!"
-
-        user_response = await authenticated_client.create_user(
-            username=test_username, password=test_password
-        )
-        assert user_response["code"] == 200
-        owned_entities["users"].append(user_response["data"]["user_id"])
-
-        # Create a test document
-        doc_response = await authenticated_client.create_document(
-            title=f"Test Document Multi {secrets.token_hex(6)}"
-        )
-        assert doc_response["code"] == 200
-        owned_entities["documents"].append(doc_response["data"]["document_id"])
-        document_id = doc_response["data"]["document_id"]
-
-        # Grant multiple access types
-        grant_response = await authenticated_client.grant_access(
-            entity_type="user",
-            entity_identifier=user_response["data"]["user_id"],
-            target_type="document",
-            target_identifier=document_id,
-            access_types=["read", "write"],
-            start_time=0.0,
-        )
-        assert grant_response["code"] == 200
-
-        # View access entries - should have 2 entries
-        view_response = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=user_response["data"]["user_id"]
-        )
-        assert view_response["code"] == 200
-        entries = view_response["data"]["items"]
-        assert len(entries) == 2, f"Expected 2 access entries, got {len(entries)}"
-
-        first_page_response = await authenticated_client.view_access_entries(
-            object_type="user",
-            object_identifier=user_response["data"]["user_id"].upper().replace("-", ""),
-            page_size=1,
-        )
-        first_page = first_page_response["data"]
-        second_page_response = await authenticated_client.view_access_entries(
-            object_type="user",
-            object_identifier=user_response["data"]["user_id"],
-            page_size=1,
-            cursor=first_page["next_cursor"],
-        )
-        second_page = second_page_response["data"]
-        assert len(first_page["items"]) == 1
-        assert len(second_page["items"]) == 1
-        assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
-
-        other = await user_factory()
-        wrong_user = await authenticated_client.view_access_entries(
-            object_type="user",
-            object_identifier=other["user_id"],
-            cursor=first_page["next_cursor"],
-            page_size=1,
-        )
-        assert wrong_user["code"] == 400
-
-        # Revoke one access type
-        first_entry_id = entries[0]["id"]
-        revoke_response = await authenticated_client.revoke_access(first_entry_id)
-        assert revoke_response["code"] == 200
-
-        # Verify only one entry remains
-        view_after_revoke = await authenticated_client.view_access_entries(
-            object_type="user", object_identifier=user_response["data"]["user_id"]
-        )
-        assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["items"]
-        assert len(entries_after) == 1, (
-            f"Expected 1 access entry after revoke, got {len(entries_after)}"
+        user = await user_factory()
+        directory = await directory_factory()
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                directory["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, READ_DACL, WRITE_DACL, READ_METADATA] "
+                    f'to user("{user["user_id"]}");'
+                ),
+            )
         )
 
-        # Clean up - revoke the remaining entry
-        remaining_entry_id = entries_after[0]["id"]
-        await authenticated_client.revoke_access(remaining_entry_id)
+        user_client = await client_factory()
+        assert_success(await user_client.login(user["username"], user["password"]))
 
-        await authenticated_client.delete_document(document_id)
-        await authenticated_client.delete_user(user_response["data"]["user_id"])
+        # Removing own write_dacl without allow_self_lockout returns 409 warning.
+        blocked = await user_client.set_directory_dacl(
+            directory["folder_id"],
+            f'inherit off; allow [READ_METADATA] to user("{user["user_id"]}");',
+        )
+        err = assert_error(blocked, 409)
+        assert err["data"]["self_lockout_warning"] is True
+
+        # Retry with allow_self_lockout=True succeeds, and subsequent edits are forbidden.
+        assert_success(
+            await user_client.set_directory_dacl(
+                directory["folder_id"],
+                f'inherit off; allow [READ_METADATA] to user("{user["user_id"]}");',
+                allow_self_lockout=True,
+            )
+        )
+        assert_error(
+            await user_client.set_directory_dacl(
+                directory["folder_id"],
+                f'inherit off; allow [WRITE_DACL] to user("{user["user_id"]}");',
+            ),
+            403,
+        )
+
+        # Admin with BYPASS_DACL can always recover access.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                directory["folder_id"],
+                f'inherit off; allow [READ_DACL, WRITE_DACL] to user("{user["user_id"]}");',
+            )
+        )
+        assert_success(await user_client.get_directory_dacl(directory["folder_id"]))
 
     @pytest.mark.asyncio
-    async def test_grant_access_to_group(
-        self, authenticated_client: CFMSTestClient, owned_entities
+    async def test_create_with_initial_dacl_requires_write_dacl_on_parent(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        user_factory,
+        client_factory,
+        owned_entities,
     ):
-        """Test granting and revoking access for a group."""
-        # Create a test group
-        test_group_name = f"test_group_{secrets.token_hex(6)}"
-
-        group_response = await authenticated_client.create_group(
-            group_name=test_group_name
+        user = await user_factory()
+        parent = await directory_factory()
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, CREATE_DIRECTORY, CREATE_DOCUMENT] "
+                    f'to user("{user["user_id"]}");'
+                ),
+            )
         )
-        assert group_response["code"] == 200
-        owned_entities["groups"].append(test_group_name)
+        user_client = await client_factory()
+        assert_success(await user_client.login(user["username"], user["password"]))
 
-        # Create a test document
-        doc_response = await authenticated_client.create_document(
-            title=f"Test Document Group {secrets.token_hex(6)}"
+        # Creating with initial dacl without write_dacl on parent is rejected (403).
+        assert_error(
+            await user_client.create_directory(
+                "NeedsWriteDacl",
+                parent_id=parent["folder_id"],
+                dacl="inherit off;",
+            ),
+            403,
         )
-        assert doc_response["code"] == 200
-        owned_entities["documents"].append(doc_response["data"]["document_id"])
-        document_id = doc_response["data"]["document_id"]
-
-        # Grant access to the group for the document
-        grant_response = await authenticated_client.grant_access(
-            entity_type="group",
-            entity_identifier=test_group_name,
-            target_type="document",
-            target_identifier=document_id,
-            access_types=["read"],
-            start_time=0.0,
+        assert_error(
+            await user_client.create_document(
+                "DocNeedsWriteDacl",
+                folder_id=parent["folder_id"],
+                dacl="inherit off;",
+            ),
+            403,
         )
-        assert grant_response["code"] == 200
 
-        # View access entries for the group
-        view_response = await authenticated_client.view_access_entries(
-            object_type="group", object_identifier=test_group_name
+        # Granting write_dacl allows setting initial dacl (with anti-lockout check).
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, CREATE_DIRECTORY, CREATE_DOCUMENT, WRITE_DACL] "
+                    f'to user("{user["user_id"]}");'
+                ),
+            )
         )
-        assert view_response["code"] == 200
-        entries = view_response["data"]["items"]
-        assert len(entries) == 1
-
-        entry_id = entries[0]["id"]
-
-        # Revoke the access
-        revoke_response = await authenticated_client.revoke_access(entry_id)
-        assert revoke_response["code"] == 200
-
-        # Verify the access was revoked
-        view_after_revoke = await authenticated_client.view_access_entries(
-            object_type="group", object_identifier=test_group_name
+        lockout = await user_client.create_directory(
+            "LockoutChild",
+            parent_id=parent["folder_id"],
+            dacl="inherit off;",
         )
-        assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["items"]
-        assert len(entries_after) == 0
+        assert assert_error(lockout, 409)["data"]["self_lockout_warning"] is True
 
-        # Clean up
-        await authenticated_client.delete_document(document_id)
-        await authenticated_client.send_request(
-            "core.group.delete", {"group_name": test_group_name}
+        created = assert_success(
+            await user_client.create_directory(
+                "AllowedChild",
+                parent_id=parent["folder_id"],
+                dacl=f'inherit off; allow [READ_DACL, WRITE_DACL] to user("{user["user_id"]}");',
+            )
+        )
+        owned_entities["directories"].append(created["id"])
+        dacl_info = assert_success(await user_client.get_directory_dacl(created["id"]))
+        assert dacl_info["inherit"] is False
+
+
+class TestCaclAuthorizationSemantics:
+    """Test inheritance, traverse, scopes, revisions, atomic deletion, and reparent."""
+
+    @pytest.mark.asyncio
+    async def test_ancestor_traverse_and_bypass_traverse_checking_permission(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        user = await user_factory()
+        parent = await directory_factory()
+        doc = await document_factory(folder_id=parent["folder_id"])
+
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"], "inherit off;"
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                doc["document_id"],
+                f'inherit off; allow [READ_METADATA] to user("{user["user_id"]}");',
+            )
+        )
+
+        user_client = await client_factory()
+        assert_success(await user_client.login(user["username"], user["password"]))
+        # Denied because user lacks TRAVERSE on parent.
+        assert_error(await user_client.get_document_info(doc["document_id"]), 403)
+
+        # Granting BYPASS_TRAVERSE_CHECKING bypasses ancestor traverse check.
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                user["user_id"],
+                [permission_entry(Permissions.BYPASS_TRAVERSE_CHECKING)],
+            )
+        )
+        assert_success(await user_client.get_document_info(doc["document_id"]))
+
+    @pytest.mark.asyncio
+    async def test_revision_get_distinguishes_current_vs_historical_ops(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+        user_factory,
+        client_factory,
+        tmp_path: Path,
+    ):
+        user = await user_factory()
+        doc = await document_factory("RevisionAuthDoc")
+        doc_id = doc["document_id"]
+        first_revs = assert_success(await authenticated_client.list_revisions(doc_id))
+        historical_rev_id = first_revs["items"][0]["id"]
+
+        second_file = tmp_path / "v2.bin"
+        second_file.write_bytes(b"version-2")
+        upload_task = assert_success(await authenticated_client.upload_document(doc_id))
+        await authenticated_client.upload_file_to_server(
+            upload_task["task_data"]["task_id"], str(second_file)
+        )
+        all_revs = assert_success(await authenticated_client.list_revisions(doc_id))
+        current_rev_id = next(r["id"] for r in all_revs["items"] if r["is_current"])
+
+        # Grant ONLY READ_CONTENT (not READ_REVISION).
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                doc_id,
+                f'inherit off; allow [READ_CONTENT] to user("{user["user_id"]}");',
+            )
+        )
+        user_client = await client_factory()
+        assert_success(await user_client.login(user["username"], user["password"]))
+
+        assert_success(await user_client.get_revision(current_rev_id))
+        assert_error(await user_client.get_revision(historical_rev_id), 403)
+
+        # Grant ONLY READ_REVISION (not READ_CONTENT).
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                doc_id,
+                f'inherit off; allow [READ_REVISION] to user("{user["user_id"]}");',
+            )
+        )
+        assert_error(await user_client.get_revision(current_rev_id), 403)
+        assert_success(await user_client.get_revision(historical_rev_id))
+
+    @pytest.mark.asyncio
+    async def test_directory_soft_delete_is_atomic_and_honors_delete_child(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        user = await user_factory()
+        parent = await directory_factory()
+        child_dir = await directory_factory(parent_id=parent["folder_id"])
+        protected_doc = await document_factory(
+            "ProtectedChildDoc", folder_id=child_dir["folder_id"]
+        )
+
+        # User has DELETE on parent & child_dir, but NOT on protected_doc, and NO DIRECTORY_DELETE_CHILD.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                f'inherit off; allow [TRAVERSE, DELETE] to user("{user["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                protected_doc["document_id"],
+                f'inherit off; allow [READ_METADATA] to user("{user["user_id"]}");',
+            )
+        )
+
+        user_client = await client_factory()
+        assert_success(await user_client.login(user["username"], user["password"]))
+
+        assert_error(await user_client.delete_directory(parent["folder_id"]), 403)
+        # Atomic check: neither parent, child_dir, nor protected_doc was deleted.
+        assert_success(
+            await authenticated_client.get_directory_info(parent["folder_id"])
+        )
+        assert_success(
+            await authenticated_client.get_directory_info(child_dir["folder_id"])
+        )
+        assert_success(
+            await authenticated_client.get_document_info(protected_doc["document_id"])
+        )
+
+        # Granting DIRECTORY_DELETE_CHILD on parent authorizes the entire subtree delete.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, DELETE, DIRECTORY_DELETE_CHILD] "
+                    f'to user("{user["user_id"]}");'
+                ),
+            )
+        )
+        assert_success(await user_client.delete_directory(parent["folder_id"]))
+        assert_error(
+            await authenticated_client.get_directory_info(parent["folder_id"]), 404
+        )
+        assert_error(
+            await authenticated_client.get_document_info(protected_doc["document_id"]),
+            404,
         )
 
     @pytest.mark.asyncio
-    async def test_grant_access_to_directory(
-        self, authenticated_client: CFMSTestClient, owned_entities
+    async def test_reparent_authorization_and_inherited_dacl_change(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
     ):
-        """Test granting and revoking access for a directory."""
-        # Create a test user
-        test_username = f"test_user_dir_{secrets.token_hex(6)}"
-        test_password = "TestPassword123!"
+        actor = await user_factory()
+        observer = await user_factory()
+        source = await directory_factory()
+        target = await directory_factory()
+        doc = await document_factory("ReparentAuthDoc", folder_id=source["folder_id"])
 
-        user_response = await authenticated_client.create_user(
-            username=test_username, password=test_password
+        # Source lets observer read; target denies observer.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                source["folder_id"],
+                (
+                    "inherit off;\n"
+                    f'allow [TRAVERSE, REPARENT] to user("{actor["user_id"]}");\n'
+                    f'allow [TRAVERSE, READ_METADATA] to user("{observer["user_id"]}");\n'
+                ),
+            )
         )
-        assert user_response["code"] == 200
-        owned_entities["users"].append(user_response["data"]["user_id"])
-
-        # Create a test directory
-        dir_response = await authenticated_client.create_directory(
-            name=f"Test Directory {secrets.token_hex(6)}"
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                target["folder_id"],
+                f'inherit off; allow [TRAVERSE] to user("{actor["user_id"]}");',
+            )
         )
-        assert dir_response["code"] == 200
-        owned_entities["directories"].append(dir_response["data"]["id"])
-        directory_id = dir_response["data"]["id"]
 
-        # Grant access to the user for the directory
-        grant_response = await authenticated_client.grant_access(
-            entity_type="user",
-            entity_identifier=user_response["data"]["user_id"],
-            target_type="directory",
-            target_identifier=directory_id,
-            access_types=["read"],
-            start_time=0.0,
+        actor_client = await client_factory()
+        assert_success(await actor_client.login(actor["username"], actor["password"]))
+        observer_client = await client_factory()
+        assert_success(
+            await observer_client.login(observer["username"], observer["password"])
         )
-        assert grant_response["code"] == 200
 
-        # View access entries for the directory
-        view_response = await authenticated_client.view_access_entries(
-            object_type="directory", object_identifier=directory_id
+        # Observer can read before reparent.
+        assert_success(await observer_client.get_document_info(doc["document_id"]))
+
+        # Actor lacks CREATE_DOCUMENT on target -> 403.
+        assert_error(
+            await actor_client.reparent_document(
+                doc["document_id"], target["folder_id"]
+            ),
+            403,
         )
-        assert view_response["code"] == 200
-        entries = view_response["data"]["items"]
-        assert len(entries) == 1
 
-        entry_id = entries[0]["id"]
-
-        # Revoke the access
-        revoke_response = await authenticated_client.revoke_access(entry_id)
-        assert revoke_response["code"] == 200
-
-        # Verify the access was revoked
-        view_after_revoke = await authenticated_client.view_access_entries(
-            object_type="directory", object_identifier=directory_id
+        # Grant CREATE_DOCUMENT on target -> reparent succeeds.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                target["folder_id"],
+                (
+                    "inherit off; "
+                    f'allow [TRAVERSE, CREATE_DOCUMENT] to user("{actor["user_id"]}");'
+                ),
+            )
         )
-        assert view_after_revoke["code"] == 200
-        entries_after = view_after_revoke["data"]["items"]
-        assert len(entries_after) == 0
+        assert_success(
+            await actor_client.reparent_document(
+                doc["document_id"], target["folder_id"]
+            )
+        )
 
-        # Clean up
-        await authenticated_client.delete_directory(directory_id)
-        await authenticated_client.delete_user(user_response["data"]["user_id"])
+        # After reparent, doc inherits target's DACL so observer loses access.
+        assert_error(await observer_client.get_document_info(doc["document_id"]), 403)

@@ -141,8 +141,8 @@ def test_conflict_description_hides_unreadable_winner_id(
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
         name_conflicts,
-        "check_access_requirements",
-        lambda session, target, user, access_type: readable,
+        "authorize_node_operation",
+        lambda session, user, target, op: SimpleNamespace(allowed=readable),
     )
     with Session(engine) as session:
         root = Folder(id="/", name="/")
@@ -169,7 +169,7 @@ def test_conflict_description_rejects_unsupported_node_before_access_check(
 
     monkeypatch.setattr(
         name_conflicts,
-        "check_access_requirements",
+        "authorize_node_operation",
         lambda *_args: pytest.fail("access check received an unsupported node"),
     )
     winner = Node(id="winner", type="node", name="Report", parent_id="/")
@@ -232,8 +232,8 @@ def test_subtree_restore_conflict_reports_descendant_winner(
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
         name_conflicts,
-        "check_access_requirements",
-        lambda session, target, user, access_type: True,
+        "authorize_node_operation",
+        lambda session, user, target, op: SimpleNamespace(allowed=True),
     )
     with Session(engine) as session:
         root = Folder(id="/", name="/")

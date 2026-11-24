@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from include.database import models
 from include.database.session import Base
+from include.domains.access.authorization.storage import (
+    compile_policy_source,
+    persist_node_policy,
+)
 from include.domains.documents.commands import bulk_purge
 from include.domains.documents.queries.file_references import (
     _clear_file_references_cache,
@@ -86,9 +90,9 @@ def test_purge_documents_bulk_deletes_revisions_before_files(purge_context):
                 ),
             ]
         )
-        document.access_rule_sets.append(
-            models.CompiledAccessRuleSet(id="rule-set-doc1")
-        )
+        compiled = compile_policy_source(session, "allow [READ_CONTENT] to any;")
+        assert compiled.policy is not None
+        persist_node_policy(session, document, compiled.policy)
 
     with purge_context.sessions.begin() as session:
         bulk_purge.purge_documents_bulk(session, ["doc1"])
@@ -97,7 +101,9 @@ def test_purge_documents_bulk_deletes_revisions_before_files(purge_context):
         assert session.get(models.Document, "doc1") is None
         assert session.get(models.Node, "doc1") is None
         assert session.scalars(select(models.DocumentRevision)).all() == []
-        assert session.scalars(select(models.CompiledAccessRuleSet)).all() == []
+        assert session.scalars(select(models.NodeDaclRule)).all() == []
+        assert session.scalars(select(models.NodeDaclClause)).all() == []
+        assert session.scalars(select(models.NodeDaclAtom)).all() == []
         assert session.scalars(select(models.FileTask)).all() == []
         assert session.scalars(select(models.File)).all() == []
     assert purge_context.queued == [("uploads/file1", ("upload-session-1",))]
@@ -107,9 +113,9 @@ def test_purge_documents_bulk_keeps_shared_files(purge_context):
     with purge_context.sessions.begin() as session:
         document = _seed_document_with_revision(session, "doc1", "rev1", "shared")
         _seed_document_with_revision(session, "doc2", "rev2", "shared")
-        document.access_rule_sets.append(
-            models.CompiledAccessRuleSet(id="rule-set-doc1")
-        )
+        compiled = compile_policy_source(session, "allow [READ_CONTENT] to any;")
+        assert compiled.policy is not None
+        persist_node_policy(session, document, compiled.policy)
 
     with purge_context.sessions.begin() as session:
         bulk_purge.purge_documents_bulk(session, ["doc1"])
@@ -121,7 +127,7 @@ def test_purge_documents_bulk_keeps_shared_files(purge_context):
         assert session.get(models.Document, "doc2") is not None
         assert session.get(models.Node, "doc2") is not None
         assert session.get(models.DocumentRevision, "rev2") is not None
-        assert session.scalars(select(models.CompiledAccessRuleSet)).all() == []
+        assert session.scalars(select(models.NodeDaclRule)).all() == []
         assert session.get(models.File, "shared") is not None
     assert purge_context.queued == []
 

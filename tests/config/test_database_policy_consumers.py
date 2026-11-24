@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from cacl_compiler import AtomicOp
 from sqlalchemy import select
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,8 +15,11 @@ from include.database.models.identity import User
 from include.database.models.operations import AuditEntry
 from include.database.models.scheduling import Schedule
 from include.database.session import Base
-from include.domains.access.authorization.access_rules import set_access_rules
-from include.domains.access.authorization.evaluation import check_access_requirements
+from include.domains.access.authorization.evaluation import authorize_node_operation
+from include.domains.access.authorization.storage import (
+    compile_policy_source,
+    persist_node_policy,
+)
 from include.domains.identity.auth.password_state import (
     assess_password,
     password_change_requirement,
@@ -101,7 +105,7 @@ def test_password_assessment_is_invalidated_by_database_policy_change(policy_ses
 
 
 @pytest.mark.component
-def test_access_recursion_uses_the_latest_database_value(policy_sessions):
+def test_access_traverse_bypass_uses_the_latest_database_value(policy_sessions):
     with policy_sessions.begin() as session:
         user = User(username="reader")
         parent = Folder(id="/", name="/", inherit=False)
@@ -110,20 +114,26 @@ def test_access_recursion_uses_the_latest_database_value(policy_sessions):
         session.flush()
         session.add(child)
         session.flush()
-        set_access_rules(
-            parent,
-            {"read": [{"match": "any", "match_groups": []}]},
-            inherit_parent=False,
+        root_compiled = compile_policy_source(session, "inherit off;")
+        assert root_compiled.policy is not None
+        persist_node_policy(session, parent, root_compiled.policy)
+        child_compiled = compile_policy_source(
+            session, "allow [LIST_DIRECTORY] to any;"
         )
-        set_access_rules(child, {"read": []})
-        assert not check_access_requirements(session, user, child)
+        assert child_compiled.policy is not None
+        persist_node_policy(session, child, child_compiled.policy)
+        assert not authorize_node_operation(
+            session, user, child, AtomicOp.LIST_DIRECTORY
+        ).allowed
         write_options(
             session,
             "access",
-            {"enable_access_recursive_check": False},
-            expected_revisions={"enable_access_recursive_check": 0},
+            {"bypass_traverse_checking": True},
+            expected_revisions={"bypass_traverse_checking": 0},
         )
-        assert check_access_requirements(session, user, child)
+        assert authorize_node_operation(
+            session, user, child, AtomicOp.LIST_DIRECTORY
+        ).allowed
 
 
 @pytest.mark.component
