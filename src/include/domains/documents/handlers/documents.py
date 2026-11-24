@@ -26,7 +26,6 @@ from pydantic import ConfigDict, Field, StringConstraints
 lazy from sqlalchemy.orm import Session as ORMSession
 
 from include.config.constants import (
-    DACL_SOURCE_MAX_LENGTH,
     DOWNLOAD_TRANSFER_MAX_CHUNK_SIZE,
     DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
     FILE_TASK_DEFAULT_DURATION_SECONDS,
@@ -48,19 +47,13 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import (
     authorize_create_on_parent,
-    authorize_dacl_read,
     authorize_node_operation,
     authorize_reparent,
     authorize_restore,
-    authorize_write_dacl_and_load_path,
-    simulate_dacl_save_lockout,
-    would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
-    compile_policy_source,
     delete_node_dacl_rules_for_targets,
     persist_node_policy,
-    render_policy_text,
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import (
@@ -82,6 +75,12 @@ from include.domains.documents.commands.upload_cleanup import (
 from include.domains.documents.creation_limits import check_document_creation_limits
 from include.domains.documents.download_limits import check_download_issue_limits
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
+from include.domains.documents.handlers.dacl import (
+    DaclSource,
+    handle_get_node_dacl,
+    handle_set_node_dacl,
+    prepare_initial_node_dacl,
+)
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
@@ -107,7 +106,6 @@ lazy from include.domains.documents.types import RevisionID
 _Sha256 = Annotated[str, StringConstraints(pattern="^[0-9A-Fa-f]{64}$")]
 _Tag = Annotated[str, StringConstraints(min_length=1, max_length=255)]
 _NonNegativeInteger = Annotated[JsonInteger, Field(ge=0)]
-_DaclSource = Annotated[str, StringConstraints(max_length=DACL_SOURCE_MAX_LENGTH)]
 
 
 class _DocumentInfoRequest(RequestDataModel):
@@ -131,14 +129,14 @@ class _GetDocumentDaclRequest(RequestDataModel):
 
 class _SetDocumentDaclRequest(RequestDataModel):
     document_id: NonEmptyString
-    dacl: _DaclSource
+    dacl: DaclSource
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
 
 
 class _CreateDocumentRequest(RequestDataModel):
     folder_id: str | None = None
     title: NonEmptyString
-    dacl: Omittable[_DaclSource] = REQUEST_UNSET
+    dacl: Omittable[DaclSource] = REQUEST_UNSET
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
 
 
@@ -306,7 +304,6 @@ class RequestGetDocumentDaclHandler(RequestHandler[_GetDocumentDaclRequest]):
     rate_limit_cost = 2
 
     def handle(self, handler, request):
-        document_id: str = request.document_id
         annotate_users: bool = (
             request.annotate_users
             if request.annotate_users is not REQUEST_UNSET
@@ -314,34 +311,15 @@ class RequestGetDocumentDaclHandler(RequestHandler[_GetDocumentDaclRequest]):
         )
 
         with Session() as session:
-            user = User.get_existing(session, handler.user_id)
-            document = session.get(Document, document_id)
-
-            if not document:
-                handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, user_id=handler.user_id)
-
-            allowed, policy = authorize_dacl_read(session, user, document)
-            if not allowed or policy is None:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_READ_DACL)
-                return Result(code=403, target=document_id, user_id=handler.user_id)
-
-            response_data: dict[str, Any] = {
-                "dacl": render_policy_text(policy),
-                "inherit": policy.inherit,
-                "fingerprint": policy.fingerprint(),
-            }
-            if annotate_users:
-                response_data["annotated_dacl"] = render_policy_text(
-                    policy, session=session, annotate_users=True
-                )
-
-            handler.conclude_request(
-                200,
-                response_data,
-                "Document DACL retrieved successfully",
+            return handle_get_node_dacl(
+                session,
+                handler,
+                model_cls=Document,
+                target_id=request.document_id,
+                annotate_users=annotate_users,
+                not_found_message=smsg.DOCUMENT_NOT_FOUND,
+                success_message="Document DACL retrieved successfully",
             )
-            return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
 class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
@@ -352,8 +330,6 @@ class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
     rate_limit_cost = 5
 
     def handle(self, handler, request):
-        document_id: str = request.document_id
-        dacl_source: str = request.dacl
         allow_self_lockout: bool = (
             request.allow_self_lockout
             if request.allow_self_lockout is not REQUEST_UNSET
@@ -361,68 +337,18 @@ class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
         )
 
         with Session() as session:
-            user = User.get_existing(session, handler.user_id)
-            document = session.get(Document, document_id)
-
-            if not document:
-                handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, user_id=handler.user_id)
-
-            authorized, current_path, check_traverse = (
-                authorize_write_dacl_and_load_path(session, user, document)
-            )
-            if not authorized:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
-                return Result(code=403, target=document_id, user_id=handler.user_id)
-
-            compiled = compile_policy_source(
+            return handle_set_node_dacl(
                 session,
-                dacl_source,
+                handler,
+                model_cls=Document,
                 target_type=ObjectType.DOCUMENT,
-                strict_principals=False,
+                target_id=request.document_id,
+                dacl_source=request.dacl,
+                allow_self_lockout=allow_self_lockout,
+                not_found_message=smsg.DOCUMENT_NOT_FOUND,
+                success_message="Document DACL updated successfully",
+                on_before_commit=lambda doc, u: mark_document_modified(doc, u.id),
             )
-            serialized_diags = [d.to_dict() for d in compiled.diagnostics]
-            if not compiled.ok or compiled.policy is None:
-                handler.conclude_request(
-                    400,
-                    {"diagnostics": serialized_diags},
-                    "Invalid CACL policy",
-                )
-                return Result(code=400, target=document_id, user_id=handler.user_id)
-
-            self_lockout_warning = simulate_dacl_save_lockout(
-                user,
-                current_path,
-                compiled.policy,
-                check_ancestor_traverse=check_traverse,
-            )
-            if self_lockout_warning and not allow_self_lockout:
-                handler.conclude_request(
-                    409,
-                    {
-                        "self_lockout_warning": True,
-                        "diagnostics": serialized_diags,
-                    },
-                    smsg.DACL_SELF_LOCKOUT,
-                )
-                return Result(code=409, target=document_id, user_id=handler.user_id)
-
-            persist_node_policy(session, document, compiled.policy)
-            mark_document_modified(document, user.id)
-            session.commit()
-
-            handler.conclude_request(
-                200,
-                {
-                    "dacl": render_policy_text(compiled.policy),
-                    "inherit": compiled.policy.inherit,
-                    "fingerprint": compiled.policy.fingerprint(),
-                    "diagnostics": serialized_diags,
-                    "self_lockout_warning": self_lockout_warning,
-                },
-                "Document DACL updated successfully",
-            )
-            return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
 class RequestGetDocumentHandler(RequestHandler[_DocumentIDRequest]):
@@ -554,65 +480,31 @@ def _create_document_in_transaction(
                 ),
             )
 
-        compiled_policy = None
-        if dacl_source is not None:
-            if not can_write_dacl:
-                return (
-                    403,
-                    {},
-                    smsg.ACCESS_DENIED_WRITE_DACL,
-                    Result(
-                        code=403,
-                        target=folder_id,
-                        data=result_data,
-                        user_id=user_id,
-                    ),
-                )
-            compiled = compile_policy_source(
-                session,
-                dacl_source,
-                target_type=ObjectType.DOCUMENT,
-                strict_principals=False,
+        compiled_policy, dacl_error = prepare_initial_node_dacl(
+            session,
+            user,
+            parent_folder,
+            object_type=ObjectType.DOCUMENT,
+            name=title,
+            dacl_source=dacl_source,
+            can_write_dacl=can_write_dacl,
+            allow_self_lockout=allow_self_lockout,
+            parent_path=parent_path,
+            check_ancestor_traverse=check_traverse,
+        )
+        if dacl_error is not None:
+            code, error_data, message = dacl_error
+            return (
+                code,
+                error_data,
+                message,
+                Result(
+                    code=code,
+                    target=folder_id,
+                    data=result_data,
+                    user_id=user_id,
+                ),
             )
-            serialized_diags = [d.to_dict() for d in compiled.diagnostics]
-            if not compiled.ok or compiled.policy is None:
-                return (
-                    400,
-                    {"diagnostics": serialized_diags},
-                    "Invalid CACL policy",
-                    Result(
-                        code=400,
-                        target=folder_id,
-                        data=result_data,
-                        user_id=user_id,
-                    ),
-                )
-            compiled_policy = compiled.policy
-
-            if not allow_self_lockout and would_self_lockout_on_create(
-                session,
-                user,
-                parent_folder,
-                ObjectType.DOCUMENT,
-                title,
-                compiled_policy,
-                parent_path=parent_path,
-                check_ancestor_traverse=check_traverse,
-            ):
-                return (
-                    409,
-                    {
-                        "self_lockout_warning": True,
-                        "diagnostics": serialized_diags,
-                    },
-                    smsg.DACL_SELF_LOCKOUT,
-                    Result(
-                        code=409,
-                        target=folder_id,
-                        data=result_data,
-                        user_id=user_id,
-                    ),
-                )
 
         limit_decision = check_document_creation_limits(
             session,

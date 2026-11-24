@@ -13,11 +13,12 @@ from include.database.models.access import datetime_to_epoch_us, epoch_us_to_dat
 from include.database.session import Base
 from include.domains.access.authorization.evaluation import (
     authorize_dacl_read,
-    authorize_dacl_save,
     authorize_directory_access_with_parent,
     authorize_node_operation,
     authorize_soft_delete_descendants,
+    authorize_write_dacl_and_load_path,
     check_directory_soft_delete_root,
+    simulate_dacl_save_lockout,
     would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
@@ -161,7 +162,7 @@ def test_half_open_time_window_and_next_transition_at(cacl_session):
     assert d_end.next_transition_at is None
 
 
-def test_authorize_dacl_save_detects_self_lockout(cacl_session):
+def test_authorize_write_dacl_and_simulate_lockout(cacl_session):
     alice = models.User(
         username="alice",
         nickname="Alice",
@@ -184,20 +185,119 @@ def test_authorize_dacl_save_detects_self_lockout(cacl_session):
     persist_node_policy(cacl_session, folder, initial.policy)
     cacl_session.commit()
 
+    write_check = authorize_write_dacl_and_load_path(cacl_session, alice, folder)
+    assert write_check.authorized is True
+    assert write_check.current_path is not None
+
     lockout_policy = compile_policy_source(cacl_session, "inherit off;").policy
     assert lockout_policy is not None
-
-    result = authorize_dacl_save(cacl_session, alice, folder, lockout_policy)
-    assert result.authorized is True
-    assert result.self_lockout_warning is True
+    assert (
+        simulate_dacl_save_lockout(
+            alice,
+            write_check.current_path,
+            lockout_policy,
+            check_ancestor_traverse=write_check.check_ancestor_traverse,
+            eval_time_utc=write_check.eval_time_utc,
+        )
+        is True
+    )
 
     keep_policy = compile_policy_source(
         cacl_session, f'inherit off; allow [WRITE_DACL] to user("{alice.id}");'
     ).policy
     assert keep_policy is not None
-    safe_result = authorize_dacl_save(cacl_session, alice, folder, keep_policy)
-    assert safe_result.authorized is True
-    assert safe_result.self_lockout_warning is False
+    assert (
+        simulate_dacl_save_lockout(
+            alice,
+            write_check.current_path,
+            keep_policy,
+            check_ancestor_traverse=write_check.check_ancestor_traverse,
+            eval_time_utc=write_check.eval_time_utc,
+        )
+        is False
+    )
+
+    bob = models.User(
+        username="bob_no_write",
+        nickname="Bob",
+        created_time=1.0,
+        status=0,
+        secret_key="s" * 64,
+    )
+    cacl_session.add(bob)
+    cacl_session.flush()
+    denied_check = authorize_write_dacl_and_load_path(cacl_session, bob, folder)
+    assert denied_check.authorized is False
+    assert denied_check.current_path is None
+
+
+def test_write_dacl_enforces_step1_lifecycle_even_for_bypass_dacl(cacl_session):
+    admin = models.User(
+        username="admin_deleted_dacl",
+        nickname="Admin",
+        created_time=1.0,
+        status=0,
+        secret_key="s" * 64,
+    )
+    admin.rights.append(
+        models.UserPermission(
+            permission=Permissions.BYPASS_DACL,
+            granted=True,
+            start_time=0.0,
+            end_time=None,
+        )
+    )
+    deleted_folder = models.Folder(
+        id="f-deleted-dacl",
+        name="DeletedFolder",
+        parent_id="/",
+        inherit=False,
+        status=models.EntityStatus.DELETED,
+    )
+    deleted_doc = models.Document(
+        id="d-deleted-dacl",
+        title="DeletedDoc",
+        folder_id="/",
+        inherit=False,
+        status=models.EntityStatus.DELETED,
+    )
+    active_folder = models.Folder(
+        id="f-active-dacl",
+        name="ActiveFolder",
+        parent_id="/",
+        inherit=False,
+    )
+    cacl_session.add_all([admin, deleted_folder, deleted_doc, active_folder])
+    cacl_session.commit()
+
+    assert (
+        authorize_write_dacl_and_load_path(
+            cacl_session, admin, deleted_folder
+        ).authorized
+        is False
+    )
+    assert (
+        authorize_write_dacl_and_load_path(cacl_session, admin, deleted_doc).authorized
+        is False
+    )
+
+    active_check = authorize_write_dacl_and_load_path(
+        cacl_session, admin, active_folder
+    )
+    assert active_check.authorized is True
+    assert active_check.current_path is None
+    lockout_policy = compile_policy_source(cacl_session, "inherit off;").policy
+    assert lockout_policy is not None
+    assert (
+        simulate_dacl_save_lockout(
+            admin,
+            active_check.current_path,
+            lockout_policy,
+            check_ancestor_traverse=active_check.check_ancestor_traverse,
+            eval_time_utc=active_check.eval_time_utc,
+        )
+        is False
+    )
 
 
 def test_compile_strict_principals_reports_errors_with_spans(cacl_session):

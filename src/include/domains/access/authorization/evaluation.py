@@ -1,8 +1,8 @@
 __all__ = [
+    "DaclWriteAuthzCheck",
     "DirectorySoftDeleteRootCheck",
     "authorize_create_on_parent",
     "authorize_dacl_read",
-    "authorize_dacl_save",
     "authorize_directory_access_with_parent",
     "authorize_directory_soft_delete",
     "authorize_node_operation",
@@ -49,10 +49,8 @@ from include.domains.access.authorization.engine import (
     InheritedDaclState,
     NamespaceNode,
     ObjectState,
-    SaveAuthzResult,
     Subject,
     SubtreeNode,
-    authorize_policy_save,
     evaluate_access,
     evaluate_effective_masks,
     evaluate_path_masks,
@@ -60,6 +58,7 @@ from include.domains.access.authorization.engine import (
     evaluate_soft_delete_subtree,
     op_applies_to_object,
     op_applies_to_state,
+    simulate_policy_save_lockout,
 )
 from include.domains.access.authorization.storage import load_node_policies
 from include.domains.access.permissions import Permissions
@@ -80,6 +79,15 @@ class _SubtreeNodeLike(Protocol):
     def status(self) -> Any: ...
     @property
     def inherit(self) -> Any: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DaclWriteAuthzCheck:
+    authorized: bool
+    reason: str
+    current_path: list[NamespaceNode] | None = None
+    check_ancestor_traverse: bool = False
+    eval_time_utc: datetime.datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,13 +471,20 @@ def authorize_write_dacl_and_load_path(
     target: Document | Folder,
     *,
     eval_time_utc: datetime.datetime | None = None,
-) -> tuple[bool, list[NamespaceNode] | None, bool]:
+) -> DaclWriteAuthzCheck:
     """Authorize WRITE_DACL up front and return the loaded path for post-compile lockout checks."""
-    if _check_step1_invariants(target, AtomicOp.WRITE_DACL) is not None:
-        return False, None, False
+    step1_denial = _check_step1_invariants(target, AtomicOp.WRITE_DACL)
+    if step1_denial is not None:
+        return DaclWriteAuthzCheck(
+            authorized=False,
+            reason=f"Missing WRITE_DACL: {step1_denial.reason}",
+        )
 
     if has_bypass_dacl(user):
-        return True, None, False
+        return DaclWriteAuthzCheck(
+            authorized=True,
+            reason="Actor holds global BYPASS_DACL capability.",
+        )
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
     path = load_ancestor_path(
@@ -488,8 +503,19 @@ def authorize_write_dacl_and_load_path(
         collect_traces=False,
     )
     if not decision.allowed:
-        return False, None, check_traverse
-    return True, path, check_traverse
+        return DaclWriteAuthzCheck(
+            authorized=False,
+            reason=f"Missing WRITE_DACL: {decision.reason}",
+            check_ancestor_traverse=check_traverse,
+            eval_time_utc=now,
+        )
+    return DaclWriteAuthzCheck(
+        authorized=True,
+        reason="Actor holds WRITE_DACL.",
+        current_path=path,
+        check_ancestor_traverse=check_traverse,
+        eval_time_utc=now,
+    )
 
 
 def simulate_dacl_save_lockout(
@@ -504,24 +530,13 @@ def simulate_dacl_save_lockout(
     if current_path is None or has_bypass_dacl(user):
         return False
 
-    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    target = current_path[-1]
-    simulated_target = NamespaceNode(
-        node_id=target.node_id,
-        name=target.name,
-        object_type=target.object_type,
-        state=target.state,
-        policy=proposed_policy,
-    )
-    post_check = evaluate_access(
+    return simulate_policy_save_lockout(
         user_to_subject(user),
-        current_path[:-1] + [simulated_target],
-        AtomicOp.WRITE_DACL,
-        eval_time_utc=now,
+        current_path,
+        proposed_policy,
+        eval_time_utc=eval_time_utc,
         check_ancestor_traverse=check_ancestor_traverse,
-        collect_traces=False,
     )
-    return not post_check.allowed
 
 
 def authorize_create_on_parent(
@@ -839,38 +854,6 @@ def authorize_restore(
         eval_time_utc=now,
         check_ancestor_traverse=check_traverse,
         collect_traces=False,
-    )
-
-
-def authorize_dacl_save(
-    session: OrmSession,
-    user: User,
-    target: Document | Folder,
-    proposed_policy: CompiledPolicy,
-    *,
-    eval_time_utc: datetime.datetime | None = None,
-) -> SaveAuthzResult:
-    """Evaluate CEP-0002 Section 5.2 WRITE_DACL + anti-lockout simulation."""
-    if has_bypass_dacl(user):
-        return SaveAuthzResult(
-            authorized=True,
-            reason="Actor holds global BYPASS_DACL capability.",
-            self_lockout_warning=False,
-        )
-
-    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
-    path = load_ancestor_path(
-        session,
-        target,
-        exclude_expired_before=now,
-        canonicalize=False,
-    )
-    return authorize_policy_save(
-        user_to_subject(user),
-        path,
-        proposed_policy,
-        eval_time_utc=now,
-        check_ancestor_traverse=should_check_ancestor_traverse(session, user),
     )
 
 

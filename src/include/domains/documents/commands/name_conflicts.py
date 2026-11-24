@@ -9,6 +9,10 @@ lazy from sqlalchemy.orm import Session
 from include.config.constants import ROOT_DIRECTORY_ID
 from include.database.errors import is_unique_constraint_violation
 from include.database.models.documents import Document, EntityStatus, Folder, Node
+from include.domains.access.authorization.engine import (
+    DIRECTORY_VISIBILITY_MASK,
+    DOCUMENT_VISIBILITY_MASK,
+)
 from include.domains.access.authorization.evaluation import (
     authorize_node_operation,
     evaluate_node_effective_masks,
@@ -138,9 +142,9 @@ def _describe_node_name_conflict_winner(
 
     masks = evaluate_node_effective_masks(session, user, winner)
     required_mask = (
-        int(AtomicOp.READ_METADATA | AtomicOp.LIST_DIRECTORY)
+        DIRECTORY_VISIBILITY_MASK
         if isinstance(winner, Folder)
-        else int(AtomicOp.READ_METADATA | AtomicOp.READ_CONTENT)
+        else DOCUMENT_VISIBILITY_MASK
     )
     readable = masks.allowed_traverse and bool(masks.effective_mask & required_mask)
     visible_id = winner.id if readable else None

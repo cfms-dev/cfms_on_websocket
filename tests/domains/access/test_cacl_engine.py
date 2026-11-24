@@ -11,13 +11,13 @@ from include.domains.access.authorization.engine import (
     ObjectState,
     Subject,
     SubtreeNode,
-    authorize_policy_save,
     evaluate_access,
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_reparent,
     evaluate_soft_delete,
     evaluate_soft_delete_subtree,
+    simulate_policy_save_lockout,
 )
 
 pytestmark = pytest.mark.unit
@@ -209,19 +209,40 @@ def test_composite_evaluators_forward_bypass_traverse():
 
     dacl_doc = _node("p", F, "allow [WRITE_DACL] to any;")
     proposed = _compile("inherit off;").policy
+    keep_policy = _compile("inherit off; allow [WRITE_DACL] to any;").policy
     assert proposed is not None
-    assert not authorize_policy_save(
-        ALICE, [root_no_traverse, dacl_doc], proposed, NOW
-    ).authorized
-    save_res = authorize_policy_save(
+    assert keep_policy is not None
+    assert not evaluate_access(
+        ALICE, [root_no_traverse, dacl_doc], AtomicOp.WRITE_DACL, NOW
+    ).allowed
+    assert simulate_policy_save_lockout(
+        ALICE,
+        [root_no_traverse, dacl_doc],
+        keep_policy,
+        NOW,
+        check_ancestor_traverse=True,
+    )
+    assert evaluate_access(
+        ALICE,
+        [root_no_traverse, dacl_doc],
+        AtomicOp.WRITE_DACL,
+        NOW,
+        check_ancestor_traverse=False,
+    ).allowed
+    assert simulate_policy_save_lockout(
         ALICE,
         [root_no_traverse, dacl_doc],
         proposed,
         NOW,
         check_ancestor_traverse=False,
     )
-    assert save_res.authorized
-    assert save_res.self_lockout_warning
+    assert not simulate_policy_save_lockout(
+        ALICE,
+        [root_no_traverse, dacl_doc],
+        keep_policy,
+        NOW,
+        check_ancestor_traverse=False,
+    )
 
 
 def test_next_transition_at_and_evaluate_effective_masks():
@@ -424,3 +445,67 @@ def test_evaluate_access_collect_traces_false_skips_trace_pass(monkeypatch):
         assert fast.next_transition_at == expected.next_transition_at
         assert fast.matched_allows == ()
         assert fast.matched_denies == ()
+
+
+def test_path_masks_inherit_off_pruning_preserves_parent_masks(monkeypatch):
+    from include.domains.access.authorization import engine as engine_mod
+
+    root = _node(
+        "root",
+        D,
+        'inherit off; allow [LIST_DIRECTORY, READ_CONTENT] to any until "2026-12-10T00:00:00Z";',
+    )
+    mid = _node("mid", D, "inherit off; allow [LIST_DIRECTORY] to any;")
+    parent = _node("parent", D)
+    target = _node("target", D, "inherit off; allow [READ_METADATA] to any;")
+
+    # Target has inherit off, but parent inherits LIST_DIRECTORY from root.
+    # With check_ancestor_traverse=False, evaluate_path_masks must still compute parent's mask.
+    pm_inherit_parent = evaluate_path_masks(
+        ALICE,
+        [root, parent, target],
+        NOW,
+        check_ancestor_traverse=False,
+    )
+    assert pm_inherit_parent.target.allowed_traverse
+    assert pm_inherit_parent.target.effective_mask == int(AtomicOp.READ_METADATA)
+    assert pm_inherit_parent.parent_state is ObjectState.NORMAL
+    assert pm_inherit_parent.parent_effective_mask == int(
+        AtomicOp.LIST_DIRECTORY | AtomicOp.READ_CONTENT
+    )
+
+    # When an ancestor at or above parent sets inherit off, ancestors above it are pruned.
+    step_calls = 0
+    orig_step = engine_mod.step_node_dacl
+
+    def _counting_step(*args, **kwargs):
+        nonlocal step_calls
+        step_calls += 1
+        return orig_step(*args, **kwargs)
+
+    monkeypatch.setattr(engine_mod, "step_node_dacl", _counting_step)
+
+    pm_pruned = evaluate_path_masks(
+        ALICE,
+        [root, mid, parent, target],
+        NOW,
+        check_ancestor_traverse=False,
+    )
+    assert step_calls == 3  # mid, parent, target (root pruned)
+    assert pm_pruned.target.allowed_traverse
+    assert pm_pruned.target.effective_mask == int(AtomicOp.READ_METADATA)
+    assert pm_pruned.target.next_transition_at is None
+    assert pm_pruned.parent_effective_mask == int(AtomicOp.LIST_DIRECTORY)
+
+    # evaluate_effective_masks does not need parent_effective_mask, so it prunes all the way to target.
+    step_calls = 0
+    em_pruned = evaluate_effective_masks(
+        ALICE,
+        [root, mid, parent, target],
+        NOW,
+        check_ancestor_traverse=False,
+    )
+    assert step_calls == 1  # target only
+    assert em_pruned.allowed_traverse
+    assert em_pruned.effective_mask == int(AtomicOp.READ_METADATA)
+    assert em_pruned.next_transition_at is None

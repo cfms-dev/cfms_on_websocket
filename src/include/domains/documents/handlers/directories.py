@@ -1,13 +1,11 @@
 import secrets
 import time
 from itertools import batched
-from typing import Annotated
 
 from cacl_compiler import AtomicOp, ObjectType
-from pydantic import ConfigDict, StringConstraints
+from pydantic import ConfigDict
 
 from include.config.constants import (
-    DACL_SOURCE_MAX_LENGTH,
     QUERY_CHUNK_SIZE,
     ROOT_DIRECTORY_ID,
 )
@@ -20,22 +18,16 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import (
     authorize_create_on_parent,
-    authorize_dacl_read,
     authorize_directory_access_with_parent,
     authorize_node_operation,
     authorize_reparent,
     authorize_restore,
     authorize_soft_delete_descendants,
-    authorize_write_dacl_and_load_path,
     check_directory_soft_delete_root,
-    simulate_dacl_save_lockout,
-    would_self_lockout_on_create,
 )
 from include.domains.access.authorization.storage import (
-    compile_policy_source,
     delete_node_dacl_rules_for_targets,
     persist_node_policy,
-    render_policy_text,
 )
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.bulk_purge import purge_documents_bulk
@@ -47,6 +39,12 @@ from include.domains.documents.commands.name_conflicts import (
     node_name_mutation,
 )
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
+from include.domains.documents.handlers.dacl import (
+    DaclSource,
+    handle_get_node_dacl,
+    handle_set_node_dacl,
+    prepare_initial_node_dacl,
+)
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
@@ -82,8 +80,6 @@ from include.transport.request_handler import (
 )
 lazy from include.types import NonEmptyString
 
-_DaclSource = Annotated[str, StringConstraints(max_length=DACL_SOURCE_MAX_LENGTH)]
-
 
 class _ListDirectoryRequest(RequestDataModel):
     folder_id: str | None
@@ -102,7 +98,7 @@ class _GetDirectoryDaclRequest(RequestDataModel):
 
 class _SetDirectoryDaclRequest(RequestDataModel):
     directory_id: NonEmptyString
-    dacl: _DaclSource
+    dacl: DaclSource
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
 
 
@@ -115,7 +111,7 @@ class _CreateDirectoryRequest(RequestDataModel):
 
     parent_id: str | None = None
     name: NonEmptyString
-    dacl: Omittable[_DaclSource] = REQUEST_UNSET
+    dacl: Omittable[DaclSource] = REQUEST_UNSET
     allow_self_lockout: Omittable[bool] = REQUEST_UNSET
     exists_ok: Omittable[bool] = REQUEST_UNSET
 
@@ -277,7 +273,6 @@ class RequestGetDirectoryDaclHandler(RequestHandler[_GetDirectoryDaclRequest]):
     rate_limit_cost = 2
 
     def handle(self, handler, request):
-        directory_id: str = request.directory_id
         annotate_users: bool = (
             request.annotate_users
             if request.annotate_users is not REQUEST_UNSET
@@ -285,34 +280,15 @@ class RequestGetDirectoryDaclHandler(RequestHandler[_GetDirectoryDaclRequest]):
         )
 
         with Session() as session:
-            user = User.get_existing(session, handler.user_id)
-            directory = session.get(Folder, directory_id)
-
-            if not directory:
-                handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=directory_id, user_id=handler.user_id)
-
-            allowed, policy = authorize_dacl_read(session, user, directory)
-            if not allowed or policy is None:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_READ_DACL)
-                return Result(code=403, target=directory_id, user_id=handler.user_id)
-
-            response_data: dict = {
-                "dacl": render_policy_text(policy),
-                "inherit": policy.inherit,
-                "fingerprint": policy.fingerprint(),
-            }
-            if annotate_users:
-                response_data["annotated_dacl"] = render_policy_text(
-                    policy, session=session, annotate_users=True
-                )
-
-            handler.conclude_request(
-                200,
-                response_data,
-                "Directory DACL retrieved successfully",
+            return handle_get_node_dacl(
+                session,
+                handler,
+                model_cls=Folder,
+                target_id=request.directory_id,
+                annotate_users=annotate_users,
+                not_found_message=smsg.DIRECTORY_NOT_FOUND,
+                success_message="Directory DACL retrieved successfully",
             )
-            return Result(code=0, target=directory_id, user_id=handler.user_id)
 
 
 class RequestSetDirectoryDaclHandler(RequestHandler[_SetDirectoryDaclRequest]):
@@ -323,8 +299,6 @@ class RequestSetDirectoryDaclHandler(RequestHandler[_SetDirectoryDaclRequest]):
     rate_limit_cost = 5
 
     def handle(self, handler, request):
-        directory_id: str = request.directory_id
-        dacl_source: str = request.dacl
         allow_self_lockout: bool = (
             request.allow_self_lockout
             if request.allow_self_lockout is not REQUEST_UNSET
@@ -332,67 +306,17 @@ class RequestSetDirectoryDaclHandler(RequestHandler[_SetDirectoryDaclRequest]):
         )
 
         with Session() as session:
-            user = User.get_existing(session, handler.user_id)
-            directory = session.get(Folder, directory_id)
-
-            if not directory:
-                handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
-                return Result(code=404, target=directory_id, user_id=handler.user_id)
-
-            authorized, current_path, check_traverse = (
-                authorize_write_dacl_and_load_path(session, user, directory)
-            )
-            if not authorized:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
-                return Result(code=403, target=directory_id, user_id=handler.user_id)
-
-            compiled = compile_policy_source(
+            return handle_set_node_dacl(
                 session,
-                dacl_source,
+                handler,
+                model_cls=Folder,
                 target_type=ObjectType.DIRECTORY,
-                strict_principals=False,
+                target_id=request.directory_id,
+                dacl_source=request.dacl,
+                allow_self_lockout=allow_self_lockout,
+                not_found_message=smsg.DIRECTORY_NOT_FOUND,
+                success_message="Directory DACL updated successfully",
             )
-            serialized_diags = [d.to_dict() for d in compiled.diagnostics]
-            if not compiled.ok or compiled.policy is None:
-                handler.conclude_request(
-                    400,
-                    {"diagnostics": serialized_diags},
-                    "Invalid CACL policy",
-                )
-                return Result(code=400, target=directory_id, user_id=handler.user_id)
-
-            self_lockout_warning = simulate_dacl_save_lockout(
-                user,
-                current_path,
-                compiled.policy,
-                check_ancestor_traverse=check_traverse,
-            )
-            if self_lockout_warning and not allow_self_lockout:
-                handler.conclude_request(
-                    409,
-                    {
-                        "self_lockout_warning": True,
-                        "diagnostics": serialized_diags,
-                    },
-                    smsg.DACL_SELF_LOCKOUT,
-                )
-                return Result(code=409, target=directory_id, user_id=handler.user_id)
-
-            persist_node_policy(session, directory, compiled.policy)
-            session.commit()
-
-            handler.conclude_request(
-                200,
-                {
-                    "dacl": render_policy_text(compiled.policy),
-                    "inherit": compiled.policy.inherit,
-                    "fingerprint": compiled.policy.fingerprint(),
-                    "diagnostics": serialized_diags,
-                    "self_lockout_warning": self_lockout_warning,
-                },
-                "Directory DACL updated successfully",
-            )
-            return Result(code=0, target=directory_id, user_id=handler.user_id)
 
 
 class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
@@ -435,48 +359,22 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, user_id=handler.user_id)
 
-            compiled_policy = None
-            serialized_diags: list[dict] = []
-            if dacl_source is not None:
-                if not can_write_dacl:
-                    handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
-                    return Result(code=403, target=parent_id, user_id=handler.user_id)
-
-                compiled = compile_policy_source(
-                    session,
-                    dacl_source,
-                    target_type=ObjectType.DIRECTORY,
-                    strict_principals=False,
-                )
-                serialized_diags = [d.to_dict() for d in compiled.diagnostics]
-                if not compiled.ok or compiled.policy is None:
-                    handler.conclude_request(
-                        400,
-                        {"diagnostics": serialized_diags},
-                        "Invalid CACL policy",
-                    )
-                    return Result(code=400, target=parent_id, user_id=handler.user_id)
-                compiled_policy = compiled.policy
-
-                if not allow_self_lockout and would_self_lockout_on_create(
-                    session,
-                    this_user,
-                    parent,
-                    ObjectType.DIRECTORY,
-                    name,
-                    compiled_policy,
-                    parent_path=parent_path,
-                    check_ancestor_traverse=check_traverse,
-                ):
-                    handler.conclude_request(
-                        409,
-                        {
-                            "self_lockout_warning": True,
-                            "diagnostics": serialized_diags,
-                        },
-                        smsg.DACL_SELF_LOCKOUT,
-                    )
-                    return Result(code=409, target=parent_id, user_id=handler.user_id)
+            compiled_policy, dacl_error = prepare_initial_node_dacl(
+                session,
+                this_user,
+                parent,
+                object_type=ObjectType.DIRECTORY,
+                name=name,
+                dacl_source=dacl_source,
+                can_write_dacl=can_write_dacl,
+                allow_self_lockout=allow_self_lockout,
+                parent_path=parent_path,
+                check_ancestor_traverse=check_traverse,
+            )
+            if dacl_error is not None:
+                code, error_data, message = dacl_error
+                handler.conclude_request(code, error_data, message)
+                return Result(code=code, target=parent_id, user_id=handler.user_id)
 
             folder = Folder(name=name, parent=parent)
             session.add(folder)

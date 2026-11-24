@@ -33,6 +33,8 @@ from include.database.models.documents import (
 )
 from include.database.models.files import File
 from include.domains.access.authorization.engine import (
+    DIRECTORY_VISIBILITY_MASK,
+    DOCUMENT_VISIBILITY_MASK,
     InheritedDaclState,
     Subject,
     step_node_dacl,
@@ -153,6 +155,139 @@ def count_active_directory_children(session, folder_id: str) -> int:
     return int(folder_count) + int(document_count)
 
 
+def _build_active_revision_chain_cte(
+    *,
+    cte_name: str,
+    rev_alias_name: str,
+    file_alias_name: str,
+    anchor_from: Any,
+    passthrough_columns: Sequence[tuple[str, Any]],
+    anchor_where: Sequence[Any] = (),
+    include_revision_id: bool = False,
+    include_details: bool = False,
+):
+    revision_table = DocumentRevision.__table__
+    file_table = File.__table__
+
+    anchor_cols: list[Any] = [col.label(name) for name, col in passthrough_columns]
+    if include_revision_id:
+        anchor_cols.append(revision_table.c.id.label("revision_id"))
+    if include_details:
+        anchor_cols.extend(
+            (
+                revision_table.c.created_time.label("revision_created_time"),
+                file_table.c.size.label("file_size"),
+            )
+        )
+    anchor_cols.extend(
+        (
+            revision_table.c.parent_revision_id.label("parent_revision_id"),
+            file_table.c.active.label("file_active"),
+        )
+    )
+
+    anchor = select(*anchor_cols).select_from(anchor_from)
+    if anchor_where:
+        anchor = anchor.where(*anchor_where)
+
+    chain = anchor.cte(cte_name, recursive=True)
+    parent_rev = revision_table.alias(rev_alias_name)
+    parent_file = file_table.alias(file_alias_name)
+
+    recursive_cols: list[Any] = [chain.c[name] for name, _ in passthrough_columns]
+    if include_revision_id:
+        recursive_cols.append(parent_rev.c.id)
+    if include_details:
+        recursive_cols.extend((parent_rev.c.created_time, parent_file.c.size))
+    recursive_cols.extend((parent_rev.c.parent_revision_id, parent_file.c.active))
+
+    return chain.union_all(
+        select(*recursive_cols)
+        .select_from(
+            chain.join(
+                parent_rev,
+                chain.c.parent_revision_id == parent_rev.c.id,
+            ).join(parent_file, parent_rev.c.file_id == parent_file.c.id)
+        )
+        .where(chain.c.file_active.is_(False))
+    )
+
+
+def _build_ranked_active_revisions_subquery(
+    *,
+    document_ids: Sequence[str] | None = None,
+    matched_documents: Any = None,
+    exclude_chain_cte: Any = None,
+    include_revision_id: bool = False,
+    include_details: bool = False,
+    rev_alias_name: str | None = None,
+    file_alias_name: str | None = None,
+):
+    revision_table = DocumentRevision.__table__
+    file_table = File.__table__
+    rev_src = (
+        revision_table.alias(rev_alias_name)
+        if rev_alias_name is not None
+        else revision_table
+    )
+    file_src = (
+        file_table.alias(file_alias_name) if file_alias_name is not None else file_table
+    )
+
+    cols: list[Any] = []
+    where_clauses: list[Any] = [file_src.c.active.is_(True)]
+    if matched_documents is not None:
+        partition_col = matched_documents.c.id
+        from_clause = matched_documents.join(
+            rev_src, matched_documents.c.id == rev_src.c.document_id
+        ).join(file_src, rev_src.c.file_id == file_src.c.id)
+        cols.extend(
+            (
+                matched_documents.c.id.label("id"),
+                matched_documents.c.name.label("name"),
+                matched_documents.c.parent_id.label("parent_id"),
+                matched_documents.c.created_time.label("created_time"),
+                matched_documents.c.inherit.label("inherit"),
+            )
+        )
+        if exclude_chain_cte is not None:
+            where_clauses.append(
+                ~exists(
+                    select(1).where(
+                        exclude_chain_cte.c.document_id == matched_documents.c.id,
+                        exclude_chain_cte.c.file_active.is_(True),
+                    )
+                )
+            )
+    else:
+        assert document_ids is not None
+        partition_col = rev_src.c.document_id
+        from_clause = rev_src.join(file_src, rev_src.c.file_id == file_src.c.id)
+        cols.append(rev_src.c.document_id.label("document_id"))
+        where_clauses.append(rev_src.c.document_id.in_(list(document_ids)))
+
+    if include_revision_id:
+        cols.append(rev_src.c.id.label("revision_id"))
+    if include_details:
+        cols.extend(
+            (
+                rev_src.c.created_time.label("last_modified"),
+                file_src.c.size.label("size"),
+            )
+        )
+
+    cols.append(
+        func.row_number()
+        .over(
+            partition_by=partition_col,
+            order_by=rev_src.c.created_time.desc(),
+        )
+        .label("row_number")
+    )
+
+    return select(*cols).select_from(from_clause).where(*where_clauses).subquery()
+
+
 def fetch_latest_active_revisions_by_document(
     session, document_ids: list[str]
 ) -> dict[str, DocumentRevision]:
@@ -166,46 +301,17 @@ def fetch_latest_active_revisions_by_document(
 
     for chunk in batched(document_ids, QUERY_CHUNK_SIZE):
         chunk_ids = list(chunk)
-        current_chain_anchor = (
-            select(
-                document_table.c.id.label("document_id"),
-                revision_table.c.id.label("revision_id"),
-                revision_table.c.created_time.label("created_time"),
-                revision_table.c.file_id.label("file_id"),
-                revision_table.c.parent_revision_id.label("parent_revision_id"),
-                file_table.c.active.label("file_active"),
-                literal(0).label("depth"),
-            )
-            .select_from(
-                document_table.join(
-                    revision_table,
-                    document_table.c.current_revision_id == revision_table.c.id,
-                ).join(file_table, revision_table.c.file_id == file_table.c.id)
-            )
-            .where(document_table.c.id.in_(chunk_ids))
-        )
-        current_chain = current_chain_anchor.cte(
-            "current_revision_chain", recursive=True
-        )
-        parent_revision = revision_table.alias("parent_revision")
-        parent_file = file_table.alias("parent_file")
-        current_chain = current_chain.union_all(
-            select(
-                current_chain.c.document_id,
-                parent_revision.c.id,
-                parent_revision.c.created_time,
-                parent_revision.c.file_id,
-                parent_revision.c.parent_revision_id,
-                parent_file.c.active,
-                (current_chain.c.depth + 1).label("depth"),
-            )
-            .select_from(
-                current_chain.join(
-                    parent_revision,
-                    current_chain.c.parent_revision_id == parent_revision.c.id,
-                ).join(parent_file, parent_revision.c.file_id == parent_file.c.id)
-            )
-            .where(current_chain.c.file_active.is_(False))
+        current_chain = _build_active_revision_chain_cte(
+            cte_name="current_revision_chain",
+            rev_alias_name="parent_revision",
+            file_alias_name="parent_file",
+            anchor_from=document_table.join(
+                revision_table,
+                document_table.c.current_revision_id == revision_table.c.id,
+            ).join(file_table, revision_table.c.file_id == file_table.c.id),
+            passthrough_columns=(("document_id", document_table.c.id),),
+            anchor_where=(document_table.c.id.in_(chunk_ids),),
+            include_revision_id=True,
         )
         current_chain_rows = session.execute(
             select(
@@ -224,27 +330,9 @@ def fetch_latest_active_revisions_by_document(
         if not fallback_document_ids:
             continue
 
-        active_revisions = (
-            select(
-                revision_table.c.document_id,
-                revision_table.c.id.label("revision_id"),
-                func.row_number()
-                .over(
-                    partition_by=revision_table.c.document_id,
-                    order_by=revision_table.c.created_time.desc(),
-                )
-                .label("row_number"),
-            )
-            .select_from(
-                revision_table.join(
-                    file_table, revision_table.c.file_id == file_table.c.id
-                )
-            )
-            .where(
-                revision_table.c.document_id.in_(fallback_document_ids),
-                file_table.c.active.is_(True),
-            )
-            .subquery()
+        active_revisions = _build_ranked_active_revisions_subquery(
+            document_ids=fallback_document_ids,
+            include_revision_id=True,
         )
         fallback_rows = session.execute(
             select(
@@ -465,44 +553,22 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
         .cte("matched_documents")
     )
 
-    current_chain_anchor = select(
-        matched_documents.c.id.label("document_id"),
-        matched_documents.c.name.label("name"),
-        matched_documents.c.parent_id.label("parent_id"),
-        matched_documents.c.created_time.label("created_time"),
-        matched_documents.c.inherit.label("inherit"),
-        revision_table.c.created_time.label("revision_created_time"),
-        file_table.c.size.label("file_size"),
-        revision_table.c.parent_revision_id.label("parent_revision_id"),
-        file_table.c.active.label("file_active"),
-    ).select_from(
-        matched_documents.join(
+    current_chain = _build_active_revision_chain_cte(
+        cte_name="search_current_chain",
+        rev_alias_name="search_parent_rev",
+        file_alias_name="search_parent_file",
+        anchor_from=matched_documents.join(
             revision_table,
             matched_documents.c.current_revision_id == revision_table.c.id,
-        ).join(file_table, revision_table.c.file_id == file_table.c.id)
-    )
-    current_chain = current_chain_anchor.cte("search_current_chain", recursive=True)
-    parent_rev = revision_table.alias("search_parent_rev")
-    parent_file = file_table.alias("search_parent_file")
-    current_chain = current_chain.union_all(
-        select(
-            current_chain.c.document_id,
-            current_chain.c.name,
-            current_chain.c.parent_id,
-            current_chain.c.created_time,
-            current_chain.c.inherit,
-            parent_rev.c.created_time,
-            parent_file.c.size,
-            parent_rev.c.parent_revision_id,
-            parent_file.c.active,
-        )
-        .select_from(
-            current_chain.join(
-                parent_rev,
-                current_chain.c.parent_revision_id == parent_rev.c.id,
-            ).join(parent_file, parent_rev.c.file_id == parent_file.c.id)
-        )
-        .where(current_chain.c.file_active.is_(False))
+        ).join(file_table, revision_table.c.file_id == file_table.c.id),
+        passthrough_columns=(
+            ("document_id", matched_documents.c.id),
+            ("name", matched_documents.c.name),
+            ("parent_id", matched_documents.c.parent_id),
+            ("created_time", matched_documents.c.created_time),
+            ("inherit", matched_documents.c.inherit),
+        ),
+        include_details=True,
     )
 
     current_active = select(
@@ -518,39 +584,12 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
         literal(1).label("type_rank"),
     ).where(current_chain.c.file_active.is_(True))
 
-    fallback_rev = revision_table.alias("search_fallback_rev")
-    fallback_file = file_table.alias("search_fallback_file")
-    fallback_ranked = (
-        select(
-            matched_documents.c.id.label("id"),
-            matched_documents.c.name.label("name"),
-            matched_documents.c.parent_id.label("parent_id"),
-            matched_documents.c.created_time.label("created_time"),
-            matched_documents.c.inherit.label("inherit"),
-            fallback_rev.c.created_time.label("last_modified"),
-            fallback_file.c.size.label("size"),
-            func.row_number()
-            .over(
-                partition_by=matched_documents.c.id,
-                order_by=fallback_rev.c.created_time.desc(),
-            )
-            .label("source_row_number"),
-        )
-        .select_from(
-            matched_documents.join(
-                fallback_rev, matched_documents.c.id == fallback_rev.c.document_id
-            ).join(fallback_file, fallback_rev.c.file_id == fallback_file.c.id)
-        )
-        .where(
-            fallback_file.c.active.is_(True),
-            ~exists(
-                select(1).where(
-                    current_chain.c.document_id == matched_documents.c.id,
-                    current_chain.c.file_active.is_(True),
-                )
-            ),
-        )
-        .subquery()
+    fallback_ranked = _build_ranked_active_revisions_subquery(
+        matched_documents=matched_documents,
+        exclude_chain_cte=current_chain,
+        include_details=True,
+        rev_alias_name="search_fallback_rev",
+        file_alias_name="search_fallback_file",
     )
     fallback_active = select(
         fallback_ranked.c.id,
@@ -563,7 +602,7 @@ def _effective_active_revision_details_subquery(document_filters: Sequence[Any])
         fallback_ranked.c.size,
         literal("document").label("type"),
         literal(1).label("type_rank"),
-    ).where(fallback_ranked.c.source_row_number == 1)
+    ).where(fallback_ranked.c.row_number == 1)
 
     return union_all(current_active, fallback_active).subquery()
 
@@ -612,44 +651,21 @@ def _fetch_active_revision_details_by_document(
     if inactive_parent_revs:
         parent_rev_ids = list(dict.fromkeys(inactive_parent_revs.values()))
         for chunk in batched(parent_rev_ids, QUERY_CHUNK_SIZE):
-            anchor = (
-                select(
-                    revision_table.c.document_id.label("document_id"),
-                    revision_table.c.created_time.label("created_time"),
-                    file_table.c.size.label("file_size"),
-                    revision_table.c.parent_revision_id.label("parent_revision_id"),
-                    file_table.c.active.label("file_active"),
-                )
-                .select_from(
-                    revision_table.join(
-                        file_table, revision_table.c.file_id == file_table.c.id
-                    )
-                )
-                .where(revision_table.c.id.in_(list(chunk)))
-            )
-            chain = anchor.cte("search_hydrate_rev_chain", recursive=True)
-            parent_rev = revision_table.alias("search_hydrate_parent_rev")
-            parent_file = file_table.alias("search_hydrate_parent_file")
-            chain = chain.union_all(
-                select(
-                    chain.c.document_id,
-                    parent_rev.c.created_time,
-                    parent_file.c.size,
-                    parent_rev.c.parent_revision_id,
-                    parent_file.c.active,
-                )
-                .select_from(
-                    chain.join(
-                        parent_rev,
-                        chain.c.parent_revision_id == parent_rev.c.id,
-                    ).join(parent_file, parent_rev.c.file_id == parent_file.c.id)
-                )
-                .where(chain.c.file_active.is_(False))
+            chain = _build_active_revision_chain_cte(
+                cte_name="search_hydrate_rev_chain",
+                rev_alias_name="search_hydrate_parent_rev",
+                file_alias_name="search_hydrate_parent_file",
+                anchor_from=revision_table.join(
+                    file_table, revision_table.c.file_id == file_table.c.id
+                ),
+                passthrough_columns=(("document_id", revision_table.c.document_id),),
+                anchor_where=(revision_table.c.id.in_(list(chunk)),),
+                include_details=True,
             )
             chain_rows = session.execute(
                 select(
                     chain.c.document_id,
-                    chain.c.created_time,
+                    chain.c.revision_created_time,
                     chain.c.file_size,
                 ).where(chain.c.file_active.is_(True))
             ).all()
@@ -662,34 +678,15 @@ def _fetch_active_revision_details_by_document(
     ]
     if fallback_doc_ids:
         for chunk in batched(fallback_doc_ids, QUERY_CHUNK_SIZE):
-            ranked = (
-                select(
-                    revision_table.c.document_id.label("document_id"),
-                    revision_table.c.created_time.label("created_time"),
-                    file_table.c.size.label("file_size"),
-                    func.row_number()
-                    .over(
-                        partition_by=revision_table.c.document_id,
-                        order_by=revision_table.c.created_time.desc(),
-                    )
-                    .label("row_number"),
-                )
-                .select_from(
-                    revision_table.join(
-                        file_table, revision_table.c.file_id == file_table.c.id
-                    )
-                )
-                .where(
-                    revision_table.c.document_id.in_(list(chunk)),
-                    file_table.c.active.is_(True),
-                )
-                .subquery()
+            ranked = _build_ranked_active_revisions_subquery(
+                document_ids=list(chunk),
+                include_details=True,
             )
             fallback_rows = session.execute(
                 select(
                     ranked.c.document_id,
-                    ranked.c.created_time,
-                    ranked.c.file_size,
+                    ranked.c.last_modified,
+                    ranked.c.size,
                 ).where(ranked.c.row_number == 1)
             ).all()
             for doc_id, created_time, file_size in fallback_rows:
@@ -740,8 +737,6 @@ def _search_primary_column(selectable, sort_by: str):
     return selectable.c.created_time
 
 
-_DIR_VISIBLE_MASK = int(AtomicOp.LIST_DIRECTORY | AtomicOp.READ_METADATA)
-_DOC_VISIBLE_MASK = int(AtomicOp.READ_CONTENT | AtomicOp.READ_METADATA)
 _TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
 _EMPTY_INHERITED_STATE = InheritedDaclState()
 
@@ -1245,7 +1240,9 @@ class _SearchVisibilityEvaluator:
             self._now_utc,
         )
         eff_mask = own_allow & ~own_deny
-        required_mask = _DIR_VISIBLE_MASK if is_dir else _DOC_VISIBLE_MASK
+        required_mask = (
+            DIRECTORY_VISIBILITY_MASK if is_dir else DOCUMENT_VISIBILITY_MASK
+        )
         return bool(eff_mask & required_mask)
 
 

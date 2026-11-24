@@ -1,4 +1,6 @@
 __all__ = [
+    "DIRECTORY_VISIBILITY_MASK",
+    "DOCUMENT_VISIBILITY_MASK",
     "EffectiveMasksResult",
     "EvalDecision",
     "InheritedDaclState",
@@ -6,10 +8,8 @@ __all__ = [
     "NamespaceNode",
     "ObjectState",
     "PathMasksResult",
-    "SaveAuthzResult",
     "Subject",
     "SubtreeNode",
-    "authorize_policy_save",
     "eval_dnf",
     "evaluate_access",
     "evaluate_effective_masks",
@@ -22,6 +22,7 @@ __all__ = [
     "rule_active_at",
     "rule_next_transition_after",
     "scope_matches",
+    "simulate_policy_save_lockout",
     "step_node_dacl",
 ]
 
@@ -142,10 +143,16 @@ class PathMasksResult:
 
 
 @dataclass(frozen=True, slots=True)
-class SaveAuthzResult:
-    authorized: bool
-    reason: str
-    self_lockout_warning: bool = False
+class _PathWalkResult:
+    allowed_traverse: bool
+    allow_mask: int = 0
+    deny_mask: int = 0
+    next_transition_at: datetime.datetime | None = None
+    target_inherited: InheritedDaclState = _EMPTY_INHERITED_STATE
+    parent_effective_mask: int = 0
+    parent_state: ObjectState | None = None
+    denied_reason: str | None = None
+    denied_traverse_ancestor_idx: int | None = None
 
 
 def op_applies_to_object(op: AtomicOp, obj_type: ObjectType) -> bool:
@@ -314,6 +321,8 @@ def step_node_dacl(
     return own_allow, own_deny, own_next, next_inherited
 
 
+DIRECTORY_VISIBILITY_MASK = int(AtomicOp.LIST_DIRECTORY | AtomicOp.READ_METADATA)
+DOCUMENT_VISIBILITY_MASK = int(AtomicOp.READ_CONTENT | AtomicOp.READ_METADATA)
 _TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
 _DELETE_BIT = int(AtomicOp.DELETE)
 
@@ -359,13 +368,92 @@ def _collect_op_traces_on_chain(
     return matched_denies, matched_allows
 
 
-def evaluate_path_masks(
+def _walk_path_dacl(
+    subject: Subject,
+    path_root_to_target: list[NamespaceNode],
+    eval_time_utc: datetime.datetime,
+    *,
+    check_ancestor_traverse: bool,
+    track_parent: bool = False,
+) -> _PathWalkResult:
+    target = path_root_to_target[-1]
+    parent_idx = len(path_root_to_target) - 2
+    start_idx = 0
+    if not check_ancestor_traverse:
+        scan_from = (
+            parent_idx
+            if track_parent and len(path_root_to_target) > 1
+            else len(path_root_to_target) - 1
+        )
+        for idx in range(scan_from, -1, -1):
+            if not path_root_to_target[idx].policy.inherit:
+                start_idx = idx
+                break
+
+    inherited = _EMPTY_INHERITED_STATE
+    next_transition: datetime.datetime | None = None
+    parent_effective_mask = 0
+    parent_state: ObjectState | None = None
+
+    for idx in range(start_idx, len(path_root_to_target) - 1):
+        ancestor = path_root_to_target[idx]
+        if (
+            check_ancestor_traverse
+            and ancestor.state is not ObjectState.NORMAL
+            and target.state is not ObjectState.SOFT_DELETED
+        ):
+            return _PathWalkResult(
+                allowed_traverse=False,
+                next_transition_at=next_transition,
+                denied_reason=(
+                    f"Ancestor '{ancestor.name}' ({ancestor.node_id}) is not in normal state."
+                ),
+            )
+        own_allow, own_deny, own_next, inherited = step_node_dacl(
+            subject, ancestor.policy, ancestor.object_type, inherited, eval_time_utc
+        )
+        if track_parent and idx == parent_idx:
+            parent_state = ancestor.state
+            parent_effective_mask = own_allow & ~own_deny
+        if check_ancestor_traverse:
+            if ancestor.state is not ObjectState.NORMAL:
+                continue
+            next_transition = _min_transition(next_transition, own_next)
+            if not ((own_allow & _TRAVERSE_BIT) and not (own_deny & _TRAVERSE_BIT)):
+                return _PathWalkResult(
+                    allowed_traverse=False,
+                    allow_mask=own_allow,
+                    deny_mask=own_deny,
+                    next_transition_at=next_transition,
+                    denied_reason=(
+                        f"Missing TRAVERSE permission on ancestor '{ancestor.name}' ({ancestor.node_id})."
+                    ),
+                    denied_traverse_ancestor_idx=idx,
+                )
+
+    a_mask, d_mask, target_next, target_inherited = step_node_dacl(
+        subject, target.policy, target.object_type, inherited, eval_time_utc
+    )
+    next_transition = _min_transition(next_transition, target_next)
+    return _PathWalkResult(
+        allowed_traverse=True,
+        allow_mask=a_mask,
+        deny_mask=d_mask,
+        next_transition_at=next_transition,
+        target_inherited=target_inherited,
+        parent_effective_mask=parent_effective_mask,
+        parent_state=parent_state,
+    )
+
+
+def _evaluate_path_masks(
     subject: Subject | None,
     path_root_to_target: list[NamespaceNode],
-    eval_time_utc: datetime.datetime | None = None,
-    check_ancestor_traverse: bool = True,
+    eval_time_utc: datetime.datetime | None,
+    check_ancestor_traverse: bool,
+    *,
+    track_parent: bool,
 ) -> PathMasksResult:
-    """Compute target effective masks, inheritable state, and immediate parent masks in O(D * R)."""
     if not path_root_to_target:
         raise ValueError("path_root_to_target must contain at least the target node.")
     if subject is None:
@@ -383,73 +471,53 @@ def evaluate_path_masks(
     now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
         datetime.UTC
     )
-    target = path_root_to_target[-1]
-    inherited = _EMPTY_INHERITED_STATE
-    next_transition: datetime.datetime | None = None
-    parent_idx = len(path_root_to_target) - 2
-    parent_effective_mask = 0
-    parent_state: ObjectState | None = None
-
-    for idx in range(len(path_root_to_target) - 1):
-        ancestor = path_root_to_target[idx]
-        if (
-            check_ancestor_traverse
-            and ancestor.state is not ObjectState.NORMAL
-            and target.state is not ObjectState.SOFT_DELETED
-        ):
-            return PathMasksResult(
-                target=EffectiveMasksResult(
-                    allowed_traverse=False,
-                    effective_allow_mask=0,
-                    effective_deny_mask=0,
-                    effective_mask=0,
-                    next_transition_at=next_transition,
-                    denied_step="2_path_traverse",
-                    denied_reason=(
-                        f"Ancestor '{ancestor.name}' ({ancestor.node_id}) is not in normal state."
-                    ),
-                )
-            )
-        own_allow, own_deny, own_next, inherited = step_node_dacl(
-            subject, ancestor.policy, ancestor.object_type, inherited, now
-        )
-        if idx == parent_idx:
-            parent_state = ancestor.state
-            parent_effective_mask = own_allow & ~own_deny
-        if check_ancestor_traverse:
-            if ancestor.state is not ObjectState.NORMAL:
-                continue
-            next_transition = _min_transition(next_transition, own_next)
-            if not ((own_allow & _TRAVERSE_BIT) and not (own_deny & _TRAVERSE_BIT)):
-                return PathMasksResult(
-                    target=EffectiveMasksResult(
-                        allowed_traverse=False,
-                        effective_allow_mask=0,
-                        effective_deny_mask=0,
-                        effective_mask=0,
-                        next_transition_at=next_transition,
-                        denied_step="2_path_traverse",
-                        denied_reason=(
-                            f"Missing TRAVERSE permission on ancestor '{ancestor.name}' ({ancestor.node_id})."
-                        ),
-                    )
-                )
-
-    a_mask, d_mask, target_next, target_inherited = step_node_dacl(
-        subject, target.policy, target.object_type, inherited, now
+    walk = _walk_path_dacl(
+        subject,
+        path_root_to_target,
+        now,
+        check_ancestor_traverse=check_ancestor_traverse,
+        track_parent=track_parent,
     )
-    next_transition = _min_transition(next_transition, target_next)
+    if not walk.allowed_traverse:
+        return PathMasksResult(
+            target=EffectiveMasksResult(
+                allowed_traverse=False,
+                effective_allow_mask=0,
+                effective_deny_mask=0,
+                effective_mask=0,
+                next_transition_at=walk.next_transition_at,
+                denied_step="2_path_traverse",
+                denied_reason=walk.denied_reason,
+            )
+        )
+
     return PathMasksResult(
         target=EffectiveMasksResult(
             allowed_traverse=True,
-            effective_allow_mask=a_mask,
-            effective_deny_mask=d_mask,
-            effective_mask=a_mask & ~d_mask,
-            next_transition_at=next_transition,
+            effective_allow_mask=walk.allow_mask,
+            effective_deny_mask=walk.deny_mask,
+            effective_mask=walk.allow_mask & ~walk.deny_mask,
+            next_transition_at=walk.next_transition_at,
         ),
-        target_inherited=target_inherited,
-        parent_effective_mask=parent_effective_mask,
-        parent_state=parent_state,
+        target_inherited=walk.target_inherited,
+        parent_effective_mask=walk.parent_effective_mask,
+        parent_state=walk.parent_state,
+    )
+
+
+def evaluate_path_masks(
+    subject: Subject | None,
+    path_root_to_target: list[NamespaceNode],
+    eval_time_utc: datetime.datetime | None = None,
+    check_ancestor_traverse: bool = True,
+) -> PathMasksResult:
+    """Compute target effective masks, inheritable state, and immediate parent masks in O(D * R)."""
+    return _evaluate_path_masks(
+        subject,
+        path_root_to_target,
+        eval_time_utc,
+        check_ancestor_traverse,
+        track_parent=True,
     )
 
 
@@ -460,11 +528,12 @@ def evaluate_effective_masks(
     check_ancestor_traverse: bool = True,
 ) -> EffectiveMasksResult:
     """Compute effective 21-bit allow/deny masks and cache TTL bound in one O(D * R) pass."""
-    return evaluate_path_masks(
+    return _evaluate_path_masks(
         subject,
         path_root_to_target,
-        eval_time_utc=eval_time_utc,
-        check_ancestor_traverse=check_ancestor_traverse,
+        eval_time_utc,
+        check_ancestor_traverse,
+        track_parent=False,
     ).target
 
 
@@ -517,60 +586,44 @@ def evaluate_access(
             step="1_lifecycle_and_type",
         )
 
-    start_idx = 0
-    if not check_ancestor_traverse:
-        for idx in range(len(path_root_to_target) - 1, -1, -1):
-            if not path_root_to_target[idx].policy.inherit:
-                start_idx = idx
-                break
-
-    inherited = _EMPTY_INHERITED_STATE
-    next_transition: datetime.datetime | None = None
-    for idx in range(start_idx, len(path_root_to_target) - 1):
-        ancestor = path_root_to_target[idx]
-        if (
-            check_ancestor_traverse
-            and ancestor.state is not ObjectState.NORMAL
-            and target.state is not ObjectState.SOFT_DELETED
-        ):
+    walk = _walk_path_dacl(
+        subject,
+        path_root_to_target,
+        now,
+        check_ancestor_traverse=check_ancestor_traverse,
+        track_parent=False,
+    )
+    if not walk.allowed_traverse:
+        if walk.denied_traverse_ancestor_idx is not None:
+            if collect_traces:
+                denies, allows = _collect_op_traces_on_chain(
+                    subject,
+                    path_root_to_target[: walk.denied_traverse_ancestor_idx + 1],
+                    AtomicOp.TRAVERSE,
+                    now,
+                )
+            else:
+                denies, allows = [], []
             return EvalDecision(
                 allowed=False,
-                reason=f"Ancestor '{ancestor.name}' ({ancestor.node_id}) is not in normal state.",
+                reason=walk.denied_reason or "Missing TRAVERSE permission on ancestor.",
                 step="2_path_traverse",
-                next_transition_at=next_transition,
+                matched_denies=tuple(denies),
+                matched_allows=tuple(allows),
+                effective_allow_mask=walk.allow_mask,
+                effective_deny_mask=walk.deny_mask,
+                next_transition_at=walk.next_transition_at,
             )
-        own_allow, own_deny, own_next, inherited = step_node_dacl(
-            subject, ancestor.policy, ancestor.object_type, inherited, now
+        return EvalDecision(
+            allowed=False,
+            reason=walk.denied_reason or "Ancestor is not in normal state.",
+            step="2_path_traverse",
+            next_transition_at=walk.next_transition_at,
         )
-        if check_ancestor_traverse:
-            if ancestor.state is not ObjectState.NORMAL:
-                continue
-            next_transition = _min_transition(next_transition, own_next)
-            if not ((own_allow & _TRAVERSE_BIT) and not (own_deny & _TRAVERSE_BIT)):
-                if collect_traces:
-                    denies, allows = _collect_op_traces_on_chain(
-                        subject,
-                        path_root_to_target[: idx + 1],
-                        AtomicOp.TRAVERSE,
-                        now,
-                    )
-                else:
-                    denies, allows = [], []
-                return EvalDecision(
-                    allowed=False,
-                    reason=f"Missing TRAVERSE permission on ancestor '{ancestor.name}' ({ancestor.node_id}).",
-                    step="2_path_traverse",
-                    matched_denies=tuple(denies),
-                    matched_allows=tuple(allows),
-                    effective_allow_mask=own_allow,
-                    effective_deny_mask=own_deny,
-                    next_transition_at=next_transition,
-                )
 
-    a_mask, d_mask, target_next, _ = step_node_dacl(
-        subject, target.policy, target.object_type, inherited, now
-    )
-    next_transition = _min_transition(next_transition, target_next)
+    a_mask = walk.allow_mask
+    d_mask = walk.deny_mask
+    next_transition = walk.next_transition_at
     op_bit = int(operation)
     if collect_traces and ((d_mask & op_bit) or (a_mask & op_bit)):
         denies, allows = _collect_op_traces_on_chain(
@@ -867,30 +920,19 @@ def evaluate_soft_delete(
     )
 
 
-def authorize_policy_save(
+def simulate_policy_save_lockout(
     actor: Subject | None,
     current_path: list[NamespaceNode],
     proposed_policy: CompiledPolicy,
     eval_time_utc: datetime.datetime | None = None,
     check_ancestor_traverse: bool = True,
-) -> SaveAuthzResult:
-    """CEP 2 Section 5.2 Save-time authorization (WRITE_DACL + anti-lockout advisory)."""
+) -> bool:
+    """Return True if replacing current_path[-1]'s policy with proposed_policy revokes WRITE_DACL."""
+    if not current_path:
+        raise ValueError("current_path must contain at least the target node.")
     now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
         datetime.UTC
     )
-    check = evaluate_access(
-        actor,
-        current_path,
-        AtomicOp.WRITE_DACL,
-        now,
-        check_ancestor_traverse=check_ancestor_traverse,
-        collect_traces=False,
-    )
-    if not check.allowed:
-        return SaveAuthzResult(
-            authorized=False, reason=f"Missing WRITE_DACL: {check.reason}"
-        )
-
     target = current_path[-1]
     simulated_target = NamespaceNode(
         node_id=target.node_id,
@@ -901,14 +943,10 @@ def authorize_policy_save(
     )
     post_check = evaluate_access(
         actor,
-        current_path[:-1] + [simulated_target],
+        [*current_path[:-1], simulated_target],
         AtomicOp.WRITE_DACL,
         now,
         check_ancestor_traverse=check_ancestor_traverse,
         collect_traces=False,
     )
-    return SaveAuthzResult(
-        authorized=True,
-        reason="Actor holds WRITE_DACL.",
-        self_lockout_warning=not post_check.allowed,
-    )
+    return not post_check.allowed
