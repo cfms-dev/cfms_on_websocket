@@ -3,27 +3,19 @@ from itertools import batched
 from typing import Any
 lazy from collections.abc import Sequence
 
-from cacl_compiler import AtomicOp
+from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType
 from sqlalchemy import (
     and_,
     exists,
-    false,
     func,
     literal,
-    not_,
     or_,
     select,
-    true,
     union_all,
 )
 from sqlalchemy.orm import joinedload, raiseload
 
 from include.config.constants import QUERY_CHUNK_SIZE
-from include.database.models.access import (
-    NodeDaclAtom,
-    NodeDaclClause,
-    NodeDaclRule,
-)
 from include.database.models.documents import (
     Document,
     DocumentRevision,
@@ -32,10 +24,17 @@ from include.database.models.documents import (
     Node,
 )
 from include.database.models.files import File
+from include.domains.access.authorization.engine import (
+    InheritedDaclState,
+    Subject,
+    step_node_dacl,
+)
 from include.domains.access.authorization.evaluation import (
     has_bypass_dacl,
     should_check_ancestor_traverse,
+    user_to_subject,
 )
+from include.domains.access.authorization.storage import load_node_policies
 lazy from include.database.models.identity import User
 
 _CURSOR_KEY = "_cursor_key"
@@ -615,99 +614,10 @@ def _search_primary_column(selectable, sort_by: str):
     return selectable.c.created_time
 
 
-def _in_values(column, values: Sequence[str]):
-    if not values:
-        return false()
-    return column.in_(list(values))
-
-
-def _sql_rule_matches_subject(
-    rule_table,
-    user_id_str: str,
-    user_groups: Sequence[str],
-    user_perms: Sequence[str],
-):
-    atom_matches_positive = or_(
-        and_(
-            NodeDaclAtom.predicate_kind == "user",
-            NodeDaclAtom.predicate_value == user_id_str,
-        ),
-        and_(
-            NodeDaclAtom.predicate_kind == "group",
-            _in_values(NodeDaclAtom.predicate_value, user_groups),
-        ),
-        and_(
-            NodeDaclAtom.predicate_kind == "perm",
-            _in_values(NodeDaclAtom.predicate_value, user_perms),
-        ),
-    )
-    atom_fails = or_(
-        and_(NodeDaclAtom.is_negated == False, not_(atom_matches_positive)),
-        and_(NodeDaclAtom.is_negated == True, atom_matches_positive),
-    )
-    return exists(
-        select(1).where(
-            NodeDaclClause.rule_id == rule_table.c.id,
-            not_(
-                exists(
-                    select(1).where(
-                        NodeDaclAtom.clause_id == NodeDaclClause.id,
-                        atom_fails,
-                    )
-                )
-            ),
-        )
-    )
-
-
-def _sql_chain_op_allowed(
-    chain_cte,
-    *,
-    target_id_col,
-    target_type_expr,
-    op_bit: int,
-    now_utc: datetime.datetime,
-    user_id_str: str,
-    user_groups: Sequence[str],
-    user_perms: Sequence[str],
-    match_target_type_on_chain: bool,
-):
-    def _effect_exists(effect: str):
-        rule_tbl = NodeDaclRule.__table__.alias(f"cacl_r_{effect}_{op_bit}")
-        chain_filters = [chain_cte.c.target_id == target_id_col]
-        if match_target_type_on_chain:
-            chain_filters.append(chain_cte.c.target_type == target_type_expr)
-        scope_match = or_(
-            rule_tbl.c.scope == "all",
-            and_(rule_tbl.c.scope == "self", chain_cte.c.distance == 0),
-            and_(rule_tbl.c.scope == "dirs", target_type_expr == "directory"),
-            and_(rule_tbl.c.scope == "docs", target_type_expr == "document"),
-        )
-        return exists(
-            select(1)
-            .select_from(
-                chain_cte.join(rule_tbl, rule_tbl.c.node_id == chain_cte.c.origin_id)
-            )
-            .where(
-                *chain_filters,
-                rule_tbl.c.effect == effect,
-                rule_tbl.c.permission_mask.op("&")(op_bit) != 0,
-                scope_match,
-                or_(
-                    rule_tbl.c.valid_from.is_(None),
-                    rule_tbl.c.valid_from <= now_utc,
-                ),
-                or_(
-                    rule_tbl.c.valid_until.is_(None),
-                    rule_tbl.c.valid_until > now_utc,
-                ),
-                _sql_rule_matches_subject(
-                    rule_tbl, user_id_str, user_groups, user_perms
-                ),
-            )
-        )
-
-    return and_(_effect_exists("allow"), not_(_effect_exists("deny")))
+_DIR_VISIBLE_MASK = int(AtomicOp.LIST_DIRECTORY | AtomicOp.READ_METADATA)
+_DOC_VISIBLE_MASK = int(AtomicOp.READ_CONTENT | AtomicOp.READ_METADATA)
+_TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
+_EMPTY_INHERITED_STATE = InheritedDaclState()
 
 
 def _search_candidate_selectable(
@@ -767,193 +677,239 @@ def _search_candidate_selectable(
     return union_all(*selects).subquery("search_candidates")
 
 
-def _search_effective_chain_cte(candidates):
-    node_table = Node.__table__
-    anchor = select(
-        candidates.c.type.label("target_type"),
-        candidates.c.id.label("target_id"),
-        candidates.c.id.label("origin_id"),
-        literal(0).label("distance"),
-        candidates.c.parent_id.label("parent_id"),
-        candidates.c.inherit.label("inherit"),
-    )
-    chain = anchor.cte("search_effective_chain", recursive=True)
-    parent_node = node_table.alias("search_eff_parent")
-    chain = chain.union_all(
-        select(
-            chain.c.target_type,
-            chain.c.target_id,
-            parent_node.c.id,
-            (chain.c.distance + 1).label("distance"),
-            parent_node.c.parent_id,
-            parent_node.c.inherit,
+class _SearchVisibilityEvaluator:
+    """Request-scoped memoized CACL evaluator for batched search candidates."""
+
+    def __init__(
+        self,
+        session,
+        subject: Subject,
+        now_utc: datetime.datetime,
+        *,
+        check_traverse: bool,
+    ) -> None:
+        self._session = session
+        self._subject = subject
+        self._now_utc = now_utc
+        self._check_traverse = check_traverse
+        self._node_meta: dict[str, tuple[str | None, int, bool]] = {}
+        self._node_policies: dict[str, CompiledPolicy] = {}
+        self._dir_state_cache: dict[str, tuple[bool, InheritedDaclState]] = {}
+
+    def ensure_loaded(self, batch_items: Sequence[dict[str, Any]]) -> None:
+        missing_ancestors: list[str] = []
+        seen_missing: set[str] = set()
+        new_policy_ids: list[str] = []
+        seen_policy: set[str] = set()
+
+        for item in batch_items:
+            nid: str = item["id"]
+            parent_id: str | None = item["parent_id"]
+            if nid not in self._node_meta:
+                self._node_meta[nid] = (
+                    parent_id,
+                    EntityStatus.OK.value,
+                    bool(item["inherit"]),
+                )
+            if nid not in self._node_policies and nid not in seen_policy:
+                seen_policy.add(nid)
+                new_policy_ids.append(nid)
+            if (
+                parent_id is not None
+                and parent_id not in self._node_meta
+                and parent_id not in seen_missing
+            ):
+                seen_missing.add(parent_id)
+                missing_ancestors.append(parent_id)
+
+        if missing_ancestors:
+            node_table = Node.__table__
+            for chunk in batched(missing_ancestors, QUERY_CHUNK_SIZE):
+                chunk_ids = list(chunk)
+                anchor = select(
+                    node_table.c.id.label("id"),
+                    node_table.c.parent_id.label("parent_id"),
+                    node_table.c.status.label("status"),
+                    node_table.c.inherit.label("inherit"),
+                    literal(0).label("depth"),
+                ).where(node_table.c.id.in_(chunk_ids))
+                ancestors = anchor.cte("search_anc_meta", recursive=True)
+                parent_node = node_table.alias("search_anc_parent")
+                ancestors = ancestors.union(
+                    select(
+                        parent_node.c.id,
+                        parent_node.c.parent_id,
+                        parent_node.c.status,
+                        parent_node.c.inherit,
+                        (ancestors.c.depth + 1).label("depth"),
+                    )
+                    .select_from(
+                        ancestors.join(
+                            parent_node, parent_node.c.id == ancestors.c.parent_id
+                        )
+                    )
+                    .where(ancestors.c.parent_id.is_not(None), ancestors.c.depth < 128)
+                )
+                rows = self._session.execute(
+                    select(
+                        ancestors.c.id,
+                        ancestors.c.parent_id,
+                        ancestors.c.status,
+                        ancestors.c.inherit,
+                    ).distinct()
+                ).all()
+                for nid, parent_id, status, inherit_flag in rows:
+                    if nid not in self._node_meta:
+                        self._node_meta[nid] = (
+                            parent_id,
+                            int(status),
+                            bool(inherit_flag),
+                        )
+                    if nid not in self._node_policies and nid not in seen_policy:
+                        seen_policy.add(nid)
+                        new_policy_ids.append(nid)
+
+        if new_policy_ids:
+            preloaded_inherit = {
+                nid: self._node_meta[nid][2]
+                for nid in new_policy_ids
+                if nid in self._node_meta
+            }
+            loaded = load_node_policies(
+                self._session,
+                new_policy_ids,
+                include_deleted=True,
+                preloaded_inherit=preloaded_inherit,
+                active_at_utc=self._now_utc,
+                canonicalize=False,
+            )
+            for nid in new_policy_ids:
+                default_inherit = (
+                    self._node_meta[nid][2] if nid in self._node_meta else True
+                )
+                self._node_policies[nid] = loaded.get(
+                    nid, CompiledPolicy(inherit=default_inherit, rules=())
+                )
+
+    def _resolve_ancestor_dir(self, dir_id: str) -> tuple[bool, InheritedDaclState]:
+        cached = self._dir_state_cache.get(dir_id)
+        if cached is not None:
+            return cached
+
+        uncomputed: list[str] = []
+        visited: set[str] = set()
+        curr_id: str | None = dir_id
+        while curr_id is not None and curr_id not in self._dir_state_cache:
+            if curr_id in visited:
+                raise RuntimeError(f"Cycle detected in folder hierarchy at {curr_id!r}")
+            visited.add(curr_id)
+            meta = self._node_meta.get(curr_id)
+            if meta is None:
+                break
+            uncomputed.append(curr_id)
+            curr_id = meta[0]
+
+        if curr_id is not None and curr_id in self._dir_state_cache:
+            traverse_ok, inherited = self._dir_state_cache[curr_id]
+        else:
+            traverse_ok, inherited = True, _EMPTY_INHERITED_STATE
+
+        for nid in reversed(uncomputed):
+            _parent_id, status, inherit_flag = self._node_meta[nid]
+            policy = self._node_policies.get(
+                nid, CompiledPolicy(inherit=inherit_flag, rules=())
+            )
+            own_allow, own_deny, _, next_inherited = step_node_dacl(
+                self._subject,
+                policy,
+                ObjectType.DIRECTORY,
+                inherited,
+                self._now_utc,
+            )
+            if self._check_traverse:
+                eff_mask = own_allow & ~own_deny
+                node_traverse_ok = (
+                    traverse_ok
+                    and status != EntityStatus.DELETED.value
+                    and bool(eff_mask & _TRAVERSE_BIT)
+                )
+            else:
+                node_traverse_ok = True
+            self._dir_state_cache[nid] = (node_traverse_ok, next_inherited)
+            traverse_ok, inherited = node_traverse_ok, next_inherited
+
+        return self._dir_state_cache.get(dir_id, (False, _EMPTY_INHERITED_STATE))
+
+    def is_visible(self, item: dict[str, Any]) -> bool:
+        parent_id: str | None = item["parent_id"]
+        if parent_id is not None:
+            traverse_ok, parent_inherited = self._resolve_ancestor_dir(parent_id)
+            if not traverse_ok:
+                return False
+        else:
+            parent_inherited = _EMPTY_INHERITED_STATE
+
+        nid: str = item["id"]
+        is_dir = item["type"] == "directory"
+        obj_type = ObjectType.DIRECTORY if is_dir else ObjectType.DOCUMENT
+        policy = self._node_policies.get(
+            nid, CompiledPolicy(inherit=bool(item["inherit"]), rules=())
         )
-        .select_from(chain.join(parent_node, parent_node.c.id == chain.c.parent_id))
-        .where(chain.c.inherit == True, chain.c.parent_id.is_not(None))
-    )
-    return chain
+        own_allow, own_deny, _, _ = step_node_dacl(
+            self._subject,
+            policy,
+            obj_type,
+            parent_inherited,
+            self._now_utc,
+        )
+        eff_mask = own_allow & ~own_deny
+        required_mask = _DIR_VISIBLE_MASK if is_dir else _DOC_VISIBLE_MASK
+        return bool(eff_mask & required_mask)
 
 
-def _search_all_ancestors_cte(candidates):
-    node_table = Node.__table__
-    parent_anchor = node_table.alias("search_anc_seed")
-    anchor = (
-        select(
-            candidates.c.type.label("target_type"),
-            candidates.c.id.label("target_id"),
-            parent_anchor.c.id.label("ancestor_id"),
-            parent_anchor.c.parent_id.label("parent_id"),
-            parent_anchor.c.status.label("ancestor_status"),
-            parent_anchor.c.inherit.label("ancestor_inherit"),
-        )
-        .select_from(
-            candidates.join(parent_anchor, parent_anchor.c.id == candidates.c.parent_id)
-        )
-        .where(candidates.c.parent_id.is_not(None))
-    )
-    ancestors = anchor.cte("search_all_ancestors", recursive=True)
-    parent_step = node_table.alias("search_anc_step")
-    ancestors = ancestors.union_all(
-        select(
-            ancestors.c.target_type,
-            ancestors.c.target_id,
-            parent_step.c.id,
-            parent_step.c.parent_id,
-            parent_step.c.status,
-            parent_step.c.inherit,
-        )
-        .select_from(
-            ancestors.join(parent_step, parent_step.c.id == ancestors.c.parent_id)
-        )
-        .where(ancestors.c.parent_id.is_not(None))
-    )
-    return ancestors
-
-
-def _ancestor_effective_chain_cte(all_ancestors_cte):
-    node_table = Node.__table__
-    distinct_ancestors = select(
-        all_ancestors_cte.c.ancestor_id.label("target_id"),
-        all_ancestors_cte.c.ancestor_id.label("origin_id"),
-        literal(0).label("distance"),
-        all_ancestors_cte.c.parent_id.label("parent_id"),
-        all_ancestors_cte.c.ancestor_inherit.label("inherit"),
-    ).distinct()
-    chain = distinct_ancestors.cte("search_anc_effective_chain", recursive=True)
-    parent_node = node_table.alias("search_anc_eff_parent")
-    chain = chain.union_all(
-        select(
-            chain.c.target_id,
-            parent_node.c.id,
-            (chain.c.distance + 1).label("distance"),
-            parent_node.c.parent_id,
-            parent_node.c.inherit,
-        )
-        .select_from(chain.join(parent_node, parent_node.c.id == chain.c.parent_id))
-        .where(chain.c.inherit == True, chain.c.parent_id.is_not(None))
-    )
-    return chain
-
-
-def _visible_search_filter(
+def _execute_search_batch(
     session,
     candidates,
-    user: User,
-    now_utc: datetime.datetime,
-):
-    if has_bypass_dacl(user):
-        return true()
-
-    user_id_str = str(user.id)
-    user_groups = list(user.all_groups)
-    user_perms = [str(permission) for permission in user.all_permissions]
-
-    effective_chain = _search_effective_chain_cte(candidates)
-
-    dir_visible = and_(
-        candidates.c.type == "directory",
-        or_(
-            _sql_chain_op_allowed(
-                effective_chain,
-                target_id_col=candidates.c.id,
-                target_type_expr=candidates.c.type,
-                op_bit=int(AtomicOp.LIST_DIRECTORY),
-                now_utc=now_utc,
-                user_id_str=user_id_str,
-                user_groups=user_groups,
-                user_perms=user_perms,
-                match_target_type_on_chain=True,
-            ),
-            _sql_chain_op_allowed(
-                effective_chain,
-                target_id_col=candidates.c.id,
-                target_type_expr=candidates.c.type,
-                op_bit=int(AtomicOp.READ_METADATA),
-                now_utc=now_utc,
-                user_id_str=user_id_str,
-                user_groups=user_groups,
-                user_perms=user_perms,
-                match_target_type_on_chain=True,
-            ),
-        ),
+    primary_column,
+    last_key: list[Any] | None,
+    sort_order: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    search_query = select(
+        candidates.c.id,
+        candidates.c.name,
+        candidates.c.name_sort_key,
+        candidates.c.parent_id,
+        candidates.c.created_time,
+        candidates.c.last_modified,
+        candidates.c.size,
+        candidates.c.type,
+        candidates.c.type_rank,
+        candidates.c.inherit,
     )
-    doc_visible = and_(
-        candidates.c.type == "document",
-        or_(
-            _sql_chain_op_allowed(
-                effective_chain,
-                target_id_col=candidates.c.id,
-                target_type_expr=candidates.c.type,
-                op_bit=int(AtomicOp.READ_CONTENT),
-                now_utc=now_utc,
-                user_id_str=user_id_str,
-                user_groups=user_groups,
-                user_perms=user_perms,
-                match_target_type_on_chain=True,
-            ),
-            _sql_chain_op_allowed(
-                effective_chain,
-                target_id_col=candidates.c.id,
-                target_type_expr=candidates.c.type,
-                op_bit=int(AtomicOp.READ_METADATA),
-                now_utc=now_utc,
-                user_id_str=user_id_str,
-                user_groups=user_groups,
-                user_perms=user_perms,
-                match_target_type_on_chain=True,
-            ),
-        ),
+    cursor_filter = _apply_search_cursor_filter(
+        candidates, primary_column, last_key, sort_order
     )
-    target_visible = or_(dir_visible, doc_visible)
+    if cursor_filter is not None:
+        search_query = search_query.where(cursor_filter)
+    search_query = search_query.order_by(
+        *_search_ordering(candidates, primary_column, sort_order)
+    ).limit(limit)
+    return [
+        {str(key): value for key, value in row.items()}
+        for row in session.execute(search_query).mappings()
+    ]
 
-    if not should_check_ancestor_traverse(session, user):
-        return target_visible
 
-    all_ancestors = _search_all_ancestors_cte(candidates)
-    anc_eff_chain = _ancestor_effective_chain_cte(all_ancestors)
-    blocked_ancestor = exists(
-        select(1).where(
-            all_ancestors.c.target_type == candidates.c.type,
-            all_ancestors.c.target_id == candidates.c.id,
-            or_(
-                all_ancestors.c.ancestor_status == EntityStatus.DELETED.value,
-                not_(
-                    _sql_chain_op_allowed(
-                        anc_eff_chain,
-                        target_id_col=all_ancestors.c.ancestor_id,
-                        target_type_expr=literal("directory"),
-                        op_bit=int(AtomicOp.TRAVERSE),
-                        now_utc=now_utc,
-                        user_id_str=user_id_str,
-                        user_groups=user_groups,
-                        user_perms=user_perms,
-                        match_target_type_on_chain=False,
-                    )
-                ),
-            ),
-        )
-    )
-    return and_(target_visible, not_(blocked_ancestor))
+def _finalize_search_item(raw_item: dict[str, Any], sort_by: str) -> dict[str, Any]:
+    item = dict(raw_item)
+    item[_CURSOR_KEY] = _search_item_cursor_key(raw_item, sort_by)
+    item.pop("name_sort_key", None)
+    item.pop("inherit", None)
+    if item["type"] == "directory":
+        item.pop("last_modified", None)
+        item.pop("size", None)
+    return item
 
 
 def fetch_visible_search_candidate_rows(
@@ -969,6 +925,9 @@ def fetch_visible_search_candidate_rows(
     last_key: list[Any] | None,
     limit: int,
 ) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+
     candidates = _search_candidate_selectable(
         query=query,
         search_documents=search_documents,
@@ -977,42 +936,54 @@ def fetch_visible_search_candidate_rows(
     if candidates is None:
         return []
 
+    primary_column = _search_primary_column(candidates, sort_by)
+
+    if has_bypass_dacl(user):
+        raw_rows = _execute_search_batch(
+            session, candidates, primary_column, last_key, sort_order, limit
+        )
+        return [_finalize_search_item(row, sort_by) for row in raw_rows]
+
     now_utc = (
         datetime.datetime.fromtimestamp(now, tz=datetime.UTC)
         if isinstance(now, int | float)
         else now.astimezone(datetime.UTC)
     )
-
-    primary_column = _search_primary_column(candidates, sort_by)
-    search_query = select(
-        candidates.c.id,
-        candidates.c.name,
-        candidates.c.name_sort_key,
-        candidates.c.parent_id,
-        candidates.c.created_time,
-        candidates.c.last_modified,
-        candidates.c.size,
-        candidates.c.type,
-        candidates.c.type_rank,
-        candidates.c.inherit,
-    ).where(_visible_search_filter(session, candidates, user, now_utc))
-    cursor_filter = _apply_search_cursor_filter(
-        candidates, primary_column, last_key, sort_order
+    evaluator = _SearchVisibilityEvaluator(
+        session,
+        user_to_subject(user),
+        now_utc,
+        check_traverse=should_check_ancestor_traverse(session, user),
     )
-    if cursor_filter is not None:
-        search_query = search_query.where(cursor_filter)
-    search_query = search_query.order_by(
-        *_search_ordering(candidates, primary_column, sort_order)
-    ).limit(limit)
 
-    rows: list[dict[str, Any]] = []
-    for row in session.execute(search_query).mappings():
-        item = {str(key): value for key, value in row.items()}
-        item[_CURSOR_KEY] = _search_item_cursor_key(item, sort_by)
-        item.pop("name_sort_key", None)
-        item.pop("inherit", None)
-        if item["type"] == "directory":
-            item.pop("last_modified", None)
-            item.pop("size", None)
-        rows.append(item)
-    return rows
+    batch_sizes = (max(limit * 2, 128), 512, 2048, 4096)
+    batch_index = 0
+    batch_last_key = last_key
+    visible_rows: list[dict[str, Any]] = []
+
+    while len(visible_rows) < limit:
+        batch_limit = batch_sizes[min(batch_index, len(batch_sizes) - 1)]
+        batch_index += 1
+        raw_rows = _execute_search_batch(
+            session,
+            candidates,
+            primary_column,
+            batch_last_key,
+            sort_order,
+            batch_limit,
+        )
+        if not raw_rows:
+            break
+
+        evaluator.ensure_loaded(raw_rows)
+        for raw_item in raw_rows:
+            if evaluator.is_visible(raw_item):
+                visible_rows.append(_finalize_search_item(raw_item, sort_by))
+                if len(visible_rows) >= limit:
+                    break
+
+        if len(raw_rows) < batch_limit:
+            break
+        batch_last_key = _search_item_cursor_key(raw_rows[-1], sort_by)
+
+    return visible_rows

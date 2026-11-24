@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from cacl_compiler import AtomicOp
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 from include.config.options import write_options
@@ -439,3 +440,125 @@ def test_visible_search_query_filters_before_limit(search_query_context):
     )
 
     assert [item["id"] for item in rows] == [visible_folder.id]
+
+
+@pytest.mark.component
+def test_visible_search_query_multi_batch_pagination_and_no_legacy_ctes(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_batch")
+    query = "SearchBatchItem"
+
+    # Create 150 hidden folders sorted before 5 visible folders (exceeds first batch of 128).
+    for idx in range(150):
+        _make_folder(
+            context,
+            f"batch-hidden-{idx:03d}",
+            f"{query}A{idx:03d}",
+            dacl="inherit off;",
+        )
+    expected_visible_ids: list[str] = []
+    for idx in range(5):
+        folder = _make_folder(
+            context,
+            f"batch-visible-{idx:03d}",
+            f"{query}Z{idx:03d}",
+        )
+        expected_visible_ids.append(folder.id)
+    context.session.commit()
+
+    # Warm cached properties before listening to SQL.
+    _ = user.all_permissions
+    _ = user.all_groups
+
+    engine = context.session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        collected_ids: list[str] = []
+        last_key = None
+        while True:
+            page = context.fetch_visible_search_candidate_rows(
+                context.session,
+                user=user,
+                now=_NOW,
+                query=query,
+                sort_by="name",
+                sort_order="asc",
+                search_documents=False,
+                search_directories=True,
+                last_key=last_key,
+                limit=2,
+            )
+            if not page:
+                break
+            collected_ids.extend(item["id"] for item in page)
+            if len(page) < 2:
+                break
+            last_key = page[-1]["_cursor_key"]
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert collected_ids == expected_visible_ids
+    for stmt in statements:
+        assert "search_effective_chain" not in stmt
+        assert "search_all_ancestors" not in stmt
+        assert "search_anc_effective_chain" not in stmt
+
+
+@pytest.mark.component
+def test_visible_search_query_hides_items_under_soft_deleted_ancestor(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_del_anc")
+    parent = _make_folder(context, "del-anc-parent", "DeletedAncParent")
+    child = _make_folder(
+        context,
+        "del-anc-child",
+        "DeletedAncChildTarget",
+        parent_id=parent.id,
+    )
+    parent.status = context.models.EntityStatus.DELETED
+    context.session.commit()
+
+    rows = context.fetch_visible_search_candidate_rows(
+        context.session,
+        user=user,
+        now=_NOW,
+        query="DeletedAncChildTarget",
+        sort_by="name",
+        sort_order="asc",
+        search_documents=False,
+        search_directories=True,
+        last_key=None,
+        limit=10,
+    )
+    assert rows == []
+
+    write_options(
+        context.session,
+        "access",
+        {"bypass_traverse_checking": True},
+        expected_revisions={"bypass_traverse_checking": 0},
+    )
+    context.session.commit()
+
+    rows_bypassed = context.fetch_visible_search_candidate_rows(
+        context.session,
+        user=user,
+        now=_NOW,
+        query="DeletedAncChildTarget",
+        sort_by="name",
+        sort_order="asc",
+        search_documents=False,
+        search_directories=True,
+        last_key=None,
+        limit=10,
+    )
+    assert [item["id"] for item in rows_bypassed] == [child.id]
