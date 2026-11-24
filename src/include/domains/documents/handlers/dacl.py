@@ -85,12 +85,17 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
     on_before_commit: Callable[[NodeT, User], None] | None = None,
 ) -> Result:
     assert handler.user_id is not None
-    user = User.get_existing(session, handler.user_id)
-    target = session.get(model_cls, target_id)
-
+    target = session.get(
+        model_cls,
+        target_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
     if target is None:
         handler.conclude_request(404, {}, not_found_message)
         return Result(code=404, target=target_id, user_id=handler.user_id)
+
+    user = User.get_existing(session, handler.user_id)
 
     write_check = authorize_write_dacl_and_load_path(session, user, target)
     if not write_check.authorized:

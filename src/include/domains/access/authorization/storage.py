@@ -612,14 +612,12 @@ def persist_node_policy(
     target_id = target.id
     assert target_id is not None
 
-    node_for_update = (
-        session.query(Node)
-        .execution_options(include_deleted=True)
-        .filter(Node.id == target_id)
+    node_for_update = session.scalars(
+        select(Node)
+        .where(Node.id == target_id)
         .with_for_update()
-        .populate_existing()
-        .one_or_none()
-    )
+        .execution_options(include_deleted=True, populate_existing=True)
+    ).one_or_none()
     if node_for_update is None:
         raise RuntimeError("Target node no longer exists while persisting DACL policy")
 

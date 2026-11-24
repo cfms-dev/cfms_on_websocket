@@ -1,16 +1,20 @@
 """Component tests for CACL storage, compilation, decompilation, and time-window evaluation."""
 
 import datetime
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, cast
 
 import pytest
 from cacl_compiler import AtomicOp, ObjectType
 from sqlalchemy import event, select
+from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.orm import sessionmaker
 
 from include.config.constants import DACL_MAX_RULES_PER_NODE
 from include.database import models
 from include.database.models.access import datetime_to_epoch_us, epoch_us_to_datetime
-from include.database.session import Base
+from include.database.session import Base, Session
 from include.domains.access.authorization import (
     evaluation as eval_mod,
 )
@@ -37,9 +41,11 @@ from include.domains.access.authorization.storage import (
     render_policy_text,
 )
 from include.domains.access.permissions import Permissions
+from include.domains.documents.handlers.dacl import handle_set_node_dacl
 from include.domains.documents.queries.deletion_tree import (
     fetch_subtree_metadata_for_soft_delete,
 )
+from include.transport.connection import ConnectionHandler
 
 pytestmark = pytest.mark.component
 
@@ -705,3 +711,210 @@ def test_soft_delete_root_check_directory_delete_child_bypass_and_missing_delete
     )
     assert root_only_child.allowed is False
     assert root_only_child.needs_descendant_check is False
+
+
+class _RecordingDaclHandler:
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+        self.responses: list[tuple[int, dict[str, Any]]] = []
+
+    def conclude_request(self, code: int, data: dict[str, Any], _message: str) -> None:
+        self.responses.append((code, data))
+
+
+@pytest.mark.parametrize("dialect_name", ["sqlite", "postgresql", "mysql"])
+def test_dacl_locking_statements_compile_across_supported_dialects(dialect_name: str):
+    dialect = {
+        "sqlite": sqlite.dialect(),
+        "postgresql": postgresql.dialect(),
+        "mysql": mysql.dialect(),
+    }[dialect_name]
+
+    for model_cls in (models.Node, models.Folder, models.Document):
+        compiled_sql = str(
+            select(model_cls)
+            .where(model_cls.id == "target-id")
+            .with_for_update()
+            .compile(dialect=dialect)
+        )
+        assert "nodes" in compiled_sql
+        if dialect_name in ("postgresql", "mysql"):
+            assert "FOR UPDATE" in compiled_sql
+
+
+def test_handle_set_node_dacl_acquires_lock_before_reading_user_or_policy(
+    sqlite_engine_factory, tmp_path
+):
+    engine = sqlite_engine_factory(tmp_path / "dacl_lock_order.db")
+    Base.metadata.create_all(engine)
+
+    with Session(bind=engine) as seed_session:
+        root = models.Folder(id="/", name="/", inherit=False)
+        seed_session.add(root)
+        seed_session.flush()
+        alice = models.User(
+            username="alice_lock_order",
+            nickname="Alice",
+            created_time=1.0,
+            status=0,
+            secret_key="s" * 64,
+        )
+        folder = models.Folder(
+            id="f-lock-order", name="LockOrder", parent_id="/", inherit=False
+        )
+        seed_session.add_all([alice, folder])
+        seed_session.flush()
+        root_policy = compile_policy_source(
+            seed_session, DEFAULT_ROOT_DACL_SOURCE
+        ).policy
+        folder_policy = compile_policy_source(
+            seed_session,
+            f'inherit off; allow [WRITE_DACL] to user("{alice.id}");',
+        ).policy
+        assert root_policy is not None
+        assert folder_policy is not None
+        persist_node_policy(seed_session, root, root_policy)
+        persist_node_policy(seed_session, folder, folder_policy)
+        alice_id = alice.id
+        seed_session.commit()
+
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        recorder = _RecordingDaclHandler(alice_id)
+        with Session(bind=engine) as session:
+            result = handle_set_node_dacl(
+                session,
+                cast(ConnectionHandler, recorder),
+                model_cls=models.Folder,
+                target_type=ObjectType.DIRECTORY,
+                target_id="f-lock-order",
+                dacl_source=f'inherit off; allow [WRITE_DACL, READ_METADATA] to user("{alice_id}");',
+                allow_self_lockout=False,
+                not_found_message="not found",
+                success_message="ok",
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert result.code == 0
+    assert len(recorder.responses) == 1
+    assert recorder.responses[0][0] == 200
+    assert statements[0] == "BEGIN IMMEDIATE"
+    assert "folders" in statements[1]
+    assert "users" not in statements[1]
+    assert "cacl_ancestor_chain" not in statements[1]
+    assert "dacl_rules" not in statements[1]
+
+
+@pytest.mark.parametrize("concurrent_mutation", ["revoke_write_dacl", "soft_delete"])
+def test_handle_set_node_dacl_serializes_concurrent_revocation_and_soft_delete(
+    sqlite_engine_factory, tmp_path, concurrent_mutation: str
+):
+    engine = sqlite_engine_factory(
+        tmp_path / f"dacl_race_{concurrent_mutation}.db", timeout_seconds=5
+    )
+    Base.metadata.create_all(engine)
+
+    with Session(bind=engine) as seed_session:
+        root = models.Folder(id="/", name="/", inherit=False)
+        seed_session.add(root)
+        seed_session.flush()
+        alice = models.User(
+            username=f"alice_{concurrent_mutation}",
+            nickname="Alice",
+            created_time=1.0,
+            status=0,
+            secret_key="s" * 64,
+        )
+        folder = models.Folder(
+            id="f-race", name="RaceFolder", parent_id="/", inherit=False
+        )
+        seed_session.add_all([alice, folder])
+        seed_session.flush()
+        root_policy = compile_policy_source(
+            seed_session, DEFAULT_ROOT_DACL_SOURCE
+        ).policy
+        initial_policy = compile_policy_source(
+            seed_session,
+            f'inherit off; allow [WRITE_DACL] to user("{alice.id}");',
+        ).policy
+        assert root_policy is not None
+        assert initial_policy is not None
+        persist_node_policy(seed_session, root, root_policy)
+        persist_node_policy(seed_session, folder, initial_policy)
+        initial_fingerprint = initial_policy.fingerprint()
+        alice_id = alice.id
+        seed_session.commit()
+
+    waiting = threading.Event()
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _observe_worker_lock(_conn, _cursor, statement, _params, _context, _many):
+        if (
+            threading.current_thread() is not threading.main_thread()
+            and statement == "BEGIN IMMEDIATE"
+        ):
+            waiting.set()
+
+    def _run_concurrent_dacl_set() -> tuple[int, int]:
+        recorder = _RecordingDaclHandler(alice_id)
+        with Session(bind=engine) as worker_session:
+            result = handle_set_node_dacl(
+                worker_session,
+                cast(ConnectionHandler, recorder),
+                model_cls=models.Folder,
+                target_type=ObjectType.DIRECTORY,
+                target_id="f-race",
+                dacl_source=(
+                    f'inherit off; allow [WRITE_DACL, LIST_DIRECTORY] to user("{alice_id}");'
+                ),
+                allow_self_lockout=False,
+                not_found_message="not found",
+                success_message="ok",
+            )
+            return result.code, recorder.responses[0][0]
+
+    expected_fingerprint = initial_fingerprint
+    try:
+        with Session(bind=engine) as holder, ThreadPoolExecutor(max_workers=1) as pool:
+            locked_folder = holder.get(
+                models.Folder,
+                "f-race",
+                with_for_update=True,
+                populate_existing=True,
+            )
+            assert locked_folder is not None
+            if concurrent_mutation == "revoke_write_dacl":
+                revoked_policy = compile_policy_source(
+                    holder, "inherit off; allow [READ_METADATA] to any;"
+                ).policy
+                assert revoked_policy is not None
+                persist_node_policy(holder, locked_folder, revoked_policy)
+                expected_fingerprint = revoked_policy.fingerprint()
+            else:
+                locked_folder.status = models.EntityStatus.DELETED
+                holder.flush()
+
+            future = pool.submit(_run_concurrent_dacl_set)
+            try:
+                assert waiting.wait(3)
+            finally:
+                holder.commit()
+            result_code, response_code = future.result(timeout=5)
+    finally:
+        event.remove(engine, "before_cursor_execute", _observe_worker_lock)
+
+    expected_status = 403 if concurrent_mutation == "revoke_write_dacl" else 404
+    assert result_code == expected_status
+    assert response_code == expected_status
+
+    with Session(bind=engine) as verify_session:
+        persisted = load_node_policies(
+            verify_session, ["f-race"], include_deleted=True
+        )["f-race"]
+        assert persisted.fingerprint() == expected_fingerprint

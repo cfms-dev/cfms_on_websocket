@@ -37,6 +37,8 @@ from include.domains.access.authorization.visibility import (
 lazy from include.database.models.identity import User
 
 _CURSOR_KEY = "_cursor_key"
+_SEARCH_PROBE_MULTIPLIER = 2
+_SEARCH_MIN_PROBE_LIMIT = 128
 
 
 def _lowered(value: str) -> str:
@@ -1144,7 +1146,7 @@ def fetch_visible_search_candidate_rows(
         lazy_hydrate_documents=not needs_revision_in_sort and search_documents,
     )
 
-    probe_limit = max(limit * 2, 128)
+    probe_limit = max(limit * _SEARCH_PROBE_MULTIPLIER, _SEARCH_MIN_PROBE_LIMIT)
     probe_rows = _execute_search_batch(
         session,
         candidates,

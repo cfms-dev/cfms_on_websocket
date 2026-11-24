@@ -955,6 +955,72 @@ def test_windowed_keyset_batch_strategy_matches_streaming_parity(search_query_co
 
 
 @pytest.mark.component
+def test_windowed_keyset_batch_strategy_matches_streaming_for_document_size_desc(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_windowed_docs")
+    query = "WindowDocSize"
+
+    for idx in range(180):
+        doc = _make_document(
+            context,
+            f"wds-hidden-{idx:03d}",
+            f"{query}Hidden{idx:03d}",
+            dacl="inherit off;",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 10_000 + idx
+
+    visible_docs: list[tuple[str, int]] = []
+    for idx in range(6):
+        doc = _make_document(
+            context,
+            f"wds-visible-{idx:03d}",
+            f"{query}Visible{idx:03d}",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        size = 500 + idx * 10
+        file_row.size = size
+        visible_docs.append((doc.id, size))
+    context.session.commit()
+
+    expected_visible = list(reversed(visible_docs))
+
+    def _collect_all(strategy):
+        collected: list[tuple[str, int]] = []
+        last_key = None
+        while True:
+            page = context.fetch_visible_search_candidate_rows(
+                context.session,
+                user=user,
+                now=_NOW,
+                query=query,
+                sort_by="size",
+                sort_order="desc",
+                search_documents=True,
+                search_directories=False,
+                last_key=last_key,
+                limit=2,
+                batch_strategy=strategy,
+            )
+            if not page:
+                break
+            collected.extend((item["id"], item["size"]) for item in page)
+            if len(page) < 2:
+                break
+            last_key = page[-1]["_cursor_key"]
+        return collected
+
+    streaming_rows = _collect_all(StreamingCursorBatchStrategy(chunk_size=16))
+    windowed_rows = _collect_all(WindowedKeysetBatchStrategy(window_sizes=(20, 40)))
+    assert streaming_rows == expected_visible
+    assert windowed_rows == expected_visible
+
+
+@pytest.mark.component
 def test_search_visibility_fails_closed_when_ancestor_chain_truncated(
     search_query_context, monkeypatch
 ):

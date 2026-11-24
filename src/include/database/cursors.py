@@ -1,4 +1,5 @@
 __all__ = [
+    "DEFAULT_KEYSET_WINDOW_SIZES",
     "KeysetBatchStrategy",
     "StreamingCursorBatchStrategy",
     "WindowedKeysetBatchStrategy",
@@ -13,6 +14,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import Executable
 
 from include.config.constants import QUERY_CHUNK_SIZE
+
+DEFAULT_KEYSET_WINDOW_SIZES: tuple[int, ...] = (2048, 8192)
 
 
 class KeysetBatchStrategy(Protocol):
@@ -61,7 +64,7 @@ class StreamingCursorBatchStrategy:
 class WindowedKeysetBatchStrategy:
     """Fetch escalating keyset-paginated windows so no cursor remains open across nested queries."""
 
-    window_sizes: tuple[int, ...] = (2048, 8192)
+    window_sizes: tuple[int, ...] = DEFAULT_KEYSET_WINDOW_SIZES
 
     def iter_batches(
         self,
