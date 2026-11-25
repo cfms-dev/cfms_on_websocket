@@ -57,6 +57,7 @@ from include.domains.operations.comments import (
     reason_change_audit_data,
 )
 from include.domains.pagination import get_offset_pagination
+from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.request_handler import (
     REQUEST_UNSET,
@@ -714,7 +715,7 @@ class RequestSetUserAvatarHandler(RequestHandler[_SetUserAvatarRequest]):
                 )
 
             if not authorize_node_operation(
-                session, user_to_update, document, AtomicOp.READ_CONTENT
+                session, this_user, document, AtomicOp.READ_CONTENT
             ).allowed:
                 handler.conclude_request(
                     403, {}, "User does not have access to the specified document"
@@ -726,7 +727,18 @@ class RequestSetUserAvatarHandler(RequestHandler[_SetUserAvatarRequest]):
                     user_id=handler.user_id,
                 )
 
-            latest_rev_file = document.get_latest_revision().file
+            try:
+                latest_rev_file = document.get_latest_revision().file
+            except RuntimeError, NoActiveRevisionsError:
+                handler.conclude_request(
+                    400, {}, "The specified document has no active revisions"
+                )
+                return Result(
+                    code=400,
+                    target=str(target_user_id),
+                    data=audit_data or None,
+                    user_id=handler.user_id,
+                )
             # check whether the file is an image
             extension = filetype.guess_extension(latest_rev_file.path)
             if extension not in ["jpg", "jpeg", "png", "gif", "bmp", "webp"]:

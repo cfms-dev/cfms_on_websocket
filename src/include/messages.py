@@ -21,18 +21,14 @@ class Messages(StrEnum):
     TARGET_DIRECTORY_NOT_FOUND = _("Target directory not found")
     TARGET_DOCUMENT_NOT_FOUND = _("Target document not found")
     KEY_NOT_FOUND = _("Key not found")
-    ENTITY_NOT_FOUND = _("Entity not found")
     TARGET_NOT_FOUND = _("Target not found")
     GROUP_ALREADY_EXISTS = _("Group already exists")
     USERNAME_ALREADY_EXISTS = _("Username already exists")
-    SPECIFIED_ENTRY_NOT_FOUND = _("Specified entry not found")
     USER_DOES_NOT_EXIST = _("User does not exist")
     ACCOUNT_NOT_ACTIVE = _("Account is not active")
     USER_LACKS_DEBUGGING_PERMISSION = _("User lacks debugging permission.")
     DOCUMENT_DOES_NOT_EXIST = _("Document does not exist")
 
-    DIRECTORY_ID_REQUIRED = _("Directory ID is required")
-    DOCUMENT_ID_REQUIRED = _("Document ID is required")
     DOCUMENT_TITLE_REQUIRED = _("Document title is required")
 
     MISSING_USERNAME = _("Username is missing")

@@ -16,6 +16,10 @@ from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.models.documents import Document, DocumentRevision, Node
 from include.database.models.files import File
 
+# FIXME: Should figure out a better solution, since such a hard limit is a very
+# poor design for a document management system.
+_MAX_REVISION_CHAIN_DEPTH = 1024
+
 
 def active_revision_exists_for(document_id_column):
     """Return a SQL EXISTS predicate matching documents with at least one active revision file."""
@@ -54,6 +58,7 @@ def _build_active_revision_chain_cte(
         (
             revision_table.c.parent_revision_id.label("parent_revision_id"),
             file_table.c.active.label("file_active"),
+            literal(0).label("depth"),
         )
     )
 
@@ -67,7 +72,13 @@ def _build_active_revision_chain_cte(
 
     recursive_cols: list[Any] = [chain.c[name] for name, _ in passthrough_columns]
     recursive_cols.extend(col for _, col in extra_columns(parent_rev, parent_file))
-    recursive_cols.extend((parent_rev.c.parent_revision_id, parent_file.c.active))
+    recursive_cols.extend(
+        (
+            parent_rev.c.parent_revision_id,
+            parent_file.c.active,
+            (chain.c.depth + 1).label("depth"),
+        )
+    )
 
     return chain.union_all(
         select(*recursive_cols)
@@ -77,7 +88,10 @@ def _build_active_revision_chain_cte(
                 chain.c.parent_revision_id == parent_rev.c.id,
             ).join(parent_file, parent_rev.c.file_id == parent_file.c.id)
         )
-        .where(chain.c.file_active.is_(False))
+        .where(
+            chain.c.file_active.is_(False),
+            chain.c.depth < _MAX_REVISION_CHAIN_DEPTH,
+        )
     )
 
 
@@ -95,7 +109,10 @@ def _build_ranked_active_revisions_for_ids(
             func.row_number()
             .over(
                 partition_by=revision_table.c.document_id,
-                order_by=revision_table.c.created_time.desc(),
+                order_by=(
+                    revision_table.c.created_time.desc(),
+                    revision_table.c.id.desc(),
+                ),
             )
             .label("row_number"),
         )
@@ -128,7 +145,7 @@ def _build_ranked_active_revisions_for_matched(
             func.row_number()
             .over(
                 partition_by=matched_documents.c.id,
-                order_by=rev_src.c.created_time.desc(),
+                order_by=(rev_src.c.created_time.desc(), rev_src.c.id.desc()),
             )
             .label("row_number"),
         )

@@ -409,7 +409,17 @@ def test_get_dacl_and_reparent_requests_validate_fields():
         RequestReparentDocumentHandler.request_model.model_validate(
             {"document_id": "doc-1", "target_folder_id": "dir-2", "new_title": "x"}
         )
-    assert exc.value.errors()[0]["type"] == "extra_forbidden"
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [
+        ("extra_forbidden", ("new_title",))
+    ]
+
+    with pytest.raises(ValidationError) as exc:
+        RequestReparentDirectoryHandler.request_model.model_validate(
+            {"folder_id": "dir-1", "target_folder_id": "dir-2", "new_name": "x"}
+        )
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [
+        ("extra_forbidden", ("new_name",))
+    ]
 
 
 @pytest.mark.parametrize("field", ["username", "old_passwd"])
@@ -498,9 +508,6 @@ def test_list_user_keys_rejects_null_user_id():
     ("handler_type", "request_data"),
     [
         pytest.param(
-            RequestCreateDirectoryHandler, {"name": "reports"}, id="directory"
-        ),
-        pytest.param(
             RequestGetDocumentInfoHandler,
             {"document_id": "document"},
             id="document-info",
@@ -516,6 +523,59 @@ def test_legacy_document_request_preserves_unknown_fields(handler_type, request_
         **request_data,
         "legacy_option": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("handler_type", "base_payload", "extra_field", "extra_value"),
+    [
+        pytest.param(
+            RequestCreateDirectoryHandler,
+            {"name": "reports"},
+            "access_rules",
+            {},
+            id="directory-access-rules",
+        ),
+        pytest.param(
+            RequestCreateDirectoryHandler,
+            {"name": "reports"},
+            "inherit_parent",
+            False,
+            id="directory-inherit-parent",
+        ),
+        pytest.param(
+            RequestCreateDirectoryHandler,
+            {"name": "reports"},
+            "legacy_option",
+            True,
+            id="directory-legacy-option",
+        ),
+        pytest.param(
+            RequestCreateDocumentHandler,
+            {"title": "report.txt"},
+            "access_rules",
+            {},
+            id="document-access-rules",
+        ),
+        pytest.param(
+            RequestCreateDocumentHandler,
+            {"title": "report.txt"},
+            "inherit_parent",
+            False,
+            id="document-inherit-parent",
+        ),
+    ],
+)
+def test_create_requests_reject_removed_and_unknown_fields(
+    handler_type, base_payload, extra_field, extra_value
+):
+    with pytest.raises(ValidationError) as exc:
+        handler_type.request_model.model_validate(
+            {**base_payload, extra_field: extra_value}
+        )
+
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [
+        ("extra_forbidden", (extra_field,))
+    ]
 
 
 def test_get_document_request_rejects_unknown_fields():

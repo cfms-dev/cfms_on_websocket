@@ -28,6 +28,7 @@ from include.domains.pagination import (
     make_cursor_response,
 )
 from include.domains.security.guards.rate_limits import risk_control_transaction
+from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.request_handler import (
     REQUEST_UNSET,
@@ -140,6 +141,22 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
         return Result(code=200, target=document_id, user_id=handler.user_id)
 
 
+def _get_revision_required_op(
+    document: Document, revision: DocumentRevision
+) -> AtomicOp:
+    if revision.id == document.current_revision_id:
+        return AtomicOp.READ_CONTENT
+    if revision.active and (
+        document.current_revision is None or not document.current_revision.active
+    ):
+        try:
+            if revision.id == document.get_latest_revision().id:
+                return AtomicOp.READ_CONTENT
+        except RuntimeError, NoActiveRevisionsError:
+            pass
+    return AtomicOp.READ_REVISION
+
+
 class RequestGetRevisionHandler(RequestHandler[_RevisionIDRequest]):
     request_model = _RevisionIDRequest
 
@@ -161,11 +178,7 @@ class RequestGetRevisionHandler(RequestHandler[_RevisionIDRequest]):
                 session,
                 user,
                 revision.document,
-                (
-                    AtomicOp.READ_CONTENT
-                    if revision.id == revision.document.current_revision_id
-                    else AtomicOp.READ_REVISION
-                ),
+                _get_revision_required_op(revision.document, revision),
             ).allowed:
                 response_code = result_code = 403
                 data = {}
@@ -259,6 +272,10 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
         cancelled_task_ids: list[str] = []
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
+            if Permissions.DELETE_REVISION not in user.all_permissions:
+                handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
+                return Result(code=403, target=revision_id, user_id=handler.user_id)
+
             revision = session.get(DocumentRevision, revision_id)
 
             if revision is None:
@@ -266,12 +283,9 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
                 return Result(code=404, target=revision_id, user_id=handler.user_id)
 
             document = revision.document
-            if (
-                Permissions.DELETE_REVISION not in user.all_permissions
-                or not authorize_node_operation(
-                    session, user, document, AtomicOp.DELETE_REVISION
-                ).allowed
-            ):
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.DELETE_REVISION
+            ).allowed:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, user_id=handler.user_id)
 

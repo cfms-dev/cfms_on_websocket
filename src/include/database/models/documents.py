@@ -129,6 +129,7 @@ class Node(Base):
         "NodeDaclRule",
         back_populates="node",
         cascade="all, delete-orphan",
+        passive_deletes=True,
         order_by="NodeDaclRule.id",
     )
 

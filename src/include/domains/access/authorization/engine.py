@@ -15,8 +15,10 @@ __all__ = [
     "evaluate_access",
     "evaluate_effective_masks",
     "evaluate_path_masks",
+    "evaluate_purge_subtree",
     "evaluate_reparent",
     "evaluate_restore",
+    "evaluate_restore_subtree",
     "evaluate_soft_delete_subtree",
     "is_ancestor_dir_traversable",
     "is_effective_mask_visible",
@@ -30,7 +32,7 @@ __all__ = [
 
 import datetime
 from collections import defaultdict, deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID
@@ -977,6 +979,44 @@ def _evaluate_descendant_delete(
     return None, child_inherited
 
 
+def _walk_subtree_bfs(
+    target_node_id: str,
+    target_inherited: InheritedDaclState,
+    descendants: Sequence[SubtreeNode],
+    visit_node: Callable[
+        [SubtreeNode, InheritedDaclState, bool],
+        tuple[EvalDecision | None, InheritedDaclState],
+    ],
+) -> EvalDecision | None:
+    children_by_parent: dict[str, list[SubtreeNode]] = defaultdict(list)
+    for node in descendants:
+        children_by_parent[node.parent_id].append(node)
+
+    queue: deque[tuple[str, InheritedDaclState]] = deque(
+        [(target_node_id, target_inherited)]
+    )
+    visited = 0
+    while queue:
+        parent_id, parent_inherited = queue.popleft()
+        for child in children_by_parent.get(parent_id, ()):
+            visited += 1
+            has_children = (
+                child.object_type is ObjectType.DIRECTORY
+                and child.node_id in children_by_parent
+            )
+            denial, child_inherited = visit_node(child, parent_inherited, has_children)
+            if denial is not None:
+                return denial
+            if has_children:
+                queue.append((child.node_id, child_inherited))
+
+    if visited != len(descendants):
+        raise RuntimeError(
+            "Subtree descendants could not all be reached from target directory."
+        )
+    return None
+
+
 def evaluate_soft_delete_subtree(
     subject: Subject | None,
     target_node_id: str,
@@ -1013,44 +1053,156 @@ def evaluate_soft_delete_subtree(
             step="5_composite_delete_descendant",
         )
 
-    children_by_parent: dict[str, list[SubtreeNode]] = defaultdict(list)
-    for node in descendants:
-        children_by_parent[node.parent_id].append(node)
-
-    queue: deque[tuple[str, InheritedDaclState]] = deque(
-        [(target_node_id, target_inherited)]
+    denial = _walk_subtree_bfs(
+        target_node_id,
+        target_inherited,
+        descendants,
+        lambda child, parent_inherited, has_children: _evaluate_descendant_delete(
+            subject,
+            child,
+            parent_inherited,
+            now,
+            has_children=has_children,
+            check_ancestor_traverse=check_ancestor_traverse,
+        ),
     )
-    visited = 0
-    while queue:
-        parent_id, parent_inherited = queue.popleft()
-        for child in children_by_parent.get(parent_id, ()):
-            visited += 1
-            has_children = (
-                child.object_type is ObjectType.DIRECTORY
-                and child.node_id in children_by_parent
-            )
-            denial, child_inherited = _evaluate_descendant_delete(
-                subject,
-                child,
-                parent_inherited,
-                now,
-                has_children=has_children,
-                check_ancestor_traverse=check_ancestor_traverse,
-            )
-            if denial is not None:
-                return denial
-            if has_children:
-                queue.append((child.node_id, child_inherited))
-
-    if visited != len(descendants):
-        raise RuntimeError(
-            "Subtree descendants could not all be reached from target directory."
-        )
+    if denial is not None:
+        return denial
 
     return EvalDecision(
         allowed=True,
         reason="DELETE granted on target and on every affected descendant.",
         step="5_composite_allowed",
+    )
+
+
+def _evaluate_descendant_deleted_op(
+    subject: Subject,
+    child: SubtreeNode,
+    parent_inherited: InheritedDaclState,
+    now: datetime.datetime,
+    operation: AtomicOp,
+    step_name: str,
+) -> tuple[EvalDecision | None, InheritedDaclState]:
+    applicability_denial = check_op_applicability(
+        operation, child.object_type, child.state
+    )
+    if applicability_denial is not None:
+        return (
+            EvalDecision(
+                allowed=False,
+                reason=(
+                    f"{applicability_denial.reason} (descendant '{child.name}' ({child.node_id}))."
+                ),
+                step=step_name,
+            ),
+            _EMPTY_INHERITED_STATE,
+        )
+
+    own_allow, own_deny, _, child_inherited = step_node_dacl(
+        subject, child.policy, child.object_type, parent_inherited, now
+    )
+    if not ((own_allow & ~own_deny) & int(operation)):
+        return (
+            EvalDecision(
+                allowed=False,
+                reason=f"{operation.name} denied on descendant '{child.name}' ({child.node_id}).",
+                step=step_name,
+                effective_allow_mask=own_allow,
+                effective_deny_mask=own_deny,
+            ),
+            child_inherited,
+        )
+    return None, child_inherited
+
+
+def _evaluate_deleted_subtree_op(
+    subject: Subject | None,
+    target_node_id: str,
+    target_inherited: InheritedDaclState,
+    descendants: Sequence[SubtreeNode],
+    operation: AtomicOp,
+    *,
+    step_name: str,
+    empty_reason: str,
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    if not descendants:
+        return EvalDecision(
+            allowed=True,
+            reason=empty_reason,
+            step="5_composite_allowed",
+        )
+    if subject is None:
+        return EvalDecision(
+            allowed=False,
+            reason="Unauthenticated request: not a DACL principal.",
+            step="0_unauthenticated",
+        )
+
+    now = (eval_time_utc or datetime.datetime.now(datetime.UTC)).astimezone(
+        datetime.UTC
+    )
+    denial = _walk_subtree_bfs(
+        target_node_id,
+        target_inherited,
+        descendants,
+        lambda child, parent_inherited, _has_children: _evaluate_descendant_deleted_op(
+            subject,
+            child,
+            parent_inherited,
+            now,
+            operation,
+            step_name,
+        ),
+    )
+    if denial is not None:
+        return denial
+
+    return EvalDecision(
+        allowed=True,
+        reason=f"{operation.name} granted on target and on every affected descendant.",
+        step="5_composite_allowed",
+    )
+
+
+def evaluate_purge_subtree(
+    subject: Subject | None,
+    target_node_id: str,
+    target_inherited: InheritedDaclState,
+    descendants: Sequence[SubtreeNode],
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    """Verify PURGE across every descendant in O(N * R) top-down BFS."""
+    return _evaluate_deleted_subtree_op(
+        subject,
+        target_node_id,
+        target_inherited,
+        descendants,
+        AtomicOp.PURGE,
+        step_name="5_composite_purge_descendant",
+        empty_reason="PURGE granted on target (no descendants).",
+        eval_time_utc=eval_time_utc,
+    )
+
+
+def evaluate_restore_subtree(
+    subject: Subject | None,
+    target_node_id: str,
+    target_inherited: InheritedDaclState,
+    descendants: Sequence[SubtreeNode],
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    """Verify RESTORE across every descendant in O(N * R) top-down BFS."""
+    return _evaluate_deleted_subtree_op(
+        subject,
+        target_node_id,
+        target_inherited,
+        descendants,
+        AtomicOp.RESTORE,
+        step_name="5_composite_restore_descendant",
+        empty_reason="RESTORE granted on target (no descendants).",
+        eval_time_utc=eval_time_utc,
     )
 
 

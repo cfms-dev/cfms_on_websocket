@@ -4,7 +4,7 @@ __all__ = [
 ]
 
 import datetime
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import batched
 from typing import Self
@@ -24,6 +24,7 @@ from include.domains.access.authorization.engine import (
     step_node_dacl,
 )
 from include.domains.access.authorization.evaluation import (
+    has_bypass_dacl,
     should_check_ancestor_traverse,
     user_to_subject,
 )
@@ -55,11 +56,13 @@ class BatchVisibilityEvaluator:
         now_utc: datetime.datetime,
         *,
         check_traverse: bool,
+        bypass_dacl: bool = False,
     ) -> None:
         self._session = session
         self._subject = subject
         self._now_utc = now_utc.astimezone(datetime.UTC)
         self._check_traverse = check_traverse
+        self._bypass_dacl = bypass_dacl
         self._node_meta: dict[str, AncestorNodeMeta] = {}
         self._node_policies: dict[str, CompiledPolicy] = {}
         self._dir_state_cache: dict[str, tuple[bool, InheritedDaclState]] = {}
@@ -71,19 +74,28 @@ class BatchVisibilityEvaluator:
         user: User,
         now_utc: datetime.datetime,
     ) -> Self:
+        bypass_dacl = has_bypass_dacl(user)
         return cls(
             session,
             user_to_subject(user),
             now_utc,
-            check_traverse=should_check_ancestor_traverse(session, user),
+            check_traverse=False
+            if bypass_dacl
+            else should_check_ancestor_traverse(session, user),
+            bypass_dacl=bypass_dacl,
         )
 
     def _register_candidates_and_collect_missing(
         self,
         candidates: Sequence[VisibilityCandidate],
-    ) -> tuple[list[str], list[str]]:
+    ) -> tuple[list[str], list[str], dict[str, bool]]:
+        batch_inherit: dict[str, bool] = {}
         for candidate in candidates:
-            if candidate.node_id not in self._node_meta:
+            batch_inherit[candidate.node_id] = candidate.inherit
+            if (
+                candidate.object_type is ObjectType.DIRECTORY
+                and candidate.node_id not in self._node_meta
+            ):
                 self._node_meta[candidate.node_id] = AncestorNodeMeta(
                     parent_id=candidate.parent_id,
                     status=candidate.status,
@@ -117,12 +129,13 @@ class BatchVisibilityEvaluator:
                 seen_candidate.add(candidate.node_id)
                 new_candidate_ids.append(candidate.node_id)
 
-        return missing_ancestors, new_candidate_ids
+        return missing_ancestors, new_candidate_ids, batch_inherit
 
     def _load_combined_batch(
         self,
         missing_ancestors: Sequence[str],
         candidate_ids: Sequence[str],
+        batch_inherit: Mapping[str, bool],
     ) -> int:
         cand_offset = 0
         for anc_chunk in batched(missing_ancestors, QUERY_CHUNK_SIZE):
@@ -147,7 +160,11 @@ class BatchVisibilityEvaluator:
                 if nid in self._node_policies:
                     continue
                 node_meta = self._node_meta.get(nid)
-                default_inherit = node_meta.inherit if node_meta is not None else True
+                default_inherit = (
+                    node_meta.inherit
+                    if node_meta is not None
+                    else batch_inherit.get(nid, True)
+                )
                 self._node_policies[nid] = CompiledPolicy(
                     inherit=default_inherit,
                     rules=tuple(rules_by_node.get(nid, ())),
@@ -157,13 +174,18 @@ class BatchVisibilityEvaluator:
     def _load_leftover_candidate_policies(
         self,
         leftover_candidates: Sequence[str],
+        batch_inherit: Mapping[str, bool],
     ) -> None:
         if not leftover_candidates:
             return
         preloaded_inherit = {
-            nid: self._node_meta[nid].inherit
+            nid: (
+                self._node_meta[nid].inherit
+                if nid in self._node_meta
+                else batch_inherit[nid]
+            )
             for nid in leftover_candidates
-            if nid in self._node_meta
+            if nid in self._node_meta or nid in batch_inherit
         }
         loaded = load_node_policies(
             self._session,
@@ -175,21 +197,29 @@ class BatchVisibilityEvaluator:
         )
         for nid in leftover_candidates:
             node_meta = self._node_meta.get(nid)
-            default_inherit = node_meta.inherit if node_meta is not None else True
+            default_inherit = (
+                node_meta.inherit
+                if node_meta is not None
+                else batch_inherit.get(nid, True)
+            )
             self._node_policies[nid] = loaded.get(
                 nid, CompiledPolicy(inherit=default_inherit, rules=())
             )
 
     def preload(self, candidates: Sequence[VisibilityCandidate]) -> None:
         """Batch-load missing ancestor chains and active policies for a chunk of candidates."""
-        missing_ancestors, new_candidate_ids = (
+        if self._bypass_dacl:
+            return
+        missing_ancestors, new_candidate_ids, batch_inherit = (
             self._register_candidates_and_collect_missing(candidates)
         )
         if not missing_ancestors and not new_candidate_ids:
             return
 
         cand_offset = (
-            self._load_combined_batch(missing_ancestors, new_candidate_ids)
+            self._load_combined_batch(
+                missing_ancestors, new_candidate_ids, batch_inherit
+            )
             if missing_ancestors
             else 0
         )
@@ -198,7 +228,7 @@ class BatchVisibilityEvaluator:
             for nid in new_candidate_ids[cand_offset:]
             if nid not in self._node_policies
         ]
-        self._load_leftover_candidate_policies(leftover_candidates)
+        self._load_leftover_candidate_policies(leftover_candidates, batch_inherit)
 
     def _resolve_ancestor_dir(self, dir_id: str) -> tuple[bool, InheritedDaclState]:
         cached = self._dir_state_cache.get(dir_id)
@@ -259,19 +289,29 @@ class BatchVisibilityEvaluator:
         return self._dir_state_cache.get(dir_id, (False, _EMPTY_INHERITED_STATE))
 
     def is_visible(self, candidate: VisibilityCandidate) -> bool:
+        if self._bypass_dacl:
+            return True
+
+        is_document = candidate.object_type is ObjectType.DOCUMENT
         parent_id = candidate.parent_id
         if parent_id is not None:
             accessible, parent_inherited = self._resolve_ancestor_dir(parent_id)
             if not accessible:
+                if is_document:
+                    self._node_policies.pop(candidate.node_id, None)
                 return False
         else:
             if candidate.node_id != ROOT_DIRECTORY_ID:
+                if is_document:
+                    self._node_policies.pop(candidate.node_id, None)
                 return False
             parent_inherited = _EMPTY_INHERITED_STATE
 
-        policy = self._node_policies.get(
-            candidate.node_id,
-            CompiledPolicy(inherit=candidate.inherit, rules=()),
+        fallback_policy = CompiledPolicy(inherit=candidate.inherit, rules=())
+        policy = (
+            self._node_policies.pop(candidate.node_id, fallback_policy)
+            if is_document
+            else self._node_policies.get(candidate.node_id, fallback_policy)
         )
         own_allow, own_deny, _, _ = step_node_dacl(
             self._subject,

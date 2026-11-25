@@ -19,9 +19,6 @@ from include.database.session import Base, Session
 from include.domains.access.authorization import (
     evaluation as eval_mod,
 )
-from include.domains.access.authorization import (
-    storage as storage_mod,
-)
 from include.domains.access.authorization.evaluation import (
     authorize_create_on_parent,
     authorize_dacl_read,
@@ -70,14 +67,33 @@ def cacl_session(sqlite_engine_factory):
         yield session
 
 
-def test_compile_persist_load_and_render_round_trip(cacl_session):
-    alice = models.User(
-        username="alice",
-        nickname="Alice",
+def _make_user(
+    username: str,
+    *,
+    nickname: str = "User",
+    permissions: tuple[str, ...] = (),
+) -> models.User:
+    user = models.User(
+        username=username,
+        nickname=nickname,
         created_time=1.0,
         status=0,
         secret_key="s" * 64,
     )
+    for perm in permissions:
+        user.rights.append(
+            models.UserPermission(
+                permission=perm,
+                granted=True,
+                start_time=0.0,
+                end_time=None,
+            )
+        )
+    return user
+
+
+def test_compile_persist_load_and_render_round_trip(cacl_session):
+    alice = _make_user("alice", nickname="Alice")
     eng = models.UserGroup(group_name="engineering", group_display_name="Engineering")
     cacl_session.add_all([alice, eng])
     cacl_session.flush()
@@ -131,13 +147,7 @@ def test_compile_rejects_malformed_uuid_but_warns_on_missing_user(cacl_session):
 
 
 def test_half_open_time_window_and_next_transition_at(cacl_session):
-    alice = models.User(
-        username="alice",
-        nickname="Alice",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
+    alice = _make_user("alice", nickname="Alice")
     cacl_session.add(alice)
     cacl_session.flush()
 
@@ -181,13 +191,7 @@ def test_half_open_time_window_and_next_transition_at(cacl_session):
 
 
 def test_authorize_write_dacl_and_simulate_lockout(cacl_session):
-    alice = models.User(
-        username="alice",
-        nickname="Alice",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
+    alice = _make_user("alice", nickname="Alice")
     cacl_session.add(alice)
     cacl_session.flush()
 
@@ -235,13 +239,7 @@ def test_authorize_write_dacl_and_simulate_lockout(cacl_session):
         is False
     )
 
-    bob = models.User(
-        username="bob_no_write",
-        nickname="Bob",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
+    bob = _make_user("bob_no_write", nickname="Bob")
     cacl_session.add(bob)
     cacl_session.flush()
     denied_check = authorize_write_dacl_and_load_path(cacl_session, bob, folder)
@@ -250,20 +248,10 @@ def test_authorize_write_dacl_and_simulate_lockout(cacl_session):
 
 
 def test_write_dacl_enforces_step1_lifecycle_even_for_bypass_dacl(cacl_session):
-    admin = models.User(
-        username="admin_deleted_dacl",
+    admin = _make_user(
+        "admin_deleted_dacl",
         nickname="Admin",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
-    admin.rights.append(
-        models.UserPermission(
-            permission=Permissions.BYPASS_DACL,
-            granted=True,
-            start_time=0.0,
-            end_time=None,
-        )
+        permissions=(Permissions.BYPASS_DACL,),
     )
     deleted_folder = models.Folder(
         id="f-deleted-dacl",
@@ -337,13 +325,7 @@ def test_compile_strict_principals_reports_errors_with_spans(cacl_session):
 
 
 def test_would_self_lockout_on_create_and_bypass_dacl(cacl_session):
-    alice = models.User(
-        username="alice",
-        nickname="Alice",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
+    alice = _make_user("alice", nickname="Alice")
     cacl_session.add(alice)
     cacl_session.flush()
 
@@ -380,20 +362,8 @@ def test_would_self_lockout_on_create_and_bypass_dacl(cacl_session):
         is False
     )
 
-    admin = models.User(
-        username="admin",
-        nickname="Admin",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
-    admin.rights.append(
-        models.UserPermission(
-            permission=Permissions.BYPASS_DACL,
-            granted=True,
-            start_time=0.0,
-            end_time=None,
-        )
+    admin = _make_user(
+        "admin", nickname="Admin", permissions=(Permissions.BYPASS_DACL,)
     )
     cacl_session.add(admin)
     cacl_session.flush()
@@ -422,13 +392,7 @@ def test_compile_policy_source_enforces_rule_count_limit(cacl_session):
 
 
 def test_sql_regression_single_pass_and_expired_rule_filtering(cacl_session):
-    alice = models.User(
-        username="alice_sql",
-        nickname="Alice",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
+    alice = _make_user("alice_sql", nickname="Alice")
     cacl_session.add(alice)
     cacl_session.flush()
 
@@ -517,13 +481,7 @@ def test_sql_regression_single_pass_and_expired_rule_filtering(cacl_session):
 def test_load_node_policies_uses_single_join_query_and_preserves_fingerprint(
     cacl_session,
 ):
-    alice = models.User(
-        username="alice_join",
-        nickname="Alice",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
+    alice = _make_user("alice_join", nickname="Alice")
     eng = models.UserGroup(group_name="eng_join", group_display_name="Engineering")
     cacl_session.add_all([alice, eng])
     cacl_session.flush()
@@ -605,58 +563,73 @@ def test_load_ancestor_paths_fails_closed_for_orphan_root_mismatch(cacl_session)
         load_ancestor_paths_for_nodes(cacl_session, [orphan])
 
 
-def test_authorize_create_on_parent_fails_closed_on_write_dacl_step1_failure(
-    cacl_session, monkeypatch
+def test_authorize_create_on_parent_checks_create_write_dacl_and_lifecycle(
+    cacl_session,
 ):
-    alice = models.User(
-        username="alice_create_fail_closed",
-        nickname="Alice",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
+    alice = _make_user("alice_create_check", nickname="Alice")
+    create_only_dir = models.Folder(
+        id="f-create-only", name="CreateOnly", parent_id="/", inherit=False
     )
-    folder = models.Folder(
-        id="f-create-boundary",
-        name="Boundary",
+    full_dir = models.Folder(
+        id="f-create-full", name="CreateFull", parent_id="/", inherit=False
+    )
+    deleted_dir = models.Folder(
+        id="f-create-deleted",
+        name="CreateDeleted",
         parent_id="/",
-        inherit=True,
+        inherit=False,
+        status=models.EntityStatus.DELETED,
     )
-    cacl_session.add_all([alice, folder])
+    cacl_session.add_all([alice, create_only_dir, full_dir, deleted_dir])
+    cacl_session.flush()
+
+    p_create_only = compile_policy_source(
+        cacl_session, f'inherit off; allow [CREATE_DOCUMENT] to user("{alice.id}");'
+    ).policy
+    p_full = compile_policy_source(
+        cacl_session,
+        f'inherit off; allow [CREATE_DOCUMENT, WRITE_DACL] to user("{alice.id}");',
+    ).policy
+    assert p_create_only is not None
+    assert p_full is not None
+    persist_node_policy(cacl_session, create_only_dir, p_create_only)
+    persist_node_policy(cacl_session, full_dir, p_full)
+    persist_node_policy(cacl_session, deleted_dir, p_full)
     cacl_session.commit()
 
-    orig_step1 = eval_mod._check_step1_invariants
-
-    def _fail_write_dacl_step1(target, operation):
-        if operation is AtomicOp.WRITE_DACL:
-            return eval_mod.EvalDecision(
-                allowed=False,
-                reason="Synthetic Step 1 failure",
-                step="1_lifecycle_and_type",
-            )
-        return orig_step1(target, operation)
-
-    monkeypatch.setattr(eval_mod, "_check_step1_invariants", _fail_write_dacl_step1)
-
-    check = authorize_create_on_parent(
+    check_only = authorize_create_on_parent(
         cacl_session,
         alice,
-        folder,
+        create_only_dir,
         AtomicOp.CREATE_DOCUMENT,
         require_write_dacl=True,
     )
-    assert check.can_create is False
-    assert check.can_write_dacl is False
-    assert check.parent_path is None
+    assert check_only.can_create is True
+    assert check_only.can_write_dacl is False
+
+    check_full = authorize_create_on_parent(
+        cacl_session,
+        alice,
+        full_dir,
+        AtomicOp.CREATE_DOCUMENT,
+        require_write_dacl=True,
+    )
+    assert check_full.can_create is True
+    assert check_full.can_write_dacl is True
+
+    check_deleted = authorize_create_on_parent(
+        cacl_session,
+        alice,
+        deleted_dir,
+        AtomicOp.CREATE_DOCUMENT,
+        require_write_dacl=True,
+    )
+    assert check_deleted.can_create is False
+    assert check_deleted.can_write_dacl is False
 
 
-def test_dacl_validity_predicates_reject_mutually_exclusive_refs(cacl_session):
+def test_load_node_policies_rejects_mutually_exclusive_time_refs(cacl_session):
     now = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        storage_mod._dacl_rule_validity_predicates(
-            models.NodeDaclRule.__table__,
-            active_ref=now,
-            expired_ref=now,
-        )
     with pytest.raises(ValueError, match="mutually exclusive"):
         load_node_policies(
             cacl_session,
@@ -669,13 +642,7 @@ def test_dacl_validity_predicates_reject_mutually_exclusive_refs(cacl_session):
 def test_soft_delete_root_check_directory_delete_child_bypass_and_missing_delete(
     cacl_session,
 ):
-    alice = models.User(
-        username="alice_soft_delete_bypass",
-        nickname="Alice",
-        created_time=1.0,
-        status=0,
-        secret_key="s" * 64,
-    )
+    alice = _make_user("alice_soft_delete_bypass", nickname="Alice")
     cacl_session.add(alice)
     cacl_session.flush()
 
@@ -778,13 +745,7 @@ def test_handle_set_node_dacl_acquires_lock_before_reading_user_or_policy(
         root = models.Folder(id="/", name="/", inherit=False)
         seed_session.add(root)
         seed_session.flush()
-        alice = models.User(
-            username="alice_lock_order",
-            nickname="Alice",
-            created_time=1.0,
-            status=0,
-            secret_key="s" * 64,
-        )
+        alice = _make_user("alice_lock_order", nickname="Alice")
         folder = models.Folder(
             id="f-lock-order", name="LockOrder", parent_id="/", inherit=False
         )
@@ -847,13 +808,7 @@ def test_handle_set_node_dacl_serializes_concurrent_revocation_and_soft_delete(
         root = models.Folder(id="/", name="/", inherit=False)
         seed_session.add(root)
         seed_session.flush()
-        alice = models.User(
-            username=f"alice_{concurrent_mutation}",
-            nickname="Alice",
-            created_time=1.0,
-            status=0,
-            secret_key="s" * 64,
-        )
+        alice = _make_user(f"alice_{concurrent_mutation}", nickname="Alice")
         folder = models.Folder(
             id="f-race", name="RaceFolder", parent_id="/", inherit=False
         )

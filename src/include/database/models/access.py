@@ -30,7 +30,7 @@ _EPOCH_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.UTC)
 
 
 def datetime_to_epoch_us(dt: datetime.datetime) -> int:
-    if dt.tzinfo is None:
+    if dt.tzinfo is None or dt.utcoffset() is None:
         raise ValueError("Timestamp must be timezone-aware")
     delta = dt.astimezone(datetime.UTC) - _EPOCH_UTC
     return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
@@ -92,7 +92,8 @@ class NodeDaclRule(Base):
         VARCHAR(255),
         ForeignKey("nodes.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
+        # NOTE: Index already defined in __table_args__; no need for
+        # redundant `index=True`.
     )
     effect: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
     permission_mask: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -110,6 +111,7 @@ class NodeDaclRule(Base):
         "NodeDaclClause",
         back_populates="rule",
         cascade="all, delete-orphan",
+        passive_deletes=True,
         order_by="NodeDaclClause.id",
     )
 
@@ -136,6 +138,7 @@ class NodeDaclClause(Base):
         "NodeDaclAtom",
         back_populates="clause",
         cascade="all, delete-orphan",
+        passive_deletes=True,
         order_by="NodeDaclAtom.id",
     )
 

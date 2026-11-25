@@ -7,15 +7,18 @@ __all__ = [
 ]
 
 from collections.abc import Callable, Generator
-from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
+from pydantic import ConfigDict, Field
+from pydantic.dataclasses import dataclass
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Executable
 
 from include.config.constants import QUERY_CHUNK_SIZE
+from include.types import PositiveInt
 
 DEFAULT_KEYSET_WINDOW_SIZES: tuple[int, ...] = (2048, 8192)
+_CURSOR_STRATEGY_CONFIG = ConfigDict(strict=True)
 
 
 class KeysetBatchStrategy(Protocol):
@@ -31,11 +34,11 @@ class KeysetBatchStrategy(Protocol):
     ) -> Generator[list[dict[str, Any]]]: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, config=_CURSOR_STRATEGY_CONFIG)
 class StreamingCursorBatchStrategy:
     """Keep a single cursor open and fetch chunks (safe on SQLite with nested queries)."""
 
-    chunk_size: int = QUERY_CHUNK_SIZE
+    chunk_size: PositiveInt = QUERY_CHUNK_SIZE
 
     def iter_batches(
         self,
@@ -60,11 +63,13 @@ class StreamingCursorBatchStrategy:
             result.close()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, config=_CURSOR_STRATEGY_CONFIG)
 class WindowedKeysetBatchStrategy:
     """Fetch escalating keyset-paginated windows so no cursor remains open across nested queries."""
 
-    window_sizes: tuple[int, ...] = DEFAULT_KEYSET_WINDOW_SIZES
+    window_sizes: Annotated[tuple[PositiveInt, ...], Field(min_length=1)] = (
+        DEFAULT_KEYSET_WINDOW_SIZES
+    )
 
     def iter_batches(
         self,
@@ -74,8 +79,6 @@ class WindowedKeysetBatchStrategy:
         cursor_key_of: Callable[[dict[str, Any]], list[Any]],
         initial_last_key: list[Any] | None,
     ) -> Generator[list[dict[str, Any]]]:
-        if not self.window_sizes:
-            raise ValueError("window_sizes must contain at least one positive size.")
         batch_last_key = initial_last_key
         window_index = 0
         while True:
@@ -83,12 +86,14 @@ class WindowedKeysetBatchStrategy:
                 min(window_index, len(self.window_sizes) - 1)
             ]
             window_index += 1
-            rows = [
-                {str(key): value for key, value in row.items()}
-                for row in session.execute(
-                    build_select(batch_last_key, window_limit)
-                ).mappings()
-            ]
+            result = session.execute(build_select(batch_last_key, window_limit))
+            try:
+                rows = [
+                    {str(key): value for key, value in row.items()}
+                    for row in result.mappings().all()
+                ]
+            finally:
+                result.close()
             if not rows:
                 break
             yield rows

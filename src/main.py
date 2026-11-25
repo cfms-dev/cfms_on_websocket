@@ -101,16 +101,23 @@ os.makedirs(EXECUTABLE_ABSPATH / "content" / "ssl", exist_ok=True)
 
 
 def ensure_root_folder():
-    """Ensure the sentinel root Folder record exists with the default CEP-0002 DACL."""
-    compiled = compile_cacl(
-        DEFAULT_ROOT_DACL_SOURCE,
-        config=CompilerConfig(target_object_type=ObjectType.DIRECTORY),
-    )
-    assert compiled.ok, compiled.diagnostics
-    assert compiled.policy is not None, compiled.diagnostics
-
+    """Ensure the sentinel root Folder record exists with the default CEP 2 DACL."""
     with Session() as session:
-        if not session.get(Folder, ROOT_DIRECTORY_ID):
+        if not session.get(
+            Folder,
+            ROOT_DIRECTORY_ID,
+            # FIXME: I wonder if this is necessary since root directory cannot
+            # be marked as deleted. Too defensive?
+            execution_options={"include_deleted": True},
+        ):
+            compiled = compile_cacl(
+                DEFAULT_ROOT_DACL_SOURCE,
+                config=CompilerConfig(target_object_type=ObjectType.DIRECTORY),
+            )
+            if not compiled.ok or compiled.policy is None:
+                raise RuntimeError(
+                    f"Failed to compile default root DACL: {compiled.diagnostics}"
+                )
             root = Folder(id=ROOT_DIRECTORY_ID, name="/", inherit=False)
             session.add(root)
             session.flush()

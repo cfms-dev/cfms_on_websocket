@@ -1,4 +1,6 @@
+from collections.abc import Sequence
 from contextlib import contextmanager
+from itertools import batched
 lazy from collections.abc import Iterator
 
 from cacl_compiler import ObjectType
@@ -6,6 +8,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 lazy from sqlalchemy.orm import Session
 
+from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.errors import is_unique_constraint_violation
 from include.database.models.documents import Document, EntityStatus, Folder, Node
 from include.domains.access.authorization.engine import is_effective_mask_visible
@@ -74,10 +77,23 @@ def describe_subtree_restore_name_conflict(
     status_operation_id: str | None,
     parent_id: str,
     name: str,
+    *,
+    restoring_node_ids: Sequence[str] | None = None,
 ) -> tuple[dict, str]:
-    if status_operation_id:
-        restoring = Node.__table__.alias("restoring_nodes")
-        winner = Node.__table__.alias("winning_nodes")
+    restoring = Node.__table__.alias("restoring_nodes")
+    winner = Node.__table__.alias("winning_nodes")
+
+    if restoring_node_ids is not None:
+        filter_batches = [
+            restoring.c.id.in_(list(chunk))
+            for chunk in batched(restoring_node_ids, QUERY_CHUNK_SIZE)
+        ]
+    elif status_operation_id:
+        filter_batches = [restoring.c.status_operation_id == status_operation_id]
+    else:
+        filter_batches = []
+
+    for scope_filter in filter_batches:
         winner_id = session.execute(
             select(winner.c.id)
             .select_from(
@@ -90,7 +106,7 @@ def describe_subtree_restore_name_conflict(
                 )
             )
             .where(
-                restoring.c.status_operation_id == status_operation_id,
+                scope_filter,
                 restoring.c.status == EntityStatus.DELETED,
                 winner.c.status != EntityStatus.DELETED,
                 winner.c.id != restoring.c.id,

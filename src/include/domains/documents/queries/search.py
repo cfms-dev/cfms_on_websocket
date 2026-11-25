@@ -396,6 +396,7 @@ def _finalize_search_item(raw_item: dict[str, Any], sort_by: str) -> dict[str, A
     item = dict(raw_item)
     item[_CURSOR_KEY] = _search_item_cursor_key(raw_item, sort_by)
     item.pop("name_sort_key", None)
+    item.pop("type_rank", None)
     item.pop("inherit", None)
     item.pop("current_revision_id", None)
     if item["type"] == "directory":

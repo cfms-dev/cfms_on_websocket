@@ -56,7 +56,7 @@ FILE_TASK_DEFAULT_DURATION_SECONDS = 3600  # 1 hour
 REPLAY_PROTECTION_TIME_WINDOW_SECONDS = 15  # Maximum age of a request timestamp
 NONCE_MIN_LENGTH = 16  # Minimum length of a nonce string
 
-# Root directory virtual folder ID — used to store access rules for the root directory
+# Root directory virtual folder ID — used to store DACL rules for the root directory
 ROOT_DIRECTORY_ID = "/"
 MAX_HIERARCHY_DEPTH = 128  # Maximum recursive ancestor/subtree traversal depth
 

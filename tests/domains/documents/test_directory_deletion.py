@@ -220,3 +220,100 @@ def test_fetch_subtree_guards_against_cycle_and_depth_limit(
             deletion_tree_mod.fetch_subtree_metadata_for_soft_delete(
                 session, "deep-sub-0"
             )
+
+
+def test_fetch_subtree_handles_locked_nodes_and_scoped_restore(sqlite_engine_factory):
+    from include.database import models
+    from include.database.session import Base
+    from include.domains.documents.queries.deletion_tree import (
+        fetch_subtree_metadata_for_restore,
+        fetch_subtree_metadata_for_soft_delete,
+    )
+
+    engine = sqlite_engine_factory(":memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    with SessionLocal.begin() as session:
+        root = models.Folder(id="/", name="/", inherit=False)
+        session.add(root)
+        session.flush()
+        parent = models.Folder(id="p-tree", name="Parent", parent=root)
+        locked_dir = models.Folder(
+            id="locked-sub",
+            name="LockedSub",
+            parent=parent,
+            status=models.EntityStatus.LOCKED,
+        )
+        locked_doc = models.Document(
+            id="locked-doc",
+            title="LockedDoc",
+            folder=locked_dir,
+            status=models.EntityStatus.LOCKED,
+        )
+        del_root = models.Folder(
+            id="del-root",
+            name="DelRoot",
+            parent=root,
+            status=models.EntityStatus.DELETED,
+            status_operation_id="op-batch",
+        )
+        del_sibling = models.Folder(
+            id="del-sibling",
+            name="DelSibling",
+            parent=del_root,
+            status=models.EntityStatus.DELETED,
+            status_operation_id="op-batch",
+        )
+        del_target = models.Folder(
+            id="del-target",
+            name="DelTarget",
+            parent=del_root,
+            status=models.EntityStatus.DELETED,
+            status_operation_id="op-batch",
+        )
+        del_child_dir = models.Folder(
+            id="del-child-dir",
+            name="DelChildDir",
+            parent=del_target,
+            status=models.EntityStatus.DELETED,
+            status_operation_id="op-batch",
+        )
+        del_old_dir = models.Folder(
+            id="del-old-dir",
+            name="DelOldDir",
+            parent=del_target,
+            status=models.EntityStatus.DELETED,
+            status_operation_id="op-older",
+        )
+        del_child_doc = models.Document(
+            id="del-child-doc",
+            title="DelChildDoc",
+            folder=del_child_dir,
+            status=models.EntityStatus.DELETED,
+            status_operation_id="op-batch",
+        )
+        session.add_all(
+            [
+                parent,
+                locked_dir,
+                locked_doc,
+                del_root,
+                del_sibling,
+                del_target,
+                del_child_dir,
+                del_old_dir,
+                del_child_doc,
+            ]
+        )
+
+    with SessionLocal() as session:
+        sd_folders, sd_docs = fetch_subtree_metadata_for_soft_delete(session, "p-tree")
+        assert [row.id for row in sd_folders] == ["locked-sub"]
+        assert [row.id for row in sd_docs] == ["locked-doc"]
+
+        rs_folders, rs_docs = fetch_subtree_metadata_for_restore(
+            session, "del-target", "op-batch"
+        )
+        assert [row.id for row in rs_folders] == ["del-child-dir"]
+        assert [row.id for row in rs_docs] == ["del-child-doc"]

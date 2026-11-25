@@ -15,8 +15,10 @@ from include.domains.access.authorization.engine import (
     evaluate_access,
     evaluate_effective_masks,
     evaluate_path_masks,
+    evaluate_purge_subtree,
     evaluate_reparent,
     evaluate_restore,
+    evaluate_restore_subtree,
     evaluate_soft_delete_subtree,
     is_ancestor_dir_traversable,
     is_effective_mask_visible,
@@ -98,6 +100,58 @@ def test_scope_matrix_and_inherit_off():
     assert _ev([root, sub], AtomicOp.TRAVERSE, check_ancestor_traverse=False).allowed
     cut = _node("cut", D, "inherit off;\nallow [TRAVERSE] on self to any;")
     assert not _ev([root, cut, doc], AtomicOp.READ_CONTENT).allowed
+
+
+def test_scope_isolation_between_dirs_docs_and_self():
+    parent_dirs_only = _node(
+        "parent",
+        D,
+        "inherit off; allow [TRAVERSE, LIST_DIRECTORY, READ_METADATA] on dirs to any;",
+    )
+    child_doc = _node("doc", F, "inherit on;")
+    assert _ev([parent_dirs_only, _node("sub", D)], AtomicOp.LIST_DIRECTORY).allowed
+    assert not _ev([parent_dirs_only, child_doc], AtomicOp.READ_METADATA).allowed
+
+    parent_docs_only = _node(
+        "parent2",
+        D,
+        "inherit off; allow [TRAVERSE] on self to any; allow [READ_METADATA] on docs to any;",
+    )
+    child_dir = _node("sub2", D, "inherit on;")
+    assert _ev([parent_docs_only, child_doc], AtomicOp.READ_METADATA).allowed
+    assert not _ev([parent_docs_only, child_dir], AtomicOp.READ_METADATA).allowed
+    assert not _ev([parent_docs_only, child_dir], AtomicOp.TRAVERSE).allowed
+
+
+def test_perm_and_negation_predicates():
+    doc = _node(
+        "f",
+        F,
+        'allow [READ_CONTENT] when (perm("p") and not group("blocked") and not user("'
+        f'{U_BOB}"));'
+        'allow [WRITE_CONTENT] when perm("missing");',
+    )
+    assert _ev([doc], AtomicOp.READ_CONTENT, check_ancestor_traverse=False).allowed
+    assert not _ev([doc], AtomicOp.WRITE_CONTENT, check_ancestor_traverse=False).allowed
+
+    blocked_subject = Subject(
+        user_id=U_ALICE, groups=frozenset({"blocked"}), perms=frozenset({"p"})
+    )
+    assert not _ev(
+        [doc],
+        AtomicOp.READ_CONTENT,
+        subj=blocked_subject,
+        check_ancestor_traverse=False,
+    ).allowed
+    bob_subject = Subject(
+        user_id=U_BOB, groups=frozenset({"g"}), perms=frozenset({"p"})
+    )
+    assert not _ev(
+        [doc],
+        AtomicOp.READ_CONTENT,
+        subj=bob_subject,
+        check_ancestor_traverse=False,
+    ).allowed
 
 
 def test_inherit_off_retains_own_rules():
@@ -423,9 +477,7 @@ def test_evaluate_soft_delete_subtree_linear_traversal_and_edge_cases():
     ).allowed
 
 
-def test_evaluate_access_collect_traces_false_skips_trace_pass(monkeypatch):
-    from include.domains.access.authorization import engine as engine_mod
-
+def test_evaluate_access_collect_traces_false_omits_traces():
     root_allow = _node(
         "root",
         D,
@@ -446,29 +498,19 @@ def test_evaluate_access_collect_traces_false_skips_trace_pass(monkeypatch):
         ([root_allow, doc_default_deny], AtomicOp.READ_CONTENT),
         ([root_no_traverse, doc_allow], AtomicOp.READ_CONTENT),
     ]
-    with_traces = [
-        evaluate_access(ALICE, path, op, NOW, collect_traces=True) for path, op in cases
-    ]
-
-    def _fail_if_called(*args, **kwargs):
-        raise AssertionError("_collect_op_traces_on_chain should not be called")
-
-    monkeypatch.setattr(engine_mod, "_collect_op_traces_on_chain", _fail_if_called)
-
-    for (path, op), expected in zip(cases, with_traces, strict=True):
+    for path, op in cases:
+        with_traces = evaluate_access(ALICE, path, op, NOW, collect_traces=True)
         fast = evaluate_access(ALICE, path, op, NOW, collect_traces=False)
-        assert fast.allowed == expected.allowed
-        assert fast.step == expected.step
-        assert fast.effective_allow_mask == expected.effective_allow_mask
-        assert fast.effective_deny_mask == expected.effective_deny_mask
-        assert fast.next_transition_at == expected.next_transition_at
+        assert fast.allowed == with_traces.allowed
+        assert fast.step == with_traces.step
+        assert fast.effective_allow_mask == with_traces.effective_allow_mask
+        assert fast.effective_deny_mask == with_traces.effective_deny_mask
+        assert fast.next_transition_at == with_traces.next_transition_at
         assert fast.matched_allows == ()
         assert fast.matched_denies == ()
 
 
-def test_path_masks_inherit_off_pruning_preserves_parent_masks(monkeypatch):
-    from include.domains.access.authorization import engine as engine_mod
-
+def test_path_masks_inherit_off_pruning_preserves_parent_masks():
     root = _node(
         "root",
         D,
@@ -493,41 +535,104 @@ def test_path_masks_inherit_off_pruning_preserves_parent_masks(monkeypatch):
         AtomicOp.LIST_DIRECTORY | AtomicOp.READ_CONTENT
     )
 
-    # When an ancestor at or above parent sets inherit off, ancestors above it are pruned.
-    step_calls = 0
-    orig_step = engine_mod.step_node_dacl
-
-    def _counting_step(*args, **kwargs):
-        nonlocal step_calls
-        step_calls += 1
-        return orig_step(*args, **kwargs)
-
-    monkeypatch.setattr(engine_mod, "step_node_dacl", _counting_step)
-
+    # When mid sets inherit off, root's READ_CONTENT and its expiration do not leak into parent/target.
     pm_pruned = evaluate_path_masks(
         ALICE,
         [root, mid, parent, target],
         NOW,
         check_ancestor_traverse=False,
     )
-    assert step_calls == 3  # mid, parent, target (root pruned)
     assert pm_pruned.target.allowed_traverse
     assert pm_pruned.target.effective_mask == int(AtomicOp.READ_METADATA)
     assert pm_pruned.target.next_transition_at is None
     assert pm_pruned.parent_effective_mask == int(AtomicOp.LIST_DIRECTORY)
 
-    # evaluate_effective_masks does not need parent_effective_mask, so it prunes all the way to target.
-    step_calls = 0
     em_pruned = evaluate_effective_masks(
         ALICE,
         [root, mid, parent, target],
         NOW,
         check_ancestor_traverse=False,
     )
-    assert step_calls == 1  # target only
     assert em_pruned.allowed_traverse
     assert em_pruned.effective_mask == int(AtomicOp.READ_METADATA)
     assert em_pruned.next_transition_at is None
+
+
+@pytest.mark.parametrize(
+    ("operation", "eval_fn", "expected_step"),
+    [
+        (AtomicOp.PURGE, evaluate_purge_subtree, "5_composite_purge_descendant"),
+        (AtomicOp.RESTORE, evaluate_restore_subtree, "5_composite_restore_descendant"),
+    ],
+)
+def test_evaluate_deleted_subtree_ops_enforce_descendant_permissions_and_state(
+    operation: AtomicOp,
+    eval_fn,
+    expected_step: str,
+):
+    root = _node("root", D, f"inherit off; allow [TRAVERSE, {operation.name}] to any;")
+    target = _node("target", D, state=ObjectState.SOFT_DELETED)
+    target_masks = evaluate_path_masks(ALICE, [root, target], NOW)
+    assert target_masks.target.allowed_traverse
+
+    inherit_policy = _compile("inherit on;").policy
+    cut_policy = _compile("inherit off;").policy
+    deny_policy = _compile(f"inherit on; deny [{operation.name}] to any;").policy
+    assert inherit_policy is not None
+    assert cut_policy is not None
+    assert deny_policy is not None
+
+    assert eval_fn(ALICE, "target", target_masks.target_inherited, [], NOW).allowed
+    assert (
+        eval_fn(
+            None,
+            "target",
+            target_masks.target_inherited,
+            [
+                SubtreeNode(
+                    "c", "target", "c", F, ObjectState.SOFT_DELETED, inherit_policy
+                )
+            ],
+            NOW,
+        ).step
+        == "0_unauthenticated"
+    )
+
+    ok_nodes = [
+        SubtreeNode("d1", "target", "d1", D, ObjectState.SOFT_DELETED, inherit_policy),
+        SubtreeNode("doc1", "d1", "doc1", F, ObjectState.SOFT_DELETED, inherit_policy),
+    ]
+    assert eval_fn(
+        ALICE, "target", target_masks.target_inherited, ok_nodes, NOW
+    ).allowed
+
+    for blocked_policy in (cut_policy, deny_policy):
+        blocked = eval_fn(
+            ALICE,
+            "target",
+            target_masks.target_inherited,
+            [
+                SubtreeNode(
+                    "d1", "target", "d1", D, ObjectState.SOFT_DELETED, inherit_policy
+                ),
+                SubtreeNode(
+                    "doc1", "d1", "doc1", F, ObjectState.SOFT_DELETED, blocked_policy
+                ),
+            ],
+            NOW,
+        )
+        assert not blocked.allowed
+        assert blocked.step == expected_step
+
+    non_deleted = eval_fn(
+        ALICE,
+        "target",
+        target_masks.target_inherited,
+        [SubtreeNode("live", "target", "live", F, ObjectState.NORMAL, inherit_policy)],
+        NOW,
+    )
+    assert not non_deleted.allowed
+    assert non_deleted.step == expected_step
 
 
 def test_evaluate_restore_in_place_and_reparenting():

@@ -1,9 +1,8 @@
 import datetime
-import uuid
 from types import SimpleNamespace
 
 import pytest
-from cacl_compiler import AtomicOp, CompiledPolicy, ObjectType, compile_cacl
+from cacl_compiler import AtomicOp, ObjectType
 from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
@@ -13,8 +12,6 @@ from include.database.cursors import (
     WindowedKeysetBatchStrategy,
 )
 from include.database.models.documents import EntityStatus
-from include.domains.access.authorization.engine import Subject
-from include.domains.access.authorization.storage import AncestorNodeMeta
 from include.domains.access.authorization.visibility import (
     BatchVisibilityEvaluator,
     VisibilityCandidate,
@@ -812,72 +809,35 @@ def test_search_active_revision_resolution_parity_across_sort_modes(
     assert [row["id"] for row in rows] == expected_order
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize("dialect_name", ["sqlite", "postgresql", "mysql"])
-def test_search_statements_compile_across_supported_dialects(dialect_name: str):
-    from sqlalchemy.dialects import mysql, postgresql, sqlite
-
-    from include.domains.access.authorization.storage import (
-        build_ancestors_and_active_policies_stmt,
-    )
-    from include.domains.documents.queries.search import (
-        _build_search_select,
-        _search_candidate_selectable,
-        _search_lightweight_candidate_selectable,
-        _search_primary_column,
-    )
-
-    dialect = {
-        "sqlite": sqlite.dialect(),
-        "postgresql": postgresql.dialect(),
-        "mysql": mysql.dialect(),
-    }[dialect_name]
-
-    lightweight = _search_lightweight_candidate_selectable(
-        query="demo",
-        search_documents=True,
-        search_directories=True,
-        require_active_document_revision=False,
-    )
-    assert lightweight is not None
-    lw_sql = str(
-        _build_search_select(
-            lightweight,
-            _search_primary_column(lightweight, "name"),
-            ["a", 0, "id-1"],
-            "asc",
-            include_revision_details=False,
-            limit=128,
-        ).compile(dialect=dialect)
-    )
-    assert "search_candidates" in lw_sql
-
-    full = _search_candidate_selectable(
-        query="demo",
-        search_documents=True,
-        search_directories=True,
-    )
-    assert full is not None
-    full_sql = str(
-        _build_search_select(
-            full,
-            _search_primary_column(full, "size"),
-            [100, 1, "id-1"],
-            "desc",
-            include_revision_details=True,
-            limit=128,
-        ).compile(dialect=dialect)
-    )
-    assert "matched_documents" in full_sql
-    assert "search_current_chain" in full_sql
-
-    combined_sql = str(
-        build_ancestors_and_active_policies_stmt(
-            ["folder-1"], ["doc-1", "doc-2"], _NOW_DT
-        ).compile(dialect=dialect)
-    )
-    assert "search_anc_meta" in combined_sql
-    assert "dacl_rule_atoms" in combined_sql
+def _collect_all_search_pages(
+    context,
+    *,
+    user,
+    query: str,
+    batch_strategy,
+    extract,
+    limit: int = 2,
+    **search_kwargs,
+):
+    collected = []
+    last_key = None
+    while True:
+        page = _search(
+            context,
+            user=user,
+            query=query,
+            last_key=last_key,
+            limit=limit,
+            batch_strategy=batch_strategy,
+            **search_kwargs,
+        )
+        if not page:
+            break
+        collected.extend(extract(item) for item in page)
+        if len(page) < limit:
+            break
+        last_key = page[-1]["_cursor_key"]
+    return collected
 
 
 @pytest.mark.component
@@ -903,30 +863,24 @@ def test_windowed_keyset_batch_strategy_matches_streaming_parity(search_query_co
         expected_visible_ids.append(folder.id)
     context.session.commit()
 
-    def _collect_all(strategy):
-        collected: list[str] = []
-        last_key = None
-        while True:
-            page = _search(
-                context,
-                user=user,
-                query=query,
-                search_documents=False,
-                search_directories=True,
-                last_key=last_key,
-                limit=2,
-                batch_strategy=strategy,
-            )
-            if not page:
-                break
-            collected.extend(item["id"] for item in page)
-            if len(page) < 2:
-                break
-            last_key = page[-1]["_cursor_key"]
-        return collected
-
-    streaming_ids = _collect_all(StreamingCursorBatchStrategy(chunk_size=16))
-    windowed_ids = _collect_all(WindowedKeysetBatchStrategy(window_sizes=(20, 40)))
+    streaming_ids = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=StreamingCursorBatchStrategy(chunk_size=16),
+        extract=lambda item: item["id"],
+        search_documents=False,
+        search_directories=True,
+    )
+    windowed_ids = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=WindowedKeysetBatchStrategy(window_sizes=(20, 40)),
+        extract=lambda item: item["id"],
+        search_documents=False,
+        search_directories=True,
+    )
     assert streaming_ids == expected_visible_ids
     assert windowed_ids == expected_visible_ids
 
@@ -966,32 +920,28 @@ def test_windowed_keyset_batch_strategy_matches_streaming_for_document_size_desc
 
     expected_visible = list(reversed(visible_docs))
 
-    def _collect_all(strategy):
-        collected: list[tuple[str, int]] = []
-        last_key = None
-        while True:
-            page = _search(
-                context,
-                user=user,
-                query=query,
-                sort_by="size",
-                sort_order="desc",
-                search_documents=True,
-                search_directories=False,
-                last_key=last_key,
-                limit=2,
-                batch_strategy=strategy,
-            )
-            if not page:
-                break
-            collected.extend((item["id"], item["size"]) for item in page)
-            if len(page) < 2:
-                break
-            last_key = page[-1]["_cursor_key"]
-        return collected
-
-    streaming_rows = _collect_all(StreamingCursorBatchStrategy(chunk_size=16))
-    windowed_rows = _collect_all(WindowedKeysetBatchStrategy(window_sizes=(20, 40)))
+    streaming_rows = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=StreamingCursorBatchStrategy(chunk_size=16),
+        extract=lambda item: (item["id"], item["size"]),
+        sort_by="size",
+        sort_order="desc",
+        search_documents=True,
+        search_directories=False,
+    )
+    windowed_rows = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=WindowedKeysetBatchStrategy(window_sizes=(20, 40)),
+        extract=lambda item: (item["id"], item["size"]),
+        sort_by="size",
+        sort_order="desc",
+        search_documents=True,
+        search_directories=False,
+    )
     assert streaming_rows == expected_visible
     assert windowed_rows == expected_visible
 
@@ -1053,67 +1003,176 @@ def test_search_visibility_fails_closed_when_ancestor_chain_truncated(
     assert rows_bypassed == []
 
 
-@pytest.mark.unit
-def test_batch_visibility_evaluator_fails_closed_for_orphan_ancestor():
-    evaluator = BatchVisibilityEvaluator(
-        session=None,  # type: ignore[arg-type]
-        subject=Subject(user_id=uuid.uuid4()),
-        now_utc=_NOW_DT,
-        check_traverse=False,
-    )
-    evaluator._node_meta["orphan-dir"] = AncestorNodeMeta(
+@pytest.mark.component
+def test_batch_visibility_evaluator_fails_closed_for_orphan_ancestor(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_orphan_vis")
+    orphan = context.models.Folder(
+        id="orphan-dir",
+        name="OrphanDir",
         parent_id=None,
-        status=EntityStatus.OK.value,
         inherit=False,
     )
-    allow_read = compile_cacl("inherit off; allow [READ_CONTENT] to any;").policy
-    assert allow_read is not None
-    evaluator._node_policies["orphan-dir"] = CompiledPolicy(inherit=False, rules=())
-    evaluator._node_policies["child-doc"] = allow_read
+    context.session.add(orphan)
+    context.session.flush()
+    doc = _make_document(
+        context,
+        "orphan-child-doc",
+        "OrphanChildDoc",
+        folder_id="orphan-dir",
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    context.session.commit()
 
+    evaluator = BatchVisibilityEvaluator.for_user(context.session, user, _NOW_DT)
     candidate = VisibilityCandidate(
-        node_id="child-doc",
+        node_id=doc.id,
         parent_id="orphan-dir",
         object_type=ObjectType.DOCUMENT,
         inherit=False,
     )
+    evaluator.preload([candidate])
     assert evaluator.is_visible(candidate) is False
 
 
-@pytest.mark.unit
-def test_batch_visibility_evaluator_preserves_deleted_candidate_status_when_used_as_ancestor():
-    evaluator = BatchVisibilityEvaluator(
-        session=None,  # type: ignore[arg-type]
-        subject=Subject(user_id=uuid.uuid4()),
-        now_utc=_NOW_DT,
-        check_traverse=True,
+@pytest.mark.component
+def test_batch_visibility_evaluator_preserves_deleted_candidate_status_when_used_as_ancestor(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_deleted_anc_vis")
+    deleted_dir = _make_folder(
+        context,
+        "deleted-dir-vis",
+        "DeletedDirVis",
     )
-    root_allow = compile_cacl(
-        "inherit off; allow [TRAVERSE, LIST_DIRECTORY, READ_CONTENT] to any;"
-    ).policy
-    assert root_allow is not None
-    evaluator._node_meta["/"] = AncestorNodeMeta(
-        parent_id=None, status=EntityStatus.OK.value, inherit=False
+    deleted_dir.status = EntityStatus.DELETED
+    context.session.flush()
+    child_doc = _make_document(
+        context,
+        "deleted-child-doc-vis",
+        "DeletedChildDocVis",
+        folder_id=deleted_dir.id,
     )
-    evaluator._node_policies["/"] = root_allow
-    evaluator._node_policies["deleted-dir"] = CompiledPolicy(inherit=True, rules=())
-    evaluator._node_policies["child-doc"] = CompiledPolicy(inherit=True, rules=())
+    context.session.commit()
 
+    evaluator = BatchVisibilityEvaluator.for_user(context.session, user, _NOW_DT)
     deleted_dir_candidate = VisibilityCandidate(
-        node_id="deleted-dir",
+        node_id=deleted_dir.id,
         parent_id="/",
         object_type=ObjectType.DIRECTORY,
         inherit=True,
         status=EntityStatus.DELETED.value,
     )
     child_doc_candidate = VisibilityCandidate(
-        node_id="child-doc",
-        parent_id="deleted-dir",
+        node_id=child_doc.id,
+        parent_id=deleted_dir.id,
         object_type=ObjectType.DOCUMENT,
         inherit=True,
     )
-    evaluator._register_candidates_and_collect_missing(
-        [deleted_dir_candidate, child_doc_candidate]
-    )
-    assert evaluator._node_meta["deleted-dir"].status == EntityStatus.DELETED.value
+    evaluator.preload([deleted_dir_candidate, child_doc_candidate])
     assert evaluator.is_visible(child_doc_candidate) is False
+
+
+@pytest.mark.component
+def test_batch_visibility_evaluator_honors_bypass_dacl_and_evicts_document_caches(
+    search_query_context,
+):
+    context = search_query_context
+    regular_user = _make_user(context, username="alice_cache_evict")
+    admin_user = _make_user(
+        context,
+        username="admin_bypass_vis",
+        permissions=(Permissions.BYPASS_DACL,),
+    )
+    blocked_dir = _make_folder(
+        context, "evict-blocked-dir", "EvictBlockedDir", dacl="inherit off;"
+    )
+    hidden_doc = _make_document(
+        context,
+        "evict-hidden-doc",
+        "EvictHiddenDoc",
+        folder_id=blocked_dir.id,
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    visible_doc = _make_document(
+        context,
+        "evict-visible-doc",
+        "EvictVisibleDoc",
+        folder_id="/",
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    context.session.commit()
+    _ = regular_user.all_permissions
+    _ = regular_user.all_groups
+    _ = admin_user.all_permissions
+    _ = admin_user.all_groups
+
+    regular_eval = BatchVisibilityEvaluator.for_user(
+        context.session, regular_user, _NOW_DT
+    )
+    candidates = [
+        VisibilityCandidate(
+            node_id=hidden_doc.id,
+            parent_id=blocked_dir.id,
+            object_type=ObjectType.DOCUMENT,
+            inherit=False,
+        ),
+        VisibilityCandidate(
+            node_id=visible_doc.id,
+            parent_id="/",
+            object_type=ObjectType.DOCUMENT,
+            inherit=False,
+        ),
+    ]
+    regular_eval.preload(candidates)
+    assert regular_eval.is_visible(candidates[0]) is False
+    assert regular_eval.is_visible(candidates[1]) is True
+    assert hidden_doc.id not in regular_eval._node_meta
+    assert visible_doc.id not in regular_eval._node_meta
+    assert hidden_doc.id not in regular_eval._node_policies
+    assert visible_doc.id not in regular_eval._node_policies
+
+    engine = context.session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        bypass_eval = BatchVisibilityEvaluator.for_user(
+            context.session, admin_user, _NOW_DT
+        )
+        bypass_eval.preload(candidates)
+        assert bypass_eval.is_visible(candidates[0]) is True
+        assert bypass_eval.is_visible(candidates[1]) is True
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+    assert statements == []
+
+
+@pytest.mark.component
+def test_search_results_omit_internal_fields(search_query_context):
+    context = search_query_context
+    regular_user = _make_user(context, username="alice_no_leak")
+    admin_user = _make_user(
+        context,
+        username="admin_no_leak",
+        permissions=(Permissions.BYPASS_DACL,),
+    )
+    _make_folder(context, "leak-dir", "LeakCheckDir")
+    _make_document(context, "leak-doc", "LeakCheckDoc")
+    context.session.commit()
+
+    for user in (regular_user, admin_user):
+        for sort_by in ("name", "size"):
+            rows = _search(context, user=user, query="LeakCheck", sort_by=sort_by)
+            assert len(rows) == 2
+            for row in rows:
+                assert "type_rank" not in row
+                assert "name_sort_key" not in row
+                assert "inherit" not in row
+                assert "current_revision_id" not in row

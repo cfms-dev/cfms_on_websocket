@@ -509,3 +509,359 @@ class TestCaclAuthorizationSemantics:
             ),
             403,
         )
+
+    @pytest.mark.asyncio
+    async def test_directory_create_rejects_removed_protocol30_fields(
+        self,
+        authenticated_client: CFMSTestClient,
+    ):
+        for extra_field, extra_value in (
+            ("access_rules", {}),
+            ("inherit_parent", False),
+        ):
+            response = await authenticated_client.send_request(
+                "core.directory.create",
+                {"name": "LegacyBlockedDir", extra_field: extra_value},
+            )
+            assert_error(response, 400)
+
+    @pytest.mark.asyncio
+    async def test_create_document_self_lockout_and_dacl_get_forbidden(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        user_factory,
+        client_factory,
+        owned_entities,
+    ):
+        user = await user_factory()
+        parent = await directory_factory()
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, CREATE_DOCUMENT, WRITE_DACL] "
+                    f'to user("{user["user_id"]}");'
+                ),
+            )
+        )
+        user_client = await client_factory()
+        assert_success(await user_client.login(user["username"], user["password"]))
+
+        blocked = await user_client.create_document(
+            "LockoutDoc",
+            folder_id=parent["folder_id"],
+            dacl="inherit off;",
+        )
+        assert assert_error(blocked, 409)["data"]["self_lockout_warning"] is True
+
+        created = assert_success(
+            await user_client.create_document(
+                "LockoutDocOverride",
+                folder_id=parent["folder_id"],
+                dacl="inherit off;",
+                allow_self_lockout=True,
+            )
+        )
+        owned_entities["documents"].append(created["document_id"])
+
+        assert_error(await user_client.get_directory_dacl(parent["folder_id"]), 403)
+        assert_error(await user_client.get_document_dacl(created["document_id"]), 403)
+
+    @pytest.mark.asyncio
+    async def test_directory_purge_is_atomic_on_descendant_denial(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        actor = await user_factory(permissions=[permission_entry(Permissions.PURGE)])
+        parent = await directory_factory()
+        child_dir = await directory_factory(parent_id=parent["folder_id"])
+        protected_doc = await document_factory(
+            "ProtectedPurgeDoc", folder_id=child_dir["folder_id"]
+        )
+
+        # Grant PURGE on parent & child_dir (via inheritance), deny PURGE on descendant doc.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, DELETE, DIRECTORY_DELETE_CHILD, LIST_DELETED, PURGE] "
+                    f'to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                protected_doc["document_id"],
+                f'inherit on; deny [PURGE] to user("{actor["user_id"]}");',
+            )
+        )
+
+        actor_client = await client_factory()
+        assert_success(await actor_client.login(actor["username"], actor["password"]))
+        assert_success(await actor_client.delete_directory(parent["folder_id"]))
+
+        assert_error(await actor_client.purge_directory(parent["folder_id"]), 403)
+
+        # Atomic check: parent, child_dir, and protected_doc still exist in deleted state.
+        deleted_root = assert_success(
+            await authenticated_client.list_deleted_items("/")
+        )
+        assert any(item["id"] == parent["folder_id"] for item in deleted_root["items"])
+        deleted_child = assert_success(
+            await authenticated_client.list_deleted_items(parent["folder_id"])
+        )
+        assert any(
+            item["id"] == child_dir["folder_id"] for item in deleted_child["items"]
+        )
+        deleted_grandchild = assert_success(
+            await authenticated_client.list_deleted_items(child_dir["folder_id"])
+        )
+        assert any(
+            item["id"] == protected_doc["document_id"]
+            for item in deleted_grandchild["items"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_directory_restore_scopes_to_subtree_avoids_old_name_collision_and_checks_descendants(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+        owned_entities,
+    ):
+        actor = await user_factory()
+        parent = await directory_factory("RestoreScopeParent")
+        sibling = await directory_factory(
+            "RestoreScopeSibling", parent_id=parent["folder_id"]
+        )
+        target = await directory_factory("RestoreTarget", parent_id=parent["folder_id"])
+        nested_dir = await directory_factory("NestedDir", parent_id=target["folder_id"])
+        nested_doc = await document_factory(
+            "NestedDoc", folder_id=nested_dir["folder_id"]
+        )
+        dest_parent = await directory_factory("RestoreDest")
+
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    f'allow [TRAVERSE, RESTORE] to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+        # Deny RESTORE on sibling so cross-subtree bleed would also violate authz.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                sibling["folder_id"],
+                f'inherit on; deny [RESTORE] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                dest_parent["folder_id"],
+                (
+                    "inherit off; "
+                    f'allow [TRAVERSE, CREATE_DIRECTORY, LIST_DIRECTORY] to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+        # Initially block RESTORE on nested_doc to verify atomic 403 on descendant denial.
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                nested_doc["document_id"],
+                f'inherit on; deny [RESTORE] to user("{actor["user_id"]}");',
+            )
+        )
+
+        assert_success(await authenticated_client.delete_directory(parent["folder_id"]))
+
+        # Occupy target's original name under parent (after restoring/simulating or in new active dest):
+        # Also test collision at old (parent_id, name) by placing an active node with same name under parent
+        # using a fresh parent-level active folder isn't possible while parent is deleted, so restore target
+        # into dest_parent (different parent) with a new name while a sibling shares op_id.
+        actor_client = await client_factory()
+        assert_success(await actor_client.login(actor["username"], actor["password"]))
+
+        # Denied atomically because nested_doc denies RESTORE.
+        assert_error(
+            await actor_client.restore_directory(
+                target["folder_id"],
+                target_parent_id=dest_parent["folder_id"],
+                new_name="RestoredSafely",
+            ),
+            403,
+        )
+        assert_error(
+            await authenticated_client.get_directory_info(target["folder_id"]), 404
+        )
+
+        # Case 1: Parent, sibling, target, and child all share the SAME status_operation_id.
+        # Restoring target into dest_parent must restore ONLY target + child, leaving parent + sibling deleted.
+        batch_parent = await directory_factory("BatchRestoreParent")
+        batch_sibling = await directory_factory(
+            "BatchRestoreSibling", parent_id=batch_parent["folder_id"]
+        )
+        batch_target = await directory_factory(
+            "BatchRestoreTarget", parent_id=batch_parent["folder_id"]
+        )
+        batch_child = await directory_factory(
+            "BatchRestoreChild", parent_id=batch_target["folder_id"]
+        )
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                batch_parent["folder_id"],
+                (
+                    "inherit off; "
+                    f'allow [TRAVERSE, RESTORE] to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                batch_sibling["folder_id"],
+                f'inherit on; deny [RESTORE] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.delete_directory(batch_parent["folder_id"])
+        )
+
+        batch_restored = assert_success(
+            await actor_client.restore_directory(
+                batch_target["folder_id"],
+                target_parent_id=dest_parent["folder_id"],
+                new_name="BatchTargetRestored",
+            )
+        )
+        assert batch_restored["parent_id"] == dest_parent["folder_id"]
+        assert batch_restored["name"] == "BatchTargetRestored"
+        batch_child_info = assert_success(
+            await authenticated_client.get_directory_info(batch_child["folder_id"])
+        )
+        assert batch_child_info["parent_id"] == batch_target["folder_id"]
+        assert_error(
+            await authenticated_client.get_directory_info(batch_parent["folder_id"]),
+            404,
+        )
+        assert_error(
+            await authenticated_client.get_directory_info(batch_sibling["folder_id"]),
+            404,
+        )
+
+        # Case 2: When an active occupant now holds target's old (parent_id, name),
+        # restoring with new_name / target_parent_id avoids colliding with the old slot.
+        old_parent = await directory_factory("OldParentForCollision")
+        re_target = await directory_factory(
+            "SharedName", parent_id=old_parent["folder_id"]
+        )
+        re_child = await directory_factory("ReChild", parent_id=re_target["folder_id"])
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                old_parent["folder_id"],
+                (
+                    "inherit off; "
+                    f'allow [TRAVERSE, RESTORE] to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+        assert_success(
+            await authenticated_client.delete_directory(re_target["folder_id"])
+        )
+        occupant = assert_success(
+            await authenticated_client.create_directory(
+                "SharedName", parent_id=old_parent["folder_id"]
+            )
+        )
+        owned_entities["directories"].append(occupant["id"])
+
+        restored = assert_success(
+            await actor_client.restore_directory(
+                re_target["folder_id"],
+                target_parent_id=dest_parent["folder_id"],
+                new_name="SharedNameRestored",
+            )
+        )
+        assert restored["parent_id"] == dest_parent["folder_id"]
+        assert restored["name"] == "SharedNameRestored"
+        child_info = assert_success(
+            await authenticated_client.get_directory_info(re_child["folder_id"])
+        )
+        assert child_info["parent_id"] == re_target["folder_id"]
+
+    @pytest.mark.asyncio
+    async def test_set_user_avatar_authorizes_actor_read_content(
+        self,
+        authenticated_client: CFMSTestClient,
+        document_factory,
+        user_factory,
+        client_factory,
+        tmp_path: Path,
+    ):
+        png_path = tmp_path / "avatar.png"
+        png_path.write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01"
+            b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        victim = await user_factory()
+        delegated_admin = await user_factory(
+            permissions=[permission_entry(Permissions.SUPER_SET_USER_AVATAR)]
+        )
+        private_doc = await document_factory(
+            "VictimPrivateAvatar", upload_file=str(png_path)
+        )
+
+        # Only victim (NOT delegated_admin) has READ_CONTENT on private_doc.
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                private_doc["document_id"],
+                f'inherit off; allow [READ_CONTENT] to user("{victim["user_id"]}");',
+            )
+        )
+
+        admin_client = await client_factory()
+        assert_success(
+            await admin_client.login(
+                delegated_admin["username"], delegated_admin["password"]
+            )
+        )
+        assert_error(
+            await admin_client.send_request(
+                "core.user.avatar.set",
+                {
+                    "user_id": victim["user_id"],
+                    "document_id": private_doc["document_id"],
+                },
+            ),
+            403,
+        )
+
+        # Granting victim SET_USER_AVATAR lets victim set their own avatar.
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                victim["user_id"], [permission_entry(Permissions.SET_USER_AVATAR)]
+            )
+        )
+        victim_client = await client_factory()
+        assert_success(
+            await victim_client.login(victim["username"], victim["password"])
+        )
+        assert_success(
+            await victim_client.send_request(
+                "core.user.avatar.set",
+                {
+                    "user_id": victim["user_id"],
+                    "document_id": private_doc["document_id"],
+                },
+            )
+        )

@@ -3,7 +3,7 @@ import time
 from itertools import batched
 
 from cacl_compiler import AtomicOp, ObjectType
-from pydantic import ConfigDict
+from sqlalchemy import select
 
 from include.config.constants import (
     QUERY_CHUNK_SIZE,
@@ -19,10 +19,13 @@ from include.database.session import Session
 from include.domains.access.authorization.evaluation import (
     authorize_create_on_parent,
     authorize_directory_access_with_parent,
+    authorize_directory_reparent,
     authorize_node_operation,
-    authorize_reparent,
-    authorize_restore,
+    authorize_purge_descendants,
+    authorize_restore_descendants,
     authorize_soft_delete_descendants,
+    check_directory_purge_root,
+    check_directory_restore_root,
     check_directory_soft_delete_root,
 )
 from include.domains.access.authorization.storage import (
@@ -50,8 +53,9 @@ from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
 from include.domains.documents.queries.deletion_tree import (
-    fetch_subtree_for_purge,
     fetch_subtree_ids_for_soft_delete,
+    fetch_subtree_metadata_for_purge,
+    fetch_subtree_metadata_for_restore,
     fetch_subtree_metadata_for_soft_delete,
 )
 from include.domains.documents.queries.file_references import (
@@ -104,12 +108,6 @@ class _SetDirectoryDaclRequest(RequestDataModel):
 
 
 class _CreateDirectoryRequest(RequestDataModel):
-    model_config = ConfigDict(
-        strict=True,
-        validate_default=True,
-        extra="allow",
-    )
-
     parent_id: str | None = None
     name: NonEmptyString
     dacl: Omittable[DaclSource] = REQUEST_UNSET
@@ -232,10 +230,6 @@ class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
 
     def handle(self, handler, request):
         directory_id: str = request.directory_id
-
-        if not directory_id:
-            handler.conclude_request(400, {}, smsg.DIRECTORY_ID_REQUIRED)
-            return
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
@@ -437,7 +431,12 @@ class RequestDeleteDirectoryHandler(RequestHandler[_FolderIDRequest]):
         cancelled_task_ids: list[str] = []
         with Session() as session:
             this_user = User.get_existing(session, handler.user_id)
-            folder = session.get(Folder, folder_id)
+            folder = session.get(
+                Folder,
+                folder_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
@@ -570,7 +569,22 @@ class RequestReparentDirectoryHandler(RequestHandler[_ReparentDirectoryRequest])
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
-            folder = session.get(Folder, folder_id)
+            locked_ids = (
+                (folder_id,)
+                if folder_id == target_folder_id
+                else tuple(sorted((folder_id, target_folder_id)))
+            )
+            locked_folders = {
+                row.id: row
+                for row in session.scalars(
+                    select(Folder)
+                    .where(Folder.id.in_(locked_ids))
+                    .order_by(Folder.id.asc())
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).all()
+            }
+            folder = locked_folders.get(folder_id)
 
             if not folder:
                 handler.conclude_request(
@@ -578,14 +592,17 @@ class RequestReparentDirectoryHandler(RequestHandler[_ReparentDirectoryRequest])
                 )
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
 
-            target_folder = session.get(Folder, target_folder_id)
+            target_folder = locked_folders.get(target_folder_id)
             if not target_folder:
                 handler.conclude_request(
                     code=404, message=smsg.TARGET_DIRECTORY_NOT_FOUND, data={}
                 )
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
 
-            if not authorize_reparent(session, user, folder, target_folder).allowed:
+            decision, dest_ancestor_ids = authorize_directory_reparent(
+                session, user, folder, target_folder
+            )
+            if not decision.allowed:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED_REPARENT_DIRECTORY)
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
 
@@ -593,7 +610,7 @@ class RequestReparentDirectoryHandler(RequestHandler[_ReparentDirectoryRequest])
                 handler.conclude_request(400, {}, smsg.CANNOT_REPARENT_TO_SAME_FOLDER)
                 return Result(code=400, target=folder_id, user_id=handler.user_id)
 
-            if target_folder.id == folder.id or target_folder.is_descendant_of(folder):
+            if target_folder.id == folder.id or folder.id in dest_ancestor_ids:
                 handler.conclude_request(
                     400, {}, smsg.CANNOT_REPARENT_DIRECTORY_INTO_SUBDIRECTORY
                 )
@@ -641,7 +658,11 @@ class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             folder = session.get(
-                Folder, folder_id, execution_options={"include_deleted": True}
+                Folder,
+                folder_id,
+                execution_options={"include_deleted": True},
+                with_for_update=True,
+                populate_existing=True,
             )
             if not folder:
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
@@ -653,16 +674,28 @@ class RequestPurgeDirectoryHandler(RequestHandler[_FolderIDRequest]):
                 )
                 return Result(code=400, target=folder_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
-                session, user, folder, AtomicOp.PURGE
-            ).allowed:
+            root_check = check_directory_purge_root(session, user, folder)
+            if not root_check.allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
 
             try:
-                all_folder_ids, all_doc_ids = fetch_subtree_for_purge(
+                descendant_folders, descendant_docs = fetch_subtree_metadata_for_purge(
                     session, folder_id
                 )
+                descendant_decision = authorize_purge_descendants(
+                    session,
+                    user,
+                    folder.id,
+                    [*descendant_folders, *descendant_docs],
+                    root_check,
+                )
+                if not descendant_decision.allowed:
+                    handler.conclude_access_denial()
+                    return Result(code=403, target=folder_id, user_id=handler.user_id)
+
+                all_folder_ids = [f.id for f in descendant_folders]
+                all_doc_ids = [doc.id for doc in descendant_docs]
 
                 session.autoflush = False
 
@@ -717,7 +750,11 @@ class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
             user = User.get_existing(session, handler.user_id)
 
             folder = session.get(
-                Folder, folder_id, execution_options={"include_deleted": True}
+                Folder,
+                folder_id,
+                execution_options={"include_deleted": True},
+                with_for_update=True,
+                populate_existing=True,
             )
             if not folder or folder.status != EntityStatus.DELETED:
                 handler.conclude_request(404, {}, smsg.DELETED_DIRECTORY_NOT_FOUND)
@@ -731,26 +768,62 @@ class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
             final_name = new_name if new_name else folder.name
 
             target_parent = (
-                session.query(Folder)
+                folder
+                if db_parent_id == folder.id
+                else session.query(Folder)
                 .execution_options(include_deleted=True)
                 .filter_by(id=db_parent_id)
+                .with_for_update()
                 .first()
             )
             if not target_parent or target_parent.status != EntityStatus.OK:
                 handler.conclude_request(409, {}, smsg.TARGET_DIRECTORY_NOT_ACTIVE)
                 return Result(code=409, target=db_parent_id, user_id=handler.user_id)
 
-            if not authorize_restore(session, user, folder, target_parent).allowed:
+            root_check = check_directory_restore_root(
+                session, user, folder, target_parent
+            )
+            if not root_check.allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
 
+            if (
+                target_parent.id == folder.id
+                or folder.id in root_check.dest_ancestor_ids
+            ):
+                handler.conclude_request(
+                    400, {}, smsg.CANNOT_REPARENT_DIRECTORY_INTO_SUBDIRECTORY
+                )
+                return Result(code=400, target=folder_id, user_id=handler.user_id)
+
             op_id = folder.status_operation_id
+            descendant_restore_ids: list[str] = []
+            if op_id:
+                descendant_folders, descendant_docs = (
+                    fetch_subtree_metadata_for_restore(session, folder_id, op_id)
+                )
+                descendant_rows = [*descendant_folders, *descendant_docs]
+                descendant_decision = authorize_restore_descendants(
+                    session, user, folder.id, descendant_rows, root_check
+                )
+                if not descendant_decision.allowed:
+                    handler.conclude_access_denial()
+                    return Result(code=403, target=folder_id, user_id=handler.user_id)
+                descendant_restore_ids = [row.id for row in descendant_rows]
+
             try:
                 with node_name_mutation(session, db_parent_id, final_name):
-                    if op_id:
+                    folder.status = EntityStatus.OK
+                    folder.status_operation_id = None
+                    folder.name = final_name
+                    folder.parent_id = db_parent_id
+                    session.flush()
+
+                    for chunk in batched(descendant_restore_ids, QUERY_CHUNK_SIZE):
                         session.query(Node).filter(
-                            Node.status_operation_id == op_id,
+                            Node.id.in_(list(chunk)),
                             Node.status == EntityStatus.DELETED,
+                            Node.status_operation_id == op_id,
                         ).update(
                             {
                                 Node.status: EntityStatus.OK,
@@ -758,11 +831,6 @@ class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
                             },
                             synchronize_session=False,
                         )
-
-                    folder.status = EntityStatus.OK
-                    folder.status_operation_id = None
-                    folder.name = final_name
-                    folder.parent_id = db_parent_id
                     session.commit()
             except NodeNameConflictError:
                 payload, message = describe_subtree_restore_name_conflict(
@@ -771,6 +839,7 @@ class RequestRestoreDirectoryHandler(RequestHandler[_RestoreDirectoryRequest]):
                     op_id,
                     db_parent_id,
                     final_name,
+                    restoring_node_ids=descendant_restore_ids,
                 )
                 return respond_to_node_name_conflict(
                     handler,

@@ -2,14 +2,20 @@ __all__ = [
     "CreateAuthzCheck",
     "DaclWriteAuthzCheck",
     "DirectorySoftDeleteRootCheck",
+    "DirectorySubtreeOpRootCheck",
     "authorize_create_on_parent",
     "authorize_dacl_read",
     "authorize_directory_access_with_parent",
+    "authorize_directory_reparent",
     "authorize_node_operation",
+    "authorize_purge_descendants",
     "authorize_reparent",
     "authorize_restore",
+    "authorize_restore_descendants",
     "authorize_soft_delete_descendants",
     "authorize_write_dacl_and_load_path",
+    "check_directory_purge_root",
+    "check_directory_restore_root",
     "check_directory_soft_delete_root",
     "evaluate_node_effective_masks",
     "has_bypass_dacl",
@@ -24,7 +30,7 @@ __all__ = [
 
 import datetime
 import operator
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import batched
@@ -60,8 +66,10 @@ from include.domains.access.authorization.engine import (
     evaluate_access,
     evaluate_effective_masks,
     evaluate_path_masks,
+    evaluate_purge_subtree,
     evaluate_reparent,
     evaluate_restore,
+    evaluate_restore_subtree,
     evaluate_soft_delete_subtree,
     simulate_policy_save_lockout,
 )
@@ -124,6 +132,15 @@ class DirectorySoftDeleteRootCheck:
     target_effective_mask: int = 0
     target_inherited: InheritedDaclState = field(default_factory=InheritedDaclState)
     check_ancestor_traverse: bool = True
+    eval_time_utc: datetime.datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DirectorySubtreeOpRootCheck:
+    allowed: bool
+    bypass_dacl: bool = False
+    target_inherited: InheritedDaclState = field(default_factory=InheritedDaclState)
+    dest_ancestor_ids: frozenset[str] = frozenset()
     eval_time_utc: datetime.datetime | None = None
 
 
@@ -606,19 +623,19 @@ def authorize_create_on_parent(
     )
 
 
-def authorize_reparent(
+def _authorize_reparent_impl(
     session: OrmSession,
     user: User,
     source: Document | Folder,
     dest_parent: Folder,
     *,
     eval_time_utc: datetime.datetime | None = None,
-) -> EvalDecision:
-    """Evaluate CEP-0002 Step 5 composite reparent (REPARENT on source + CREATE_* on dest)."""
+    load_dest_ancestors: bool = False,
+) -> tuple[EvalDecision, frozenset[str]]:
     if has_bypass_dacl(user):
         src_step1 = _check_step1_invariants(source, AtomicOp.REPARENT)
         if src_step1 is not None:
-            return src_step1
+            return src_step1, frozenset()
         dest_op = (
             AtomicOp.CREATE_DOCUMENT
             if isinstance(source, Document)
@@ -626,11 +643,19 @@ def authorize_reparent(
         )
         dst_step1 = _check_step1_invariants(dest_parent, dest_op)
         if dst_step1 is not None:
-            return dst_step1
-        return EvalDecision(
-            allowed=True,
-            reason="Allowed by global BYPASS_DACL capability.",
-            step="0_bypass_dacl",
+            return dst_step1, frozenset()
+        dest_ancestors = (
+            frozenset(_fetch_ancestor_node_rows(session, [dest_parent.id]).keys())
+            if load_dest_ancestors
+            else frozenset()
+        )
+        return (
+            EvalDecision(
+                allowed=True,
+                reason="Allowed by global BYPASS_DACL capability.",
+                step="0_bypass_dacl",
+            ),
+            dest_ancestors,
         )
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
@@ -640,7 +665,7 @@ def authorize_reparent(
         exclude_expired_before=now,
         canonicalize=False,
     )
-    return evaluate_reparent(
+    decision = evaluate_reparent(
         user_to_subject(user),
         paths[source.id],
         paths[dest_parent.id],
@@ -648,6 +673,79 @@ def authorize_reparent(
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
         collect_traces=False,
     )
+    dest_ancestors = (
+        frozenset(node.node_id for node in paths[dest_parent.id])
+        if load_dest_ancestors
+        else frozenset()
+    )
+    return decision, dest_ancestors
+
+
+def authorize_reparent(
+    session: OrmSession,
+    user: User,
+    source: Document | Folder,
+    dest_parent: Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> EvalDecision:
+    """Evaluate CEP 2 Step 5 composite reparent (REPARENT on source + CREATE_* on dest)."""
+    decision, _ = _authorize_reparent_impl(
+        session,
+        user,
+        source,
+        dest_parent,
+        eval_time_utc=eval_time_utc,
+        load_dest_ancestors=False,
+    )
+    return decision
+
+
+def authorize_directory_reparent(
+    session: OrmSession,
+    user: User,
+    source: Folder,
+    dest_parent: Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> tuple[EvalDecision, frozenset[str]]:
+    """Evaluate reparent and return destination ancestor node IDs for cycle checks."""
+    return _authorize_reparent_impl(
+        session,
+        user,
+        source,
+        dest_parent,
+        eval_time_utc=eval_time_utc,
+        load_dest_ancestors=True,
+    )
+
+
+def _build_subtree_nodes(
+    descendant_rows: Sequence[_SubtreeNodeLike],
+    target_id: str,
+    policies: Mapping[str, CompiledPolicy],
+) -> list[SubtreeNode]:
+    return [
+        SubtreeNode(
+            node_id=row.id,
+            parent_id=row.parent_id or target_id,
+            name=row.name,
+            object_type=(
+                ObjectType.DOCUMENT
+                if row.type == NodeType.DOCUMENT.value
+                else ObjectType.DIRECTORY
+            ),
+            state=(
+                ObjectState.SOFT_DELETED
+                if int(row.status) == EntityStatus.DELETED.value
+                else ObjectState.NORMAL
+            ),
+            policy=policies.get(
+                row.id, CompiledPolicy(inherit=bool(row.inherit), rules=())
+            ),
+        )
+        for row in descendant_rows
+    ]
 
 
 def check_directory_soft_delete_root(
@@ -727,28 +825,7 @@ def authorize_soft_delete_descendants(
         exclude_expired_before=now,
         canonicalize=False,
     )
-
-    subtree_nodes = [
-        SubtreeNode(
-            node_id=row.id,
-            parent_id=row.parent_id or target_id,
-            name=row.name,
-            object_type=(
-                ObjectType.DOCUMENT
-                if row.type == NodeType.DOCUMENT.value
-                else ObjectType.DIRECTORY
-            ),
-            state=(
-                ObjectState.SOFT_DELETED
-                if int(row.status) == EntityStatus.DELETED.value
-                else ObjectState.NORMAL
-            ),
-            policy=policies.get(
-                row.id, CompiledPolicy(inherit=bool(row.inherit), rules=())
-            ),
-        )
-        for row in descendant_rows
-    ]
+    subtree_nodes = _build_subtree_nodes(descendant_rows, target_id, policies)
     return evaluate_soft_delete_subtree(
         user_to_subject(user),
         target_id,
@@ -757,6 +834,210 @@ def authorize_soft_delete_descendants(
         subtree_nodes,
         eval_time_utc=now,
         check_ancestor_traverse=root_check.check_ancestor_traverse,
+    )
+
+
+def check_directory_purge_root(
+    session: OrmSession,
+    user: User,
+    target: Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> DirectorySubtreeOpRootCheck:
+    """Authorize PURGE on target soft-deleted directory and capture inherited DACL state."""
+    if _check_step1_invariants(target, AtomicOp.PURGE) is not None:
+        return DirectorySubtreeOpRootCheck(allowed=False)
+
+    if has_bypass_dacl(user):
+        return DirectorySubtreeOpRootCheck(allowed=True, bypass_dacl=True)
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = _load_ancestor_path(
+        session,
+        target,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    check_traverse = should_check_ancestor_traverse(session, user)
+    path_masks = evaluate_path_masks(
+        user_to_subject(user),
+        path,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
+    if not path_masks.target.allowed_traverse or not (
+        path_masks.target.effective_mask & int(AtomicOp.PURGE)
+    ):
+        return DirectorySubtreeOpRootCheck(allowed=False)
+
+    return DirectorySubtreeOpRootCheck(
+        allowed=True,
+        target_inherited=path_masks.target_inherited,
+        eval_time_utc=now,
+    )
+
+
+def check_directory_restore_root(
+    session: OrmSession,
+    user: User,
+    target: Folder,
+    target_parent: Folder,
+    *,
+    eval_time_utc: datetime.datetime | None = None,
+) -> DirectorySubtreeOpRootCheck:
+    """Authorize RESTORE on target directory (+ CREATE_DIRECTORY on dest) and capture state."""
+    if (
+        _check_step1_invariants(target, AtomicOp.RESTORE) is not None
+        or target_parent.status != EntityStatus.OK
+    ):
+        return DirectorySubtreeOpRootCheck(allowed=False)
+
+    if has_bypass_dacl(user):
+        dest_ancestors = frozenset(
+            _fetch_ancestor_node_rows(session, [target_parent.id]).keys()
+        )
+        return DirectorySubtreeOpRootCheck(
+            allowed=True,
+            bypass_dacl=True,
+            dest_ancestor_ids=dest_ancestors,
+        )
+
+    reparenting = (target.parent_id or ROOT_DIRECTORY_ID) != target_parent.id
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    paths = load_ancestor_paths_for_nodes(
+        session,
+        [target, target_parent],
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    subject = user_to_subject(user)
+    check_traverse = should_check_ancestor_traverse(session, user)
+    decision = evaluate_restore(
+        subject,
+        paths[target.id],
+        paths[target_parent.id],
+        reparenting=reparenting,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+        collect_traces=False,
+    )
+    if not decision.allowed:
+        return DirectorySubtreeOpRootCheck(allowed=False)
+
+    target_masks = evaluate_path_masks(
+        subject,
+        paths[target.id],
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
+    return DirectorySubtreeOpRootCheck(
+        allowed=True,
+        target_inherited=target_masks.target_inherited,
+        dest_ancestor_ids=frozenset(node.node_id for node in paths[target_parent.id]),
+        eval_time_utc=now,
+    )
+
+
+def _authorize_deleted_subtree_descendants(
+    session: OrmSession,
+    user: User,
+    target_id: str,
+    descendant_rows: Sequence[_SubtreeNodeLike],
+    root_check: DirectorySubtreeOpRootCheck,
+    *,
+    evaluate_fn: Callable[
+        [
+            Subject | None,
+            str,
+            InheritedDaclState,
+            Sequence[SubtreeNode],
+            datetime.datetime | None,
+        ],
+        EvalDecision,
+    ],
+    op_name: str,
+) -> EvalDecision:
+    if not root_check.allowed:
+        return EvalDecision(
+            allowed=False,
+            reason=f"{op_name} on target failed.",
+            step=f"5_composite_{op_name.lower()}_target",
+        )
+    non_deleted = [
+        row for row in descendant_rows if int(row.status) != EntityStatus.DELETED.value
+    ]
+    if non_deleted:
+        first = non_deleted[0]
+        return EvalDecision(
+            allowed=False,
+            reason=(
+                f"{op_name} is not applicable to non-deleted descendant "
+                f"'{first.name}' ({first.id})."
+            ),
+            step="1_lifecycle_and_type",
+        )
+    if root_check.bypass_dacl or not descendant_rows:
+        return EvalDecision(
+            allowed=True,
+            reason=f"Subtree {op_name.lower()} authorized.",
+            step="5_composite_allowed",
+        )
+
+    now = root_check.eval_time_utc or datetime.datetime.now(datetime.UTC)
+    preloaded_inherit = {row.id: bool(row.inherit) for row in descendant_rows}
+    policies = load_node_policies(
+        session,
+        list(preloaded_inherit.keys()),
+        include_deleted=True,
+        preloaded_inherit=preloaded_inherit,
+        exclude_expired_before=now,
+        canonicalize=False,
+    )
+    subtree_nodes = _build_subtree_nodes(descendant_rows, target_id, policies)
+    return evaluate_fn(
+        user_to_subject(user),
+        target_id,
+        root_check.target_inherited,
+        subtree_nodes,
+        now,
+    )
+
+
+def authorize_purge_descendants(
+    session: OrmSession,
+    user: User,
+    target_id: str,
+    descendant_rows: Sequence[_SubtreeNodeLike],
+    root_check: DirectorySubtreeOpRootCheck,
+) -> EvalDecision:
+    """Load only descendant DACLs and verify PURGE + deleted state in O(N * R)."""
+    return _authorize_deleted_subtree_descendants(
+        session,
+        user,
+        target_id,
+        descendant_rows,
+        root_check,
+        evaluate_fn=evaluate_purge_subtree,
+        op_name="PURGE",
+    )
+
+
+def authorize_restore_descendants(
+    session: OrmSession,
+    user: User,
+    target_id: str,
+    descendant_rows: Sequence[_SubtreeNodeLike],
+    root_check: DirectorySubtreeOpRootCheck,
+) -> EvalDecision:
+    """Load only descendant DACLs and verify RESTORE + deleted state in O(N * R)."""
+    return _authorize_deleted_subtree_descendants(
+        session,
+        user,
+        target_id,
+        descendant_rows,
+        root_check,
+        evaluate_fn=evaluate_restore_subtree,
+        op_name="RESTORE",
     )
 
 

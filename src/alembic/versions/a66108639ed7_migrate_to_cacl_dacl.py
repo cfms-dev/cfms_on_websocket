@@ -9,6 +9,7 @@ Create Date: 2026-11-24 16:20:40.698440
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from graphlib import TopologicalSorter
 
 import sqlalchemy as sa
 from alembic import op
@@ -55,15 +56,28 @@ _PRESET_READ_MASK = 1043  # TRAVERSE | LIST_DIRECTORY | READ_CONTENT | READ_META
 _DEFAULT_SYSOP_ALL_OPS_MASK = 2097151  # All 21 CEP-0002 v1 AtomicOps (bits 0..20)
 
 
-def _data_tables():
+@dataclass(frozen=True, slots=True)
+class _MigrationTables:
+    nodes: sa.TableClause
+    dacl_rules: sa.Table
+    dacl_rule_clauses: sa.Table
+    dacl_rule_atoms: sa.Table
+    user_groups: sa.TableClause
+    group_permissions: sa.Table
+    user_permissions: sa.TableClause
+    options: sa.TableClause
+    system_states: sa.TableClause
+
+
+def _data_tables() -> _MigrationTables:
     metadata = sa.MetaData()
-    return (
-        sa.table(
+    return _MigrationTables(
+        nodes=sa.table(
             "nodes",
             sa.column("id", sa.String()),
             sa.column("inherit", sa.Boolean()),
         ),
-        sa.Table(
+        dacl_rules=sa.Table(
             "dacl_rules",
             metadata,
             sa.Column(
@@ -80,7 +94,7 @@ def _data_tables():
             sa.Column("valid_until", sa.BigInteger()),
             sa.Column("remark", sa.Text()),
         ),
-        sa.Table(
+        dacl_rule_clauses=sa.Table(
             "dacl_rule_clauses",
             metadata,
             sa.Column(
@@ -91,7 +105,7 @@ def _data_tables():
             ),
             sa.Column("rule_id", sa.BigInteger()),
         ),
-        sa.Table(
+        dacl_rule_atoms=sa.Table(
             "dacl_rule_atoms",
             metadata,
             sa.Column(
@@ -105,8 +119,8 @@ def _data_tables():
             sa.Column("predicate_value", sa.String()),
             sa.Column("is_negated", sa.Boolean()),
         ),
-        sa.table("user_groups", sa.column("group_name", sa.String())),
-        sa.Table(
+        user_groups=sa.table("user_groups", sa.column("group_name", sa.String())),
+        group_permissions=sa.Table(
             "group_permissions",
             metadata,
             sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -116,13 +130,15 @@ def _data_tables():
             sa.Column("start_time", sa.Double()),
             sa.Column("end_time", sa.Double()),
         ),
-        sa.table("user_permissions", sa.column("permission", sa.String())),
-        sa.table(
+        user_permissions=sa.table(
+            "user_permissions", sa.column("permission", sa.String())
+        ),
+        options=sa.table(
             "options",
             sa.column("namespace", sa.String()),
             sa.column("option_key", sa.String()),
         ),
-        sa.table(
+        system_states=sa.table(
             "system_states",
             sa.column("owner", sa.String()),
             sa.column("state_key", sa.String()),
@@ -134,14 +150,14 @@ def _data_tables():
     )
 
 
-def _seed_default_root_dacl(connection: sa.Connection) -> None:
-    (
-        nodes,
-        dacl_rules,
-        dacl_rule_clauses,
-        dacl_rule_atoms,
-        *_rest,
-    ) = _data_tables()
+def _seed_default_root_dacl(
+    connection: sa.Connection,
+    tables: _MigrationTables,
+) -> None:
+    nodes = tables.nodes
+    dacl_rules = tables.dacl_rules
+    dacl_rule_clauses = tables.dacl_rule_clauses
+    dacl_rule_atoms = tables.dacl_rule_atoms
     root_exists = connection.execute(
         sa.select(nodes.c.id).where(nodes.c.id == _ROOT_DIRECTORY_ID)
     ).first()
@@ -251,23 +267,45 @@ def _detach_sqlite_node_dependents(
                 sa.text("UPDATE document_revisions SET parent_revision_id = NULL")
             )
 
-    detached_fks: list[tuple[str, list[dict]]] = []
-    child_detach_plan = (
-        ("document_metadata_tags", {"document_metadata"}),
-        ("document_metadata", {"documents"}),
-        ("document_revisions", {"documents"}),
-        ("documents", {"nodes"}),
-    )
-    for table_name, referred_targets in child_detach_plan:
-        if table_name not in existing_tables:
-            continue
-        fks_to_drop = [
+    foreign_keys = {
+        name: inspector.get_foreign_keys(name) for name in existing_tables
+    }
+    affected = {"nodes", "folders"} & existing_tables
+    while additional := {
+        name
+        for name, keys in foreign_keys.items()
+        if name not in affected
+        and any(key["referred_table"] in affected for key in keys)
+    }:
+        affected.update(additional)
+
+    references: dict[str, list[dict]] = {}
+    for name in affected - {"nodes", "folders"}:
+        relevant_fks = [
             fk
-            for fk in inspector.get_foreign_keys(table_name)
-            if fk["referred_table"] in referred_targets
+            for fk in foreign_keys[name]
+            if fk["referred_table"] in affected
+            and fk["referred_table"] != name
+            and not (
+                name == "documents"
+                and fk["referred_table"] == "document_revisions"
+            )
         ]
-        if not fks_to_drop:
-            continue
+        if relevant_fks:
+            references[name] = relevant_fks
+
+    order = tuple(
+        TopologicalSorter(
+            {
+                name: {fk["referred_table"] for fk in keys} - {"nodes", "folders"}
+                for name, keys in references.items()
+            }
+        ).static_order()
+    )
+
+    detached_fks: list[tuple[str, list[dict]]] = []
+    for table_name in reversed(order):
+        fks_to_drop = references[table_name]
         detached_fks.append((table_name, fks_to_drop))
         with op.batch_alter_table(
             table_name, naming_convention=_SQLITE_FK_NAMING
@@ -326,31 +364,38 @@ def _reinsert_sqlite_nodes_and_folders(
         "INSERT INTO folders (id, created_time) VALUES (:id, :created_time)"
     )
     folders_by_id = {row["id"]: row for row in saved_folders}
-    folder_nodes = [row for row in saved_nodes if row["id"] in folders_by_id]
-    other_nodes = [row for row in saved_nodes if row["id"] not in folders_by_id]
+    folder_nodes: dict[str, dict] = {}
+    other_nodes: list[dict] = []
+    for row in saved_nodes:
+        if row["id"] in folders_by_id:
+            folder_nodes[row["id"]] = row
+        else:
+            other_nodes.append(row)
 
-    inserted_folders: set[str] = set()
-    remaining_folders = list(folder_nodes)
-    while remaining_folders:
-        ready = [
-            row
-            for row in remaining_folders
-            if row["parent_id"] is None or row["parent_id"] in inserted_folders
-        ]
-        if not ready:
-            raise RuntimeError(
-                "Unable to restore folder hierarchy during nodes migration: cycle detected"
-            )
-        for row in ready:
-            connection.execute(insert_node_sql, row)
-            connection.execute(insert_folder_sql, folders_by_id[row["id"]])
-            inserted_folders.add(row["id"])
-        remaining_folders = [
-            row for row in remaining_folders if row["id"] not in inserted_folders
-        ]
+    children_by_parent: dict[str | None, list[dict]] = {}
+    for row in folder_nodes.values():
+        children_by_parent.setdefault(row["parent_id"], []).append(row)
 
-    for row in other_nodes:
-        connection.execute(insert_node_sql, row)
+    level = children_by_parent.get(None, [])
+    inserted_count = 0
+    while level:
+        connection.execute(insert_node_sql, level)
+        connection.execute(
+            insert_folder_sql, [folders_by_id[row["id"]] for row in level]
+        )
+        inserted_count += len(level)
+        next_level: list[dict] = []
+        for row in level:
+            next_level.extend(children_by_parent.get(row["id"], ()))
+        level = next_level
+
+    if inserted_count != len(folder_nodes):
+        raise RuntimeError(
+            "Unable to restore folder hierarchy during nodes migration: cycle detected"
+        )
+
+    if other_nodes:
+        connection.execute(insert_node_sql, other_nodes)
 
 
 def _restore_sqlite_node_dependents(
@@ -388,21 +433,27 @@ def _restore_sqlite_node_dependents(
                     **fk["options"],
                 )
 
-    for rev_id, parent_rev_id in snapshot.saved_parent_revisions:
+    if snapshot.saved_parent_revisions:
         connection.execute(
             sa.text(
                 "UPDATE document_revisions SET parent_revision_id = :parent_rev_id "
                 "WHERE id = :rev_id"
             ),
-            {"rev_id": rev_id, "parent_rev_id": parent_rev_id},
+            [
+                {"rev_id": rev_id, "parent_rev_id": parent_rev_id}
+                for rev_id, parent_rev_id in snapshot.saved_parent_revisions
+            ],
         )
 
-    for doc_id, rev_id in snapshot.saved_current_revisions:
+    if snapshot.saved_current_revisions:
         connection.execute(
             sa.text(
                 "UPDATE documents SET current_revision_id = :rev_id WHERE id = :doc_id"
             ),
-            {"doc_id": doc_id, "rev_id": rev_id},
+            [
+                {"doc_id": doc_id, "rev_id": rev_id}
+                for doc_id, rev_id in snapshot.saved_current_revisions
+            ],
         )
 
 
@@ -461,6 +512,7 @@ def _alter_nodes_access_rule_set_column(*, drop: bool) -> None:
 def upgrade() -> None:
     """Upgrade schema to CEP-0002 CACL DACL tables and drop legacy access/block tables."""
     connection = op.get_bind()
+    tables = _data_tables()
     connection.execute(sa.text("UPDATE nodes SET access_rule_set_id = NULL"))
     connection.execute(sa.text("DELETE FROM compiled_access_rule_sets"))
 
@@ -499,20 +551,18 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_dacl_rules")),
     )
-    with op.batch_alter_table("dacl_rules", schema=None) as batch_op:
-        batch_op.create_index(
-            "ix_dacl_rules_node_effect_scope",
-            ["node_id", "effect", "scope"],
-            unique=False,
-        )
-        batch_op.create_index(
-            batch_op.f("ix_dacl_rules_node_id"), ["node_id"], unique=False
-        )
-        batch_op.create_index(
-            "ix_dacl_rules_validity",
-            ["node_id", "valid_from", "valid_until"],
-            unique=False,
-        )
+    op.create_index(
+        "ix_dacl_rules_node_effect_scope",
+        "dacl_rules",
+        ["node_id", "effect", "scope"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_dacl_rules_validity",
+        "dacl_rules",
+        ["node_id", "valid_from", "valid_until"],
+        unique=False,
+    )
 
     op.create_table(
         "dacl_rule_clauses",
@@ -535,10 +585,12 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_dacl_rule_clauses")),
     )
-    with op.batch_alter_table("dacl_rule_clauses", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_dacl_rule_clauses_rule_id"), ["rule_id"], unique=False
-        )
+    op.create_index(
+        op.f("ix_dacl_rule_clauses_rule_id"),
+        "dacl_rule_clauses",
+        ["rule_id"],
+        unique=False,
+    )
 
     op.create_table(
         "dacl_rule_atoms",
@@ -568,15 +620,18 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_dacl_rule_atoms")),
     )
-    with op.batch_alter_table("dacl_rule_atoms", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_dacl_rule_atoms_clause_id"), ["clause_id"], unique=False
-        )
-        batch_op.create_index(
-            "ix_dacl_rule_atoms_principal",
-            ["predicate_kind", "predicate_value"],
-            unique=False,
-        )
+    op.create_index(
+        op.f("ix_dacl_rule_atoms_clause_id"),
+        "dacl_rule_atoms",
+        ["clause_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_dacl_rule_atoms_principal",
+        "dacl_rule_atoms",
+        ["predicate_kind", "predicate_value"],
+        unique=False,
+    )
 
     op.drop_table("compiled_access_rule_rights")
     op.drop_table("compiled_access_rule_memberships")
@@ -587,58 +642,48 @@ def upgrade() -> None:
     op.drop_table("userblock_entries")
     op.drop_table("object_access_entries")
 
-    connection = op.get_bind()
-    _seed_default_root_dacl(connection)
-
-    (
-        _nodes,
-        _dacl_rules,
-        _dacl_rule_clauses,
-        _dacl_rule_atoms,
-        user_groups,
-        group_permissions,
-        user_permissions,
-        options,
-        system_states,
-    ) = _data_tables()
+    _seed_default_root_dacl(connection, tables)
 
     # Remove obsolete recursive-check option row so startup option loading stays clean.
     connection.execute(
-        options.delete().where(
-            options.c.namespace == "access",
-            options.c.option_key == "enable_access_recursive_check",
+        tables.options.delete().where(
+            tables.options.c.namespace == "access",
+            tables.options.c.option_key == "enable_access_recursive_check",
         )
     )
 
     # Remove deleted core permissions from existing permission tables.
     connection.execute(
-        group_permissions.delete().where(
-            group_permissions.c.permission.in_(_REMOVED_PERMISSIONS)
+        tables.group_permissions.delete().where(
+            tables.group_permissions.c.permission.in_(_REMOVED_PERMISSIONS)
         )
     )
     connection.execute(
-        user_permissions.delete().where(
-            user_permissions.c.permission.in_(_REMOVED_PERMISSIONS)
+        tables.user_permissions.delete().where(
+            tables.user_permissions.c.permission.in_(_REMOVED_PERMISSIONS)
         )
     )
 
     # Grant new CEP-0002 global capability permissions to sysop if present.
     sysop_exists = connection.execute(
-        sa.select(user_groups.c.group_name).where(user_groups.c.group_name == "sysop")
+        sa.select(tables.user_groups.c.group_name).where(
+            tables.user_groups.c.group_name == "sysop"
+        )
     ).first()
     if sysop_exists:
         for permission in _ADDED_SYSOP_PERMISSIONS:
             grant_exists = connection.execute(
-                sa.select(group_permissions.c.permission).where(
-                    group_permissions.c.group_name == "sysop",
-                    group_permissions.c.permission == permission,
-                    group_permissions.c.granted == sa.true(),
+                sa.select(tables.group_permissions.c.permission).where(
+                    tables.group_permissions.c.group_name == "sysop",
+                    tables.group_permissions.c.permission == permission,
+                    tables.group_permissions.c.granted == sa.true(),
+                    tables.group_permissions.c.end_time.is_(None),
                 )
             ).first()
             if grant_exists:
                 continue
             inserted_grant = connection.execute(
-                group_permissions.insert().values(
+                tables.group_permissions.insert().values(
                     group_name="sysop",
                     permission=permission,
                     granted=True,
@@ -647,7 +692,7 @@ def upgrade() -> None:
                 )
             )
             connection.execute(
-                system_states.insert().values(
+                tables.system_states.insert().values(
                     owner=_MIGRATION_OWNER,
                     state_key=permission,
                     schema_version=2,
@@ -661,25 +706,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema back to legacy access-rule and user-block tables."""
+    """Downgrade schema back to legacy access-rule and user-block tables.
+
+    Note: legacy access-rule/user-block rows and the 24 pruned permission grants
+    removed by ``upgrade()`` cannot be recovered automatically; restore a database
+    backup for full data rollback.
+    """
     connection = op.get_bind()
-    (
-        _nodes,
-        _dacl_rules,
-        _dacl_rule_clauses,
-        _dacl_rule_atoms,
-        _user_groups,
-        group_permissions,
-        _user_permissions,
-        options,
-        system_states,
-    ) = _data_tables()
+    tables = _data_tables()
 
     for permission in _ADDED_SYSOP_PERMISSIONS:
         marker = connection.execute(
-            sa.select(system_states.c.payload).where(
-                system_states.c.owner == _MIGRATION_OWNER,
-                system_states.c.state_key == permission,
+            sa.select(tables.system_states.c.payload).where(
+                tables.system_states.c.owner == _MIGRATION_OWNER,
+                tables.system_states.c.state_key == permission,
             )
         ).first()
         if marker is None:
@@ -687,21 +727,21 @@ def downgrade() -> None:
         group_permission_id = marker.payload.get("group_permission_id")
         if group_permission_id is not None:
             connection.execute(
-                group_permissions.delete().where(
-                    group_permissions.c.id == group_permission_id
+                tables.group_permissions.delete().where(
+                    tables.group_permissions.c.id == group_permission_id
                 )
             )
         connection.execute(
-            system_states.delete().where(
-                system_states.c.owner == _MIGRATION_OWNER,
-                system_states.c.state_key == permission,
+            tables.system_states.delete().where(
+                tables.system_states.c.owner == _MIGRATION_OWNER,
+                tables.system_states.c.state_key == permission,
             )
         )
 
     connection.execute(
-        options.delete().where(
-            options.c.namespace == "access",
-            options.c.option_key == "bypass_traverse_checking",
+        tables.options.delete().where(
+            tables.options.c.namespace == "access",
+            tables.options.c.option_key == "bypass_traverse_checking",
         )
     )
 
@@ -717,17 +757,18 @@ def downgrade() -> None:
         sa.Column("end_time", sa.Double(), nullable=True),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_object_access_entries")),
     )
-    with op.batch_alter_table("object_access_entries", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_object_access_entries_target_identifier"),
-            ["target_identifier"],
-            unique=False,
-        )
-        batch_op.create_index(
-            batch_op.f("ix_object_access_entries_entity_identifier"),
-            ["entity_identifier"],
-            unique=False,
-        )
+    op.create_index(
+        op.f("ix_object_access_entries_target_identifier"),
+        "object_access_entries",
+        ["target_identifier"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_object_access_entries_entity_identifier"),
+        "object_access_entries",
+        ["entity_identifier"],
+        unique=False,
+    )
 
     op.create_table(
         "userblock_entries",
@@ -784,12 +825,12 @@ def downgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_compiled_access_rule_sets")),
     )
-    with op.batch_alter_table("compiled_access_rule_sets", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rule_sets_node_id"),
-            ["node_id"],
-            unique=False,
-        )
+    op.create_index(
+        op.f("ix_compiled_access_rule_sets_node_id"),
+        "compiled_access_rule_sets",
+        ["node_id"],
+        unique=False,
+    )
 
     op.create_table(
         "compiled_access_rules",
@@ -805,17 +846,18 @@ def downgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_compiled_access_rules")),
     )
-    with op.batch_alter_table("compiled_access_rules", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rules_rule_set_id"),
-            ["rule_set_id"],
-            unique=False,
-        )
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rules_access_type"),
-            ["access_type"],
-            unique=False,
-        )
+    op.create_index(
+        op.f("ix_compiled_access_rules_rule_set_id"),
+        "compiled_access_rules",
+        ["rule_set_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_compiled_access_rules_access_type"),
+        "compiled_access_rules",
+        ["access_type"],
+        unique=False,
+    )
 
     op.create_table(
         "compiled_access_rule_groups",
@@ -835,12 +877,12 @@ def downgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_compiled_access_rule_groups")),
     )
-    with op.batch_alter_table("compiled_access_rule_groups", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rule_groups_rule_id"),
-            ["rule_id"],
-            unique=False,
-        )
+    op.create_index(
+        op.f("ix_compiled_access_rule_groups_rule_id"),
+        "compiled_access_rule_groups",
+        ["rule_id"],
+        unique=False,
+    )
 
     op.create_table(
         "compiled_access_rule_memberships",
@@ -857,19 +899,18 @@ def downgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_compiled_access_rule_memberships")),
     )
-    with op.batch_alter_table(
-        "compiled_access_rule_memberships", schema=None
-    ) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rule_memberships_group_name"),
-            ["group_name"],
-            unique=False,
-        )
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rule_memberships_group_id"),
-            ["group_id"],
-            unique=False,
-        )
+    op.create_index(
+        op.f("ix_compiled_access_rule_memberships_group_name"),
+        "compiled_access_rule_memberships",
+        ["group_name"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_compiled_access_rule_memberships_group_id"),
+        "compiled_access_rule_memberships",
+        ["group_id"],
+        unique=False,
+    )
 
     op.create_table(
         "compiled_access_rule_rights",
@@ -886,17 +927,18 @@ def downgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_compiled_access_rule_rights")),
     )
-    with op.batch_alter_table("compiled_access_rule_rights", schema=None) as batch_op:
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rule_rights_permission"),
-            ["permission"],
-            unique=False,
-        )
-        batch_op.create_index(
-            batch_op.f("ix_compiled_access_rule_rights_group_id"),
-            ["group_id"],
-            unique=False,
-        )
+    op.create_index(
+        op.f("ix_compiled_access_rule_rights_permission"),
+        "compiled_access_rule_rights",
+        ["permission"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_compiled_access_rule_rights_group_id"),
+        "compiled_access_rule_rights",
+        ["group_id"],
+        unique=False,
+    )
 
     op.drop_table("dacl_rule_atoms")
     op.drop_table("dacl_rule_clauses")

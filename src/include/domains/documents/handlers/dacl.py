@@ -6,6 +6,7 @@ __all__ = [
     "prepare_initial_node_dacl",
 ]
 
+import datetime
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -81,6 +82,34 @@ def handle_get_node_dacl[NodeT: (Folder, Document)](
     return Result(code=0, target=target_id, user_id=handler.user_id)
 
 
+def _compile_dacl_for_node(
+    session: OrmSession,
+    dacl_source: str,
+    *,
+    target_type: ObjectType,
+    eval_time_utc: datetime.datetime | None,
+) -> tuple[
+    CompiledPolicy | None,
+    list[dict[str, Any]],
+    tuple[int, dict[str, Any], str] | None,
+]:
+    compiled = compile_policy_source(
+        session,
+        dacl_source,
+        target_type=target_type,
+        strict_principals=False,
+        now_utc=eval_time_utc,
+    )
+    serialized_diags = [d.to_dict() for d in compiled.diagnostics]
+    if not compiled.ok or compiled.policy is None:
+        return (
+            None,
+            serialized_diags,
+            (400, {"diagnostics": serialized_diags}, "Invalid CACL policy"),
+        )
+    return compiled.policy, serialized_diags, None
+
+
 def handle_set_node_dacl[NodeT: (Folder, Document)](
     session: OrmSession,
     handler: ConnectionHandler,
@@ -108,26 +137,21 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
         handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
         return Result(code=403, target=target_id, user_id=handler.user_id)
 
-    compiled = compile_policy_source(
+    policy, serialized_diags, compile_error = _compile_dacl_for_node(
         session,
         dacl_source,
         target_type=spec.target_type,
-        strict_principals=False,
-        now_utc=write_check.eval_time_utc,
+        eval_time_utc=write_check.eval_time_utc,
     )
-    serialized_diags = [d.to_dict() for d in compiled.diagnostics]
-    if not compiled.ok or compiled.policy is None:
-        handler.conclude_request(
-            400,
-            {"diagnostics": serialized_diags},
-            "Invalid CACL policy",
-        )
+    if compile_error is not None or policy is None:
+        assert compile_error is not None
+        handler.conclude_request(*compile_error)
         return Result(code=400, target=target_id, user_id=handler.user_id)
 
     self_lockout_warning = simulate_dacl_save_lockout(
         user,
         write_check.current_path,
-        compiled.policy,
+        policy,
         check_ancestor_traverse=write_check.check_ancestor_traverse,
         eval_time_utc=write_check.eval_time_utc,
     )
@@ -142,7 +166,7 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
         )
         return Result(code=409, target=target_id, user_id=handler.user_id)
 
-    persist_node_policy(session, target, compiled.policy)
+    persist_node_policy(session, target, policy, already_locked=True)
     if spec.on_before_commit is not None:
         spec.on_before_commit(target, user)
     session.commit()
@@ -150,9 +174,9 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
     handler.conclude_request(
         200,
         {
-            "dacl": render_policy_text(compiled.policy),
-            "inherit": compiled.policy.inherit,
-            "fingerprint": compiled.policy.fingerprint(),
+            "dacl": render_policy_text(policy),
+            "inherit": policy.inherit,
+            "fingerprint": policy.fingerprint(),
             "diagnostics": serialized_diags,
             "self_lockout_warning": self_lockout_warning,
         },
@@ -178,20 +202,14 @@ def prepare_initial_node_dacl(
     if not create_check.can_write_dacl:
         return None, (403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
 
-    compiled = compile_policy_source(
+    policy, serialized_diags, compile_error = _compile_dacl_for_node(
         session,
         dacl_source,
         target_type=object_type,
-        strict_principals=False,
-        now_utc=create_check.eval_time_utc,
+        eval_time_utc=create_check.eval_time_utc,
     )
-    serialized_diags = [d.to_dict() for d in compiled.diagnostics]
-    if not compiled.ok or compiled.policy is None:
-        return None, (
-            400,
-            {"diagnostics": serialized_diags},
-            "Invalid CACL policy",
-        )
+    if compile_error is not None or policy is None:
+        return None, compile_error
 
     if not allow_self_lockout and would_self_lockout_on_create(
         session,
@@ -199,7 +217,7 @@ def prepare_initial_node_dacl(
         parent,
         object_type,
         name,
-        compiled.policy,
+        policy,
         create_check=create_check,
     ):
         return None, (
@@ -211,4 +229,4 @@ def prepare_initial_node_dacl(
             smsg.DACL_SELF_LOCKOUT,
         )
 
-    return compiled.policy, None
+    return policy, None

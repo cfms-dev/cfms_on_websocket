@@ -618,6 +618,8 @@ def persist_node_policy(
     session: OrmSession,
     target: Document | Folder,
     policy: CompiledPolicy,
+    *,
+    already_locked: bool = False,
 ) -> None:
     """Persist a CompiledPolicy onto target within the caller's active transaction."""
     if target.id is None:
@@ -625,16 +627,18 @@ def persist_node_policy(
     target_id = target.id
     assert target_id is not None
 
-    node_for_update = session.scalars(
-        select(Node)
-        .where(Node.id == target_id)
-        .with_for_update()
-        .execution_options(include_deleted=True, populate_existing=True)
-    ).one_or_none()
-    if node_for_update is None:
-        raise RuntimeError("Target node no longer exists while persisting DACL policy")
-
-    node_for_update.inherit = policy.inherit
+    if not already_locked:
+        node_for_update = session.scalars(
+            select(Node)
+            .where(Node.id == target_id)
+            .with_for_update()
+            .execution_options(include_deleted=True, populate_existing=True)
+        ).one_or_none()
+        if node_for_update is None:
+            raise RuntimeError(
+                "Target node no longer exists while persisting DACL policy"
+            )
+        node_for_update.inherit = policy.inherit
     target.inherit = policy.inherit
 
     delete_node_dacl_rules_for_targets(session, [target_id])

@@ -1,7 +1,8 @@
 __all__ = [
     "SubtreeNodeRow",
-    "fetch_subtree_for_purge",
     "fetch_subtree_ids_for_soft_delete",
+    "fetch_subtree_metadata_for_purge",
+    "fetch_subtree_metadata_for_restore",
     "fetch_subtree_metadata_for_soft_delete",
 ]
 
@@ -35,6 +36,7 @@ def _query_subtree_folders(
     root_folder_id: str,
     *,
     include_deleted: bool,
+    status_operation_id: str | None = None,
 ) -> dict[str, SubtreeNodeRow]:
     node_table = Node.__table__
     anchor = select(
@@ -56,8 +58,15 @@ def _query_subtree_folders(
         child_node.c.id != root_folder_id,
         subtree.c.depth <= MAX_HIERARCHY_DEPTH,
     ]
-    if not include_deleted:
-        recursive_filters.append(child_node.c.status == EntityStatus.OK.value)
+    if status_operation_id is not None:
+        recursive_filters.extend(
+            (
+                child_node.c.status == EntityStatus.DELETED.value,
+                child_node.c.status_operation_id == status_operation_id,
+            )
+        )
+    elif not include_deleted:
+        recursive_filters.append(child_node.c.status != EntityStatus.DELETED.value)
     subtree = subtree.union_all(
         select(
             child_node.c.id,
@@ -137,6 +146,7 @@ def _query_subtree_documents(
     folder_ids: list[str],
     *,
     include_deleted: bool,
+    status_operation_id: str | None = None,
 ) -> list[SubtreeNodeRow]:
     node_table = Node.__table__
     documents: list[SubtreeNodeRow] = []
@@ -152,8 +162,13 @@ def _query_subtree_documents(
             node_table.c.parent_id.in_(list(chunk)),
             node_table.c.type == NodeType.DOCUMENT.value,
         )
-        if not include_deleted:
-            doc_stmt = doc_stmt.where(node_table.c.status == EntityStatus.OK.value)
+        if status_operation_id is not None:
+            doc_stmt = doc_stmt.where(
+                node_table.c.status == EntityStatus.DELETED.value,
+                node_table.c.status_operation_id == status_operation_id,
+            )
+        elif not include_deleted:
+            doc_stmt = doc_stmt.where(node_table.c.status != EntityStatus.DELETED.value)
         for nid, name, parent_id, node_type, status, inherit_flag in session.execute(
             doc_stmt
         ).all():
@@ -175,9 +190,13 @@ def _fetch_subtree_rows(
     root_folder_id: str,
     *,
     include_deleted: bool,
+    status_operation_id: str | None = None,
 ) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
     folder_by_id = _query_subtree_folders(
-        session, root_folder_id, include_deleted=include_deleted
+        session,
+        root_folder_id,
+        include_deleted=include_deleted,
+        status_operation_id=status_operation_id,
     )
     if not folder_by_id:
         return [], []
@@ -185,7 +204,10 @@ def _fetch_subtree_rows(
         folder_by_id, root_folder_id
     )
     documents = _query_subtree_documents(
-        session, list(folder_by_id.keys()), include_deleted=include_deleted
+        session,
+        list(folder_by_id.keys()),
+        include_deleted=include_deleted,
+        status_operation_id=status_operation_id,
     )
     return ordered_descendant_folders, documents
 
@@ -209,12 +231,25 @@ def fetch_subtree_ids_for_soft_delete(
     return [f.id for f in folders], [d.id for d in documents]
 
 
-def fetch_subtree_for_purge(
+def fetch_subtree_metadata_for_purge(
     session: Session,
     root_folder_id: str,
-) -> tuple[list[str], list[str]]:
-    """Return all descendant folder IDs (deepest first) and document IDs for cascading purge."""
-    folders, documents = _fetch_subtree_rows(
-        session, root_folder_id, include_deleted=True
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    """Return lightweight metadata for all descendant folders (deepest first) and documents for cascading purge."""
+    return _fetch_subtree_rows(session, root_folder_id, include_deleted=True)
+
+
+def fetch_subtree_metadata_for_restore(
+    session: Session,
+    root_folder_id: str,
+    status_operation_id: str,
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    """Return lightweight metadata for soft-deleted descendants matching status_operation_id."""
+    if not status_operation_id:
+        return [], []
+    return _fetch_subtree_rows(
+        session,
+        root_folder_id,
+        include_deleted=True,
+        status_operation_id=status_operation_id,
     )
-    return [f.id for f in folders], [d.id for d in documents]

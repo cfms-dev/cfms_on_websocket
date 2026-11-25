@@ -256,10 +256,6 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
     def handle(self, handler, request):
         document_id = request.document_id
 
-        if not document_id:
-            handler.conclude_request(400, {}, smsg.DOCUMENT_ID_REQUIRED)
-            return
-
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
             document = session.get(Document, document_id)
@@ -1011,30 +1007,29 @@ class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
 
             if Permissions.PURGE not in user.all_permissions:
                 handler.conclude_permission_denial()
-                return
+                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
             document = session.get(
                 Document, doc_id, execution_options={"include_deleted": True}
             )
             if document is None:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return
+                return Result(code=404, target=doc_id, user_id=handler.user_id)
 
             if document.status != EntityStatus.DELETED:
                 handler.conclude_request(
                     400, {}, "Document must be marked as deleted before purging"
                 )
-                return
+                return Result(code=400, target=doc_id, user_id=handler.user_id)
 
             if not authorize_node_operation(
                 session, user, document, AtomicOp.PURGE
             ).allowed:
                 handler.conclude_access_denial()
-                return
+                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
             delete_node_dacl_rules_for_targets(session, [doc_id])
             delete_all_document_revisions(session, document)
-            mark_document_modified(document, user.id)
             session.delete(document)
             session.commit()
 
