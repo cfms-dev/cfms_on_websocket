@@ -42,7 +42,7 @@ def test_setting_permission_migration_preserves_independent_grants(
             )
         connection.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "e952c02c1454")
         grants = connection.execute(select(permissions.c.permission)).scalars().all()
         assert sorted(grants) == ["manage_settings", "view_settings"]
         markers = (
@@ -104,7 +104,7 @@ def test_setting_permission_migration_without_sysop_is_reversible(
     with engine.connect() as connection:
         config.attributes["connection"] = connection
         command.stamp(config, "16c86712512a")
-        command.upgrade(config, "head")
+        command.upgrade(config, "e952c02c1454")
         command.downgrade(config, "16c86712512a")
         assert (
             connection.execute(select(Base.metadata.tables["group_permissions"])).all()

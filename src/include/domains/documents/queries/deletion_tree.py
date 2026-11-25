@@ -1,326 +1,255 @@
-import time
+__all__ = [
+    "SubtreeNodeRow",
+    "fetch_subtree_ids_for_soft_delete",
+    "fetch_subtree_metadata_for_purge",
+    "fetch_subtree_metadata_for_restore",
+    "fetch_subtree_metadata_for_soft_delete",
+]
+
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from itertools import batched
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import literal, select
+from sqlalchemy.orm import Session
 
-from include.config.constants import QUERY_CHUNK_SIZE
-from include.database.models.access import ObjectAccessEntry
+from include.config.constants import MAX_HIERARCHY_DEPTH, QUERY_CHUNK_SIZE
 from include.database.models.documents import (
-    Document,
-    DocumentRevision,
     EntityStatus,
-    Folder,
+    Node,
+    NodeType,
 )
-from include.domains.access.authorization.compiled_rules import (
-    fetch_compiled_access_rules_for_targets,
-)
-from include.domains.access.authorization.evaluation import check_access_for_object
-from include.domains.access.authorization.grants import prefetch_user_blocks
-lazy from include.database.models.identity import User
 
 
-def fetch_subtree_for_deletion(
+@dataclass(frozen=True, slots=True)
+class SubtreeNodeRow:
+    id: str
+    name: str
+    parent_id: str | None
+    type: str
+    status: int
+    inherit: bool
+
+
+def _query_subtree_folders(
     session: Session,
     root_folder_id: str,
-    user: User,
-    now: float | None = None,
-    include_deleted: bool = False,
-) -> tuple[
-    list[str],  # deletable_folder_ids: ordered
-    set[str],  # deletable_doc_ids
-    list[dict],  # failed_items
-    set[str],  # protected_folder_ids
-    dict[str, Folder],  # folder_map
-]:
-    """
-    Analyze whether the subtree under root_folder_id can be deleted.
-
-    Returns:
-        deletable_folder_ids: Folder IDs that can be deleted, ordered deepest first.
-        deletable_doc_ids: Document IDs that can be deleted.
-        failed_items: Permission-failed items for client responses.
-        protected_folder_ids: Folder IDs kept because of undeletable descendants.
-        folder_map: Mapping from folder ID to Folder ORM object.
-    """
-    if now is None:
-        now = time.time()
-
-    # Step 1: Fetch all folder IDs in the subtree with a recursive CTE.
-    exec_opts = {"include_deleted": True} if include_deleted else {}
-    status_filter = "" if include_deleted else f"AND n.status = {EntityStatus.OK.value}"
-
-    subtree_sql = text(f"""
-        WITH RECURSIVE subtree(id, parent_id, status) AS (
-            SELECT f.id, n.parent_id, n.status
-            FROM folders f
-            INNER JOIN nodes n ON n.id = f.id
-            WHERE f.id = :root_id
-
-            UNION ALL
-
-            SELECT f.id, n.parent_id, n.status
-            FROM folders f
-            INNER JOIN nodes n ON n.id = f.id
-            INNER JOIN subtree s ON n.parent_id = s.id
-            WHERE 1=1 {status_filter}
-        )
-        SELECT id FROM subtree WHERE id != :root_id
-        """)
-    # The caller has already checked whether root_id itself can be deleted.
-    # This function analyzes only its contents. Remove WHERE id != :root_id to
-    # include the root itself.
-
-    all_subfolder_ids = [
-        row[0]
-        for row in session.execute(subtree_sql, {"root_id": root_folder_id}).fetchall()
+    *,
+    include_deleted: bool,
+    status_operation_id: str | None = None,
+) -> dict[str, SubtreeNodeRow]:
+    node_table = Node.__table__
+    anchor = select(
+        node_table.c.id.label("id"),
+        node_table.c.name.label("name"),
+        node_table.c.parent_id.label("parent_id"),
+        node_table.c.type.label("type"),
+        node_table.c.status.label("status"),
+        node_table.c.inherit.label("inherit"),
+        literal(0).label("depth"),
+    ).where(
+        node_table.c.id == root_folder_id,
+        node_table.c.type == NodeType.DIRECTORY.value,
+    )
+    subtree = anchor.cte("deletion_subtree", recursive=True)
+    child_node = node_table.alias("deletion_child_node")
+    recursive_filters = [
+        child_node.c.type == NodeType.DIRECTORY.value,
+        child_node.c.id != root_folder_id,
+        subtree.c.depth <= MAX_HIERARCHY_DEPTH,
     ]
-
-    # Also load the root itself for the later BFS derivation.
-    all_folder_ids_to_load = list(set(all_subfolder_ids + [root_folder_id]))
-
-    # Step 2: Load all folders in bulk.
-    # Chunked to avoid SQLite bind-variable limit for large subtrees.
-    folders: list[Folder] = []
-    for chunk in batched(all_folder_ids_to_load, QUERY_CHUNK_SIZE):
-        folders.extend(
-            session.query(Folder)
-            .execution_options(**exec_opts)
-            .filter(Folder.id.in_(list(chunk)))
-            .all()
-        )
-    folder_map: dict[str, Folder] = {f.id: f for f in folders}
-    actual_folder_ids = list(folder_map.keys())
-    actual_folder_id_set = set(actual_folder_ids)
-
-    # Step 3: Load all subtree documents, including revisions and files.
-    # Chunked to avoid SQLite bind-variable limit for large subtrees.
-    documents: list[Document] = []
-    for chunk in batched(actual_folder_ids, QUERY_CHUNK_SIZE):
-        documents.extend(
-            session.query(Document)
-            .options(
-                joinedload(Document.current_revision).joinedload(DocumentRevision.file),
+    if status_operation_id is not None:
+        recursive_filters.extend(
+            (
+                child_node.c.status == EntityStatus.DELETED.value,
+                child_node.c.status_operation_id == status_operation_id,
             )
-            .execution_options(**exec_opts)
-            .filter(Document.folder_id.in_(list(chunk)))
-            .all()
         )
-
-    # Step 4: Prefetch OAE rows in bulk.
-    # Chunked to avoid bind-variable limit for large subtrees.
-    all_target_ids = actual_folder_ids + [doc.id for doc in documents]
-    oae_entries: list[ObjectAccessEntry] = []
-    for chunk in batched(all_target_ids, QUERY_CHUNK_SIZE):
-        oae_entries.extend(
-            session.query(ObjectAccessEntry)
-            .execution_options(**exec_opts)
-            .filter(
-                ObjectAccessEntry.target_identifier.in_(list(chunk)),
-                ObjectAccessEntry.start_time <= now,
-                (ObjectAccessEntry.end_time == None)
-                | (ObjectAccessEntry.end_time >= now),
-            )
-            .all()
+    elif not include_deleted:
+        recursive_filters.append(child_node.c.status != EntityStatus.DELETED.value)
+    subtree = subtree.union_all(
+        select(
+            child_node.c.id,
+            child_node.c.name,
+            child_node.c.parent_id,
+            child_node.c.type,
+            child_node.c.status,
+            child_node.c.inherit,
+            (subtree.c.depth + 1).label("depth"),
         )
-    oae_by_target: dict = defaultdict(list)
-    for entry in oae_entries:
-        oae_by_target[entry.target_identifier].append(entry)
-
-    compiled_rules_by_target = fetch_compiled_access_rules_for_targets(
-        session,
-        [
-            *(("directory", folder_id) for folder_id in actual_folder_ids),
-            *(("document", doc.id) for doc in documents),
-        ],
+        .select_from(subtree.join(child_node, child_node.c.parent_id == subtree.c.id))
+        .where(*recursive_filters)
     )
 
-    # Step 5: Prefetch user block state once to avoid repeated queries.
-    is_globally_blocked, blocked_write_ids = prefetch_user_blocks(
-        session, user, "write", now
-    )
-
-    # Step 6: Check permissions for each document. check_access_for_object uses
-    # preloaded all_folders and oae_by_target, so it does not emit extra SQL.
-    deletable_doc_ids: set[str] = set()
-    failed_items: list[dict] = []
-
-    has_delete_document_perm = "delete_document" in user.all_permissions
-
-    for doc in documents:
-        if not include_deleted and doc.status != EntityStatus.OK:
-            continue
-
-        can_delete = (
-            not is_globally_blocked
-            and doc.id not in blocked_write_ids
-            and has_delete_document_perm
-            and check_access_for_object(
-                doc,
-                user,
-                "write",
-                all_folders=folders,
-                oae_by_target=oae_by_target,
-                compiled_rules_by_target=compiled_rules_by_target,
-                folder_map=folder_map,
-            )
+    folder_by_id: dict[str, SubtreeNodeRow] = {}
+    for nid, name, parent_id, node_type, status, inherit_flag, depth in session.execute(
+        select(
+            subtree.c.id,
+            subtree.c.name,
+            subtree.c.parent_id,
+            subtree.c.type,
+            subtree.c.status,
+            subtree.c.inherit,
+            subtree.c.depth,
         )
-
-        if can_delete:
-            deletable_doc_ids.add(doc.id)
-        else:
-            assert doc.folder_id is not None
-            if check_access_for_object(
-                folder_map[doc.folder_id],
-                user,
-                "read",
-                all_folders=folders,
-                oae_by_target=oae_by_target,
-                compiled_rules_by_target=compiled_rules_by_target,
-                folder_map=folder_map,
-            ):
-                failed_items.append(
-                    {
-                        "type": "document",
-                        "id": doc.id,
-                        "title": doc.title,
-                        "parent_folder_id": doc.folder_id,
-                        "reason": "permission_denied",
-                    }
-                )
-
-    # Step 7: Check each child folder's own permissions.
-    has_delete_directory_perm = "delete_directory" in user.all_permissions
-
-    # folder_self_deletable considers only the folder itself, not descendants.
-    folder_self_deletable: dict[str, bool] = {}
-
-    for folder in folders:
-        if folder.id == root_folder_id:
-            # The handler already authorized the root itself, so assume deletable.
-            folder_self_deletable[folder.id] = True
-            continue
-
-        can_delete = (
-            not is_globally_blocked
-            and folder.id not in blocked_write_ids
-            and has_delete_directory_perm
-            and check_access_for_object(
-                folder,
-                user,
-                "write",
-                all_folders=folders,
-                oae_by_target=oae_by_target,
-                compiled_rules_by_target=compiled_rules_by_target,
-                folder_map=folder_map,
+    ).all():
+        if int(depth) > MAX_HIERARCHY_DEPTH:
+            raise RuntimeError(
+                f"Directory subtree depth exceeded limit ({MAX_HIERARCHY_DEPTH})."
             )
-        )
-        folder_self_deletable[folder.id] = can_delete
-        if not can_delete:
-            assert folder.parent_id is not None, (
-                "Root folder should have been handled separately"
+        if nid not in folder_by_id:
+            folder_by_id[nid] = SubtreeNodeRow(
+                id=nid,
+                name=name,
+                parent_id=parent_id,
+                type=node_type,
+                status=int(status),
+                inherit=bool(inherit_flag),
             )
-            if check_access_for_object(
-                folder_map[folder.parent_id],
-                user,
-                "read",
-                all_folders=folders,
-                oae_by_target=oae_by_target,
-                compiled_rules_by_target=compiled_rules_by_target,
-                folder_map=folder_map,
-            ):
-                failed_items.append(
-                    {
-                        "type": "folder",
-                        "id": folder.id,
-                        "name": folder.name,
-                        "parent_folder_id": folder.parent_id,
-                        "reason": "permission_denied",
-                    }
-                )
+    return folder_by_id
 
-    # Step 8: Derive folders that must be kept because they contain undeletable
-    # descendants. Build a leaf-to-root topological order and bubble state up.
 
-    # Build parent-child relation maps.
+def _order_descendant_folders_bottom_up(
+    folder_by_id: dict[str, SubtreeNodeRow],
+    root_folder_id: str,
+) -> list[SubtreeNodeRow]:
+    # Topological order from deepest leaf up to root so callers can delete bottom-up.
     children_map: dict[str, list[str]] = defaultdict(list)
     parent_map: dict[str, str | None] = {}
-    for folder in folders:
-        parent_map[folder.id] = folder.parent_id
-        if folder.parent_id and folder.parent_id in actual_folder_id_set:
-            children_map[folder.parent_id].append(folder.id)
+    for fid, folder in folder_by_id.items():
+        parent_map[fid] = folder.parent_id
+        if folder.parent_id and folder.parent_id in folder_by_id:
+            children_map[folder.parent_id].append(fid)
 
-    # Record whether each folder contains undeletable content. A folder with
-    # insufficient self permissions is treated as undeletable for its parent.
-    has_undeletable_content: dict[str, bool] = {}
-
-    # Process nodes in leaf-to-root topological order. Start with leaves, which
-    # have no child folders in the subtree.
-
-    in_degree = {fid: len(children_map[fid]) for fid in actual_folder_ids}
-    queue = deque([fid for fid in actual_folder_ids if in_degree[fid] == 0])
-
-    topo_order = []
+    in_degree = {fid: len(children_map[fid]) for fid in folder_by_id}
+    queue = deque([fid for fid in folder_by_id if in_degree[fid] == 0])
+    ordered_descendant_folders: list[SubtreeNodeRow] = []
+    visited_count = 0
     while queue:
         fid = queue.popleft()
-        topo_order.append(fid)
-        parent_id = parent_map.get(fid)
-        if parent_id and parent_id in in_degree:
-            in_degree[parent_id] -= 1
-            if in_degree[parent_id] == 0:
-                queue.append(parent_id)
+        visited_count += 1
+        if fid != root_folder_id:
+            ordered_descendant_folders.append(folder_by_id[fid])
+        pid = parent_map.get(fid)
+        if pid and pid in in_degree:
+            in_degree[pid] -= 1
+            if in_degree[pid] == 0:
+                queue.append(pid)
 
-    if len(topo_order) != len(actual_folder_ids):
+    if visited_count != len(folder_by_id):
         raise RuntimeError("Cycle detected in folder hierarchy.")
+    return ordered_descendant_folders
 
-    # Calculate has_undeletable_content in leaf-to-root order. Documents count
-    # as undeletable content for their containing folder.
-    folder_has_undeletable_doc: dict[str, bool] = defaultdict(bool)
-    for doc in documents:
-        is_active = (
-            doc.current_revision is not None and doc.current_revision.file.active
+
+def _query_subtree_documents(
+    session: Session,
+    folder_ids: list[str],
+    *,
+    include_deleted: bool,
+    status_operation_id: str | None = None,
+) -> list[SubtreeNodeRow]:
+    node_table = Node.__table__
+    documents: list[SubtreeNodeRow] = []
+    for chunk in batched(folder_ids, QUERY_CHUNK_SIZE):
+        doc_stmt = select(
+            node_table.c.id,
+            node_table.c.name,
+            node_table.c.parent_id,
+            node_table.c.type,
+            node_table.c.status,
+            node_table.c.inherit,
+        ).where(
+            node_table.c.parent_id.in_(list(chunk)),
+            node_table.c.type == NodeType.DOCUMENT.value,
         )
-        if is_active and doc.id not in deletable_doc_ids and doc.folder_id:
-            folder_has_undeletable_doc[doc.folder_id] = True
+        if status_operation_id is not None:
+            doc_stmt = doc_stmt.where(
+                node_table.c.status == EntityStatus.DELETED.value,
+                node_table.c.status_operation_id == status_operation_id,
+            )
+        elif not include_deleted:
+            doc_stmt = doc_stmt.where(node_table.c.status != EntityStatus.DELETED.value)
+        for nid, name, parent_id, node_type, status, inherit_flag in session.execute(
+            doc_stmt
+        ).all():
+            documents.append(
+                SubtreeNodeRow(
+                    id=nid,
+                    name=name,
+                    parent_id=parent_id,
+                    type=node_type,
+                    status=int(status),
+                    inherit=bool(inherit_flag),
+                )
+            )
+    return documents
 
-    for fid in topo_order:
-        self_undeletable = not folder_self_deletable.get(fid, True)
-        child_undeletable = any(
-            has_undeletable_content.get(child_fid, False)
-            for child_fid in children_map[fid]
-        )
-        doc_undeletable = folder_has_undeletable_doc.get(fid, False)
-        has_undeletable_content[fid] = (
-            self_undeletable or child_undeletable or doc_undeletable
-        )
 
-    # Step 9: Generate the final ordered result from topo_order.
-    deletable_folder_ids: list[str] = []
-    protected_folder_ids: set[str] = set()
+def _fetch_subtree_rows(
+    session: Session,
+    root_folder_id: str,
+    *,
+    include_deleted: bool,
+    status_operation_id: str | None = None,
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    folder_by_id = _query_subtree_folders(
+        session,
+        root_folder_id,
+        include_deleted=include_deleted,
+        status_operation_id=status_operation_id,
+    )
+    if not folder_by_id:
+        return [], []
+    ordered_descendant_folders = _order_descendant_folders_bottom_up(
+        folder_by_id, root_folder_id
+    )
+    documents = _query_subtree_documents(
+        session,
+        list(folder_by_id.keys()),
+        include_deleted=include_deleted,
+        status_operation_id=status_operation_id,
+    )
+    return ordered_descendant_folders, documents
 
-    # Since topo_order runs from leaves to root, deletable_folder_ids will also
-    # delete child folders before parent folders.
-    for fid in topo_order:
-        # Skip root_folder_id; external handler logic decides how to handle it.
-        if fid == root_folder_id:
-            continue
 
-        # A folder is deletable only when it is deletable itself and has no
-        # undeletable descendants.
-        can_delete_folder = folder_self_deletable.get(
-            fid, False
-        ) and not has_undeletable_content.get(fid, False)
+def fetch_subtree_metadata_for_soft_delete(
+    session: Session,
+    root_folder_id: str,
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    """Return lightweight metadata for all non-deleted descendant folders (deepest first) and documents."""
+    return _fetch_subtree_rows(session, root_folder_id, include_deleted=False)
 
-        if can_delete_folder:
-            deletable_folder_ids.append(fid)
-        else:
-            protected_folder_ids.add(fid)
 
-    return (
-        deletable_folder_ids,  # Ordered from deepest to shallowest.
-        deletable_doc_ids,
-        failed_items,
-        protected_folder_ids,
-        folder_map,
+def fetch_subtree_ids_for_soft_delete(
+    session: Session,
+    root_folder_id: str,
+) -> tuple[list[str], list[str]]:
+    """Return all non-deleted descendant folder IDs (deepest first) and document IDs."""
+    folders, documents = _fetch_subtree_rows(
+        session, root_folder_id, include_deleted=False
+    )
+    return [f.id for f in folders], [d.id for d in documents]
+
+
+def fetch_subtree_metadata_for_purge(
+    session: Session,
+    root_folder_id: str,
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    """Return lightweight metadata for all descendant folders (deepest first) and documents for cascading purge."""
+    return _fetch_subtree_rows(session, root_folder_id, include_deleted=True)
+
+
+def fetch_subtree_metadata_for_restore(
+    session: Session,
+    root_folder_id: str,
+    status_operation_id: str,
+) -> tuple[list[SubtreeNodeRow], list[SubtreeNodeRow]]:
+    """Return lightweight metadata for soft-deleted descendants matching status_operation_id."""
+    if not status_operation_id:
+        return [], []
+    return _fetch_subtree_rows(
+        session,
+        root_folder_id,
+        include_deleted=True,
+        status_operation_id=status_operation_id,
     )

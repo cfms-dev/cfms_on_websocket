@@ -116,8 +116,11 @@ previous response's `next_cursor`.
   patterns, including `%` and `_`, do not act as wildcards; `/`, quotes, and
   other punctuation are also matched as ordinary characters.
 - The global `search` permission controls whether a user may invoke this API.
-  Read rules, inherited rules, object access entries, and user blocks then
-  determine which matching objects appear in the response.
+  CACL DACL policies (including inheritance, scopes, validity windows,
+  deny-overrides, and ancestor `TRAVERSE` checks unless bypassed via
+  `bypass_traverse_checking` or `bypass_dacl`) then determine which matching
+  objects appear in the response (`READ_CONTENT` or `READ_METADATA` for
+  documents; `LIST_DIRECTORY` or `READ_METADATA` for directories).
 - Permission filtering is applied before pagination, so page boundaries and
   `has_more` are calculated from visible candidates.
 - Documents without active revisions are excluded.

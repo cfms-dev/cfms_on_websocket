@@ -1,0 +1,1 @@
+Introduced a CACL implementation that complies with the CEP 2 specification, fully replacing the existing access control rule functionality and consolidating several access control features.

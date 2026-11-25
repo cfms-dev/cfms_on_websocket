@@ -16,37 +16,32 @@ from include.config.constants import NONCE_MIN_LENGTH
 from include.config.validation import AdmissionControlPolicy
 from include.database.models.identity import User, UserStatus
 from include.database.session import Session
-from include.domains.access.handlers import (
-    RequestGrantAccessHandler,
-    RequestRevokeAccessHandler,
-    RequestViewAccessEntriesHandler,
-)
 from include.domains.access.permissions import Permissions
 from include.domains.documents.handlers.directories import (
     RequestCreateDirectoryHandler,
     RequestDeleteDirectoryHandler,
-    RequestGetDirectoryAccessRulesHandler,
+    RequestGetDirectoryDaclHandler,
     RequestGetDirectoryInfoHandler,
     RequestListDeletedItemsHandler,
     RequestListDirectoryHandler,
-    RequestMoveDirectoryHandler,
     RequestPurgeDirectoryHandler,
     RequestRenameDirectoryHandler,
+    RequestReparentDirectoryHandler,
     RequestRestoreDirectoryHandler,
-    RequestSetDirectoryRulesHandler,
+    RequestSetDirectoryDaclHandler,
 )
 from include.domains.documents.handlers.documents import (
     RequestCreateDocumentHandler,
     RequestDeleteDocumentHandler,
     RequestDownloadFileHandler,
-    RequestGetDocumentAccessRulesHandler,
+    RequestGetDocumentDaclHandler,
     RequestGetDocumentHandler,
     RequestGetDocumentInfoHandler,
-    RequestMoveDocumentHandler,
     RequestPurgeDocumentHandler,
     RequestRenameDocumentHandler,
+    RequestReparentDocumentHandler,
     RequestRestoreDocumentHandler,
-    RequestSetDocumentRulesHandler,
+    RequestSetDocumentDaclHandler,
     RequestSetDocumentTagsHandler,
     RequestUploadDocumentHandler,
     RequestUploadFileHandler,
@@ -79,22 +74,18 @@ from include.domains.identity.handlers.groups import (
     RequestRenameGroupHandler,
 )
 from include.domains.identity.handlers.users import (
-    RequestBlockUserHandler,
     RequestChangeUserGroupsHandler,
     RequestChangeUserPermissionsHandler,
     RequestCreateUserHandler,
     RequestDeleteUserHandler,
     RequestGetUserAvatarHandler,
     RequestGetUserInfoHandler,
-    RequestListUserBlocksHandler,
     RequestListUsersHandler,
     RequestManageUserStatusHandler,
     RequestSetNicknameHandler,
     RequestSetPasswdHandler,
     RequestSetUserAvatarHandler,
     RequestSetUsernameHandler,
-    RequestUnblockUserHandler,
-    RequestUpdateUserBlockHandler,
 )
 from include.domains.identity.states import AuthState
 from include.domains.identity.tokens import Token, TokenPurpose
@@ -187,10 +178,10 @@ available_functions: dict[str, type[RequestHandler]] = {
     "core.document.restore": RequestRestoreDocumentHandler,
     "core.document.purge": RequestPurgeDocumentHandler,
     "core.document.rename": RequestRenameDocumentHandler,
-    "core.document.move": RequestMoveDocumentHandler,
+    "core.document.reparent": RequestReparentDocumentHandler,
     "core.document.info.get": RequestGetDocumentInfoHandler,
-    "core.document.access_rule.get": RequestGetDocumentAccessRulesHandler,
-    "core.document.access_rule.set": RequestSetDocumentRulesHandler,
+    "core.document.dacl.get": RequestGetDocumentDaclHandler,
+    "core.document.dacl.set": RequestSetDocumentDaclHandler,
     "core.document.tag.set": RequestSetDocumentTagsHandler,
     # Revisions
     "core.document.revision.list": RequestListRevisionsHandler,
@@ -203,23 +194,19 @@ available_functions: dict[str, type[RequestHandler]] = {
     # Directories
     "core.directory.list": RequestListDirectoryHandler,
     "core.directory.info.get": RequestGetDirectoryInfoHandler,
-    "core.directory.access_rule.get": RequestGetDirectoryAccessRulesHandler,
-    "core.directory.access_rule.set": RequestSetDirectoryRulesHandler,
+    "core.directory.dacl.get": RequestGetDirectoryDaclHandler,
+    "core.directory.dacl.set": RequestSetDirectoryDaclHandler,
     "core.directory.create": RequestCreateDirectoryHandler,
     "core.directory.delete": RequestDeleteDirectoryHandler,
     "core.directory.restore": RequestRestoreDirectoryHandler,
     "core.directory.purge": RequestPurgeDirectoryHandler,
     "core.directory.rename": RequestRenameDirectoryHandler,
-    "core.directory.move": RequestMoveDirectoryHandler,
+    "core.directory.reparent": RequestReparentDirectoryHandler,
     "core.directory.deleted_item.list": RequestListDeletedItemsHandler,
     # Search
     "core.search.query": RequestSearchHandler,
     # Users
     "core.user.status.set": RequestManageUserStatusHandler,
-    "core.user.block.create": RequestBlockUserHandler,
-    "core.user.block.delete": RequestUnblockUserHandler,
-    "core.user.block.update": RequestUpdateUserBlockHandler,
-    "core.user.block.list": RequestListUserBlocksHandler,
     "core.user.list": RequestListUsersHandler,
     "core.user.create": RequestCreateUserHandler,
     "core.user.delete": RequestDeleteUserHandler,
@@ -238,10 +225,6 @@ available_functions: dict[str, type[RequestHandler]] = {
     "core.group.rename": RequestRenameGroupHandler,
     "core.group.info.get": RequestGetGroupInfoHandler,
     "core.group.permission.change": RequestChangeGroupPermissionsHandler,
-    # Access
-    "core.access.entry.grant": RequestGrantAccessHandler,
-    "core.access.entry.revoke": RequestRevokeAccessHandler,
-    "core.access.entry.list": RequestViewAccessEntriesHandler,
     # System
     "core.server.lockdown.set": RequestLockdownHandler,
     "core.audit.entry.list": RequestViewAuditLogsHandler,

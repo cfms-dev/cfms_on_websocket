@@ -21,24 +21,14 @@ class Messages(StrEnum):
     TARGET_DIRECTORY_NOT_FOUND = _("Target directory not found")
     TARGET_DOCUMENT_NOT_FOUND = _("Target document not found")
     KEY_NOT_FOUND = _("Key not found")
-    ENTITY_NOT_FOUND = _("Entity not found")
     TARGET_NOT_FOUND = _("Target not found")
-    ACCESS_ENTRY_NOT_FOUND = _("Access entry not found")
     GROUP_ALREADY_EXISTS = _("Group already exists")
     USERNAME_ALREADY_EXISTS = _("Username already exists")
-    UNSUPPORTED_BLOCK_TYPES = _("Unsupported block type(s)")
-    SPECIFIED_ENTRY_NOT_FOUND = _("Specified entry not found")
-    SPECIFIED_BLOCK_ENDED = _("The specified block has ended")
     USER_DOES_NOT_EXIST = _("User does not exist")
     ACCOUNT_NOT_ACTIVE = _("Account is not active")
     USER_LACKS_DEBUGGING_PERMISSION = _("User lacks debugging permission.")
-    NOT_AFTER_MUST_BE_LATER_THAN_NOT_BEFORE = _(
-        "`not_after` must be later than `not_before`"
-    )
     DOCUMENT_DOES_NOT_EXIST = _("Document does not exist")
 
-    DIRECTORY_ID_REQUIRED = _("Directory ID is required")
-    DOCUMENT_ID_REQUIRED = _("Document ID is required")
     DOCUMENT_TITLE_REQUIRED = _("Document title is required")
 
     MISSING_USERNAME = _("Username is missing")
@@ -47,23 +37,24 @@ class Messages(StrEnum):
     AUTHENTICATION_REQUIRED = _("Authentication is required")
 
     ACCESS_DENIED = _("Access denied")
-    ACCESS_DENIED_MOVE_DOCUMENT = _("Access denied to move document")
-    ACCESS_DENIED_MOVE_DIRECTORY = _("Access denied to move directory")
+    ACCESS_DENIED_REPARENT_DOCUMENT = _("Access denied to reparent document")
+    ACCESS_DENIED_REPARENT_DIRECTORY = _("Access denied to reparent directory")
     ACCESS_DENIED_WRITE_DIRECTORY = _("Access denied to write directory")
-    ACCESS_DENIED_SET_ACCESS_RULES = _("Access denied to set access rules")
-    ACCESS_DENIED_MANAGE_ACCESS = _(
-        "You do not have permission to manage object access"
+    ACCESS_DENIED_READ_DACL = _("Access denied to read DACL")
+    ACCESS_DENIED_WRITE_DACL = _("Access denied to write DACL")
+    DACL_SELF_LOCKOUT = _(
+        "Saving this DACL would revoke your own WRITE_DACL access; pass allow_self_lockout=true to confirm"
     )
     PERMISSION_DENIED = _("Permission denied")
     PERMISSION_DENIED_CREATE_GROUP = _("You do not have permission to create groups")
 
     CANNOT_PURGE_ROOT_DIRECTORY = _("Cannot purge the root directory")
     CANNOT_RESTORE_ROOT_DIRECTORY = _("Cannot restore root directory")
-    CANNOT_MOVE_TO_SAME_FOLDER = _("Cannot move to the same folder")
+    CANNOT_REPARENT_TO_SAME_FOLDER = _("Cannot reparent to the same folder")
     TARGET_DIRECTORY_NOT_ACTIVE = _("Target directory is not active")
 
-    CANNOT_MOVE_DIRECTORY_INTO_SUBDIRECTORY = _(
-        "Cannot move a directory into its own subdirectory"
+    CANNOT_REPARENT_DIRECTORY_INTO_SUBDIRECTORY = _(
+        "Cannot reparent a directory into its own subdirectory"
     )
 
     NAME_DUPLICATE = _("Name duplicate")

@@ -2,7 +2,7 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import event, literal
+from sqlalchemy import event
 from sqlalchemy.orm import joinedload, raiseload, sessionmaker
 
 pytestmark = pytest.mark.component
@@ -10,7 +10,7 @@ pytestmark = pytest.mark.component
 
 @pytest.fixture(scope="module")
 def directory_models():
-    import include.database.models.access as blocking
+    import include.database.models.access as access_models
     import include.database.models.keyrings as keyring
     import include.domains.documents.handlers.documents as document_handlers
     from include.database.models.documents import (
@@ -22,24 +22,20 @@ def directory_models():
     )
     from include.database.models.files import File
     from include.database.session import Base
+    from include.domains.documents.queries.active_revisions import (
+        fetch_latest_active_revisions_by_document,
+    )
     from include.domains.documents.queries.listing import (
-        _node_rules_allow,
         count_active_directory_children,
         directory_cursor_key,
         fetch_deleted_listing_items,
         fetch_directory_listing_items,
-        fetch_latest_active_revisions_by_document,
     )
 
-    _ = (blocking, keyring)
+    _ = (access_models, keyring)
 
     return SimpleNamespace(
         Base=Base,
-        CompiledAccessRule=blocking.CompiledAccessRule,
-        CompiledAccessRuleGroup=blocking.CompiledAccessRuleGroup,
-        CompiledAccessRuleMembership=blocking.CompiledAccessRuleMembership,
-        CompiledAccessRuleRight=blocking.CompiledAccessRuleRight,
-        CompiledAccessRuleSet=blocking.CompiledAccessRuleSet,
         Document=Document,
         DocumentRevision=DocumentRevision,
         document_handlers=document_handlers,
@@ -52,7 +48,6 @@ def directory_models():
         fetch_deleted_listing_items=fetch_deleted_listing_items,
         fetch_latest_active_revisions=fetch_latest_active_revisions_by_document,
         fetch_directory_listing_items=fetch_directory_listing_items,
-        node_rules_allow=_node_rules_allow,
     )
 
 
@@ -205,8 +200,8 @@ def test_document_info_reads_revision_and_file_consistently_during_deduplication
     )
     monkeypatch.setattr(
         directory_models.document_handlers,
-        "check_access_requirements",
-        lambda _session, _document, _user, access_type="read": access_type == "read",
+        "authorize_node_operation",
+        lambda _session, _user, _document, _op: SimpleNamespace(allowed=True),
     )
 
     handler = SimpleNamespace(
@@ -647,123 +642,3 @@ def test_deleted_listing_query_limits_candidates(
     )
     assert len(second_page) == 1
     assert second_page[0]["id"] != items[0]["id"]
-
-
-def test_node_rules_allow_handles_missing_empty_and_read_rules(
-    directory_models,
-    directory_session,
-):
-    no_rules = directory_models.Folder(id="listing-no-rules", name="No Rules")
-    empty_after_migration = directory_models.Folder(
-        id="listing-empty-migrated",
-        name="Empty Migrated",
-    )
-    restricted = directory_models.Folder(id="listing-restricted", name="Restricted")
-    directory_session.add_all([no_rules, empty_after_migration, restricted])
-    directory_session.flush()
-
-    rule_set = directory_models.CompiledAccessRuleSet(node_id=restricted.id)
-    rule = directory_models.CompiledAccessRule(access_type="read", match_mode="all")
-    group = directory_models.CompiledAccessRuleGroup(
-        group_index=0,
-        match_mode="all",
-        rights_match_mode="all",
-        rights_empty=False,
-        groups_match_mode="all",
-        groups_empty=True,
-    )
-    group.rights.append(
-        directory_models.CompiledAccessRuleRight(permission="view-restricted")
-    )
-    rule.match_groups.append(group)
-    rule_set.rules.append(rule)
-    directory_session.add(rule_set)
-    directory_session.flush()
-    restricted.access_rule_set_id = rule_set.id
-    directory_session.commit()
-
-    allowed_user = SimpleNamespace(
-        all_permissions={"view-restricted"},
-        all_groups=set(),
-    )
-    denied_user = SimpleNamespace(all_permissions=set(), all_groups=set())
-
-    def allowed_ids_for(user):
-        return {
-            row[0]
-            for row in directory_session.query(directory_models.Node.id)
-            .filter(
-                directory_models.Node.id != "/",
-                directory_models.node_rules_allow(
-                    literal("directory"),
-                    directory_models.Node.id,
-                    user,
-                ),
-            )
-            .all()
-        }
-
-    assert allowed_ids_for(allowed_user) == {
-        no_rules.id,
-        empty_after_migration.id,
-        restricted.id,
-    }
-    assert allowed_ids_for(denied_user) == {
-        no_rules.id,
-        empty_after_migration.id,
-    }
-
-
-def test_node_rules_allow_matches_explicit_empty_compiled_requirements(
-    directory_models,
-    directory_session,
-):
-    from include.domains.access.authorization.access_rules import set_access_rules
-
-    restricted = directory_models.Folder(
-        id="listing-explicit-empty-requirements",
-        name="Explicit Empty Requirements",
-        inherit=False,
-    )
-    directory_session.add(restricted)
-    directory_session.flush()
-
-    set_access_rules(
-        restricted,
-        {
-            "read": [
-                {
-                    "match": "all",
-                    "match_groups": [
-                        {
-                            "match": "any",
-                            "rights": {"match": "any", "require": []},
-                            "groups": {"match": "all", "require": ["staff"]},
-                        }
-                    ],
-                }
-            ]
-        },
-        inherit_parent=False,
-    )
-    directory_session.flush()
-
-    staff_user = SimpleNamespace(all_permissions=set(), all_groups={"staff"})
-    denied_user = SimpleNamespace(all_permissions=set(), all_groups=set())
-
-    def allowed_ids_for(user):
-        return {
-            row[0]
-            for row in directory_session.query(directory_models.Node.id)
-            .filter(
-                directory_models.node_rules_allow(
-                    literal("directory"),
-                    directory_models.Node.id,
-                    user,
-                )
-            )
-            .all()
-        }
-
-    assert restricted.id in allowed_ids_for(staff_user)
-    assert restricted.id not in allowed_ids_for(denied_user)

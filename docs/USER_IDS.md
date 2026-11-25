@@ -74,19 +74,15 @@ After reading `response.data.user_id`, use that UUID:
 
 | Actions | Account selector |
 | --- | --- |
-| `core.user.delete`, `core.user.username.set`, `core.user.nickname.set`, `core.user.block.create`, `core.user.block.list` | Required `user_id` |
+| `core.user.delete`, `core.user.username.set`, `core.user.nickname.set` | Required `user_id` |
 | `core.user.avatar.get`, `core.user.avatar.set`, `core.user.group.change`, `core.user.permission.change`, `core.user.status.set` | Required `user_id` |
 | `core.user.authentication.totp.delete`, `core.user.authentication.totp.status.get`, `core.user.key.upload`, `core.user.key.list` | Optional `user_id`; omitted means the authenticated account |
-| `core.access.entry.grant` with `entity_type = "user"` | User UUID in `entity_identifier` |
-| `core.access.entry.list` with `object_type = "user"` | User UUID in `object_identifier` |
 
 `core.user.nickname.set` changes only the nickname. `core.user.username.set` changes
 only the username, requires an ESCALATION token and `set_username` for oneself or
 `super_set_username` for any account, and preserves UUIDs and existing tokens.
 `core.user.status.set` returns `user_id`,
-`username`, `status`, and `reason`. Block creation, update, and listing include
-the owner's `user_id`. `core.user.block.delete` and `core.user.block.update` keep `block_id`;
-key-specific actions keep their key ID; `core.access.entry.revoke` keeps `entry_id`.
+`username`, `status`, and `reason`. Key-specific actions keep their key ID.
 
 `core.user.password.set` accepts `new_passwd` and optional `user_id` (default: caller).
 Ordinary requests require a GENERAL|ESCALATION token and
@@ -108,10 +104,6 @@ the actor UUID. Once the target is authorized and resolved,
 their resource ID target and can include `data.target_user_id` for the owner.
 Credential authentication events retain username targets. Existing audit rows
 are not rewritten.
-
-User block and access-entry cursors bind the canonical account UUID. Equivalent
-UUID spellings select the same account; a cursor cannot be reused for another
-account. Missing users retain empty block/access-entry listings.
 
 Upgrade clients and servers together from protocol 27 to 28. Old `username`,
 `target`, and `target_username` management selectors are rejected rather than

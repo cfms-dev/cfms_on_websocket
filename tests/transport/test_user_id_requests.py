@@ -3,18 +3,12 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from include.domains.access.handlers import (
-    RequestGrantAccessHandler,
-    RequestViewAccessEntriesHandler,
-)
 from include.domains.identity.handlers.users import (
-    RequestBlockUserHandler,
     RequestChangeUserGroupsHandler,
     RequestChangeUserPermissionsHandler,
     RequestDeleteUserHandler,
     RequestGetUserAvatarHandler,
     RequestGetUserInfoHandler,
-    RequestListUserBlocksHandler,
     RequestManageUserStatusHandler,
     RequestSetNicknameHandler,
     RequestSetPasswdHandler,
@@ -34,8 +28,6 @@ USER_ID = "aabbccdd-0000-4000-8000-000000000001"
 USER_REQUESTS = [
     (RequestDeleteUserHandler, {}),
     (RequestSetNicknameHandler, {"nickname": "New nickname"}),
-    (RequestBlockUserHandler, {"target": {"type": "all"}, "block_types": ["read"]}),
-    (RequestListUserBlocksHandler, {}),
     (RequestGetUserAvatarHandler, {}),
     (RequestSetUserAvatarHandler, {"document_id": "document"}),
     (RequestChangeUserGroupsHandler, {"groups": []}),
@@ -128,35 +120,4 @@ def test_password_modes_cannot_mix_selectors(selectors):
     with pytest.raises(ValidationError):
         RequestSetPasswdHandler.request_model.model_validate(
             {**selectors, "new_passwd": "NewPassword123!"}
-        )
-
-
-@pytest.mark.parametrize(
-    ("handler_type", "base_data", "type_field", "identifier_field"),
-    [
-        (
-            RequestGrantAccessHandler,
-            {
-                "target_type": "document",
-                "target_identifier": "document",
-                "access_types": ["read"],
-                "start_time": 0,
-            },
-            "entity_type",
-            "entity_identifier",
-        ),
-        (RequestViewAccessEntriesHandler, {}, "object_type", "object_identifier"),
-    ],
-)
-def test_access_identifiers_validate_user_ids_without_restricting_group_names(
-    handler_type, base_data, type_field, identifier_field
-):
-    for entity_type, identifier in (("user", USER_ID), ("group", "staff")):
-        request = handler_type.request_model.model_validate(
-            {**base_data, type_field: entity_type, identifier_field: identifier}
-        )
-        assert getattr(request, identifier_field) == identifier
-    with pytest.raises(ValidationError):
-        handler_type.request_model.model_validate(
-            {**base_data, type_field: "user", identifier_field: "alice"}
         )

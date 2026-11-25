@@ -1,7 +1,7 @@
 __all__ = [
-    "AVAILABLE_ACCESS_TYPES",
-    "AVAILABLE_BLOCK_TYPES",
     "CORE_VERSION",
+    "DACL_MAX_RULES_PER_NODE",
+    "DACL_SOURCE_MAX_LENGTH",
     "DEFAULT_SSL_CERT_VALIDITY_DAYS",
     "DEFAULT_TOKEN_EXPIRY_SECONDS",
     "DEFAULT_TRUSTED_PROXY_NETWORKS",
@@ -12,6 +12,7 @@ __all__ = [
     "FILE_TASK_EVENT_CHANNEL",
     "GLOBAL_BROADCAST_EVENT_CHANNEL",
     "LOGIN_GUARD_EVENT_CHANNEL",
+    "MAX_HIERARCHY_DEPTH",
     "MAX_PARAM_SIZE",
     "NONCE_MIN_LENGTH",
     "PAGINATION_DEFAULT_PAGE_SIZE",
@@ -36,9 +37,6 @@ GLOBAL_BROADCAST_EVENT_CHANNEL = "system:broadcast"
 LOGIN_GUARD_EVENT_CHANNEL = "security:login_guard"
 FILE_TASK_EVENT_CHANNEL = "documents:file_tasks"
 
-AVAILABLE_ACCESS_TYPES = ["read", "write", "move", "manage"]
-AVAILABLE_BLOCK_TYPES: set = {"read", "write", "move"}
-
 # Authentication and Security Constants
 DEFAULT_TOKEN_EXPIRY_SECONDS = 3600  # 1 hour
 ESCALATION_TOKEN_EXPIRY_SECONDS = 300
@@ -58,8 +56,13 @@ FILE_TASK_DEFAULT_DURATION_SECONDS = 3600  # 1 hour
 REPLAY_PROTECTION_TIME_WINDOW_SECONDS = 15  # Maximum age of a request timestamp
 NONCE_MIN_LENGTH = 16  # Minimum length of a nonce string
 
-# Root directory virtual folder ID — used to store access rules for the root directory
+# Root directory virtual folder ID — used to store DACL rules for the root directory
 ROOT_DIRECTORY_ID = "/"
+MAX_HIERARCHY_DEPTH = 128  # Maximum recursive ancestor/subtree traversal depth
+
+# CACL DACL Limits
+DACL_SOURCE_MAX_LENGTH = 65_536  # 64 KiB max raw CACL policy source per request
+DACL_MAX_RULES_PER_NODE = 256  # Max compiled DACL rules persisted on a single node
 
 # Pagination Constants
 PAGINATION_DEFAULT_PAGE_SIZE = 128

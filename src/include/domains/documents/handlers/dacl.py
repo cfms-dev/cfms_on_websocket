@@ -1,0 +1,232 @@
+__all__ = [
+    "DaclSource",
+    "NodeDaclTargetSpec",
+    "handle_get_node_dacl",
+    "handle_set_node_dacl",
+    "prepare_initial_node_dacl",
+]
+
+import datetime
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Annotated, Any
+
+from cacl_compiler import CompiledPolicy, ObjectType
+from pydantic import StringConstraints
+lazy from sqlalchemy.orm import Session as OrmSession
+
+from include.config.constants import DACL_SOURCE_MAX_LENGTH
+from include.database.models.documents import Document, Folder
+from include.database.models.identity import User
+from include.domains.access.authorization.evaluation import (
+    CreateAuthzCheck,
+    authorize_dacl_read,
+    authorize_write_dacl_and_load_path,
+    simulate_dacl_save_lockout,
+    would_self_lockout_on_create,
+)
+from include.domains.access.authorization.storage import (
+    compile_policy_source,
+    persist_node_policy,
+    render_policy_text,
+)
+from include.messages import Messages as smsg
+from include.transport.request_handler import Result
+lazy from include.transport.connection import ConnectionHandler
+
+DaclSource = Annotated[str, StringConstraints(max_length=DACL_SOURCE_MAX_LENGTH)]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeDaclTargetSpec[NodeT: (Folder, Document)]:
+    model_cls: type[NodeT]
+    target_type: ObjectType
+    not_found_message: str
+    get_success_message: str
+    set_success_message: str
+    on_before_commit: Callable[[NodeT, User], None] | None = None
+
+
+def handle_get_node_dacl[NodeT: (Folder, Document)](
+    session: OrmSession,
+    handler: ConnectionHandler,
+    *,
+    spec: NodeDaclTargetSpec[NodeT],
+    target_id: str,
+    annotate_users: bool,
+) -> Result:
+    assert handler.user_id is not None
+    user = User.get_existing(session, handler.user_id)
+    target = session.get(spec.model_cls, target_id)
+
+    if target is None:
+        handler.conclude_request(404, {}, spec.not_found_message)
+        return Result(code=404, target=target_id, user_id=handler.user_id)
+
+    allowed, policy = authorize_dacl_read(session, user, target)
+    if not allowed or policy is None:
+        handler.conclude_request(403, {}, smsg.ACCESS_DENIED_READ_DACL)
+        return Result(code=403, target=target_id, user_id=handler.user_id)
+
+    response_data: dict[str, Any] = {
+        "dacl": render_policy_text(policy),
+        "inherit": policy.inherit,
+        "fingerprint": policy.fingerprint(),
+    }
+    if annotate_users:
+        response_data["annotated_dacl"] = render_policy_text(
+            policy, session=session, annotate_users=True
+        )
+
+    handler.conclude_request(200, response_data, spec.get_success_message)
+    return Result(code=0, target=target_id, user_id=handler.user_id)
+
+
+def _compile_dacl_for_node(
+    session: OrmSession,
+    dacl_source: str,
+    *,
+    target_type: ObjectType,
+    eval_time_utc: datetime.datetime | None,
+) -> tuple[
+    CompiledPolicy | None,
+    list[dict[str, Any]],
+    tuple[int, dict[str, Any], str] | None,
+]:
+    compiled = compile_policy_source(
+        session,
+        dacl_source,
+        target_type=target_type,
+        strict_principals=False,
+        now_utc=eval_time_utc,
+    )
+    serialized_diags = [d.to_dict() for d in compiled.diagnostics]
+    if not compiled.ok or compiled.policy is None:
+        return (
+            None,
+            serialized_diags,
+            (400, {"diagnostics": serialized_diags}, "Invalid CACL policy"),
+        )
+    return compiled.policy, serialized_diags, None
+
+
+def handle_set_node_dacl[NodeT: (Folder, Document)](
+    session: OrmSession,
+    handler: ConnectionHandler,
+    *,
+    spec: NodeDaclTargetSpec[NodeT],
+    target_id: str,
+    dacl_source: str,
+    allow_self_lockout: bool,
+) -> Result:
+    assert handler.user_id is not None
+    target = session.get(
+        spec.model_cls,
+        target_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if target is None:
+        handler.conclude_request(404, {}, spec.not_found_message)
+        return Result(code=404, target=target_id, user_id=handler.user_id)
+
+    user = User.get_existing(session, handler.user_id)
+
+    write_check = authorize_write_dacl_and_load_path(session, user, target)
+    if not write_check.authorized:
+        handler.conclude_request(403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
+        return Result(code=403, target=target_id, user_id=handler.user_id)
+
+    policy, serialized_diags, compile_error = _compile_dacl_for_node(
+        session,
+        dacl_source,
+        target_type=spec.target_type,
+        eval_time_utc=write_check.eval_time_utc,
+    )
+    if compile_error is not None or policy is None:
+        assert compile_error is not None
+        handler.conclude_request(*compile_error)
+        return Result(code=400, target=target_id, user_id=handler.user_id)
+
+    self_lockout_warning = simulate_dacl_save_lockout(
+        user,
+        write_check.current_path,
+        policy,
+        check_ancestor_traverse=write_check.check_ancestor_traverse,
+        eval_time_utc=write_check.eval_time_utc,
+    )
+    if self_lockout_warning and not allow_self_lockout:
+        handler.conclude_request(
+            409,
+            {
+                "self_lockout_warning": True,
+                "diagnostics": serialized_diags,
+            },
+            smsg.DACL_SELF_LOCKOUT,
+        )
+        return Result(code=409, target=target_id, user_id=handler.user_id)
+
+    persist_node_policy(session, target, policy, already_locked=True)
+    if spec.on_before_commit is not None:
+        spec.on_before_commit(target, user)
+    session.commit()
+
+    handler.conclude_request(
+        200,
+        {
+            "dacl": render_policy_text(policy),
+            "inherit": policy.inherit,
+            "fingerprint": policy.fingerprint(),
+            "diagnostics": serialized_diags,
+            "self_lockout_warning": self_lockout_warning,
+        },
+        spec.set_success_message,
+    )
+    return Result(code=0, target=target_id, user_id=handler.user_id)
+
+
+def prepare_initial_node_dacl(
+    session: OrmSession,
+    user: User,
+    parent: Folder,
+    *,
+    object_type: ObjectType,
+    name: str,
+    dacl_source: str | None,
+    create_check: CreateAuthzCheck,
+    allow_self_lockout: bool,
+) -> tuple[CompiledPolicy | None, tuple[int, dict[str, Any], str] | None]:
+    if dacl_source is None:
+        return None, None
+
+    if not create_check.can_write_dacl:
+        return None, (403, {}, smsg.ACCESS_DENIED_WRITE_DACL)
+
+    policy, serialized_diags, compile_error = _compile_dacl_for_node(
+        session,
+        dacl_source,
+        target_type=object_type,
+        eval_time_utc=create_check.eval_time_utc,
+    )
+    if compile_error is not None or policy is None:
+        return None, compile_error
+
+    if not allow_self_lockout and would_self_lockout_on_create(
+        session,
+        user,
+        parent,
+        object_type,
+        name,
+        policy,
+        create_check=create_check,
+    ):
+        return None, (
+            409,
+            {
+                "self_lockout_warning": True,
+                "diagnostics": serialized_diags,
+            },
+            smsg.DACL_SELF_LOCKOUT,
+        )
+
+    return policy, None

@@ -15,6 +15,7 @@ lazy import secrets
 lazy import string
 lazy from collections.abc import Generator
 
+from cacl_compiler import CompilerConfig, ObjectType, compile_cacl
 from loguru import logger
 from websockets.sync.server import Server, serve
 lazy from cryptography import x509
@@ -52,7 +53,10 @@ from include.database.models.documents import (
 )
 from include.database.models.files import File
 from include.database.session import Base, Session, engine
-from include.domains.access.authorization.access_rules import set_access_rules
+from include.domains.access.authorization.storage import (
+    DEFAULT_ROOT_DACL_SOURCE,
+    persist_node_policy,
+)
 from include.domains.documents.file_task_signals import on_file_task_event
 from include.domains.identity.auth.registry import auth_registry
 from include.domains.identity.default_groups import DEFAULT_GROUP_PERMISSIONS
@@ -97,37 +101,27 @@ os.makedirs(EXECUTABLE_ABSPATH / "content" / "ssl", exist_ok=True)
 
 
 def ensure_root_folder():
-    """
-    Ensure that the sentinel Folder record for the root directory exists in
-    the database.
-
-    This record has no children of its own; it exists only so access rules
-    and ObjectAccessEntries can be attached to the root directory through the
-    normal access-control mechanism.
-
-    When created, the root folder is configured with default access rules that
-    restrict read, write, and manage access to the ``sysop`` group only.
-    """
-    _sysop_rule = {
-        "match": "all",
-        "match_groups": [
-            {
-                "match": "all",
-                "groups": {"match": "all", "require": ["sysop"]},
-            }
-        ],
-    }
-    _DEFAULT_ROOT_ACCESS_RULES = {
-        "read": [],
-        "write": [_sysop_rule],
-        "manage": [_sysop_rule],
-    }
-
+    """Ensure the sentinel root Folder record exists with the default CEP 2 DACL."""
     with Session() as session:
-        if not session.get(Folder, ROOT_DIRECTORY_ID):
-            root = Folder(id=ROOT_DIRECTORY_ID, name="/")
+        if not session.get(
+            Folder,
+            ROOT_DIRECTORY_ID,
+            # FIXME: I wonder if this is necessary since root directory cannot
+            # be marked as deleted. Too defensive?
+            execution_options={"include_deleted": True},
+        ):
+            compiled = compile_cacl(
+                DEFAULT_ROOT_DACL_SOURCE,
+                config=CompilerConfig(target_object_type=ObjectType.DIRECTORY),
+            )
+            if not compiled.ok or compiled.policy is None:
+                raise RuntimeError(
+                    f"Failed to compile default root DACL: {compiled.diagnostics}"
+                )
+            root = Folder(id=ROOT_DIRECTORY_ID, name="/", inherit=False)
             session.add(root)
-            set_access_rules(root, _DEFAULT_ROOT_ACCESS_RULES, inherit_parent=False)
+            session.flush()
+            persist_node_policy(session, root, compiled.policy)
             session.commit()
 
 

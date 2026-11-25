@@ -568,21 +568,21 @@ class CFMSTestClient:
         )
 
     async def create_document(
-        self, title: str, folder_id: str | None = None
+        self,
+        title: str,
+        folder_id: str | None = None,
+        *,
+        dacl: str | None = None,
+        allow_self_lockout: bool | None = None,
     ) -> dict[str, Any]:
-        """
-        Create a new document.
-
-        Args:
-            title: Title of the document
-            folder_id: Optional folder ID to create the document in
-
-        Returns:
-            Response with created document information
-        """
-        data = {"title": title}
+        """Create a new document."""
+        data: dict[str, Any] = {"title": title}
         if folder_id is not None:
             data["folder_id"] = folder_id
+        if dacl is not None:
+            data["dacl"] = dacl
+        if allow_self_lockout is not None:
+            data["allow_self_lockout"] = allow_self_lockout
         return await self.send_request("core.document.create", data)
 
     async def upload_document(
@@ -639,6 +639,35 @@ class CFMSTestClient:
         return await self.send_request(
             "core.document.rename", {"document_id": document_id, "new_title": new_title}
         )
+
+    async def reparent_document(
+        self, document_id: str, target_folder_id: str | None
+    ) -> dict[str, Any]:
+        """Reparent a document to another directory."""
+        return await self.send_request(
+            "core.document.reparent",
+            {"document_id": document_id, "target_folder_id": target_folder_id},
+        )
+
+    async def get_document_dacl(
+        self, document_id: str, *, annotate_users: bool | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"document_id": document_id}
+        if annotate_users is not None:
+            data["annotate_users"] = annotate_users
+        return await self.send_request("core.document.dacl.get", data)
+
+    async def set_document_dacl(
+        self,
+        document_id: str,
+        dacl: str,
+        *,
+        allow_self_lockout: bool | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"document_id": document_id, "dacl": dacl}
+        if allow_self_lockout is not None:
+            data["allow_self_lockout"] = allow_self_lockout
+        return await self.send_request("core.document.dacl.set", data)
 
     async def get_document_info(self, document_id: str) -> dict[str, Any]:
         """
@@ -719,22 +748,47 @@ class CFMSTestClient:
         return await self.send_request("core.directory.list", data)
 
     async def create_directory(
-        self, name: str, parent_id: str | None = None
+        self,
+        name: str,
+        parent_id: str | None = None,
+        *,
+        dacl: str | None = None,
+        allow_self_lockout: bool | None = None,
     ) -> dict[str, Any]:
-        """
-        Create a new directory.
-
-        Args:
-            name: Name of the directory
-            parent_id: Optional parent directory ID
-
-        Returns:
-            Response with created directory information
-        """
-        data = {"name": name}
+        """Create a new directory."""
+        data: dict[str, Any] = {"name": name}
         if parent_id is not None:
             data["parent_id"] = parent_id
+        if dacl is not None:
+            data["dacl"] = dacl
+        if allow_self_lockout is not None:
+            data["allow_self_lockout"] = allow_self_lockout
         return await self.send_request("core.directory.create", data)
+
+    async def get_directory_info(self, directory_id: str) -> dict[str, Any]:
+        return await self.send_request(
+            "core.directory.info.get", {"directory_id": directory_id}
+        )
+
+    async def get_directory_dacl(
+        self, directory_id: str, *, annotate_users: bool | None = None
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"directory_id": directory_id}
+        if annotate_users is not None:
+            data["annotate_users"] = annotate_users
+        return await self.send_request("core.directory.dacl.get", data)
+
+    async def set_directory_dacl(
+        self,
+        directory_id: str,
+        dacl: str,
+        *,
+        allow_self_lockout: bool | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"directory_id": directory_id, "dacl": dacl}
+        if allow_self_lockout is not None:
+            data["allow_self_lockout"] = allow_self_lockout
+        return await self.send_request("core.directory.dacl.set", data)
 
     async def delete_directory(self, folder_id: str) -> dict[str, Any]:
         """
@@ -779,21 +833,12 @@ class CFMSTestClient:
             data["new_name"] = new_name
         return await self.send_request("core.directory.restore", data)
 
-    async def move_directory(
+    async def reparent_directory(
         self, folder_id: str, target_folder_id: str | None
     ) -> dict[str, Any]:
-        """
-        Move a directory to a new location.
-
-        Args:
-            folder_id: The ID of the folder to move
-            target_folder_id: The ID of the target parent folder (None for root)
-
-        Returns:
-            Response indicating success or failure
-        """
+        """Reparent a directory to a new parent directory."""
         return await self.send_request(
-            "core.directory.move",
+            "core.directory.reparent",
             {"folder_id": folder_id, "target_folder_id": target_folder_id},
         )
 
@@ -1398,84 +1443,6 @@ class CFMSTestClient:
         """
         return await self.send_request("core.user.authentication.totp.status.get", {})
 
-    async def grant_access(
-        self,
-        entity_type: str,
-        entity_identifier: str,
-        target_type: str,
-        target_identifier: str,
-        access_types: list[str],
-        start_time: float,
-        end_time: float | None = None,
-    ) -> dict[str, Any]:
-        """
-        Grant access to a user or group for a document or directory.
-
-        Args:
-            entity_type: Type of entity ("user" or "group")
-            entity_identifier: User UUID or group name
-            target_type: Type of target ("document" or "directory")
-            target_identifier: Document or folder ID
-            access_types: List of access types to grant
-            start_time: When access starts (timestamp)
-            end_time: When access ends (timestamp, optional)
-
-        Returns:
-            Response indicating success or failure
-        """
-        data: dict[str, Any] = {
-            "entity_type": entity_type,
-            "entity_identifier": entity_identifier,
-            "target_type": target_type,
-            "target_identifier": target_identifier,
-            "access_types": access_types,
-            "start_time": start_time,
-        }
-        if end_time is not None:
-            data["end_time"] = end_time
-        return await self.send_request("core.access.entry.grant", data)
-
-    async def revoke_access(self, entry_id: int) -> dict[str, Any]:
-        """
-        Revoke access by deleting an access entry.
-
-        Args:
-            entry_id: ID of the access entry to revoke
-
-        Returns:
-            Response indicating success or failure
-        """
-        return await self.send_request(
-            "core.access.entry.revoke", {"entry_id": entry_id}
-        )
-
-    async def view_access_entries(
-        self,
-        object_type: str,
-        object_identifier: str,
-        page_size: int | None = None,
-        cursor: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        View access entries for a user, group, document, or directory.
-
-        Args:
-            object_type: Type of object ("user", "group", "document", or "directory")
-            object_identifier: Identifier of the object
-
-        Returns:
-            Response with list of access entries
-        """
-        data: dict[str, Any] = {
-            "object_type": object_type,
-            "object_identifier": object_identifier,
-        }
-        if page_size is not None:
-            data["page_size"] = page_size
-        if cursor is not None:
-            data["cursor"] = cursor
-        return await self.send_request("core.access.entry.list", data)
-
     # Keyring methods
 
     async def upload_keyring(
@@ -1617,38 +1584,6 @@ class CFMSTestClient:
         if not isinstance(reason, _RequestValueUnset):
             data["reason"] = reason
         return await self.send_request("core.user.status.set", data)
-
-    async def block_user(
-        self,
-        user_id: str,
-        target_type: str,
-        block_types: list[str],
-        target_id: str | None = None,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        """Block user from accessing certain things.
-        target_type: "all", "directory", "document"
-        block_types: e.g. ["read", "write"]
-        """
-        data = {
-            "user_id": user_id,
-            "target": {"type": target_type},
-            "block_types": block_types,
-        }
-        if target_id is not None:
-            data["target"]["id"] = target_id
-        if reason is not None:
-            data["reason"] = reason
-
-        return await self.send_request("core.user.block.create", data)
-
-    async def update_user_block(
-        self, block_id: str, reason: str | None
-    ) -> dict[str, Any]:
-        """Replace or clear a user block's reason."""
-        return await self.send_request(
-            "core.user.block.update", {"block_id": block_id, "reason": reason}
-        )
 
     async def view_audit_logs(
         self,

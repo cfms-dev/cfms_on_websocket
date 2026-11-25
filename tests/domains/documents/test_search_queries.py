@@ -1,34 +1,41 @@
-from pathlib import Path
+import datetime
 from types import SimpleNamespace
 
 import pytest
+from cacl_compiler import AtomicOp, ObjectType
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_SRC_PATH = _PROJECT_ROOT / "src"
-_NOW = 1_700_000_000.0
-_SYSOP_READ_RULES = {
-    "read": [
-        {
-            "match": "all",
-            "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
-        }
-    ]
-}
+from include.config.options import write_options
+from include.database.cursors import (
+    StreamingCursorBatchStrategy,
+    WindowedKeysetBatchStrategy,
+)
+from include.database.models.documents import EntityStatus
+from include.domains.access.authorization.visibility import (
+    BatchVisibilityEvaluator,
+    VisibilityCandidate,
+)
+from include.domains.access.permissions import Permissions
+
+_NOW_DT = datetime.datetime(2026, 6, 15, 12, 0, 0, tzinfo=datetime.UTC)
+_NOW = _NOW_DT.timestamp()
 
 
 @pytest.fixture
 def search_query_context(sqlite_engine_factory):
     from include.database import models
     from include.database.session import Base
-    from include.domains.access.authorization.access_rules import set_access_rules
     from include.domains.access.authorization.evaluation import (
-        check_access_for_object,
+        authorize_node_operation,
     )
-    from include.domains.access.authorization.searchable_tree import (
-        load_folder_access_context,
+    from include.domains.access.authorization.storage import (
+        DEFAULT_ROOT_DACL_SOURCE,
+        compile_policy_source,
+        persist_node_policy,
     )
-    from include.domains.documents.queries.listing import (
+    from include.domains.documents.queries.search import (
+        SearchQuerySpec,
         fetch_visible_search_candidate_rows,
     )
 
@@ -37,19 +44,56 @@ def search_query_context(sqlite_engine_factory):
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine)
     with session_factory() as session:
-        session.add(models.Folder(id="/", name="/", inherit=False))
+        root = models.Folder(id="/", name="/", inherit=False)
+        session.add(root)
+        session.flush()
+        root_compiled = compile_policy_source(session, DEFAULT_ROOT_DACL_SOURCE)
+        assert root_compiled.policy is not None
+        persist_node_policy(session, root, root_compiled.policy)
         session.commit()
         yield SimpleNamespace(
-            check_access_for_object=check_access_for_object,
+            SearchQuerySpec=SearchQuerySpec,
+            authorize_node_operation=authorize_node_operation,
+            compile_policy_source=compile_policy_source,
             fetch_visible_search_candidate_rows=fetch_visible_search_candidate_rows,
-            load_folder_access_context=load_folder_access_context,
             models=models,
+            persist_node_policy=persist_node_policy,
             session=session,
-            set_access_rules=set_access_rules,
         )
 
 
-def _make_user(context, *, permissions=(), username="alice"):
+def _search(
+    context,
+    *,
+    user,
+    query: str,
+    sort_by: str = "name",
+    sort_order: str = "asc",
+    search_documents: bool = True,
+    search_directories: bool = True,
+    last_key=None,
+    limit: int = 10,
+    now: float = _NOW,
+    batch_strategy=None,
+):
+    return context.fetch_visible_search_candidate_rows(
+        context.session,
+        context.SearchQuerySpec(
+            query=query,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            search_documents=search_documents,
+            search_directories=search_directories,
+            last_key=last_key,
+            limit=limit,
+        ),
+        user=user,
+        now=now,
+        batch_strategy=batch_strategy,
+    )
+
+
+def _make_user(context, *, permissions=(), groups=(), username="alice"):
     user = context.models.User(
         username=username,
         nickname=username,
@@ -70,6 +114,22 @@ def _make_user(context, *, permissions=(), username="alice"):
                 end_time=None,
             )
         )
+    for group_name in groups:
+        if context.session.get(context.models.UserGroup, group_name) is None:
+            context.session.add(
+                context.models.UserGroup(
+                    group_name=group_name,
+                    group_display_name=group_name,
+                )
+            )
+        user.groups.append(
+            context.models.UserMembership(
+                user=user,
+                group_name=group_name,
+                start_time=0.0,
+                end_time=None,
+            )
+        )
     context.session.add(user)
     context.session.flush()
     return user
@@ -81,237 +141,278 @@ def _make_folder(
     name: str,
     *,
     parent_id: str = "/",
-    inherit: bool = True,
-    access_rules: dict | None = None,
+    dacl: str | None = None,
 ):
     folder = context.models.Folder(
         id=folder_id,
         name=name,
         parent_id=parent_id,
-        inherit=inherit,
+        inherit=True,
     )
     context.session.add(folder)
     context.session.flush()
-    if access_rules is not None:
-        context.set_access_rules(
-            folder,
-            access_rules,
-            inherit_parent=inherit,
-        )
+    if dacl is not None:
+        compiled = context.compile_policy_source(context.session, dacl)
+        assert not compiled.errors, compiled.diagnostics
+        assert compiled.policy is not None
+        context.persist_node_policy(context.session, folder, compiled.policy)
     return folder
 
 
-@pytest.mark.component
-def test_visible_search_query_honors_oae_direct_grant(search_query_context):
-    context = search_query_context
-    user = _make_user(context)
-    folder = _make_folder(
-        context,
-        "oae-visible",
-        "SearchOAEVisible",
-        access_rules=_SYSOP_READ_RULES,
+def _make_document(
+    context,
+    doc_id: str,
+    title: str,
+    *,
+    folder_id: str = "/",
+    dacl: str | None = None,
+):
+    doc = context.models.Document(
+        id=doc_id,
+        title=title,
+        folder_id=folder_id,
+        inherit=True,
     )
-    context.session.add(
-        context.models.ObjectAccessEntry(
-            entity_type="user",
-            entity_identifier=str(user.id),
-            target_type="directory",
-            target_identifier=folder.id,
-            access_type="read",
-            start_time=_NOW - 1,
-            end_time=None,
-        )
+    context.session.add(doc)
+    context.session.flush()
+    file_row = context.models.File(
+        id=f"file-{doc_id}",
+        path=f"/tmp/{doc_id}",
+        sha256="a" * 64,
+        active=True,
+    )
+    file_row.size = 12
+    context.session.add(file_row)
+    rev = context.models.DocumentRevision(
+        id=f"rev-{doc_id}",
+        document_id=doc.id,
+        file_id=file_row.id,
+        created_time=_NOW,
+    )
+    context.session.add(rev)
+    context.session.flush()
+    doc.current_revision_id = rev.id
+    if dacl is not None:
+        compiled = context.compile_policy_source(context.session, dacl)
+        assert not compiled.errors, compiled.diagnostics
+        assert compiled.policy is not None
+        context.persist_node_policy(context.session, doc, compiled.policy)
+    return doc
+
+
+@pytest.mark.component
+def test_visible_search_query_honors_cacl_dnf_and_negation(search_query_context):
+    context = search_query_context
+    alice = _make_user(context, groups=("engineering",), username="alice")
+    bob = _make_user(context, groups=("engineering", "interns"), username="bob")
+    query = "SearchDNF"
+
+    visible_for_alice = _make_folder(
+        context,
+        "dnf-alice-only",
+        f"{query}AliceOnly",
+        dacl="""
+            inherit off;
+            allow [LIST_DIRECTORY] when (group("engineering") and not group("interns"));
+        """,
+    )
+    explicit_user_folder = _make_folder(
+        context,
+        "dnf-user-grant",
+        f"{query}UserGrant",
+        dacl=f"""
+            inherit off;
+            allow [LIST_DIRECTORY] when (user("{alice.id}") or group("ops"));
+        """,
     )
     context.session.commit()
+    folders = [visible_for_alice, explicit_user_folder]
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
-        user=user,
-        now=_NOW,
-        query="SearchOAEVisible",
-        sort_by="name",
-        sort_order="asc",
-        search_documents=False,
-        search_directories=True,
-        last_key=None,
-        limit=10,
-    )
-
-    assert [item["id"] for item in rows] == [folder.id]
+    for user, expected_ids in (
+        (alice, {visible_for_alice.id, explicit_user_folder.id}),
+        (bob, set()),
+    ):
+        python_visible_ids = {
+            folder.id
+            for folder in folders
+            if context.authorize_node_operation(
+                context.session,
+                user,
+                folder,
+                AtomicOp.LIST_DIRECTORY,
+                eval_time_utc=_NOW_DT,
+            ).allowed
+        }
+        sql_visible_ids = {
+            item["id"]
+            for item in _search(
+                context,
+                user=user,
+                query=query,
+                search_documents=False,
+                search_directories=True,
+            )
+        }
+        assert sql_visible_ids == python_visible_ids == expected_ids
 
 
 @pytest.mark.component
-def test_visible_search_query_honors_compiled_rule_match_modes(
+def test_visible_search_query_honors_inherit_off_and_ancestor_traverse(
     search_query_context,
 ):
     context = search_query_context
-    user = _make_user(context, permissions=["list_users"])
-    query = "SearchCompiledRules"
-    visible_rules = {
-        "read": [
-            {
-                "match": "any",
-                "match_groups": [
-                    {
-                        "match": "any",
-                        "rights": {
-                            "match": "any",
-                            "require": ["debugging", "list_users"],
-                        },
-                        "groups": {
-                            "match": "all",
-                            "require": ["missing_group"],
-                        },
-                    }
-                ],
-            },
-            {
-                "match": "all",
-                "match_groups": [
-                    {"rights": {"match": "all", "require": ["list_users"]}}
-                ],
-            },
-        ]
-    }
-    hidden_rules = {
-        "read": [
-            {
-                "match": "any",
-                "match_groups": [
-                    {
-                        "rights": {
-                            "match": "any",
-                            "require": ["list_users"],
-                        }
-                    }
-                ],
-            },
-            {
-                "match": "all",
-                "match_groups": [{"groups": {"match": "all", "require": ["sysop"]}}],
-            },
-        ]
-    }
-    visible_folder = _make_folder(
-        context,
-        "compiled-visible",
-        f"{query}Visible",
-        access_rules=visible_rules,
-    )
-    hidden_folder = _make_folder(
-        context,
-        "compiled-hidden",
-        f"{query}Hidden",
-        access_rules=hidden_rules,
-    )
-    context.session.commit()
-    folders = [visible_folder, hidden_folder]
-
-    ancestors, oaes = context.load_folder_access_context(
-        context.session, folders, now=_NOW
-    )
-    python_visible_ids = {
-        folder.id
-        for folder in folders
-        if context.check_access_for_object(
-            folder,
-            user,
-            "read",
-            ancestors,
-            oaes,
-            recursive=True,
-        )
-    }
-    sql_visible_ids = {
-        item["id"]
-        for item in context.fetch_visible_search_candidate_rows(
-            context.session,
-            user=user,
-            now=_NOW,
-            query=query,
-            sort_by="name",
-            sort_order="asc",
-            search_documents=False,
-            search_directories=True,
-            last_key=None,
-            limit=10,
-        )
-    }
-
-    assert sql_visible_ids == python_visible_ids == {visible_folder.id}
-
-
-@pytest.mark.component
-def test_visible_search_query_honors_inherit_false_boundary(search_query_context):
-    context = search_query_context
-    user = _make_user(context)
-    query = "SearchInheritBoundary"
+    user = _make_user(context, username="alice")
+    query = "SearchTraverseBoundary"
     parent = _make_folder(
         context,
-        "inherit-parent",
+        "traverse-parent",
         f"{query}Parent",
-        access_rules=_SYSOP_READ_RULES,
+        dacl="inherit off;",
     )
     child = _make_folder(
         context,
-        "inherit-child",
+        "traverse-child",
         f"{query}Child",
         parent_id=parent.id,
-        inherit=False,
+        dacl="""
+            inherit off;
+            allow [LIST_DIRECTORY] to any;
+        """,
     )
     context.session.commit()
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    # Without TRAVERSE on parent, child is hidden even with inherit off + local allow.
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query=f"{query}Child",
-        sort_by="name",
-        sort_order="asc",
         search_documents=False,
         search_directories=True,
-        last_key=None,
-        limit=10,
     )
+    assert rows == []
 
-    assert [item["id"] for item in rows] == [child.id]
+    # With global bypass_traverse_checking enabled, child becomes visible.
+    write_options(
+        context.session,
+        "access",
+        {"bypass_traverse_checking": True},
+        expected_revisions={"bypass_traverse_checking": 0},
+    )
+    context.session.commit()
+
+    rows_after = _search(
+        context,
+        user=user,
+        query=f"{query}Child",
+        search_documents=False,
+        search_directories=True,
+    )
+    assert [item["id"] for item in rows_after] == [child.id]
 
 
 @pytest.mark.component
-def test_visible_search_query_honors_read_block(search_query_context):
+def test_visible_search_query_honors_deny_overrides_and_time_windows(
+    search_query_context,
+):
     context = search_query_context
-    user = _make_user(context)
-    folder = _make_folder(
+    user = _make_user(context, username="alice")
+    denied_doc = _make_document(
         context,
-        "blocked-target",
-        "SearchBlockedTarget",
+        "denied-doc",
+        "SearchWindowDenied",
+        dacl=f"""
+            allow [READ_CONTENT, READ_METADATA] to any;
+            deny [READ_CONTENT, READ_METADATA] to user("{user.id}");
+        """,
     )
-    block = context.models.UserBlockEntry(
-        user=user,
-        timestamp=_NOW,
-        not_before=_NOW - 1,
-        not_after=-1,
-        target_type="directory",
-        target_id=folder.id,
+    expired_doc = _make_document(
+        context,
+        "expired-doc",
+        "SearchWindowExpired",
+        dacl="""
+            inherit off;
+            allow [READ_METADATA] to any until "2026-06-15T12:00:00Z";
+        """,
     )
-    block.sub_entries.append(context.models.UserBlockSubEntry(block_type="read"))
-    context.session.add(block)
+    active_doc = _make_document(
+        context,
+        "active-doc",
+        "SearchWindowActive",
+        dacl="""
+            inherit off;
+            allow [READ_METADATA] to any from "2026-06-15T12:00:00Z" until "2026-06-15T13:00:00Z";
+        """,
+    )
     context.session.commit()
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
-        query="SearchBlockedTarget",
-        sort_by="name",
-        sort_order="asc",
-        search_documents=False,
-        search_directories=True,
-        last_key=None,
-        limit=10,
+        query="SearchWindow",
+        search_documents=True,
+        search_directories=False,
     )
+    assert [item["id"] for item in rows] == [active_doc.id]
+    assert not context.authorize_node_operation(
+        context.session, user, denied_doc, AtomicOp.READ_METADATA, eval_time_utc=_NOW_DT
+    ).allowed
+    assert not context.authorize_node_operation(
+        context.session,
+        user,
+        expired_doc,
+        AtomicOp.READ_METADATA,
+        eval_time_utc=_NOW_DT,
+    ).allowed
 
-    assert rows == []
+
+@pytest.mark.component
+def test_visible_search_query_honors_scopes_and_bypass_dacl(search_query_context):
+    context = search_query_context
+    alice = _make_user(context, username="alice")
+    admin = _make_user(
+        context, permissions=(Permissions.BYPASS_DACL,), username="admin"
+    )
+    parent = _make_folder(
+        context,
+        "scope-parent",
+        "SearchScopeParent",
+        dacl="""
+            inherit off;
+            allow [TRAVERSE] to any;
+            allow [READ_METADATA] on docs to any;
+        """,
+    )
+    child_folder = _make_folder(
+        context,
+        "scope-child-folder",
+        "SearchScopeChildFolder",
+        parent_id=parent.id,
+    )
+    child_doc = _make_document(
+        context,
+        "scope-child-doc",
+        "SearchScopeChildDoc",
+        folder_id=parent.id,
+    )
+    context.session.commit()
+
+    alice_rows = _search(
+        context,
+        user=alice,
+        query="SearchScope",
+    )
+    assert [item["id"] for item in alice_rows] == [child_doc.id]
+
+    admin_rows = _search(
+        context,
+        user=admin,
+        query="SearchScope",
+    )
+    assert {item["id"] for item in admin_rows} == {
+        parent.id,
+        child_folder.id,
+        child_doc.id,
+    }
 
 
 @pytest.mark.component
@@ -324,7 +425,7 @@ def test_visible_search_query_filters_before_limit(search_query_context):
             context,
             f"hidden-{index}",
             f"{query}Hidden{index}",
-            access_rules=_SYSOP_READ_RULES,
+            dacl="inherit off;",
         )
     visible_folder = _make_folder(
         context,
@@ -333,17 +434,745 @@ def test_visible_search_query_filters_before_limit(search_query_context):
     )
     context.session.commit()
 
-    rows = context.fetch_visible_search_candidate_rows(
-        context.session,
+    rows = _search(
+        context,
         user=user,
-        now=_NOW,
         query=query,
-        sort_by="name",
-        sort_order="asc",
         search_documents=False,
         search_directories=True,
-        last_key=None,
         limit=1,
     )
 
     assert [item["id"] for item in rows] == [visible_folder.id]
+
+
+@pytest.mark.component
+def test_visible_search_query_multi_batch_pagination_and_no_legacy_ctes(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_batch")
+    query = "SearchBatchItem"
+
+    # Create 150 hidden folders sorted before 5 visible folders (exceeds first batch of 128).
+    for idx in range(150):
+        _make_folder(
+            context,
+            f"batch-hidden-{idx:03d}",
+            f"{query}A{idx:03d}",
+            dacl="inherit off;",
+        )
+    expected_visible_ids: list[str] = []
+    for idx in range(5):
+        folder = _make_folder(
+            context,
+            f"batch-visible-{idx:03d}",
+            f"{query}Z{idx:03d}",
+        )
+        expected_visible_ids.append(folder.id)
+    context.session.commit()
+
+    # Warm cached properties before listening to SQL.
+    _ = user.all_permissions
+    _ = user.all_groups
+
+    engine = context.session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        collected_ids: list[str] = []
+        last_key = None
+        while True:
+            page = _search(
+                context,
+                user=user,
+                query=query,
+                search_documents=False,
+                search_directories=True,
+                last_key=last_key,
+                limit=2,
+            )
+            if not page:
+                break
+            collected_ids.extend(item["id"] for item in page)
+            if len(page) < 2:
+                break
+            last_key = page[-1]["_cursor_key"]
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert collected_ids == expected_visible_ids
+    for stmt in statements:
+        assert "search_effective_chain" not in stmt
+        assert "search_all_ancestors" not in stmt
+        assert "search_anc_effective_chain" not in stmt
+
+
+@pytest.mark.component
+def test_visible_search_query_hides_items_under_soft_deleted_ancestor(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_del_anc")
+    parent = _make_folder(context, "del-anc-parent", "DeletedAncParent")
+    child = _make_folder(
+        context,
+        "del-anc-child",
+        "DeletedAncChildTarget",
+        parent_id=parent.id,
+    )
+    parent.status = context.models.EntityStatus.DELETED
+    context.session.commit()
+
+    rows = _search(
+        context,
+        user=user,
+        query="DeletedAncChildTarget",
+        search_documents=False,
+        search_directories=True,
+    )
+    assert rows == []
+
+    write_options(
+        context.session,
+        "access",
+        {"bypass_traverse_checking": True},
+        expected_revisions={"bypass_traverse_checking": 0},
+    )
+    context.session.commit()
+
+    rows_bypassed = _search(
+        context,
+        user=user,
+        query="DeletedAncChildTarget",
+        search_documents=False,
+        search_directories=True,
+    )
+    assert [item["id"] for item in rows_bypassed] == [child.id]
+
+
+@pytest.mark.component
+def test_low_selectivity_document_search_avoids_repeated_revision_subquery_and_splits(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_low_sel")
+    query = "LowSelDoc"
+
+    blocked_parent = _make_folder(
+        context,
+        "low-sel-blocked-parent",
+        "BlockedParent",
+        dacl="inherit off;",
+    )
+    # 400 docs hidden via blocked parent (traverse denied) + 250 docs hidden via own inherit off.
+    for idx in range(400):
+        doc = _make_document(
+            context,
+            f"ls-parent-hidden-{idx:03d}",
+            f"{query}A{idx:03d}",
+            folder_id=blocked_parent.id,
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 100 + idx
+    for idx in range(250):
+        doc = _make_document(
+            context,
+            f"ls-self-hidden-{idx:03d}",
+            f"{query}B{idx:03d}",
+            dacl="inherit off;",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 1000 + idx
+
+    expected_visible_ids: list[str] = []
+    for idx in range(5):
+        doc = _make_document(
+            context,
+            f"ls-visible-{idx:03d}",
+            f"{query}Z{idx:03d}",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 5000 + idx
+        expected_visible_ids.append(doc.id)
+    context.session.commit()
+
+    _ = user.all_permissions
+    _ = user.all_groups
+
+    engine = context.session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        # 1. Default sort_by="name": no search_current_chain / row_number at all,
+        # and blocked parent pruning keeps total SQL count very low.
+        statements.clear()
+        name_rows = _search(
+            context,
+            user=user,
+            query=query,
+            search_documents=True,
+            search_directories=False,
+            limit=5,
+        )
+        name_stmts = list(statements)
+
+        # 2. sort_by="size": SQLite Phase 2 uses a single streaming cursor, so the
+        # candidate query runs at most twice (Phase 1 probe + Phase 2 stream), and
+        # no standalone clause/atom queries are emitted.
+        statements.clear()
+        size_rows = _search(
+            context,
+            user=user,
+            query=query,
+            sort_by="size",
+            search_documents=True,
+            search_directories=False,
+            limit=5,
+        )
+        size_stmts = list(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    assert [item["id"] for item in name_rows] == expected_visible_ids
+    assert [item["size"] for item in name_rows] == [5000, 5001, 5002, 5003, 5004]
+    assert all("current_revision_id" not in item for item in name_rows)
+    assert all("search_current_chain" not in stmt for stmt in name_stmts)
+    assert all("row_number" not in stmt.lower() for stmt in name_stmts)
+    assert not any(
+        "FROM dacl_rule_clauses" in stmt or "FROM dacl_rule_atoms" in stmt
+        for stmt in name_stmts
+    )
+
+    assert [item["id"] for item in size_rows] == expected_visible_ids
+    assert [item["size"] for item in size_rows] == [5000, 5001, 5002, 5003, 5004]
+    candidate_size_stmts = [stmt for stmt in size_stmts if "search_candidates" in stmt]
+    assert len(candidate_size_stmts) <= 2
+    assert not any(
+        "FROM dacl_rule_clauses" in stmt or "FROM dacl_rule_atoms" in stmt
+        for stmt in size_stmts
+    )
+
+
+@pytest.mark.component
+@pytest.mark.parametrize("sort_by", ["name", "created_time", "size", "last_modified"])
+@pytest.mark.parametrize("use_bypass", [False, True])
+def test_search_active_revision_resolution_parity_across_sort_modes(
+    search_query_context,
+    sort_by: str,
+    use_bypass: bool,
+):
+    context = search_query_context
+    user = _make_user(
+        context,
+        permissions=(Permissions.BYPASS_DACL,) if use_bypass else (),
+        username=f"rev_user_{sort_by}_{use_bypass}",
+    )
+    query = "RevParityDoc"
+
+    # 1. Direct active current_revision
+    doc_direct = context.models.Document(
+        id="rev-direct", title=f"{query}1Direct", folder_id="/", created_time=_NOW + 1
+    )
+    f_direct = context.models.File(
+        id="f-rev-direct", path="/tmp/direct", sha256="a" * 64, active=True
+    )
+    f_direct.size = 300
+    r_direct = context.models.DocumentRevision(
+        id="r-rev-direct",
+        document_id=doc_direct.id,
+        file_id=f_direct.id,
+        created_time=_NOW + 10,
+    )
+    context.session.add_all([doc_direct, f_direct, r_direct])
+    context.session.flush()
+    doc_direct.current_revision_id = r_direct.id
+
+    # 2. Inactive current_revision falling back along parent_revision_id chain
+    doc_chain = context.models.Document(
+        id="rev-chain", title=f"{query}2Chain", folder_id="/", created_time=_NOW + 2
+    )
+    f_chain_old = context.models.File(
+        id="f-chain-old", path="/tmp/chain-old", sha256="b" * 64, active=True
+    )
+    f_chain_old.size = 100
+    f_chain_new = context.models.File(
+        id="f-chain-new", path="/tmp/chain-new", sha256="c" * 64, active=False
+    )
+    f_chain_new.size = 999
+    r_chain_old = context.models.DocumentRevision(
+        id="r-chain-old",
+        document_id=doc_chain.id,
+        file_id=f_chain_old.id,
+        created_time=_NOW + 30,
+    )
+    r_chain_new = context.models.DocumentRevision(
+        id="r-chain-new",
+        document_id=doc_chain.id,
+        file_id=f_chain_new.id,
+        parent_revision_id=r_chain_old.id,
+        created_time=_NOW + 40,
+    )
+    context.session.add_all(
+        [doc_chain, f_chain_old, f_chain_new, r_chain_old, r_chain_new]
+    )
+    context.session.flush()
+    doc_chain.current_revision_id = r_chain_new.id
+
+    # 3. current_revision_id is None -> fallback to latest active revision by created_time
+    doc_fallback = context.models.Document(
+        id="rev-fallback",
+        title=f"{query}3Fallback",
+        folder_id="/",
+        created_time=_NOW + 3,
+    )
+    f_fb_1 = context.models.File(
+        id="f-fb-1", path="/tmp/fb1", sha256="d" * 64, active=True
+    )
+    f_fb_1.size = 150
+    f_fb_2 = context.models.File(
+        id="f-fb-2", path="/tmp/fb2", sha256="e" * 64, active=True
+    )
+    f_fb_2.size = 200
+    r_fb_1 = context.models.DocumentRevision(
+        id="r-fb-1",
+        document_id=doc_fallback.id,
+        file_id=f_fb_1.id,
+        created_time=_NOW + 5,
+    )
+    r_fb_2 = context.models.DocumentRevision(
+        id="r-fb-2",
+        document_id=doc_fallback.id,
+        file_id=f_fb_2.id,
+        created_time=_NOW + 20,
+    )
+    context.session.add_all([doc_fallback, f_fb_1, f_fb_2, r_fb_1, r_fb_2])
+    context.session.flush()
+    doc_fallback.current_revision_id = None
+
+    # 4. Document with NO active revision (must be excluded without shortening limit)
+    doc_inactive = context.models.Document(
+        id="rev-inactive",
+        title=f"{query}0Inactive",
+        folder_id="/",
+        created_time=_NOW,
+    )
+    f_inactive = context.models.File(
+        id="f-inactive", path="/tmp/inactive", sha256="f" * 64, active=False
+    )
+    f_inactive.size = 50
+    r_inactive = context.models.DocumentRevision(
+        id="r-inactive",
+        document_id=doc_inactive.id,
+        file_id=f_inactive.id,
+        created_time=_NOW + 1,
+    )
+    context.session.add_all([doc_inactive, f_inactive, r_inactive])
+    context.session.flush()
+    doc_inactive.current_revision_id = r_inactive.id
+    context.session.commit()
+
+    rows = _search(
+        context,
+        user=user,
+        query=query,
+        sort_by=sort_by,
+        search_documents=True,
+        search_directories=False,
+        limit=3,
+    )
+
+    by_id = {row["id"]: (row["last_modified"], row["size"]) for row in rows}
+    assert by_id == {
+        "rev-direct": (_NOW + 10, 300),
+        "rev-chain": (_NOW + 30, 100),
+        "rev-fallback": (_NOW + 20, 200),
+    }
+
+    expected_order = {
+        "name": ["rev-direct", "rev-chain", "rev-fallback"],
+        "created_time": ["rev-direct", "rev-chain", "rev-fallback"],
+        "size": ["rev-chain", "rev-fallback", "rev-direct"],
+        "last_modified": ["rev-direct", "rev-fallback", "rev-chain"],
+    }[sort_by]
+    assert [row["id"] for row in rows] == expected_order
+
+
+def _collect_all_search_pages(
+    context,
+    *,
+    user,
+    query: str,
+    batch_strategy,
+    extract,
+    limit: int = 2,
+    **search_kwargs,
+):
+    collected = []
+    last_key = None
+    while True:
+        page = _search(
+            context,
+            user=user,
+            query=query,
+            last_key=last_key,
+            limit=limit,
+            batch_strategy=batch_strategy,
+            **search_kwargs,
+        )
+        if not page:
+            break
+        collected.extend(extract(item) for item in page)
+        if len(page) < limit:
+            break
+        last_key = page[-1]["_cursor_key"]
+    return collected
+
+
+@pytest.mark.component
+def test_windowed_keyset_batch_strategy_matches_streaming_parity(search_query_context):
+    context = search_query_context
+    user = _make_user(context, username="alice_windowed")
+    query = "WindowParity"
+
+    for idx in range(180):
+        _make_folder(
+            context,
+            f"wp-hidden-{idx:03d}",
+            f"{query}A{idx:03d}",
+            dacl="inherit off;",
+        )
+    expected_visible_ids: list[str] = []
+    for idx in range(6):
+        folder = _make_folder(
+            context,
+            f"wp-visible-{idx:03d}",
+            f"{query}Z{idx:03d}",
+        )
+        expected_visible_ids.append(folder.id)
+    context.session.commit()
+
+    streaming_ids = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=StreamingCursorBatchStrategy(chunk_size=16),
+        extract=lambda item: item["id"],
+        search_documents=False,
+        search_directories=True,
+    )
+    windowed_ids = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=WindowedKeysetBatchStrategy(window_sizes=(20, 40)),
+        extract=lambda item: item["id"],
+        search_documents=False,
+        search_directories=True,
+    )
+    assert streaming_ids == expected_visible_ids
+    assert windowed_ids == expected_visible_ids
+
+
+@pytest.mark.component
+def test_windowed_keyset_batch_strategy_matches_streaming_for_document_size_desc(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_windowed_docs")
+    query = "WindowDocSize"
+
+    for idx in range(180):
+        doc = _make_document(
+            context,
+            f"wds-hidden-{idx:03d}",
+            f"{query}Hidden{idx:03d}",
+            dacl="inherit off;",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        file_row.size = 10_000 + idx
+
+    visible_docs: list[tuple[str, int]] = []
+    for idx in range(6):
+        doc = _make_document(
+            context,
+            f"wds-visible-{idx:03d}",
+            f"{query}Visible{idx:03d}",
+        )
+        file_row = context.session.get(context.models.File, f"file-{doc.id}")
+        assert file_row is not None
+        size = 500 + idx * 10
+        file_row.size = size
+        visible_docs.append((doc.id, size))
+    context.session.commit()
+
+    expected_visible = list(reversed(visible_docs))
+
+    streaming_rows = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=StreamingCursorBatchStrategy(chunk_size=16),
+        extract=lambda item: (item["id"], item["size"]),
+        sort_by="size",
+        sort_order="desc",
+        search_documents=True,
+        search_directories=False,
+    )
+    windowed_rows = _collect_all_search_pages(
+        context,
+        user=user,
+        query=query,
+        batch_strategy=WindowedKeysetBatchStrategy(window_sizes=(20, 40)),
+        extract=lambda item: (item["id"], item["size"]),
+        sort_by="size",
+        sort_order="desc",
+        search_documents=True,
+        search_directories=False,
+    )
+    assert streaming_rows == expected_visible
+    assert windowed_rows == expected_visible
+
+
+@pytest.mark.component
+def test_search_visibility_fails_closed_when_ancestor_chain_truncated(
+    search_query_context, monkeypatch
+):
+    from include.domains.access.authorization import storage as storage_mod
+
+    context = search_query_context
+    user = _make_user(context, username="alice_deep_search")
+
+    parent_id = "/"
+    for idx in range(5):
+        folder = _make_folder(
+            context,
+            f"deep-search-{idx}",
+            f"DeepSearchDir{idx}",
+            parent_id=parent_id,
+        )
+        parent_id = folder.id
+    _make_document(
+        context,
+        "deep-search-doc",
+        "DeepSearchTargetDoc",
+        folder_id=parent_id,
+    )
+    context.session.commit()
+
+    monkeypatch.setattr(storage_mod, "MAX_HIERARCHY_DEPTH", 2)
+
+    # Fails closed with normal traverse checking.
+    rows = _search(
+        context,
+        user=user,
+        query="DeepSearchTargetDoc",
+        search_documents=True,
+        search_directories=False,
+    )
+    assert rows == []
+
+    # Still fails closed even when bypass_traverse_checking is enabled.
+    write_options(
+        context.session,
+        "access",
+        {"bypass_traverse_checking": True},
+        expected_revisions={"bypass_traverse_checking": 0},
+    )
+    context.session.commit()
+
+    rows_bypassed = _search(
+        context,
+        user=user,
+        query="DeepSearchTargetDoc",
+        search_documents=True,
+        search_directories=False,
+    )
+    assert rows_bypassed == []
+
+
+@pytest.mark.component
+def test_batch_visibility_evaluator_fails_closed_for_orphan_ancestor(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_orphan_vis")
+    orphan = context.models.Folder(
+        id="orphan-dir",
+        name="OrphanDir",
+        parent_id=None,
+        inherit=False,
+    )
+    context.session.add(orphan)
+    context.session.flush()
+    doc = _make_document(
+        context,
+        "orphan-child-doc",
+        "OrphanChildDoc",
+        folder_id="orphan-dir",
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    context.session.commit()
+
+    evaluator = BatchVisibilityEvaluator.for_user(context.session, user, _NOW_DT)
+    candidate = VisibilityCandidate(
+        node_id=doc.id,
+        parent_id="orphan-dir",
+        object_type=ObjectType.DOCUMENT,
+        inherit=False,
+    )
+    evaluator.preload([candidate])
+    assert evaluator.is_visible(candidate) is False
+
+
+@pytest.mark.component
+def test_batch_visibility_evaluator_preserves_deleted_candidate_status_when_used_as_ancestor(
+    search_query_context,
+):
+    context = search_query_context
+    user = _make_user(context, username="alice_deleted_anc_vis")
+    deleted_dir = _make_folder(
+        context,
+        "deleted-dir-vis",
+        "DeletedDirVis",
+    )
+    deleted_dir.status = EntityStatus.DELETED
+    context.session.flush()
+    child_doc = _make_document(
+        context,
+        "deleted-child-doc-vis",
+        "DeletedChildDocVis",
+        folder_id=deleted_dir.id,
+    )
+    context.session.commit()
+
+    evaluator = BatchVisibilityEvaluator.for_user(context.session, user, _NOW_DT)
+    deleted_dir_candidate = VisibilityCandidate(
+        node_id=deleted_dir.id,
+        parent_id="/",
+        object_type=ObjectType.DIRECTORY,
+        inherit=True,
+        status=EntityStatus.DELETED.value,
+    )
+    child_doc_candidate = VisibilityCandidate(
+        node_id=child_doc.id,
+        parent_id=deleted_dir.id,
+        object_type=ObjectType.DOCUMENT,
+        inherit=True,
+    )
+    evaluator.preload([deleted_dir_candidate, child_doc_candidate])
+    assert evaluator.is_visible(child_doc_candidate) is False
+
+
+@pytest.mark.component
+def test_batch_visibility_evaluator_honors_bypass_dacl_and_evicts_document_caches(
+    search_query_context,
+):
+    context = search_query_context
+    regular_user = _make_user(context, username="alice_cache_evict")
+    admin_user = _make_user(
+        context,
+        username="admin_bypass_vis",
+        permissions=(Permissions.BYPASS_DACL,),
+    )
+    blocked_dir = _make_folder(
+        context, "evict-blocked-dir", "EvictBlockedDir", dacl="inherit off;"
+    )
+    hidden_doc = _make_document(
+        context,
+        "evict-hidden-doc",
+        "EvictHiddenDoc",
+        folder_id=blocked_dir.id,
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    visible_doc = _make_document(
+        context,
+        "evict-visible-doc",
+        "EvictVisibleDoc",
+        folder_id="/",
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    context.session.commit()
+    _ = regular_user.all_permissions
+    _ = regular_user.all_groups
+    _ = admin_user.all_permissions
+    _ = admin_user.all_groups
+
+    regular_eval = BatchVisibilityEvaluator.for_user(
+        context.session, regular_user, _NOW_DT
+    )
+    candidates = [
+        VisibilityCandidate(
+            node_id=hidden_doc.id,
+            parent_id=blocked_dir.id,
+            object_type=ObjectType.DOCUMENT,
+            inherit=False,
+        ),
+        VisibilityCandidate(
+            node_id=visible_doc.id,
+            parent_id="/",
+            object_type=ObjectType.DOCUMENT,
+            inherit=False,
+        ),
+    ]
+    regular_eval.preload(candidates)
+    assert regular_eval.is_visible(candidates[0]) is False
+    assert regular_eval.is_visible(candidates[1]) is True
+    assert hidden_doc.id not in regular_eval._node_meta
+    assert visible_doc.id not in regular_eval._node_meta
+    assert hidden_doc.id not in regular_eval._node_policies
+    assert visible_doc.id not in regular_eval._node_policies
+
+    engine = context.session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        bypass_eval = BatchVisibilityEvaluator.for_user(
+            context.session, admin_user, _NOW_DT
+        )
+        bypass_eval.preload(candidates)
+        assert bypass_eval.is_visible(candidates[0]) is True
+        assert bypass_eval.is_visible(candidates[1]) is True
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+    assert statements == []
+
+
+@pytest.mark.component
+def test_search_results_omit_internal_fields(search_query_context):
+    context = search_query_context
+    regular_user = _make_user(context, username="alice_no_leak")
+    admin_user = _make_user(
+        context,
+        username="admin_no_leak",
+        permissions=(Permissions.BYPASS_DACL,),
+    )
+    _make_folder(context, "leak-dir", "LeakCheckDir")
+    _make_document(context, "leak-doc", "LeakCheckDoc")
+    context.session.commit()
+
+    for user in (regular_user, admin_user):
+        for sort_by in ("name", "size"):
+            rows = _search(context, user=user, query="LeakCheck", sort_by=sort_by)
+            assert len(rows) == 2
+            for row in rows:
+                assert "type_rank" not in row
+                assert "name_sort_key" not in row
+                assert "inherit" not in row
+                assert "current_revision_id" not in row

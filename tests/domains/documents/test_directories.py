@@ -23,7 +23,7 @@ class TestDirectoryOperations:
         assert response["data"]["parent_id"] is None
 
     @pytest.mark.asyncio
-    async def test_parent_id_hidden_without_parent_read_access(
+    async def test_parent_id_hidden_without_parent_list_access(
         self,
         authenticated_client: CFMSTestClient,
         test_user,
@@ -32,54 +32,30 @@ class TestDirectoryOperations:
     ):
         parent = await directory_factory()
         child = await directory_factory(parent_id=parent["folder_id"])
-        restricted_rule = {
-            "read": [
-                {
-                    "match": "all",
-                    "match_groups": [
-                        {
-                            "rights": {
-                                "match": "all",
-                                "require": ["super_list_directory"],
-                            }
-                        }
-                    ],
-                }
-            ]
-        }
         assert_success(
-            await authenticated_client.send_request(
-                "core.directory.access_rule.set",
-                {
-                    "directory_id": parent["folder_id"],
-                    "access_rules": restricted_rule,
-                    "inherit_parent": False,
-                },
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                f'inherit off; allow [TRAVERSE] to user("{test_user["user_id"]}");',
             )
         )
         assert_success(
-            await authenticated_client.grant_access(
-                entity_type="user",
-                entity_identifier=test_user["user_id"],
-                target_type="directory",
-                target_identifier=child["folder_id"],
-                access_types=["read"],
-                start_time=0,
+            await authenticated_client.set_directory_dacl(
+                child["folder_id"],
+                (
+                    "inherit off; "
+                    f'allow [LIST_DIRECTORY, READ_METADATA] to user("{test_user["user_id"]}");'
+                ),
             )
         )
 
         listing = assert_success(await user_client.list_directory(child["folder_id"]))
-        info = assert_success(
-            await user_client.send_request(
-                "core.directory.info.get", {"directory_id": child["folder_id"]}
-            )
-        )
+        info = assert_success(await user_client.get_directory_info(child["folder_id"]))
 
         assert listing["parent_id"] is None
         assert info["parent_id"] is None
 
     @pytest.mark.asyncio
-    async def test_super_list_directory_keeps_parent_id_visible(
+    async def test_bypass_dacl_keeps_parent_id_visible(
         self,
         authenticated_client: CFMSTestClient,
         test_user,
@@ -89,27 +65,13 @@ class TestDirectoryOperations:
         parent = await directory_factory()
         child = await directory_factory(parent_id=parent["folder_id"])
         assert_success(
-            await authenticated_client.send_request(
-                "core.directory.access_rule.set",
-                {
-                    "directory_id": parent["folder_id"],
-                    "access_rules": {
-                        "read": [
-                            {
-                                "match": "all",
-                                "match_groups": [
-                                    {"groups": {"match": "all", "require": ["sysop"]}}
-                                ],
-                            }
-                        ]
-                    },
-                    "inherit_parent": False,
-                },
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"], "inherit off;"
             )
         )
         assert_success(
             await authenticated_client.change_user_permissions(
-                test_user["user_id"], [permission_entry("super_list_directory")]
+                test_user["user_id"], [permission_entry("bypass_dacl")]
             )
         )
 
@@ -211,48 +173,23 @@ class TestDirectoryOperations:
             "Hidden Name Winner", parent_id=parent["folder_id"]
         )
         assert_success(
-            await authenticated_client.send_request(
-                "core.directory.access_rule.set",
-                {
-                    "directory_id": winner["folder_id"],
-                    "inherit_parent": False,
-                    "access_rules": {
-                        "read": [
-                            {
-                                "match": "all",
-                                "match_groups": [
-                                    {"groups": {"match": "all", "require": ["sysop"]}}
-                                ],
-                            }
-                        ]
-                    },
-                },
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, LIST_DIRECTORY, CREATE_DIRECTORY] "
+                    f'to user("{test_user["user_id"]}");'
+                ),
             )
         )
         assert_success(
-            await authenticated_client.change_user_permissions(
-                test_user["user_id"],
-                [
-                    permission_entry("create_directory"),
-                    permission_entry("super_create_directory"),
-                ],
-            )
-        )
-        assert_success(
-            await authenticated_client.grant_access(
-                entity_type="user",
-                entity_identifier=test_user["user_id"],
-                target_type="directory",
-                target_identifier=parent["folder_id"],
-                access_types=["read", "write"],
-                start_time=0,
+            await authenticated_client.set_directory_dacl(
+                winner["folder_id"], "inherit off;"
             )
         )
         assert_success(await user_client.list_directory(parent["folder_id"]))
         assert_error(
-            await user_client.send_request(
-                "core.directory.info.get", {"directory_id": winner["folder_id"]}
-            ),
+            await user_client.get_directory_info(winner["folder_id"]),
             403,
         )
 
@@ -270,7 +207,7 @@ class TestDirectoryOperations:
         assert "duplicate_id" not in error["data"]
 
     @pytest.mark.asyncio
-    async def test_directory_move_conflict_preserves_parent_and_reports_winner(
+    async def test_directory_reparent_conflict_preserves_parent_and_reports_winner(
         self,
         authenticated_client: CFMSTestClient,
         directory_factory,
@@ -281,7 +218,7 @@ class TestDirectoryOperations:
         moving = await directory_factory("Moving Folder", parent_id=source["folder_id"])
         winner = await document_factory(moving["name"], folder_id=target["folder_id"])
 
-        response = await authenticated_client.move_directory(
+        response = await authenticated_client.reparent_directory(
             moving["folder_id"], target["folder_id"]
         )
 
@@ -443,15 +380,15 @@ class TestDirectoryOperations:
         assert info["parent_id"] == "/"
         assert info["name"] == parent["name"]
         assert "created_time" in info
-        assert "access_rules" in info
-        assert "info_code" in info
+        assert "access_rules" not in info
+        assert "info_code" not in info
 
 
-class TestDirectoryMove:
-    """Test directory move operations."""
+class TestDirectoryReparent:
+    """Test directory reparent operations."""
 
     @pytest.mark.asyncio
-    async def test_move_directory_to_root(
+    async def test_reparent_directory_to_root(
         self,
         authenticated_client: CFMSTestClient,
         directory_factory,
@@ -459,13 +396,13 @@ class TestDirectoryMove:
         parent = await directory_factory()
         child = await directory_factory(parent_id=parent["folder_id"])
 
-        response = await authenticated_client.move_directory(child["folder_id"], None)
+        response = await authenticated_client.reparent_directory(
+            child["folder_id"], None
+        )
 
         assert_success(response)
         info = assert_success(
-            await authenticated_client.send_request(
-                "core.directory.info.get", {"directory_id": child["folder_id"]}
-            )
+            await authenticated_client.get_directory_info(child["folder_id"])
         )
         assert info["parent_id"] == "/"
         parent_listing = assert_success(
@@ -482,7 +419,7 @@ class TestDirectoryMove:
             pytest.param(2, id="grandchild"),
         ],
     )
-    async def test_move_directory_into_its_subtree_is_rejected(
+    async def test_reparent_directory_into_its_subtree_is_rejected(
         self,
         authenticated_client: CFMSTestClient,
         directory_factory,
@@ -493,20 +430,18 @@ class TestDirectoryMove:
         for _ in range(target_depth):
             target = await directory_factory(parent_id=target["folder_id"])
 
-        response = await authenticated_client.move_directory(
+        response = await authenticated_client.reparent_directory(
             parent["folder_id"], target["folder_id"]
         )
 
         assert_error(response, 400)
         info = assert_success(
-            await authenticated_client.send_request(
-                "core.directory.info.get", {"directory_id": parent["folder_id"]}
-            )
+            await authenticated_client.get_directory_info(parent["folder_id"])
         )
         assert info["parent_id"] == "/"
 
     @pytest.mark.asyncio
-    async def test_move_directory_to_sibling(
+    async def test_reparent_directory_to_sibling(
         self,
         authenticated_client: CFMSTestClient,
         directory_factory,
@@ -515,7 +450,7 @@ class TestDirectoryMove:
         first = await directory_factory(parent_id=parent["folder_id"])
         second = await directory_factory(parent_id=parent["folder_id"])
 
-        response = await authenticated_client.move_directory(
+        response = await authenticated_client.reparent_directory(
             second["folder_id"], first["folder_id"]
         )
 

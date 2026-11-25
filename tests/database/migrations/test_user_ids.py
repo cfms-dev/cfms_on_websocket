@@ -85,7 +85,7 @@ def test_account_identity_migration_preserves_references(sqlite_engine_factory):
         )
         connection.commit()
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "e952c02c1454")
         users = Base.metadata.tables["users"]
         user_id = connection.scalar(
             select(users.c.id).where(users.c.username == "alice")
@@ -101,16 +101,12 @@ def test_account_identity_migration_preserves_references(sqlite_engine_factory):
             select(Base.metadata.tables["user_passwords"])
         ).one()
         assert password.pass_hash == "preserved"
+        oae_table = Table("object_access_entries", MetaData(), autoload_with=connection)
         grants = (
-            connection.execute(
-                select(
-                    Base.metadata.tables["object_access_entries"].c.entity_identifier
-                )
-            )
-            .scalars()
-            .all()
+            connection.execute(select(oae_table.c.entity_identifier)).scalars().all()
         )
         assert grants == [str(user_id)]
+        command.upgrade(config, "head")
         assert (
             connection.scalar(select(Base.metadata.tables["audit_entries"].c.target))
             == "alice"

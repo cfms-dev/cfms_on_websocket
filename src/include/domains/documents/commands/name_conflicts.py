@@ -1,14 +1,20 @@
+from collections.abc import Sequence
 from contextlib import contextmanager
+from itertools import batched
 lazy from collections.abc import Iterator
 
+from cacl_compiler import ObjectType
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 lazy from sqlalchemy.orm import Session
 
-from include.config.constants import ROOT_DIRECTORY_ID
+from include.config.constants import QUERY_CHUNK_SIZE
 from include.database.errors import is_unique_constraint_violation
 from include.database.models.documents import Document, EntityStatus, Folder, Node
-from include.domains.access.authorization.evaluation import check_access_requirements
+from include.domains.access.authorization.engine import is_effective_mask_visible
+from include.domains.access.authorization.evaluation import (
+    evaluate_node_effective_masks,
+)
 from include.messages import Messages as smsg
 lazy from include.database.models.identity import User
 
@@ -44,32 +50,6 @@ def node_name_mutation(session: Session, parent_id: str, name: str) -> Iterator[
         raise NodeNameConflictError(parent_id, name) from exc
 
 
-def get_target_folder_and_check_write(
-    session: Session, user: User, target_folder_id: str | None, super_permission: str
-) -> tuple[Folder | None, int, str]:
-    """
-    Looks up the target folder and checks write access.
-    Returns (folder_object, error_code, error_message).
-    If valid, error_code is 0.
-    """
-    if not target_folder_id:
-        target_folder_id = ROOT_DIRECTORY_ID
-
-    target_folder = session.get(Folder, target_folder_id)
-    if not target_folder:
-        return None, 404, smsg.TARGET_DIRECTORY_NOT_FOUND
-
-    if not check_access_requirements(session, user, target_folder, "write"):
-        if (
-            target_folder_id == ROOT_DIRECTORY_ID
-            and super_permission in user.all_permissions
-        ):
-            return target_folder, 0, ""
-        return None, 403, smsg.ACCESS_DENIED_WRITE_DIRECTORY
-
-    return target_folder, 0, ""
-
-
 def describe_node_name_conflict(
     session: Session, user: User, parent_id: str, name: str
 ) -> tuple[dict, str]:
@@ -97,10 +77,23 @@ def describe_subtree_restore_name_conflict(
     status_operation_id: str | None,
     parent_id: str,
     name: str,
+    *,
+    restoring_node_ids: Sequence[str] | None = None,
 ) -> tuple[dict, str]:
-    if status_operation_id:
-        restoring = Node.__table__.alias("restoring_nodes")
-        winner = Node.__table__.alias("winning_nodes")
+    restoring = Node.__table__.alias("restoring_nodes")
+    winner = Node.__table__.alias("winning_nodes")
+
+    if restoring_node_ids is not None:
+        filter_batches = [
+            restoring.c.id.in_(list(chunk))
+            for chunk in batched(restoring_node_ids, QUERY_CHUNK_SIZE)
+        ]
+    elif status_operation_id:
+        filter_batches = [restoring.c.status_operation_id == status_operation_id]
+    else:
+        filter_batches = []
+
+    for scope_filter in filter_batches:
         winner_id = session.execute(
             select(winner.c.id)
             .select_from(
@@ -113,7 +106,7 @@ def describe_subtree_restore_name_conflict(
                 )
             )
             .where(
-                restoring.c.status_operation_id == status_operation_id,
+                scope_filter,
                 restoring.c.status == EntityStatus.DELETED,
                 winner.c.status != EntityStatus.DELETED,
                 winner.c.id != restoring.c.id,
@@ -138,7 +131,13 @@ def _describe_node_name_conflict_winner(
     if not isinstance(winner, Document | Folder):
         raise TypeError(f"Unsupported conflicting node type: {winner.type!r}")
 
-    readable = check_access_requirements(session, user, winner, "read")
+    masks = evaluate_node_effective_masks(session, user, winner)
+    obj_type = (
+        ObjectType.DIRECTORY if isinstance(winner, Folder) else ObjectType.DOCUMENT
+    )
+    readable = masks.allowed_traverse and is_effective_mask_visible(
+        obj_type, masks.effective_mask
+    )
     visible_id = winner.id if readable else None
     if isinstance(winner, Document):
         payload = {"type": "document", "id": visible_id}

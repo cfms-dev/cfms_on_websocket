@@ -5,17 +5,25 @@ import pytest
 from pydantic import ValidationError
 
 from include.config.constants import (
+    DACL_SOURCE_MAX_LENGTH,
     DOWNLOAD_TRANSFER_MIN_CHUNK_SIZE,
     PAGINATION_MAX_PAGE_SIZE,
 )
 from include.domains.documents.handlers.directories import (
     RequestCreateDirectoryHandler,
+    RequestGetDirectoryDaclHandler,
+    RequestReparentDirectoryHandler,
     RequestRestoreDirectoryHandler,
+    RequestSetDirectoryDaclHandler,
 )
 from include.domains.documents.handlers.documents import (
+    RequestCreateDocumentHandler,
     RequestDownloadFileHandler,
+    RequestGetDocumentDaclHandler,
     RequestGetDocumentHandler,
     RequestGetDocumentInfoHandler,
+    RequestReparentDocumentHandler,
+    RequestSetDocumentDaclHandler,
 )
 from include.domains.documents.handlers.search import RequestSearchHandler
 from include.domains.identity.handlers.auth import (
@@ -37,7 +45,6 @@ from include.domains.identity.handlers.users import (
     RequestListUsersHandler,
     RequestManageUserStatusHandler,
     RequestSetPasswdHandler,
-    RequestUpdateUserBlockHandler,
 )
 from include.domains.identity.tokens import TokenPurpose
 from include.domains.keyrings.handlers.keyrings import RequestListUserKeysHandler
@@ -340,20 +347,79 @@ def test_active_user_status_rejects_reason_field(reason):
         )
 
 
-@pytest.mark.parametrize("reason", [None, "x" * 1024], ids=["null", "maximum-length"])
-def test_update_user_block_accepts_nullable_or_maximum_reason(reason):
-    request = RequestUpdateUserBlockHandler.request_model.model_validate(
-        {"block_id": "block", "reason": reason}
+def test_set_dacl_requests_accept_empty_policy_and_allow_self_lockout():
+    doc_req = RequestSetDocumentDaclHandler.request_model.model_validate(
+        {"document_id": "doc-1", "dacl": "", "allow_self_lockout": True}
     )
+    assert doc_req.dacl == ""
+    assert doc_req.allow_self_lockout is True
 
-    assert request.reason == reason
+    dir_req = RequestSetDirectoryDaclHandler.request_model.model_validate(
+        {"directory_id": "dir-1", "dacl": "inherit off;"}
+    )
+    assert dir_req.dacl == "inherit off;"
+    assert "allow_self_lockout" not in dir_req.model_fields_set
+
+    oversized_dacl = "a" * (DACL_SOURCE_MAX_LENGTH + 1)
+    for model_cls, payload in (
+        (
+            RequestSetDocumentDaclHandler.request_model,
+            {"document_id": "doc-1", "dacl": oversized_dacl},
+        ),
+        (
+            RequestSetDirectoryDaclHandler.request_model,
+            {"directory_id": "dir-1", "dacl": oversized_dacl},
+        ),
+        (
+            RequestCreateDocumentHandler.request_model,
+            {"title": "doc.txt", "dacl": oversized_dacl},
+        ),
+        (
+            RequestCreateDirectoryHandler.request_model,
+            {"name": "dir", "dacl": oversized_dacl},
+        ),
+    ):
+        with pytest.raises(ValidationError) as exc:
+            model_cls.model_validate(payload)
+        assert exc.value.errors()[0]["type"] == "string_too_long"
 
 
-def test_update_user_block_rejects_empty_reason():
-    with pytest.raises(ValidationError, match="reason"):
-        RequestUpdateUserBlockHandler.request_model.model_validate(
-            {"block_id": "block", "reason": ""}
+def test_get_dacl_and_reparent_requests_validate_fields():
+    doc_get = RequestGetDocumentDaclHandler.request_model.model_validate(
+        {"document_id": "doc-1", "annotate_users": True}
+    )
+    assert doc_get.annotate_users is True
+
+    dir_get = RequestGetDirectoryDaclHandler.request_model.model_validate(
+        {"directory_id": "dir-1"}
+    )
+    assert "annotate_users" not in dir_get.model_fields_set
+
+    doc_reparent = RequestReparentDocumentHandler.request_model.model_validate(
+        {"document_id": "doc-1", "target_folder_id": None}
+    )
+    assert doc_reparent.target_folder_id is None
+
+    dir_reparent = RequestReparentDirectoryHandler.request_model.model_validate(
+        {"folder_id": "dir-1", "target_folder_id": None}
+    )
+    assert dir_reparent.target_folder_id is None
+
+    with pytest.raises(ValidationError) as exc:
+        RequestReparentDocumentHandler.request_model.model_validate(
+            {"document_id": "doc-1", "target_folder_id": "dir-2", "new_title": "x"}
         )
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [
+        ("extra_forbidden", ("new_title",))
+    ]
+
+    with pytest.raises(ValidationError) as exc:
+        RequestReparentDirectoryHandler.request_model.model_validate(
+            {"folder_id": "dir-1", "target_folder_id": "dir-2", "new_name": "x"}
+        )
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [
+        ("extra_forbidden", ("new_name",))
+    ]
 
 
 @pytest.mark.parametrize("field", ["username", "old_passwd"])
@@ -442,9 +508,6 @@ def test_list_user_keys_rejects_null_user_id():
     ("handler_type", "request_data"),
     [
         pytest.param(
-            RequestCreateDirectoryHandler, {"name": "reports"}, id="directory"
-        ),
-        pytest.param(
             RequestGetDocumentInfoHandler,
             {"document_id": "document"},
             id="document-info",
@@ -460,6 +523,59 @@ def test_legacy_document_request_preserves_unknown_fields(handler_type, request_
         **request_data,
         "legacy_option": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("handler_type", "base_payload", "extra_field", "extra_value"),
+    [
+        pytest.param(
+            RequestCreateDirectoryHandler,
+            {"name": "reports"},
+            "access_rules",
+            {},
+            id="directory-access-rules",
+        ),
+        pytest.param(
+            RequestCreateDirectoryHandler,
+            {"name": "reports"},
+            "inherit_parent",
+            False,
+            id="directory-inherit-parent",
+        ),
+        pytest.param(
+            RequestCreateDirectoryHandler,
+            {"name": "reports"},
+            "legacy_option",
+            True,
+            id="directory-legacy-option",
+        ),
+        pytest.param(
+            RequestCreateDocumentHandler,
+            {"title": "report.txt"},
+            "access_rules",
+            {},
+            id="document-access-rules",
+        ),
+        pytest.param(
+            RequestCreateDocumentHandler,
+            {"title": "report.txt"},
+            "inherit_parent",
+            False,
+            id="document-inherit-parent",
+        ),
+    ],
+)
+def test_create_requests_reject_removed_and_unknown_fields(
+    handler_type, base_payload, extra_field, extra_value
+):
+    with pytest.raises(ValidationError) as exc:
+        handler_type.request_model.model_validate(
+            {**base_payload, extra_field: extra_value}
+        )
+
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [
+        ("extra_forbidden", (extra_field,))
+    ]
 
 
 def test_get_document_request_rejects_unknown_fields():

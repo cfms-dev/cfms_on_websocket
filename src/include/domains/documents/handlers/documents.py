@@ -2,11 +2,14 @@ __all__ = [
     "RequestCreateDocumentHandler",
     "RequestDeleteDocumentHandler",
     "RequestDownloadFileHandler",
+    "RequestGetDocumentDaclHandler",
     "RequestGetDocumentHandler",
     "RequestGetDocumentInfoHandler",
-    "RequestMoveDocumentHandler",
+    "RequestPurgeDocumentHandler",
     "RequestRenameDocumentHandler",
-    "RequestSetDocumentRulesHandler",
+    "RequestReparentDocumentHandler",
+    "RequestRestoreDocumentHandler",
+    "RequestSetDocumentDaclHandler",
     "RequestSetDocumentTagsHandler",
     "RequestUploadDocumentHandler",
     "RequestUploadFileHandler",
@@ -18,7 +21,7 @@ import time
 import uuid
 from typing import Annotated, Any
 
-import jsonschema
+from cacl_compiler import AtomicOp, ObjectType
 from pydantic import ConfigDict, Field, StringConstraints
 lazy from sqlalchemy.orm import Session as ORMSession
 
@@ -42,12 +45,16 @@ from include.database.models.documents import (
 from include.database.models.files import File, FileTask, FileTaskStatus, TransferMode
 from include.database.models.identity import User
 from include.database.session import Session
-from include.domains.access.authorization.access_rules import apply_access_rules
-from include.domains.access.authorization.compiled_rules import (
-    get_access_rules_dict,
-    get_access_rules_list,
+from include.domains.access.authorization.evaluation import (
+    authorize_create_on_parent,
+    authorize_node_operation,
+    authorize_reparent,
+    authorize_restore,
 )
-from include.domains.access.authorization.evaluation import check_access_requirements
+from include.domains.access.authorization.storage import (
+    delete_node_dacl_rules_for_targets,
+    persist_node_policy,
+)
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import (
     cancel_file_tasks_for_files,
@@ -57,7 +64,6 @@ from include.domains.documents.commands.file_tasks import (
 from include.domains.documents.commands.name_conflicts import (
     NodeNameConflictError,
     describe_node_name_conflict,
-    get_target_folder_and_check_write,
     node_name_mutation,
 )
 from include.domains.documents.commands.revision_deletion import (
@@ -69,14 +75,21 @@ from include.domains.documents.commands.upload_cleanup import (
 from include.domains.documents.creation_limits import check_document_creation_limits
 from include.domains.documents.download_limits import check_download_issue_limits
 from include.domains.documents.file_task_signals import publish_cancelled_file_tasks
+from include.domains.documents.handlers.dacl import (
+    DaclSource,
+    NodeDaclTargetSpec,
+    handle_get_node_dacl,
+    handle_set_node_dacl,
+    prepare_initial_node_dacl,
+)
 from include.domains.documents.handlers.name_conflict_responses import (
     respond_to_node_name_conflict,
 )
+from include.domains.documents.queries.active_revisions import (
+    fetch_latest_active_revisions_by_document,
+)
 from include.domains.documents.queries.file_references import (
     find_unreachable_document_file_ids,
-)
-from include.domains.documents.queries.listing import (
-    fetch_latest_active_revisions_by_document,
 )
 from include.domains.security.guards.rate_limits import risk_control_transaction
 from include.exceptions.misc import NoActiveRevisionsError
@@ -93,8 +106,6 @@ lazy from include.domains.documents.types import RevisionID
 
 _Sha256 = Annotated[str, StringConstraints(pattern="^[0-9A-Fa-f]{64}$")]
 _Tag = Annotated[str, StringConstraints(min_length=1, max_length=255)]
-
-# FIXME: Extract to `include.types` when necessary.
 _NonNegativeInteger = Annotated[JsonInteger, Field(ge=0)]
 
 
@@ -112,11 +123,22 @@ class _DocumentIDRequest(RequestDataModel):
     document_id: NonEmptyString
 
 
+class _GetDocumentDaclRequest(RequestDataModel):
+    document_id: NonEmptyString
+    annotate_users: Omittable[bool] = REQUEST_UNSET
+
+
+class _SetDocumentDaclRequest(RequestDataModel):
+    document_id: NonEmptyString
+    dacl: DaclSource
+    allow_self_lockout: Omittable[bool] = REQUEST_UNSET
+
+
 class _CreateDocumentRequest(RequestDataModel):
     folder_id: str | None = None
     title: NonEmptyString
-    access_rules: Omittable[dict[str, Any]] = REQUEST_UNSET
-    inherit_parent: Omittable[bool] = REQUEST_UNSET
+    dacl: Omittable[DaclSource] = REQUEST_UNSET
+    allow_self_lockout: Omittable[bool] = REQUEST_UNSET
 
 
 class _UploadDocumentRequest(RequestDataModel):
@@ -149,13 +171,7 @@ class _UploadFileRequest(RequestDataModel):
     restart: Omittable[bool] = REQUEST_UNSET
 
 
-class _SetDocumentRulesRequest(RequestDataModel):
-    document_id: NonEmptyString
-    access_rules: dict[str, list[Any]]
-    inherit_parent: Omittable[bool] = REQUEST_UNSET
-
-
-class _MoveDocumentRequest(RequestDataModel):
+class _ReparentDocumentRequest(RequestDataModel):
     document_id: NonEmptyString
     target_folder_id: str | None = None
 
@@ -178,21 +194,6 @@ def create_file_task(
     *,
     issued_by_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    """Creates a new file processing task for the specified file.
-
-    Args:
-        session: Transaction that owns the file and the new task.
-        file (File): The file object for which the task is to be generated.
-
-    Returns:
-        dict or None: A dictionary containing the task details:
-            - task_id (int): The unique identifier of the created task.
-            - provider (str): The file transfer provider (e.g., "native").
-            - start_time (float): The start time of the task.
-            - end_time (float): The end time of the task (1 hour after start).
-        Returns None if the file with the given file_id does not exist.
-
-    """
     if not file:
         raise ValueError("File can not be None when creating a file task")
 
@@ -253,21 +254,21 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
     rate_limit_cost = 3
 
     def handle(self, handler, request):
-
         document_id = request.document_id
-
-        if not document_id:
-            handler.conclude_request(400, {}, smsg.DOCUMENT_ID_REQUIRED)
-            return
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
-
             document = session.get(Document, document_id)
 
             if not document:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
+
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.READ_METADATA
+            ).allowed:
+                handler.conclude_access_denial()
+                return Result(code=403, target=document_id, user_id=handler.user_id)
 
             latest_revision = fetch_latest_active_revisions_by_document(
                 session, [document.id]
@@ -278,23 +279,6 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
                 )
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if not check_access_requirements(
-                session, user, document, access_type="read"
-            ):
-                handler.conclude_access_denial()
-                return Result(code=403, target=document_id, user_id=handler.user_id)
-
-            info_code = 0
-            access_rules = []
-            if Permissions.VIEW_ACCESS_RULES in user.all_permissions:
-                access_rules = get_access_rules_list(
-                    session,
-                    target_type="document",
-                    target_id=document.id,
-                )
-            else:
-                info_code = 1  # No permission to view document access rules.
-
             data = {
                 "document_id": document.id,
                 "parent_id": document.folder_id,
@@ -302,56 +286,70 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
                 "size": latest_revision.file.size,
                 "created_time": document.created_time,
                 "last_modified": latest_revision.created_time,
-                "access_rules": access_rules,
-                "info_code": info_code,
+                "metadata": serialize_document_metadata(document),
             }
-
-            if Permissions.VIEW_METADATA in user.all_permissions:
-                data["metadata"] = serialize_document_metadata(document)
 
             handler.conclude_request(200, data, "Document info retrieved successfully")
             return Result(code=0, target=document_id, user_id=handler.user_id)
 
 
-class RequestGetDocumentAccessRulesHandler(RequestHandler[_DocumentIDRequest]):
-    request_model = _DocumentIDRequest
+_DOCUMENT_DACL_TARGET = NodeDaclTargetSpec(
+    model_cls=Document,
+    target_type=ObjectType.DOCUMENT,
+    not_found_message=smsg.DOCUMENT_NOT_FOUND,
+    get_success_message="Document DACL retrieved successfully",
+    set_success_message="Document DACL updated successfully",
+    on_before_commit=lambda doc, u: mark_document_modified(doc, u.id),
+)
+
+
+class RequestGetDocumentDaclHandler(RequestHandler[_GetDocumentDaclRequest]):
+    """Handles the "core.document.dacl.get" action."""
+
+    request_model = _GetDocumentDaclRequest
     requires_auth = True
     rate_limit_cost = 2
 
     def handle(self, handler, request):
-
-        document_id: str = request.document_id
+        annotate_users: bool = (
+            request.annotate_users
+            if request.annotate_users is not REQUEST_UNSET
+            else False
+        )
 
         with Session() as session:
-            user = User.get_existing(session, handler.user_id)
-            document = session.get(Document, document_id)
-
-            if not document:
-                handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, user_id=handler.user_id)
-
-            if (
-                not check_access_requirements(
-                    session, user, document, access_type="read"
-                )
-                or Permissions.VIEW_ACCESS_RULES not in user.all_permissions
-            ):
-                handler.conclude_access_denial()
-                return Result(code=403, target=document_id, user_id=handler.user_id)
-
-            handler.conclude_request(
-                200,
-                {
-                    "rules": get_access_rules_dict(
-                        session,
-                        target_type="document",
-                        target_id=document.id,
-                    ),
-                    "inherit": document.inherit,
-                },
-                "Document access rules retrieved successfully",
+            return handle_get_node_dacl(
+                session,
+                handler,
+                spec=_DOCUMENT_DACL_TARGET,
+                target_id=request.document_id,
+                annotate_users=annotate_users,
             )
-            return Result(code=0, target=document_id, user_id=handler.user_id)
+
+
+class RequestSetDocumentDaclHandler(RequestHandler[_SetDocumentDaclRequest]):
+    """Handles the "core.document.dacl.set" action."""
+
+    request_model = _SetDocumentDaclRequest
+    requires_auth = True
+    rate_limit_cost = 5
+
+    def handle(self, handler, request):
+        allow_self_lockout: bool = (
+            request.allow_self_lockout
+            if request.allow_self_lockout is not REQUEST_UNSET
+            else False
+        )
+
+        with Session() as session:
+            return handle_set_node_dacl(
+                session,
+                handler,
+                spec=_DOCUMENT_DACL_TARGET,
+                target_id=request.document_id,
+                dacl_source=request.dacl,
+                allow_self_lockout=allow_self_lockout,
+            )
 
 
 class RequestGetDocumentHandler(RequestHandler[_DocumentIDRequest]):
@@ -373,7 +371,9 @@ class RequestGetDocumentHandler(RequestHandler[_DocumentIDRequest]):
                 response_code = result_code = 404
                 data = {}
                 message = smsg.DOCUMENT_NOT_FOUND
-            elif not check_access_requirements(session, user, document):
+            elif not authorize_node_operation(
+                session, user, document, AtomicOp.READ_CONTENT
+            ).allowed:
                 response_code = result_code = 403
                 data = {}
                 message = smsg.ACCESS_DENIED
@@ -437,18 +437,40 @@ def _create_document_in_transaction(
     remote_address: str,
     folder_id: str,
     title: str,
-    access_rules: dict[str, Any],
-    inherit_parent: bool,
+    dacl_source: str | None,
+    allow_self_lockout: bool,
 ) -> tuple[int, dict[str, Any], str, Result]:
     result_data = {"title": title}
 
     with risk_control_transaction(session):
         user = User.get_existing(session, user_id)
-        if Permissions.CREATE_DOCUMENT not in user.all_permissions:
+
+        parent_folder = session.get(Folder, folder_id or ROOT_DIRECTORY_ID)
+        if parent_folder is None:
+            return (
+                404,
+                {},
+                smsg.TARGET_DIRECTORY_NOT_FOUND,
+                Result(
+                    code=404,
+                    target=folder_id,
+                    data=result_data,
+                    user_id=user_id,
+                ),
+            )
+
+        create_check = authorize_create_on_parent(
+            session,
+            user,
+            parent_folder,
+            AtomicOp.CREATE_DOCUMENT,
+            require_write_dacl=dacl_source is not None,
+        )
+        if not create_check.can_create:
             return (
                 403,
                 {},
-                smsg.PERMISSION_DENIED,
+                smsg.ACCESS_DENIED_WRITE_DIRECTORY,
                 Result(
                     code=403,
                     target=folder_id,
@@ -457,19 +479,24 @@ def _create_document_in_transaction(
                 ),
             )
 
-        _folder, error_code, error_message = get_target_folder_and_check_write(
+        compiled_policy, dacl_error = prepare_initial_node_dacl(
             session,
             user,
-            folder_id,
-            Permissions.SUPER_CREATE_DOCUMENT,
+            parent_folder,
+            object_type=ObjectType.DOCUMENT,
+            name=title,
+            dacl_source=dacl_source,
+            create_check=create_check,
+            allow_self_lockout=allow_self_lockout,
         )
-        if error_code != 0:
+        if dacl_error is not None:
+            code, error_data, message = dacl_error
             return (
-                error_code,
-                {},
-                error_message,
+                code,
+                error_data,
+                message,
                 Result(
-                    code=error_code,
+                    code=code,
                     target=folder_id,
                     data=result_data,
                     user_id=user_id,
@@ -522,25 +549,9 @@ def _create_document_in_transaction(
         session.add_all((new_file, new_document, new_revision))
 
         with node_name_mutation(session, folder_id, title):
-            if not apply_access_rules(
-                new_document,
-                access_rules,
-                user,
-                inherit_parent,
-            ):
-                session.rollback()
-                return (
-                    403,
-                    {},
-                    smsg.ACCESS_DENIED,
-                    Result(
-                        code=403,
-                        target=folder_id,
-                        data=result_data,
-                        user_id=user_id,
-                    ),
-                )
-
+            session.flush()
+            if compiled_policy is not None:
+                persist_node_policy(session, new_document, compiled_policy)
             new_document.current_revision = new_revision
             task_data = create_file_task(
                 session,
@@ -574,13 +585,11 @@ class RequestCreateDocumentHandler(RequestHandler[_CreateDocumentRequest]):
     def handle(self, handler, request):
         folder_id = request.folder_id or ROOT_DIRECTORY_ID
         title = (request.title or "").strip()
-        access_rules = (
-            request.access_rules if request.access_rules is not REQUEST_UNSET else None
-        ) or {}
-        inherit_parent = (
-            request.inherit_parent
-            if request.inherit_parent is not REQUEST_UNSET
-            else True
+        dacl_source = request.dacl if request.dacl is not REQUEST_UNSET else None
+        allow_self_lockout = (
+            request.allow_self_lockout
+            if request.allow_self_lockout is not REQUEST_UNSET
+            else False
         )
 
         if not title:
@@ -601,25 +610,13 @@ class RequestCreateDocumentHandler(RequestHandler[_CreateDocumentRequest]):
                     handler.remote_address,
                     folder_id,
                     title,
-                    access_rules,
-                    inherit_parent,
+                    dacl_source,
+                    allow_self_lockout,
                 )
             except NodeNameConflictError:
                 user = User.get_existing(session, handler.user_id)
                 conflict_response = describe_node_name_conflict(
                     session, user, folder_id, title
-                )
-            except (ValueError, jsonschema.ValidationError) as exc:
-                outcome = (
-                    400,
-                    {},
-                    f"Set access rules failed: {exc!s}",
-                    Result(
-                        code=400,
-                        target=folder_id,
-                        data={"title": title},
-                        user_id=handler.user_id,
-                    ),
                 )
 
         if conflict_response is not None:
@@ -656,9 +653,9 @@ class RequestUploadDocumentHandler(RequestHandler[_UploadDocumentRequest]):
             this_user = User.get_existing(session, handler.user_id)
 
             if document:
-                if not check_access_requirements(
-                    session, this_user, document, access_type="write"
-                ):
+                if not authorize_node_operation(
+                    session, this_user, document, AtomicOp.WRITE_CONTENT
+                ).allowed:
                     handler.conclude_access_denial()
                     return Result(code=403, target=document_id, user_id=handler.user_id)
 
@@ -727,7 +724,6 @@ class RequestUploadDocumentHandler(RequestHandler[_UploadDocumentRequest]):
                 if "parent_revision_id" in request.model_fields_set:
                     parent_revision_id = request.parent_revision_id
 
-                    # Validate the provided parent_revision_id if it's not null
                     if parent_revision_id and parent_revision_id not in [
                         rev.id for rev in document.revisions
                     ]:
@@ -792,12 +788,9 @@ class RequestDeleteDocumentHandler(RequestHandler[_DocumentIDRequest]):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if (
-                Permissions.DELETE_DOCUMENT not in user.all_permissions
-                or not check_access_requirements(
-                    session, user, document, access_type="write"
-                )
-            ):
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.DELETE
+            ).allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 
@@ -829,8 +822,6 @@ class RequestRenameDocumentHandler(RequestHandler[_RenameDocumentRequest]):
     rate_limit_cost = 3
 
     def handle(self, handler, request):
-
-        # Parse the directory renaming request
         document_id: str = request.document_id
         new_title: str = request.new_title
 
@@ -842,10 +833,9 @@ class RequestRenameDocumentHandler(RequestHandler[_RenameDocumentRequest]):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if (
-                Permissions.RENAME_DOCUMENT not in this_user.all_permissions
-                or not check_access_requirements(session, this_user, document, "write")
-            ):
+            if not authorize_node_operation(
+                session, this_user, document, AtomicOp.RENAME
+            ).allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 
@@ -893,7 +883,6 @@ class RequestDownloadFileHandler(RequestHandler[_DownloadFileRequest]):
         offset: int = request.offset if request.offset is not REQUEST_UNSET else 0
         max_chunk_size: int = request.max_chunk_size
 
-        # The server still needs to send one more response.
         handler.send_file(task_id, offset, max_chunk_size)
 
 
@@ -910,7 +899,6 @@ class RequestUploadFileHandler(RequestHandler[_UploadFileRequest]):
         max_chunk_size = request.max_chunk_size
         restart = request.restart if request.restart is not REQUEST_UNSET else False
 
-        # The server needs to send one response.
         handler.receive_file(
             task_id,
             file_size,
@@ -920,93 +908,20 @@ class RequestUploadFileHandler(RequestHandler[_UploadFileRequest]):
         )
 
 
-class RequestSetDocumentRulesHandler(RequestHandler[_SetDocumentRulesRequest]):
-    """Handles the "core.document.access_rule.set" action."""
+class RequestReparentDocumentHandler(RequestHandler[_ReparentDocumentRequest]):
+    """Handles the "core.document.reparent" action."""
 
-    request_model = _SetDocumentRulesRequest
-
-    requires_auth = True
-    rate_limit_cost = 5
-
-    def handle(self, handler, request):
-        """Handles the document access rules setting request from the client."""
-        document_id: str = request.document_id
-        access_rules_to_apply: dict = request.access_rules
-        inherit_parent: bool = (
-            request.inherit_parent
-            if request.inherit_parent is not REQUEST_UNSET
-            else True
-        )
-
-        if not handler.user_id:
-            handler.conclude_request(401, {}, smsg.AUTHENTICATION_REQUIRED)
-            return Result(code=401, target=document_id)
-
-        with Session() as session:
-            user = User.get_existing(session, handler.user_id)
-
-            document = session.get(Document, document_id)
-
-            if not document:
-                handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return Result(code=404, target=document_id, user_id=handler.user_id)
-
-            if Permissions.SET_ACCESS_RULES not in user.all_permissions:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_SET_ACCESS_RULES)
-                return Result(code=403, target=document_id, user_id=handler.user_id)
-
-            if not check_access_requirements(
-                session, user, document, access_type="manage"
-            ):
-                handler.conclude_access_denial()
-                return Result(code=403, target=document_id, user_id=handler.user_id)
-
-            try:
-                if apply_access_rules(
-                    document, access_rules_to_apply, user, inherit_parent
-                ):
-                    mark_document_modified(document, user.id)
-                    session.commit()
-                    handler.conclude_request(200, {}, "Set access rules successfully")
-                    return Result(code=0, target=document_id, user_id=handler.user_id)
-                else:
-                    session.rollback()
-                    handler.conclude_access_denial()
-                    return Result(code=403, target=document_id, user_id=handler.user_id)
-            except (ValueError, jsonschema.ValidationError) as exc:
-                session.rollback()
-                handler.conclude_request(400, {}, f"Set access rules failed: {exc!s}")
-                return Result(code=400, target=document_id, user_id=handler.user_id)
-
-
-class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
-    """Handles the "core.document.move" action."""
-
-    request_model = _MoveDocumentRequest
+    request_model = _ReparentDocumentRequest
 
     requires_auth = True
     rate_limit_cost = 3
 
     def handle(self, handler, request):
-
         document_id: str = request.document_id
-        target_folder_id: str | None = request.target_folder_id
-
-        if not target_folder_id:
-            target_folder_id = ROOT_DIRECTORY_ID
+        target_folder_id: str = request.target_folder_id or ROOT_DIRECTORY_ID
 
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
-
-            if Permissions.MOVE not in user.all_permissions:
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MOVE_DOCUMENT)
-                return Result(
-                    code=403,
-                    target=document_id,
-                    data={"target_folder_id": target_folder_id},
-                    user_id=handler.user_id,
-                )
-
             document = session.get(Document, document_id)
             if not document:
                 handler.conclude_request(
@@ -1014,24 +929,6 @@ class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
                 )
                 return Result(
                     code=404,
-                    target=document_id,
-                    data={"target_folder_id": target_folder_id},
-                    user_id=handler.user_id,
-                )
-
-            if document.folder_id == target_folder_id:
-                handler.conclude_request(400, {}, smsg.CANNOT_MOVE_TO_SAME_FOLDER)
-                return Result(
-                    code=400,
-                    target=document_id,
-                    data={"target_folder_id": target_folder_id},
-                    user_id=handler.user_id,
-                )
-
-            if not check_access_requirements(session, user, document, "move"):
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_MOVE_DOCUMENT)
-                return Result(
-                    code=403,
                     target=document_id,
                     data={"target_folder_id": target_folder_id},
                     user_id=handler.user_id,
@@ -1049,22 +946,23 @@ class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
                     user_id=handler.user_id,
                 )
 
-            if not check_access_requirements(session, user, target_folder, "write"):
-                if (
-                    target_folder_id == ROOT_DIRECTORY_ID
-                    and Permissions.SUPER_CREATE_DOCUMENT in user.all_permissions
-                ):
-                    pass
-                else:
-                    handler.conclude_request(
-                        403, {}, smsg.ACCESS_DENIED_WRITE_DIRECTORY
-                    )
-                    return Result(
-                        code=403,
-                        target=document_id,
-                        data={"target_folder_id": target_folder_id},
-                        user_id=handler.user_id,
-                    )
+            if not authorize_reparent(session, user, document, target_folder).allowed:
+                handler.conclude_request(403, {}, smsg.ACCESS_DENIED_REPARENT_DOCUMENT)
+                return Result(
+                    code=403,
+                    target=document_id,
+                    data={"target_folder_id": target_folder_id},
+                    user_id=handler.user_id,
+                )
+
+            if (document.folder_id or ROOT_DIRECTORY_ID) == target_folder_id:
+                handler.conclude_request(400, {}, smsg.CANNOT_REPARENT_TO_SAME_FOLDER)
+                return Result(
+                    code=400,
+                    target=document_id,
+                    data={"target_folder_id": target_folder_id},
+                    user_id=handler.user_id,
+                )
 
             source_folder_id = document.folder_id or ROOT_DIRECTORY_ID
             title = document.title
@@ -1095,10 +993,7 @@ class RequestMoveDocumentHandler(RequestHandler[_MoveDocumentRequest]):
 
 
 class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
-    """Handles the "core.document.purge" action, which permanently deletes a document and all its revisions.
-
-    This action is irreversible and should only be allowed for users with special permissions.
-    """
+    """Handles the "core.document.purge" action."""
 
     request_model = _DocumentIDRequest
 
@@ -1112,27 +1007,29 @@ class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
 
             if Permissions.PURGE not in user.all_permissions:
                 handler.conclude_permission_denial()
-                return
+                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
             document = session.get(
                 Document, doc_id, execution_options={"include_deleted": True}
             )
             if document is None:
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
-                return
+                return Result(code=404, target=doc_id, user_id=handler.user_id)
 
             if document.status != EntityStatus.DELETED:
                 handler.conclude_request(
                     400, {}, "Document must be marked as deleted before purging"
                 )
-                return
+                return Result(code=400, target=doc_id, user_id=handler.user_id)
 
-            if not check_access_requirements(session, user, document, "write"):
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.PURGE
+            ).allowed:
                 handler.conclude_access_denial()
-                return
+                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
+            delete_node_dacl_rules_for_targets(session, [doc_id])
             delete_all_document_revisions(session, document)
-            mark_document_modified(document, user.id)
             session.delete(document)
             session.commit()
 
@@ -1141,10 +1038,7 @@ class RequestPurgeDocumentHandler(RequestHandler[_DocumentIDRequest]):
 
 
 class RequestRestoreDocumentHandler(RequestHandler[_RestoreDocumentRequest]):
-    """Handles the "core.document.restore" action.
-    Restores a marked-as-deleted document. Supports renaming and moving to a
-    new folder during restoration. Maps virtual ROOT_DIRECTORY_ID to database None.
-    """
+    """Handles the "core.document.restore" action."""
 
     request_model = _RestoreDocumentRequest
 
@@ -1163,21 +1057,12 @@ class RequestRestoreDocumentHandler(RequestHandler[_RestoreDocumentRequest]):
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
 
-            if Permissions.RESTORE not in user.all_permissions:
-                handler.conclude_permission_denial()
-                return Result(code=403, target=doc_id, user_id=handler.user_id)
-
             document = session.get(
                 Document, doc_id, execution_options={"include_deleted": True}
             )
-
             if not document or document.status != EntityStatus.DELETED:
                 handler.conclude_request(404, {}, smsg.DELETED_DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=doc_id, user_id=handler.user_id)
-
-            if not check_access_requirements(session, user, document, "write"):
-                handler.conclude_access_denial()
-                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
             if target_folder_provided:
                 db_folder_id = target_folder_id or ROOT_DIRECTORY_ID
@@ -1193,10 +1078,6 @@ class RequestRestoreDocumentHandler(RequestHandler[_RestoreDocumentRequest]):
                 handler.conclude_request(404, {}, smsg.TARGET_DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=db_folder_id, user_id=handler.user_id)
 
-            if not check_access_requirements(session, user, target_folder, "write"):
-                handler.conclude_access_denial()
-                return Result(code=403, target=db_folder_id, user_id=handler.user_id)
-
             if target_folder.status != EntityStatus.OK:
                 handler.conclude_request(
                     409,
@@ -1204,6 +1085,10 @@ class RequestRestoreDocumentHandler(RequestHandler[_RestoreDocumentRequest]):
                     "Cannot restore: Target folder is deleted. Restore it first.",
                 )
                 return Result(code=409, target=doc_id, user_id=handler.user_id)
+
+            if not authorize_restore(session, user, document, target_folder).allowed:
+                handler.conclude_access_denial()
+                return Result(code=403, target=doc_id, user_id=handler.user_id)
 
             try:
                 with node_name_mutation(session, db_folder_id, final_title):
@@ -1264,12 +1149,9 @@ class RequestSetDocumentTagsHandler(RequestHandler[_SetDocumentTagsRequest]):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if (
-                Permissions.SET_METADATA_TAGS not in user.all_permissions
-                or not check_access_requirements(
-                    session, user, document, access_type="write"
-                )
-            ):
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.WRITE_METADATA
+            ).allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 

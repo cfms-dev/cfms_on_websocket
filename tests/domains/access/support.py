@@ -62,31 +62,9 @@ def _make_rule_user(models, session, *, permissions=(), groups=(), username="ali
 
 
 def _make_access_rule_user(models, session, username="alice"):
-    now = time.time()
-    user = models.User(
+    return _make_rule_user(
+        models,
+        session,
+        permissions=("list_users",),
         username=username,
-        nickname=username,
-        avatar_id=None,
-        last_login=None,
-        created_time=now,
-        status=0,
-        secret_key=f"{username}-secret",
-        preference_dek_id=None,
     )
-    for permission in (
-        "delete_document",
-        "delete_directory",
-        "list_users",
-    ):
-        user.rights.append(
-            models.UserPermission(
-                user=user,
-                permission=permission,
-                granted=True,
-                start_time=0.0,
-                end_time=None,
-            )
-        )
-    session.add(user)
-    session.flush()
-    return user

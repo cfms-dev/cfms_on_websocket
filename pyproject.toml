@@ -23,6 +23,7 @@ dependencies = [
     "loguru>=0.7.3",
     "watchdog>=6.0.0",
     "pydantic>=2.13.4",
+    "cacl-compiler @ git+https://github.com/cfms-dev/cacl.git#subdirectory=packages/cacl-compiler",
 ]
 
 [project.optional-dependencies]

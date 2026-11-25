@@ -129,6 +129,8 @@ def test_name_mutation_does_not_hide_other_integrity_errors(message) -> None:
 def test_conflict_description_hides_unreadable_winner_id(
     monkeypatch, readable, sqlite_engine_factory
 ) -> None:
+    from cacl_compiler import AtomicOp
+
     import include.database.models  # noqa: F401
     from include.database.models.documents import Folder
     from include.database.session import Base
@@ -141,8 +143,11 @@ def test_conflict_description_hides_unreadable_winner_id(
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
         name_conflicts,
-        "check_access_requirements",
-        lambda session, target, user, access_type: readable,
+        "evaluate_node_effective_masks",
+        lambda session, user, target: SimpleNamespace(
+            allowed_traverse=readable,
+            effective_mask=int(AtomicOp.READ_METADATA) if readable else 0,
+        ),
     )
     with Session(engine) as session:
         root = Folder(id="/", name="/")
@@ -169,7 +174,7 @@ def test_conflict_description_rejects_unsupported_node_before_access_check(
 
     monkeypatch.setattr(
         name_conflicts,
-        "check_access_requirements",
+        "evaluate_node_effective_masks",
         lambda *_args: pytest.fail("access check received an unsupported node"),
     )
     winner = Node(id="winner", type="node", name="Report", parent_id="/")
@@ -220,6 +225,8 @@ def test_successful_name_mutation_does_not_prequery_sibling_names(
 def test_subtree_restore_conflict_reports_descendant_winner(
     monkeypatch, sqlite_engine_factory
 ) -> None:
+    from cacl_compiler import AtomicOp
+
     import include.database.models  # noqa: F401
     from include.database.models.documents import EntityStatus, Folder
     from include.database.session import Base
@@ -232,8 +239,11 @@ def test_subtree_restore_conflict_reports_descendant_winner(
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
         name_conflicts,
-        "check_access_requirements",
-        lambda session, target, user, access_type: True,
+        "evaluate_node_effective_masks",
+        lambda session, user, target: SimpleNamespace(
+            allowed_traverse=True,
+            effective_mask=int(AtomicOp.READ_METADATA),
+        ),
     )
     with Session(engine) as session:
         root = Folder(id="/", name="/")

@@ -21,7 +21,6 @@ reason-change audit payload or repeat operational side effects.
 | Business operation | Create or activate | Update an active reason | Storage | Visibility |
 | --- | --- | --- | --- | --- |
 | Account disabled status | `core.user.status.set` with `status: "disabled"` | Repeat `core.user.status.set` while disabled | Deduplicated comment | Included in disabled-login response |
-| User block | `core.user.block.create` | `core.user.block.update` | Deduplicated comment | Included in `core.user.block.create`, `core.user.block.update`, and `core.user.block.list` responses; users may list their own blocks |
 | Service lockdown | `core.server.lockdown.set` with `status: true` | Repeat `core.server.lockdown.set` while enabled | Lockdown state | Included in lockdown state and broadcast responses |
 | Banned subnet | `core.security.banned_subnet.create` | `core.security.banned_subnet.update` | Deduplicated comment | Included in banned-subnet responses |
 

@@ -29,7 +29,6 @@ from include.config.constants import (
 )
 from include.database.session import Base, Session
 from include.domains.identity.tokens import Token, TokenPurpose
-lazy from include.database.models.access import UserBlockEntry
 lazy from include.database.models.comments import Comment
 lazy from include.database.models.files import File
 lazy from include.database.models.keyrings import UserKey
@@ -137,9 +136,6 @@ class User(Base):
         "UserPermission", back_populates="user", cascade="all, delete-orphan"
     )
 
-    block_entries: Mapped[list["UserBlockEntry"]] = relationship(
-        "UserBlockEntry", back_populates="user", cascade="all, delete-orphan"
-    )
     audit_entries: Mapped[list["AuditEntry"]] = relationship(
         "AuditEntry", back_populates="user"
     )

@@ -1,9 +1,10 @@
+from cacl_compiler import AtomicOp
 from sqlalchemy import and_, or_
 
 from include.database.models.documents import Document, DocumentRevision
 from include.database.models.identity import User
 from include.database.session import Session
-from include.domains.access.authorization.evaluation import check_access_requirements
+from include.domains.access.authorization.evaluation import authorize_node_operation
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import cancel_file_tasks_for_files
 from include.domains.documents.commands.revision_deletion import (
@@ -27,6 +28,7 @@ from include.domains.pagination import (
     make_cursor_response,
 )
 from include.domains.security.guards.rate_limits import risk_control_transaction
+from include.exceptions.misc import NoActiveRevisionsError
 from include.messages import Messages as smsg
 from include.transport.request_handler import (
     REQUEST_UNSET,
@@ -73,10 +75,9 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
                 handler.conclude_request(404, {}, "Document not found")
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if (
-                Permissions.LIST_REVISIONS not in user.all_permissions
-                or not check_access_requirements(session, user, document, "read")
-            ):
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.LIST_REVISIONS
+            ).allowed:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 
@@ -140,6 +141,22 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
         return Result(code=200, target=document_id, user_id=handler.user_id)
 
 
+def _get_revision_required_op(
+    document: Document, revision: DocumentRevision
+) -> AtomicOp:
+    if revision.id == document.current_revision_id:
+        return AtomicOp.READ_CONTENT
+    if revision.active and (
+        document.current_revision is None or not document.current_revision.active
+    ):
+        try:
+            if revision.id == document.get_latest_revision().id:
+                return AtomicOp.READ_CONTENT
+        except RuntimeError, NoActiveRevisionsError:
+            pass
+    return AtomicOp.READ_REVISION
+
+
 class RequestGetRevisionHandler(RequestHandler[_RevisionIDRequest]):
     request_model = _RevisionIDRequest
 
@@ -157,12 +174,12 @@ class RequestGetRevisionHandler(RequestHandler[_RevisionIDRequest]):
                 response_code = result_code = 404
                 data = {}
                 message = "Revision not found"
-            elif (
-                Permissions.VIEW_REVISION not in user.all_permissions
-                or not check_access_requirements(
-                    session, user, revision.document, "read"
-                )
-            ):
+            elif not authorize_node_operation(
+                session,
+                user,
+                revision.document,
+                _get_revision_required_op(revision.document, revision),
+            ).allowed:
                 response_code = result_code = 403
                 data = {}
                 message = smsg.ACCESS_DENIED
@@ -227,10 +244,9 @@ class RequestSetDocumentRevisionHandler(RequestHandler[_SetDocumentRevisionReque
                 handler.conclude_request(404, {}, "Document or Revision not found")
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if (
-                Permissions.SET_CURRENT_REVISION not in user.all_permissions
-                or not check_access_requirements(session, user, document, "write")
-            ):
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.SET_CURRENT_REVISION
+            ).allowed:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 
@@ -256,6 +272,12 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
         cancelled_task_ids: list[str] = []
         with Session() as session:
             user = User.get_existing(session, handler.user_id)
+            if Permissions.DELETE_REVISION not in user.all_permissions:
+                handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
+                return Result(code=403, target=revision_id, user_id=handler.user_id)
+
+            # FIXME: If the selected revision belongs to a soft-deleted document,
+            # the behavior here is undefined.
             revision = session.get(DocumentRevision, revision_id)
 
             if revision is None:
@@ -263,19 +285,18 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
                 return Result(code=404, target=revision_id, user_id=handler.user_id)
 
             document = revision.document
+            if not authorize_node_operation(
+                session, user, document, AtomicOp.DELETE_REVISION
+            ).allowed:
+                handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
+                return Result(code=403, target=revision_id, user_id=handler.user_id)
+
             if (
                 document.current_revision_id == revision.id
                 or len(document.revisions) == 1  # backward compatibility
             ):
                 handler.conclude_request(400, {}, "Cannot delete the current revision")
                 return Result(code=400, target=revision_id, user_id=handler.user_id)
-
-            if (
-                Permissions.DELETE_REVISION not in user.all_permissions
-                or check_access_requirements(session, user, document, "write") is False
-            ):
-                handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
-                return Result(code=403, target=revision_id, user_id=handler.user_id)
 
             with session.no_autoflush:
                 # Try to connect parent and child revisions directly

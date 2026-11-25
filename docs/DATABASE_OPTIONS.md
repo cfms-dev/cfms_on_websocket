@@ -22,7 +22,7 @@ invalid values fail explicitly rather than silently falling back.
 | `security.auth_throttle` | Authentication throttling and record retention |
 | `security.request_rate_control` | Request and connection rate policy, including the JSON `action_costs` map |
 | `security.brute_force_lockdown` | The detector's five policy fields |
-| `access` | `enable_access_recursive_check` |
+| `access` | `bypass_traverse_checking` |
 | `document.upload` | Upload timeouts, cleanup interval and pending-document limit |
 | `document.upload.creation_risk_control` | Document creation risk policy |
 | `document.download.risk_control` | Document download risk policy |

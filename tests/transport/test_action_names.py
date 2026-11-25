@@ -3,9 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from include.config.validation import RequestRateControlPolicy
-from tests.support.request_names import REQUEST_RENAMES
+from tests.support.request_names import REMOVED_PROTOCOL_30_ACTIONS, REQUEST_RENAMES
 
 
+# FIXME: It is not a good idea to make tests applicable only to a specific protocol
+# version. Perhaps we should consider removing these tests.
 @pytest.mark.unit
 @pytest.mark.parametrize("debug", [False, True])
 def test_request_registry_matches_protocol_31(
@@ -18,7 +20,7 @@ def test_request_registry_matches_protocol_31(
     from include.extensions.oidc_sso import _extension as oidc
 
     core_handlers = dict(server_main.available_functions)
-    assert len(core_handlers) == 90
+    assert len(core_handlers) == 83
     monkeypatch.setattr(server_main, "available_functions", core_handlers)
     monkeypatch.setattr(
         server_main, "whitelisted_functions", list(server_main.whitelisted_functions)
@@ -58,7 +60,7 @@ def test_request_registry_matches_protocol_31(
         for action, handler in core_handlers.items()
     }
     assert PROTOCOL_VERSION == 31
-    assert len(REQUEST_RENAMES) == len({new for _, new, _ in REQUEST_RENAMES}) == 92
+    assert len(REQUEST_RENAMES) == len({new for _, new, _ in REQUEST_RENAMES}) == 85
     expected["core.user.username.set"] = (
         "include.domains.identity.handlers.users.RequestSetUsernameHandler"
     )
@@ -71,6 +73,7 @@ def test_request_registry_matches_protocol_31(
     )
     assert actual == expected
     assert set(core_handlers).isdisjoint(old for old, _, _ in REQUEST_RENAMES)
+    assert set(core_handlers).isdisjoint(REMOVED_PROTOCOL_30_ACTIONS)
     assert set(server_main.whitelisted_functions) == {
         "core.server.info.get",
         "core.auth.login",
@@ -88,7 +91,9 @@ def test_request_registry_matches_protocol_31(
 @pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "old_action", [old for old, _, _ in REQUEST_RENAMES] + ["core.user.rename"]
+    "old_action",
+    [old for old, _, _ in REQUEST_RENAMES]
+    + ["core.user.rename", *REMOVED_PROTOCOL_30_ACTIONS],
 )
 async def test_old_request_names_are_rejected_and_connection_remains_usable(
     client, old_action

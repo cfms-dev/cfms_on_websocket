@@ -1,208 +1,181 @@
-import secrets
-import time
-import uuid
+__all__ = [
+    "NodeDaclAtom",
+    "NodeDaclClause",
+    "NodeDaclRule",
+    "UtcEpochMicros",
+    "datetime_to_epoch_us",
+    "epoch_us_to_datetime",
+]
 
-from sqlalchemy import VARCHAR, BigInteger, Boolean, Double, ForeignKey, Integer
+import datetime
+
+from sqlalchemy import (
+    VARCHAR,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    TypeDecorator,
+)
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from include.database.session import Base
-lazy from include.database.models.comments import Comment
 lazy from include.database.models.documents import Node
-lazy from include.database.models.identity import User
+
+_EPOCH_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.UTC)
 
 
-class UserBlockEntry(Base):
-    __tablename__ = "userblock_entries"
-    block_id: Mapped[str] = mapped_column(
-        VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
+def datetime_to_epoch_us(dt: datetime.datetime) -> int:
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError("Timestamp must be timezone-aware")
+
+    # See: https://docs.python.org/3/library/datetime.html#datetime-objects
+    delta = dt.astimezone(datetime.UTC) - _EPOCH_UTC
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+
+def epoch_us_to_datetime(epoch_us: int) -> datetime.datetime:
+    return _EPOCH_UTC + datetime.timedelta(microseconds=epoch_us)
+
+
+class UtcEpochMicros(TypeDecorator[datetime.datetime]):
+    """Store timezone-aware UTC datetimes as exact 64-bit epoch microseconds."""
+
+    impl = BigInteger
+    cache_ok = True
+
+    def process_bind_param(
+        self,
+        value: datetime.datetime | None,
+        dialect: Dialect,
+    ) -> int | None:
+        if value is None:
+            return None
+        return datetime_to_epoch_us(value)
+
+    def process_result_value(
+        self,
+        value: int | None,
+        dialect: Dialect,
+    ) -> datetime.datetime | None:
+        if value is None:
+            return None
+        return epoch_us_to_datetime(value)
+
+
+class NodeDaclRule(Base):
+    """Persisted CEP-0002 compiled DACL rule (SSOT)."""
+
+    __tablename__ = "dacl_rules"
+    __table_args__ = (
+        CheckConstraint("effect IN ('allow', 'deny')", name="ck_dacl_rules_effect"),
+        CheckConstraint("permission_mask > 0", name="ck_dacl_rules_permission_mask"),
+        CheckConstraint(
+            "scope IN ('self', 'dirs', 'docs', 'all')", name="ck_dacl_rules_scope"
+        ),
+        CheckConstraint(
+            "valid_from IS NULL OR valid_until IS NULL OR valid_from < valid_until",
+            name="ck_dacl_rules_valid_window",
+        ),
+        Index("ix_dacl_rules_node_effect_scope", "node_id", "effect", "scope"),
+        Index("ix_dacl_rules_validity", "node_id", "valid_from", "valid_until"),
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE")
-    )
-    user: Mapped["User"] = relationship("User", back_populates="block_entries")
-    sub_entries: Mapped[list["UserBlockSubEntry"]] = relationship(
-        "UserBlockSubEntry", back_populates="parent_entry", cascade="all, delete-orphan"
-    )
-    timestamp: Mapped[float] = mapped_column(Double, nullable=False)
 
-    not_before: Mapped[float] = mapped_column(Double, nullable=False)
-    not_after: Mapped[float] = mapped_column(Double, nullable=False)
-
-    # Due to technical issues in the implementation of ORM, target_type and target_id are
-    # stored as two separate columns, but when 'target_type' is 'all', target_id can be
-    # left empty.
-    target_type: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
-    target_id: Mapped[str] = mapped_column(VARCHAR(255), nullable=True)
-    reason_comment_id: Mapped[int | None] = mapped_column(
+    id: Mapped[int] = mapped_column(
         BigInteger().with_variant(Integer, "sqlite"),
-        ForeignKey("comments.comment_id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    reason_comment: Mapped["Comment | None"] = relationship("Comment")
-
-    @property
-    def reason(self) -> str | None:
-        return self.reason_comment.comment_text if self.reason_comment else None
-
-
-class UserBlockSubEntry(Base):
-    __tablename__ = "userblock_sub_entries"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    parent_id: Mapped[str] = mapped_column(
-        ForeignKey("userblock_entries.block_id", ondelete="CASCADE")
-    )
-    parent_entry: Mapped[UserBlockEntry] = relationship(
-        "UserBlockEntry", back_populates="sub_entries"
-    )
-    block_type: Mapped[str] = mapped_column(VARCHAR(64))
-
-
-class ObjectAccessEntry(Base):
-    """
-    Model for `User`/`UserGroup` access.
-    """
-
-    __tablename__ = "object_access_entries"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-
-    # User / UserGroup
-    entity_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
-    entity_identifier: Mapped[str] = mapped_column(
-        VARCHAR(255), nullable=False, index=True
-    )
-
-    # Document / Folder
-    target_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
-    target_identifier: Mapped[str] = mapped_column(
-        VARCHAR(255), nullable=False, index=True
-    )
-
-    # read, write, move
-    access_type: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
-
-    start_time: Mapped[float] = mapped_column(Double, nullable=False)
-    end_time: Mapped[float | None] = mapped_column(Double, nullable=True)
-
-
-class CompiledAccessRule(Base):
-    """
-    Persisted representation of document/folder JSON access rules.
-    """
-
-    __tablename__ = "compiled_access_rules"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    rule_set_id: Mapped[str] = mapped_column(
-        VARCHAR(32),
-        ForeignKey("compiled_access_rule_sets.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    access_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
-    match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
-
-    rule_set: Mapped["CompiledAccessRuleSet"] = relationship(
-        "CompiledAccessRuleSet", back_populates="rules"
-    )
-    match_groups: Mapped[list["CompiledAccessRuleGroup"]] = relationship(
-        "CompiledAccessRuleGroup",
-        back_populates="rule",
-        cascade="all, delete-orphan",
-        order_by="CompiledAccessRuleGroup.group_index",
-    )
-
-
-class CompiledAccessRuleSet(Base):
-    __tablename__ = "compiled_access_rule_sets"
-
-    id: Mapped[str] = mapped_column(
-        VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
+        primary_key=True,
+        autoincrement=True,
     )
     node_id: Mapped[str] = mapped_column(
         VARCHAR(255),
         ForeignKey("nodes.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
+        # NOTE: Index already defined in __table_args__; no need for
+        # redundant `index=True`.
     )
-    created_at: Mapped[float] = mapped_column(
-        Double, nullable=False, default=lambda: time.time()
+    effect: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+    permission_mask: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    scope: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+    valid_from: Mapped[datetime.datetime | None] = mapped_column(
+        UtcEpochMicros(), nullable=True
     )
+    valid_until: Mapped[datetime.datetime | None] = mapped_column(
+        UtcEpochMicros(), nullable=True
+    )
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    node: Mapped["Node"] = relationship(
-        "Node",
-        back_populates="access_rule_sets",
-        foreign_keys=[node_id],
-    )
-    rules: Mapped[list[CompiledAccessRule]] = relationship(
-        "CompiledAccessRule",
-        back_populates="rule_set",
+    node: Mapped["Node"] = relationship("Node", back_populates="dacl_rules")
+    clauses: Mapped[list["NodeDaclClause"]] = relationship(
+        "NodeDaclClause",
+        back_populates="rule",
         cascade="all, delete-orphan",
-        order_by="CompiledAccessRule.id",
+        passive_deletes=True,
+        order_by="NodeDaclClause.id",
     )
 
 
-class CompiledAccessRuleGroup(Base):
-    __tablename__ = "compiled_access_rule_groups"
+class NodeDaclClause(Base):
+    """Single DNF conjunction clause belonging to a NodeDaclRule."""
 
-    id: Mapped[str] = mapped_column(
-        VARCHAR(32), primary_key=True, default=lambda: secrets.token_hex(16)
+    __tablename__ = "dacl_rule_clauses"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
     )
     rule_id: Mapped[int] = mapped_column(
-        ForeignKey("compiled_access_rules.id", ondelete="CASCADE"),
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("dacl_rules.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    group_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
-    rights_match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
-    rights_empty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    groups_match_mode: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
-    groups_empty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    rule: Mapped[CompiledAccessRule] = relationship(
-        "CompiledAccessRule", back_populates="match_groups"
-    )
-    rights: Mapped[list["CompiledAccessRuleRight"]] = relationship(
-        "CompiledAccessRuleRight",
-        back_populates="group",
+    rule: Mapped[NodeDaclRule] = relationship("NodeDaclRule", back_populates="clauses")
+    atoms: Mapped[list["NodeDaclAtom"]] = relationship(
+        "NodeDaclAtom",
+        back_populates="clause",
         cascade="all, delete-orphan",
-        order_by="CompiledAccessRuleRight.id",
-    )
-    groups: Mapped[list["CompiledAccessRuleMembership"]] = relationship(
-        "CompiledAccessRuleMembership",
-        back_populates="group",
-        cascade="all, delete-orphan",
-        order_by="CompiledAccessRuleMembership.id",
+        passive_deletes=True,
+        order_by="NodeDaclAtom.id",
     )
 
 
-class CompiledAccessRuleRight(Base):
-    __tablename__ = "compiled_access_rule_rights"
+class NodeDaclAtom(Base):
+    """Single predicate literal within a NodeDaclClause."""
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    group_id: Mapped[str] = mapped_column(
-        ForeignKey("compiled_access_rule_groups.id", ondelete="CASCADE"),
+    __tablename__ = "dacl_rule_atoms"
+    __table_args__ = (
+        CheckConstraint(
+            "predicate_kind IN ('user', 'group', 'perm')",
+            name="ck_dacl_rule_atoms_kind",
+        ),
+        Index(
+            "ix_dacl_rule_atoms_principal",
+            "predicate_kind",
+            "predicate_value",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    clause_id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("dacl_rule_clauses.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    permission: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, index=True)
+    predicate_kind: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
+    predicate_value: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    is_negated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    group: Mapped[CompiledAccessRuleGroup] = relationship(
-        "CompiledAccessRuleGroup", back_populates="rights"
-    )
-
-
-class CompiledAccessRuleMembership(Base):
-    __tablename__ = "compiled_access_rule_memberships"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    group_id: Mapped[str] = mapped_column(
-        ForeignKey("compiled_access_rule_groups.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    group_name: Mapped[str] = mapped_column(VARCHAR(255), nullable=False, index=True)
-
-    group: Mapped[CompiledAccessRuleGroup] = relationship(
-        "CompiledAccessRuleGroup", back_populates="groups"
+    clause: Mapped[NodeDaclClause] = relationship(
+        "NodeDaclClause", back_populates="atoms"
     )
