@@ -32,6 +32,8 @@ _EPOCH_UTC = datetime.datetime(1970, 1, 1, tzinfo=datetime.UTC)
 def datetime_to_epoch_us(dt: datetime.datetime) -> int:
     if dt.tzinfo is None or dt.utcoffset() is None:
         raise ValueError("Timestamp must be timezone-aware")
+
+    # See: https://docs.python.org/3/library/datetime.html#datetime-objects
     delta = dt.astimezone(datetime.UTC) - _EPOCH_UTC
     return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
 

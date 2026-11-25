@@ -276,6 +276,8 @@ class RequestDeleteRevisionHandler(RequestHandler[_RevisionIDRequest]):
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=revision_id, user_id=handler.user_id)
 
+            # FIXME: If the selected revision belongs to a soft-deleted document,
+            # the behavior here is undefined.
             revision = session.get(DocumentRevision, revision_id)
 
             if revision is None:
