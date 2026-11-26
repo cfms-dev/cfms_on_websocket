@@ -5,11 +5,10 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 from alembic.config import Config
-from sqlalchemy import Engine
+from sqlalchemy import Engine, MetaData
 
 import include.database.models  # noqa: F401
 from alembic import command
-from include.database.session import Base
 from tests.database.migrations.test_cacl_migration import run_cacl_migration_round_trip
 
 pytestmark = pytest.mark.integration
@@ -32,11 +31,12 @@ def _drop_all_mysql_tables(engine: Engine) -> None:
 
 
 def test_mysql_cacl_migration_upgrade_and_downgrade_round_trip(
+    isolated_metadata: MetaData,
     mysql_pure_engine: Engine,
 ):
     _drop_all_mysql_tables(mysql_pure_engine)
     try:
-        Base.metadata.create_all(mysql_pure_engine)
+        isolated_metadata.create_all(mysql_pure_engine)
         with mysql_pure_engine.connect() as connection:
             config = Config(_ROOT / "src/alembic.ini")
             config.attributes["connection"] = connection

@@ -1,3 +1,4 @@
+import ast
 import json
 from types import SimpleNamespace
 
@@ -161,3 +162,40 @@ def test_main_does_not_retry_or_hide_pytest_failures(tmp_path, monkeypatch, exit
     monkeypatch.setattr(health, "run_pytest", run)
     assert health.main(["run", "--report", str(tmp_path / "result.xml")]) == exit_code
     assert calls == [True]
+
+
+def _node_exists(node_id: str) -> bool:
+    file_part, *qual_parts = node_id.split("::")
+    path = health.PROJECT_ROOT / file_part
+    if not path.is_file():
+        return False
+    if not qual_parts:
+        return True
+    node: ast.AST = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for part in qual_parts:
+        body = getattr(node, "body", ())
+        matches = [
+            child
+            for child in body
+            if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name == part
+        ]
+        if not matches:
+            return False
+        node = matches[0]
+    return True
+
+
+def test_configured_isolated_and_backend_test_nodes_exist():
+    configured = [
+        *health.ISOLATED_NODES,
+        *health.MYSQL_PATHS,
+        *(
+            arg
+            for args in health.PROFILES.values()
+            for arg in args
+            if arg.startswith("tests/") and arg != "tests/"
+        ),
+    ]
+    missing = [node for node in configured if not _node_exists(node)]
+    assert missing == []

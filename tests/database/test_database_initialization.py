@@ -3,6 +3,8 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect
+from sqlalchemy.dialects import mysql
+from sqlalchemy.sql import ddl
 
 import include.database.models  # noqa: F401
 from include.config.paths import EXECUTABLE_ABSPATH
@@ -47,3 +49,38 @@ def test_existing_old_database_is_not_modified_before_upgrade(
             "legacy_data",
             "alembic_version",
         }
+
+
+def test_isolated_metadata_mysql_ddl_preserves_sqlite_use_alter_foreign_keys(
+    isolated_metadata, sqlite_engine_factory
+):
+    mysql_dialect = mysql.dialect()
+
+    class _CompilingConnection:
+        dialect = mysql_dialect
+
+        def schema_for_object(self, obj):
+            return obj.schema
+
+        def execute(self, statement, *_args, **_kwargs):
+            str(statement.compile(dialect=self.dialect))
+
+        def _run_ddl_visitor(self, visitorcallable, element, **kwargs):
+            visitorcallable(self.dialect, self, **kwargs).traverse_single(element)
+
+    ddl.SchemaGenerator(
+        mysql_dialect, _CompilingConnection(), checkfirst=False
+    ).traverse_single(isolated_metadata)
+
+    sqlite_engine = sqlite_engine_factory(":memory:")
+    Base.metadata.create_all(sqlite_engine)
+    inspector = inspect(sqlite_engine)
+    assert "fk_documents_current_revision_id_document_revisions" in {
+        fk["name"] for fk in inspector.get_foreign_keys("documents")
+    }
+    assert "fk_nodes_parent_id_folders" in {
+        fk["name"] for fk in inspector.get_foreign_keys("nodes")
+    }
+    assert "fk_users_preference_dek_id" in {
+        fk["name"] for fk in inspector.get_foreign_keys("users")
+    }

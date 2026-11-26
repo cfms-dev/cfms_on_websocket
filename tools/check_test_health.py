@@ -63,14 +63,14 @@ TIME_LIMIT_SECONDS = {
 }
 ISOLATED_NODES = (
     *[
-        f"tests/domains/access/test_access.py::TestAccessManagement::{name}"
+        f"tests/domains/access/test_access.py::TestCaclDaclEndpoints::{name}"
         for name in (
-            "test_grant_and_revoke_access",
-            "test_grant_multiple_access_types",
-            "test_grant_access_to_group",
-            "test_grant_access_to_directory",
+            "test_document_and_directory_dacl_round_trip_and_annotations",
+            "test_soft_anti_lockout_and_explicit_override",
+            "test_create_with_initial_dacl_requires_write_dacl_on_parent",
         )
     ],
+    "tests/domains/access/test_access.py::TestCaclAuthorizationSemantics::test_ancestor_traverse_and_bypass_traverse_checking_permission",
     "tests/domains/documents/test_search.py::TestSearch::test_search_directories",
     "tests/domains/documents/test_search.py::TestSearch::test_search_both",
     "tests/domains/security/test_totp.py::TestTotpCredentials::test_confirm_totp_setup_with_valid_token",
