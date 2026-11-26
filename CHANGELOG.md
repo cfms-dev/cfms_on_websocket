@@ -9,9 +9,27 @@ Changes for the next release are collected as
 
 ## Unreleased
 
-<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.14.0...HEAD)</small>
+<small>[Compare with latest](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.15.0...HEAD)</small>
 
 <!-- towncrier release notes start -->
+
+## [v0.15.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.15.0) - 2026-11-26
+
+<small>[Compare with previous release](https://github.com/cfms-dev/cfms_on_websocket/compare/v0.14.0...v0.15.0)</small>
+
+### Added
+
+- Introduced a CACL implementation that complies with the CEP 2 specification, fully replacing the existing access control rule functionality and consolidating several access control features.
+
+### Changed
+
+- Batch active group permission lookups and short-circuit active document revision chain recursion during directory and search queries.
+- Improve test isolation and deterministic time coverage, enforce per-layer feedback budgets, run each PR layer once in parallel shuffled jobs, and reserve whole-suite multi-seed and independent-node checks for daily validation while retaining disposable backend compatibility checks. Isolate backend DDL metadata so MySQL setup cannot remove foreign keys from later SQLite tests.
+
+### Fixed
+
+- Fix option creation with the pure Python MySQL connector so initial option writes and default initialization persist instead of failing with false revision conflict errors.
+
 
 ## [v0.14.0](https://github.com/cfms-dev/cfms_on_websocket/releases/tag/v0.14.0) - 2026-11-12
 
