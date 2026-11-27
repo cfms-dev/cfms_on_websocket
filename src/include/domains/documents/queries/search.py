@@ -24,7 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session
 
-from include.config.constants import QUERY_CHUNK_SIZE
+from include.config.constants import QUERY_CHUNK_SIZE, ROOT_DIRECTORY_ID
 from include.database.cursors import KeysetBatchStrategy, default_keyset_batch_strategy
 from include.database.models.documents import (
     Document,
@@ -34,7 +34,13 @@ from include.database.models.documents import (
     NodeType,
 )
 from include.database.models.identity import User
-from include.domains.access.authorization.evaluation import has_bypass_dacl
+from include.domains.access.authorization.engine import ObjectState
+from include.domains.access.authorization.evaluation import (
+    _ALL_OPS_MASK,
+    global_gate_ops_mask,
+    has_bypass_dacl,
+    project_effective_mask,
+)
 from include.domains.access.authorization.visibility import (
     BatchVisibilityEvaluator,
     VisibilityCandidate,
@@ -489,7 +495,9 @@ class _SearchPageCollector:
         candidates: Sequence[VisibilityCandidate],
     ) -> None:
         for raw_item, candidate in zip(chunk_list, candidates, strict=True):
-            if self._evaluator.is_visible(candidate):
+            effective_mask = self._evaluator.evaluate_visible_effective_mask(candidate)
+            if effective_mask is not None:
+                raw_item["effective_mask"] = effective_mask
                 self.visible_rows.append(_finalize_search_item(raw_item, self._sort_by))
                 if self.is_full:
                     return
@@ -508,7 +516,11 @@ class _SearchPageCollector:
                 raw_item = chunk_list[pos]
                 candidate = candidates[pos]
                 pos += 1
-                if self._evaluator.is_visible(candidate):
+                effective_mask = self._evaluator.evaluate_visible_effective_mask(
+                    candidate
+                )
+                if effective_mask is not None:
+                    raw_item["effective_mask"] = effective_mask
                     pending_visible.append(raw_item)
             if not pending_visible:
                 break
@@ -539,6 +551,8 @@ def _fetch_bypass_search_rows(
     candidates,
     primary_column,
     spec: SearchQuerySpec,
+    *,
+    user: User,
 ) -> list[dict[str, Any]]:
     raw_rows = _execute_search_batch(
         session,
@@ -549,6 +563,33 @@ def _fetch_bypass_search_rows(
         spec.limit,
         include_revision_details=spec.needs_revision_in_sort,
     )
+    global_mask = global_gate_ops_mask(user)
+    dir_mask = project_effective_mask(
+        _ALL_OPS_MASK,
+        object_type=ObjectType.DIRECTORY,
+        state=ObjectState.NORMAL,
+        global_mask=global_mask,
+    )
+    root_mask = project_effective_mask(
+        _ALL_OPS_MASK,
+        object_type=ObjectType.DIRECTORY,
+        state=ObjectState.NORMAL,
+        global_mask=global_mask,
+        is_root=True,
+    )
+    doc_mask = project_effective_mask(
+        _ALL_OPS_MASK,
+        object_type=ObjectType.DOCUMENT,
+        state=ObjectState.NORMAL,
+        global_mask=global_mask,
+    )
+    for row in raw_rows:
+        if row["type"] == "directory":
+            row["effective_mask"] = (
+                root_mask if row["id"] == ROOT_DIRECTORY_ID else dir_mask
+            )
+        else:
+            row["effective_mask"] = doc_mask
     if spec.needs_revision_in_sort or not spec.search_documents:
         return [_finalize_search_item(row, spec.sort_by) for row in raw_rows]
     return _hydrate_lightweight_search_rows(session, raw_rows, spec.sort_by)
@@ -633,7 +674,9 @@ def fetch_visible_search_candidate_rows(
 
     primary_column = _search_primary_column(candidates, spec.sort_by)
     if bypass_dacl:
-        return _fetch_bypass_search_rows(session, candidates, primary_column, spec)
+        return _fetch_bypass_search_rows(
+            session, candidates, primary_column, spec, user=user
+        )
 
     now_utc = (
         datetime.datetime.fromtimestamp(now, tz=datetime.UTC)

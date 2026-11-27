@@ -22,6 +22,7 @@ from include.domains.access.authorization.evaluation import (
     CreateAuthzCheck,
     authorize_dacl_read,
     authorize_write_dacl_and_load_path,
+    compute_post_save_dacl_effective_mask,
     simulate_dacl_save_lockout,
     would_self_lockout_on_create,
 )
@@ -63,15 +64,17 @@ def handle_get_node_dacl[NodeT: (Folder, Document)](
         handler.conclude_request(404, {}, spec.not_found_message)
         return Result(code=404, target=target_id, user_id=handler.user_id)
 
-    allowed, policy = authorize_dacl_read(session, user, target)
-    if not allowed or policy is None:
+    read_check = authorize_dacl_read(session, user, target)
+    if not read_check.allowed or read_check.policy is None:
         handler.conclude_request(403, {}, smsg.ACCESS_DENIED_READ_DACL)
         return Result(code=403, target=target_id, user_id=handler.user_id)
 
+    policy = read_check.policy
     response_data: dict[str, Any] = {
         "dacl": render_policy_text(policy),
         "inherit": policy.inherit,
         "fingerprint": policy.fingerprint(),
+        "effective_mask": read_check.effective_mask,
     }
     if annotate_users:
         response_data["annotated_dacl"] = render_policy_text(
@@ -171,6 +174,9 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
         spec.on_before_commit(target, user)
     session.commit()
 
+    effective_mask = compute_post_save_dacl_effective_mask(
+        user, target, write_check, policy
+    )
     handler.conclude_request(
         200,
         {
@@ -179,6 +185,7 @@ def handle_set_node_dacl[NodeT: (Folder, Document)](
             "fingerprint": policy.fingerprint(),
             "diagnostics": serialized_diags,
             "self_lockout_warning": self_lockout_warning,
+            "effective_mask": effective_mask,
         },
         spec.set_success_message,
     )

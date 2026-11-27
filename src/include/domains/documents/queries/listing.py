@@ -1,12 +1,15 @@
 __all__ = [
+    "attach_listing_effective_masks",
     "count_active_directory_children",
     "directory_cursor_key",
     "fetch_deleted_listing_items",
     "fetch_directory_listing_items",
 ]
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
+from cacl_compiler import ObjectType
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
@@ -15,12 +18,20 @@ from include.database.models.documents import (
     EntityStatus,
     Folder,
 )
+from include.database.models.identity import User
+from include.domains.access.authorization.engine import ObjectState
+from include.domains.access.authorization.evaluation import (
+    DirectoryAccessResult,
+    ListingMaskTarget,
+    compute_listing_item_effective_masks,
+)
 from include.domains.documents.queries.active_revisions import (
     active_revision_exists_for,
     fetch_latest_active_revisions_by_document,
 )
 
 _CURSOR_KEY = "_cursor_key"
+_NODE_INHERIT_KEY = "_node_inherit"
 
 
 def directory_cursor_key(item: dict[str, Any]) -> list[Any]:
@@ -72,6 +83,7 @@ def _fetch_directory_rows(session: Session, folder_id: str, last_key, limit: int
         Folder.id,
         Folder.name,
         Folder.created_time,
+        Folder.inherit,
         name_expression.label("name_sort_key"),
     ).filter(Folder.parent_id == folder_id, Folder.status != EntityStatus.DELETED)
     if last_key is not None:
@@ -100,6 +112,7 @@ def _fetch_document_rows(
         Document.title,
         Document.created_time,
         Document.status_operation_id,
+        Document.inherit,
         name_expression.label("name_sort_key"),
     ).filter(Document.folder_id == folder_id)
     if include_deleted:
@@ -122,20 +135,26 @@ def _fetch_document_rows(
 
 
 def fetch_directory_listing_items(
-    session: Session, folder_id: str, last_key: list[Any] | None, limit: int
+    session: Session,
+    folder_id: str,
+    last_key: list[Any] | None,
+    limit: int,
+    *,
+    include_inherit_meta: bool = False,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     folder_rows = _fetch_directory_rows(session, folder_id, last_key, limit)
-    items.extend(
-        {
+    for row in folder_rows:
+        item: dict[str, Any] = {
             "type": "directory",
             "id": row.id,
             "name": row.name,
             "created_time": row.created_time,
             _CURSOR_KEY: _directory_item_cursor_key(0, row.name_sort_key, row.id),
         }
-        for row in folder_rows
-    )
+        if include_inherit_meta:
+            item[_NODE_INHERIT_KEY] = bool(row.inherit)
+        items.append(item)
 
     remaining = limit - len(items)
     if remaining <= 0:
@@ -145,8 +164,11 @@ def fetch_directory_listing_items(
     latest_revisions_by_document = fetch_latest_active_revisions_by_document(
         session, [row.id for row in document_rows]
     )
-    items.extend(
-        {
+    for row in document_rows:
+        latest_revision = latest_revisions_by_document.get(row.id)
+        if not latest_revision:
+            continue
+        item = {
             "type": "document",
             "id": row.id,
             "title": row.title,
@@ -157,14 +179,19 @@ def fetch_directory_listing_items(
             "size": latest_revision.file.size,
             _CURSOR_KEY: _directory_item_cursor_key(1, row.name_sort_key, row.id),
         }
-        for row in document_rows
-        if (latest_revision := latest_revisions_by_document.get(row.id))
-    )
+        if include_inherit_meta:
+            item[_NODE_INHERIT_KEY] = bool(row.inherit)
+        items.append(item)
     return items
 
 
 def fetch_deleted_listing_items(
-    session: Session, folder_id: str, last_key: list[Any] | None, limit: int
+    session: Session,
+    folder_id: str,
+    last_key: list[Any] | None,
+    limit: int,
+    *,
+    include_inherit_meta: bool = False,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     name_expression = func.lower(Folder.name)
@@ -174,6 +201,7 @@ def fetch_deleted_listing_items(
             Folder.name,
             Folder.created_time,
             Folder.status_operation_id,
+            Folder.inherit,
             name_expression.label("name_sort_key"),
         )
         .execution_options(include_deleted=True)
@@ -193,8 +221,8 @@ def fetch_deleted_listing_items(
             .limit(limit)
             .all()
         )
-        items.extend(
-            {
+        for row in rows:
+            item: dict[str, Any] = {
                 "type": "directory",
                 "id": row.id,
                 "name": row.name,
@@ -202,8 +230,9 @@ def fetch_deleted_listing_items(
                 "status_operation_id": row.status_operation_id,
                 _CURSOR_KEY: _directory_item_cursor_key(0, row.name_sort_key, row.id),
             }
-            for row in rows
-        )
+            if include_inherit_meta:
+                item[_NODE_INHERIT_KEY] = bool(row.inherit)
+            items.append(item)
 
     remaining = limit - len(items)
     if remaining <= 0:
@@ -216,8 +245,8 @@ def fetch_deleted_listing_items(
         remaining,
         include_deleted=True,
     )
-    items.extend(
-        {
+    for row in document_rows:
+        item = {
             "type": "document",
             "id": row.id,
             "title": row.title,
@@ -226,6 +255,44 @@ def fetch_deleted_listing_items(
             "status_operation_id": row.status_operation_id,
             _CURSOR_KEY: _directory_item_cursor_key(1, row.name_sort_key, row.id),
         }
-        for row in document_rows
-    )
+        if include_inherit_meta:
+            item[_NODE_INHERIT_KEY] = bool(row.inherit)
+        items.append(item)
     return items
+
+
+def attach_listing_effective_masks(
+    session: Session,
+    user: User,
+    parent_access: DirectoryAccessResult,
+    page_items: Sequence[dict[str, Any]],
+    *,
+    inherit_by_id: Mapping[str, bool],
+    state: ObjectState,
+    include_deleted: bool = False,
+) -> None:
+    """Attach projected effective_mask onto each already-sliced listing item in place."""
+    if not page_items:
+        return
+    targets = [
+        ListingMaskTarget(
+            node_id=item["id"],
+            object_type=(
+                ObjectType.DIRECTORY
+                if item["type"] == "directory"
+                else ObjectType.DOCUMENT
+            ),
+            state=state,
+            inherit=inherit_by_id.get(item["id"], True),
+        )
+        for item in page_items
+    ]
+    masks = compute_listing_item_effective_masks(
+        session,
+        user,
+        parent_access,
+        targets,
+        include_deleted=include_deleted,
+    )
+    for item in page_items:
+        item["effective_mask"] = masks[item["id"]]

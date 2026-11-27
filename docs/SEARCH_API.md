@@ -56,7 +56,8 @@ and returned with cursor pagination.
                 "id": "dir_id_1",
                 "name": "Directory Name",
                 "parent_id": "parent_folder_id",
-                "created_time": 1234567890.123
+                "created_time": 1234567890.123,
+                "effective_mask": 1049603
             },
             {
                 "type": "document",
@@ -65,7 +66,8 @@ and returned with cursor pagination.
                 "parent_id": "folder_id",
                 "created_time": 1234567890.123,
                 "last_modified": 1234567891.456,
-                "size": 1024
+                "size": 1024,
+                "effective_mask": 1040
             }
         ],
         "page_size": 128,
@@ -86,7 +88,10 @@ and returned with cursor pagination.
 | `has_more` | boolean | Whether another page is available. |
 | `query` | string | Trimmed query that was executed. |
 
-Each item includes `type`, `id`, `name`, `parent_id`, and `created_time`.
+Each item includes `type`, `id`, `name`, `parent_id`, `created_time`, and
+`effective_mask` (a 21-bit CEP-0002 `AtomicOp` integer bitmask indicating the
+operations the authenticated user is currently permitted to perform on that
+node; see [Protocol 32 migration](PROTOCOL_32_MIGRATION.md)).
 Document items additionally include `last_modified` and `size`.
 
 ## Cursor Rules

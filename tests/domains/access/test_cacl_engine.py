@@ -4,15 +4,24 @@ import datetime
 from uuid import UUID
 
 import pytest
-from cacl_compiler import AtomicOp, CompilerConfig, ObjectType, compile_cacl
+from cacl_compiler import (
+    AtomicOp,
+    CompiledPolicy,
+    CompilerConfig,
+    ObjectType,
+    compile_cacl,
+)
 
 from include.domains.access.authorization.engine import (
+    InheritedDaclState,
     NamespaceNode,
     ObjectState,
     Subject,
     SubtreeNode,
+    applicable_ops_mask,
     check_op_applicability,
     evaluate_access,
+    evaluate_child_effective_mask,
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_purge_subtree,
@@ -736,3 +745,76 @@ def test_shared_step1_traverse_and_visibility_predicates():
     assert is_effective_mask_visible(F, int(AtomicOp.READ_CONTENT))
     assert is_effective_mask_visible(F, int(AtomicOp.READ_METADATA))
     assert not is_effective_mask_visible(F, int(AtomicOp.WRITE_CONTENT))
+
+
+def test_applicable_ops_mask_and_child_effective_mask():
+    dir_normal = applicable_ops_mask(D, ObjectState.NORMAL)
+    assert dir_normal & int(AtomicOp.LIST_DIRECTORY)
+    assert dir_normal & int(AtomicOp.DELETE)
+    assert dir_normal & int(AtomicOp.DIRECTORY_DELETE_CHILD)
+    assert not (dir_normal & int(AtomicOp.READ_CONTENT))
+    assert not (dir_normal & int(AtomicOp.RESTORE))
+    assert not (dir_normal & int(AtomicOp.PURGE))
+
+    root_normal = applicable_ops_mask(D, ObjectState.NORMAL, is_root=True)
+    assert root_normal & int(
+        AtomicOp.LIST_DIRECTORY | AtomicOp.CREATE_DOCUMENT | AtomicOp.LIST_DELETED
+    )
+    assert not (
+        root_normal
+        & int(
+            AtomicOp.RENAME
+            | AtomicOp.REPARENT
+            | AtomicOp.DELETE
+            | AtomicOp.DIRECTORY_DELETE_CHILD
+            | AtomicOp.RESTORE
+            | AtomicOp.PURGE
+        )
+    )
+
+    dir_deleted = applicable_ops_mask(D, ObjectState.SOFT_DELETED)
+    assert dir_deleted == int(AtomicOp.LIST_DELETED | AtomicOp.RESTORE | AtomicOp.PURGE)
+
+    doc_normal = applicable_ops_mask(F, ObjectState.NORMAL)
+    assert doc_normal & int(
+        AtomicOp.READ_CONTENT | AtomicOp.DELETE_REVISION | AtomicOp.WRITE_DACL
+    )
+    assert not (
+        doc_normal
+        & int(
+            AtomicOp.TRAVERSE
+            | AtomicOp.LIST_DIRECTORY
+            | AtomicOp.CREATE_DOCUMENT
+            | AtomicOp.RESTORE
+            | AtomicOp.PURGE
+        )
+    )
+
+    doc_deleted = applicable_ops_mask(F, ObjectState.SOFT_DELETED)
+    assert doc_deleted == int(AtomicOp.RESTORE | AtomicOp.PURGE)
+
+    inherited = InheritedDaclState(
+        dir_allow=int(AtomicOp.LIST_DIRECTORY | AtomicOp.DELETE),
+        dir_deny=int(AtomicOp.DELETE),
+        doc_allow=int(AtomicOp.READ_CONTENT | AtomicOp.WRITE_CONTENT),
+        doc_deny=int(AtomicOp.WRITE_CONTENT),
+    )
+    assert evaluate_child_effective_mask(
+        ALICE, CompiledPolicy(inherit=True, rules=()), D, inherited, NOW
+    ) == int(AtomicOp.LIST_DIRECTORY)
+    assert evaluate_child_effective_mask(
+        ALICE, CompiledPolicy(inherit=True, rules=()), F, inherited, NOW
+    ) == int(AtomicOp.READ_CONTENT)
+    assert (
+        evaluate_child_effective_mask(
+            ALICE, CompiledPolicy(inherit=False, rules=()), F, inherited, NOW
+        )
+        == 0
+    )
+    child_override = _compile(
+        f'inherit on; allow [READ_METADATA] to user("{U_ALICE}"); deny [READ_CONTENT] to user("{U_ALICE}");'
+    )
+    assert child_override.policy is not None
+    assert evaluate_child_effective_mask(
+        ALICE, child_override.policy, F, inherited, NOW
+    ) == int(AtomicOp.READ_METADATA)

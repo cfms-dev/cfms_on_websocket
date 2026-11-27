@@ -146,6 +146,7 @@ def _describe_node_name_conflict_winner(
         payload = {"type": "directory", "id": visible_id}
         if readable:
             payload["entity"] = winner
+            payload["raw_effective_mask"] = masks.effective_mask
         message = smsg.DIRECTORY_NAME_DUPLICATE
 
     if visible_id is not None:

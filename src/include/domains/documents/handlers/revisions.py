@@ -4,7 +4,10 @@ from sqlalchemy import and_, or_
 from include.database.models.documents import Document, DocumentRevision
 from include.database.models.identity import User
 from include.database.session import Session
-from include.domains.access.authorization.evaluation import authorize_node_operation
+from include.domains.access.authorization.evaluation import (
+    authorize_node_access_with_mask,
+    authorize_node_operation,
+)
 from include.domains.access.permissions import Permissions
 from include.domains.documents.commands.file_tasks import cancel_file_tasks_for_files
 from include.domains.documents.commands.revision_deletion import (
@@ -75,9 +78,10 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
                 handler.conclude_request(404, {}, "Document not found")
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
+            allowed, effective_mask = authorize_node_access_with_mask(
                 session, user, document, AtomicOp.LIST_REVISIONS
-            ).allowed:
+            )
+            if not allowed:
                 handler.conclude_request(403, {}, smsg.ACCESS_DENIED)
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 
@@ -136,6 +140,7 @@ class RequestListRevisionsHandler(RequestHandler[_ListRevisionsRequest]):
                 filters=filters,
                 cursor_key=lambda item: [item["created_time"], item["id"]],
             )
+            response_data["effective_mask"] = effective_mask
 
         handler.conclude_request(200, response_data, "Revisions listed successfully")
         return Result(code=200, target=document_id, user_id=handler.user_id)

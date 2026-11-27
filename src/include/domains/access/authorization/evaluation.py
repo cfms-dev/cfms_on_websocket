@@ -1,12 +1,16 @@
 __all__ = [
     "CreateAuthzCheck",
+    "DaclReadAuthzResult",
     "DaclWriteAuthzCheck",
+    "DirectoryAccessResult",
     "DirectorySoftDeleteRootCheck",
     "DirectorySubtreeOpRootCheck",
+    "ListingMaskTarget",
     "authorize_create_on_parent",
     "authorize_dacl_read",
-    "authorize_directory_access_with_parent",
+    "authorize_directory_access",
     "authorize_directory_reparent",
+    "authorize_node_access_with_mask",
     "authorize_node_operation",
     "authorize_purge_descendants",
     "authorize_reparent",
@@ -17,11 +21,17 @@ __all__ = [
     "check_directory_purge_root",
     "check_directory_restore_root",
     "check_directory_soft_delete_root",
+    "compute_created_node_effective_mask",
+    "compute_listing_item_effective_masks",
+    "compute_post_save_dacl_effective_mask",
     "evaluate_node_effective_masks",
+    "global_gate_ops_mask",
+    "global_gate_ops_mask_from_perms",
     "has_bypass_dacl",
     "load_ancestor_paths_for_nodes",
     "node_to_object_state",
     "node_to_object_type",
+    "project_effective_mask",
     "should_check_ancestor_traverse",
     "simulate_dacl_save_lockout",
     "user_to_subject",
@@ -30,7 +40,7 @@ __all__ = [
 
 import datetime
 import operator
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import batched
@@ -62,8 +72,10 @@ from include.domains.access.authorization.engine import (
     ObjectState,
     Subject,
     SubtreeNode,
+    applicable_ops_mask,
     check_op_applicability,
     evaluate_access,
+    evaluate_child_effective_mask,
     evaluate_effective_masks,
     evaluate_path_masks,
     evaluate_purge_subtree,
@@ -126,6 +138,32 @@ class DaclWriteAuthzCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class DaclReadAuthzResult:
+    allowed: bool
+    policy: CompiledPolicy | None = None
+    effective_mask: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryAccessResult:
+    allowed: bool
+    visible_parent_id: str | None = None
+    effective_mask: int = 0
+    target_inherited: InheritedDaclState = field(default_factory=InheritedDaclState)
+    children_traversable: bool = False
+    bypass_dacl: bool = False
+    eval_time_utc: datetime.datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ListingMaskTarget:
+    node_id: str
+    object_type: ObjectType
+    state: ObjectState
+    inherit: bool
+
+
+@dataclass(frozen=True, slots=True)
 class DirectorySoftDeleteRootCheck:
     allowed: bool
     needs_descendant_check: bool
@@ -146,6 +184,37 @@ class DirectorySubtreeOpRootCheck:
 
 def has_bypass_dacl(user: User) -> bool:
     return Permissions.BYPASS_DACL in user.all_permissions
+
+
+def global_gate_ops_mask_from_perms(perms: Collection[str]) -> int:
+    """Return the 21-bit mask of AtomicOps not blocked by global permission gates."""
+    mask = _ALL_OPS_MASK
+    if Permissions.PURGE not in perms:
+        mask &= ~int(AtomicOp.PURGE)
+    if Permissions.DELETE_REVISION not in perms:
+        mask &= ~int(AtomicOp.DELETE_REVISION)
+    return mask
+
+
+def global_gate_ops_mask(user: User) -> int:
+    """Return the 21-bit mask of AtomicOps permitted by user's global permission gates."""
+    return global_gate_ops_mask_from_perms(user.all_permissions)
+
+
+def project_effective_mask(
+    raw_mask: int,
+    *,
+    object_type: ObjectType,
+    state: ObjectState,
+    global_mask: int,
+    is_root: bool = False,
+) -> int:
+    """Clamp a raw CACL effective mask by target/state/root invariants and global gates."""
+    return (
+        raw_mask
+        & applicable_ops_mask(object_type, state, is_root=is_root)
+        & global_mask
+    )
 
 
 def user_to_subject(user: User) -> Subject:
@@ -406,49 +475,196 @@ def evaluate_node_effective_masks(
     )
 
 
-def authorize_directory_access_with_parent(
+def authorize_node_access_with_mask(
     session: OrmSession,
     user: User,
-    directory: Folder,
+    target: Document | Folder,
     operation: AtomicOp,
     *,
     eval_time_utc: datetime.datetime | None = None,
-) -> tuple[bool, str | None]:
-    """Authorize directory access and compute visible parent_id in a single DB pass."""
-    if _check_step1_invariants(directory, operation) is not None:
-        return False, None
+) -> tuple[bool, int]:
+    """Authorize a single operation on target and return its projected effective mask."""
+    if _check_step1_invariants(target, operation) is not None:
+        return False, 0
+
+    obj_type = node_to_object_type(target)
+    obj_state = node_to_object_state(target)
+    is_root = target.id == ROOT_DIRECTORY_ID
+    global_mask = global_gate_ops_mask(user)
 
     if has_bypass_dacl(user):
-        return True, directory.parent_id
+        return True, project_effective_mask(
+            _ALL_OPS_MASK,
+            object_type=obj_type,
+            state=obj_state,
+            global_mask=global_mask,
+            is_root=is_root,
+        )
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
     path = _load_ancestor_path(
         session,
-        directory,
-        exclude_expired_before=now,
+        target,
+        active_at_utc=now,
         canonicalize=False,
     )
-    path_masks = evaluate_path_masks(
+    masks = evaluate_effective_masks(
         user_to_subject(user),
         path,
         eval_time_utc=now,
         check_ancestor_traverse=should_check_ancestor_traverse(session, user),
     )
+    if not masks.allowed_traverse or not (masks.effective_mask & int(operation)):
+        return False, 0
+    return True, project_effective_mask(
+        masks.effective_mask,
+        object_type=obj_type,
+        state=obj_state,
+        global_mask=global_mask,
+        is_root=is_root,
+    )
+
+
+def authorize_directory_access(
+    session: OrmSession,
+    user: User,
+    directory: Folder,
+    operation: AtomicOp,
+    *,
+    include_visible_parent: bool = True,
+    eval_time_utc: datetime.datetime | None = None,
+) -> DirectoryAccessResult:
+    """Authorize directory access, compute visible parent_id, projected mask, and child context."""
+    if _check_step1_invariants(directory, operation) is not None:
+        return DirectoryAccessResult(allowed=False)
+
+    dir_state = node_to_object_state(directory)
+    is_root = directory.id == ROOT_DIRECTORY_ID
+    global_mask = global_gate_ops_mask(user)
+
+    if has_bypass_dacl(user):
+        return DirectoryAccessResult(
+            allowed=True,
+            visible_parent_id=directory.parent_id if include_visible_parent else None,
+            effective_mask=project_effective_mask(
+                _ALL_OPS_MASK,
+                object_type=ObjectType.DIRECTORY,
+                state=dir_state,
+                global_mask=global_mask,
+                is_root=is_root,
+            ),
+            children_traversable=True,
+            bypass_dacl=True,
+            eval_time_utc=eval_time_utc,
+        )
+
+    now = eval_time_utc or datetime.datetime.now(datetime.UTC)
+    path = _load_ancestor_path(
+        session,
+        directory,
+        active_at_utc=now,
+        canonicalize=False,
+    )
+    check_traverse = should_check_ancestor_traverse(session, user)
+    path_masks = evaluate_path_masks(
+        user_to_subject(user),
+        path,
+        eval_time_utc=now,
+        check_ancestor_traverse=check_traverse,
+    )
     if not path_masks.target.allowed_traverse or not (
         path_masks.target.effective_mask & int(operation)
     ):
-        return False, None
+        return DirectoryAccessResult(allowed=False)
 
     visible_parent_id = (
         directory.parent_id
         if (
-            directory.parent_id is not None
+            include_visible_parent
+            and directory.parent_id is not None
             and path_masks.parent_state is ObjectState.NORMAL
             and bool(path_masks.parent_effective_mask & int(AtomicOp.LIST_DIRECTORY))
         )
         else None
     )
-    return True, visible_parent_id
+    children_traversable = (
+        not check_traverse
+        or dir_state is ObjectState.SOFT_DELETED
+        or bool(path_masks.target.effective_mask & int(AtomicOp.TRAVERSE))
+    )
+    return DirectoryAccessResult(
+        allowed=True,
+        visible_parent_id=visible_parent_id,
+        effective_mask=project_effective_mask(
+            path_masks.target.effective_mask,
+            object_type=ObjectType.DIRECTORY,
+            state=dir_state,
+            global_mask=global_mask,
+            is_root=is_root,
+        ),
+        target_inherited=path_masks.target_inherited,
+        children_traversable=children_traversable,
+        bypass_dacl=False,
+        eval_time_utc=now,
+    )
+
+
+def compute_listing_item_effective_masks(
+    session: OrmSession,
+    user: User,
+    parent_access: DirectoryAccessResult,
+    targets: Sequence[ListingMaskTarget],
+    *,
+    include_deleted: bool = False,
+) -> dict[str, int]:
+    """Compute projected effective masks for direct children of an authorized folder."""
+    if not targets:
+        return {}
+
+    global_mask = global_gate_ops_mask(user)
+    if parent_access.bypass_dacl:
+        return {
+            target.node_id: project_effective_mask(
+                _ALL_OPS_MASK,
+                object_type=target.object_type,
+                state=target.state,
+                global_mask=global_mask,
+            )
+            for target in targets
+        }
+
+    if not parent_access.children_traversable:
+        return {target.node_id: 0 for target in targets}
+
+    now = parent_access.eval_time_utc or datetime.datetime.now(datetime.UTC)
+    preloaded_inherit = {target.node_id: target.inherit for target in targets}
+    policies = load_node_policies(
+        session,
+        list(preloaded_inherit.keys()),
+        include_deleted=include_deleted,
+        preloaded_inherit=preloaded_inherit,
+        active_at_utc=now,
+        canonicalize=False,
+    )
+    subject = user_to_subject(user)
+    inherited = parent_access.target_inherited
+    return {
+        target.node_id: project_effective_mask(
+            evaluate_child_effective_mask(
+                subject,
+                policies.get(
+                    target.node_id, CompiledPolicy(inherit=target.inherit, rules=())
+                ),
+                target.object_type,
+                inherited,
+                now,
+            ),
+            object_type=target.object_type,
+            state=target.state,
+            global_mask=global_mask,
+        )
+        for target in targets
+    }
 
 
 def authorize_dacl_read(
@@ -457,10 +673,15 @@ def authorize_dacl_read(
     target: Document | Folder,
     *,
     eval_time_utc: datetime.datetime | None = None,
-) -> tuple[bool, CompiledPolicy | None]:
-    """Authorize READ_DACL and return the target's canonical CompiledPolicy in one DB pass."""
+) -> DaclReadAuthzResult:
+    """Authorize READ_DACL and return the target's canonical CompiledPolicy and projected mask."""
     if _check_step1_invariants(target, AtomicOp.READ_DACL) is not None:
-        return False, None
+        return DaclReadAuthzResult(allowed=False)
+
+    obj_type = node_to_object_type(target)
+    obj_state = node_to_object_state(target)
+    is_root = target.id == ROOT_DIRECTORY_ID
+    global_mask = global_gate_ops_mask(user)
 
     if has_bypass_dacl(user):
         policy = load_node_policies(
@@ -469,7 +690,17 @@ def authorize_dacl_read(
             preloaded_inherit={target.id: bool(target.inherit)},
             canonicalize=True,
         )[target.id]
-        return True, policy
+        return DaclReadAuthzResult(
+            allowed=True,
+            policy=policy,
+            effective_mask=project_effective_mask(
+                _ALL_OPS_MASK,
+                object_type=obj_type,
+                state=obj_state,
+                global_mask=global_mask,
+                is_root=is_root,
+            ),
+        )
 
     now = eval_time_utc or datetime.datetime.now(datetime.UTC)
     path = _load_ancestor_path(
@@ -487,8 +718,19 @@ def authorize_dacl_read(
         collect_traces=False,
     )
     if not decision.allowed:
-        return False, None
-    return True, path[-1].policy
+        return DaclReadAuthzResult(allowed=False)
+    raw_mask = decision.effective_allow_mask & ~decision.effective_deny_mask
+    return DaclReadAuthzResult(
+        allowed=True,
+        policy=path[-1].policy,
+        effective_mask=project_effective_mask(
+            raw_mask,
+            object_type=obj_type,
+            state=obj_state,
+            global_mask=global_mask,
+            is_root=is_root,
+        ),
+    )
 
 
 def authorize_write_dacl_and_load_path(
@@ -516,7 +758,7 @@ def authorize_write_dacl_and_load_path(
     path = _load_ancestor_path(
         session,
         target,
-        exclude_expired_before=now,
+        active_at_utc=now,
         canonicalize=False,
     )
     check_traverse = should_check_ancestor_traverse(session, user)
@@ -565,6 +807,99 @@ def simulate_dacl_save_lockout(
     )
 
 
+def compute_post_save_dacl_effective_mask(
+    user: User,
+    target: Document | Folder,
+    write_check: DaclWriteAuthzCheck,
+    saved_policy: CompiledPolicy,
+) -> int:
+    """Compute the projected effective mask for target immediately after saving saved_policy."""
+    obj_type = node_to_object_type(target)
+    obj_state = node_to_object_state(target)
+    is_root = target.id == ROOT_DIRECTORY_ID
+    global_mask = global_gate_ops_mask(user)
+
+    if write_check.current_path is None or has_bypass_dacl(user):
+        return project_effective_mask(
+            _ALL_OPS_MASK,
+            object_type=obj_type,
+            state=obj_state,
+            global_mask=global_mask,
+            is_root=is_root,
+        )
+
+    current_target = write_check.current_path[-1]
+    updated_target = NamespaceNode(
+        node_id=current_target.node_id,
+        name=current_target.name,
+        object_type=current_target.object_type,
+        state=current_target.state,
+        policy=saved_policy,
+    )
+    masks = evaluate_effective_masks(
+        user_to_subject(user),
+        [*write_check.current_path[:-1], updated_target],
+        eval_time_utc=write_check.eval_time_utc,
+        check_ancestor_traverse=write_check.check_ancestor_traverse,
+    )
+    if not masks.allowed_traverse:
+        return 0
+    return project_effective_mask(
+        masks.effective_mask,
+        object_type=obj_type,
+        state=obj_state,
+        global_mask=global_mask,
+        is_root=is_root,
+    )
+
+
+def compute_created_node_effective_mask(
+    user: User,
+    *,
+    node_id: str,
+    name: str,
+    object_type: ObjectType,
+    create_check: CreateAuthzCheck,
+    initial_policy: CompiledPolicy | None = None,
+) -> int:
+    """Compute the projected effective mask for a newly created child using preloaded parent_path."""
+    global_mask = global_gate_ops_mask(user)
+    if create_check.parent_path is None or has_bypass_dacl(user):
+        return project_effective_mask(
+            _ALL_OPS_MASK,
+            object_type=object_type,
+            state=ObjectState.NORMAL,
+            global_mask=global_mask,
+        )
+
+    child_policy = (
+        initial_policy
+        if initial_policy is not None
+        else CompiledPolicy(inherit=True, rules=())
+    )
+    created_node = NamespaceNode(
+        node_id=node_id,
+        name=name,
+        object_type=object_type,
+        state=ObjectState.NORMAL,
+        policy=child_policy,
+    )
+    masks = evaluate_effective_masks(
+        user_to_subject(user),
+        [*create_check.parent_path, created_node],
+        eval_time_utc=create_check.eval_time_utc,
+        check_ancestor_traverse=create_check.check_ancestor_traverse,
+    )
+    if not masks.allowed_traverse:
+        return 0
+    return project_effective_mask(
+        masks.effective_mask,
+        object_type=object_type,
+        state=ObjectState.NORMAL,
+        global_mask=global_mask,
+    )
+
+
 def authorize_create_on_parent(
     session: OrmSession,
     user: User,
@@ -590,7 +925,7 @@ def authorize_create_on_parent(
     parent_path = _load_ancestor_path(
         session,
         parent,
-        exclude_expired_before=now,
+        active_at_utc=now,
         canonicalize=False,
     )
     check_traverse = should_check_ancestor_traverse(session, user)

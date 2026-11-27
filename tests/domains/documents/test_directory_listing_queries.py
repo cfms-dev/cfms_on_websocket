@@ -200,8 +200,8 @@ def test_document_info_reads_revision_and_file_consistently_during_deduplication
     )
     monkeypatch.setattr(
         directory_models.document_handlers,
-        "authorize_node_operation",
-        lambda _session, _user, _document, _op: SimpleNamespace(allowed=True),
+        "authorize_node_access_with_mask",
+        lambda _session, _user, _document, _op: (True, 1 << 10),
     )
 
     handler = SimpleNamespace(
@@ -223,6 +223,7 @@ def test_document_info_reads_revision_and_file_consistently_during_deduplication
     assert remapped is True
     assert responses[0]["code"] == 200
     assert responses[0]["data"]["size"] == 7
+    assert responses[0]["data"]["effective_mask"] == (1 << 10)
 
 
 def test_fetch_latest_active_revisions_batches_without_lazy_revision_loads(

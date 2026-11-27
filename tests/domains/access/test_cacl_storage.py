@@ -19,14 +19,17 @@ from include.database.session import Base, Session
 from include.domains.access.authorization import (
     evaluation as eval_mod,
 )
+from include.domains.access.authorization.engine import ObjectState
 from include.domains.access.authorization.evaluation import (
+    ListingMaskTarget,
     authorize_create_on_parent,
     authorize_dacl_read,
-    authorize_directory_access_with_parent,
+    authorize_directory_access,
     authorize_node_operation,
     authorize_soft_delete_descendants,
     authorize_write_dacl_and_load_path,
     check_directory_soft_delete_root,
+    compute_listing_item_effective_masks,
     load_ancestor_paths_for_nodes,
     simulate_dacl_save_lockout,
     would_self_lockout_on_create,
@@ -434,11 +437,13 @@ def test_sql_regression_single_pass_and_expired_rule_filtering(cacl_session):
 
         # 1. Directory access + visible parent_id uses only 1 CTE and no separate nodes.inherit query.
         statements.clear()
-        allowed, visible_parent = authorize_directory_access_with_parent(
+        access = authorize_directory_access(
             cacl_session, alice, child, AtomicOp.LIST_DIRECTORY, eval_time_utc=eval_now
         )
-        assert allowed is True
-        assert visible_parent == parent.id
+        assert access.allowed is True
+        assert access.visible_parent_id == parent.id
+        assert access.effective_mask & int(AtomicOp.LIST_DIRECTORY)
+        assert not (access.effective_mask & int(AtomicOp.READ_CONTENT))
         cte_queries = [s for s in statements if "cacl_ancestor_chain" in s]
         assert len(cte_queries) == 1
         separate_inherit_queries = [
@@ -450,12 +455,13 @@ def test_sql_regression_single_pass_and_expired_rule_filtering(cacl_session):
 
         # 2. DACL read uses only 1 CTE and still returns all rules (including expired rule).
         statements.clear()
-        can_read, policy = authorize_dacl_read(
+        read_check = authorize_dacl_read(
             cacl_session, alice, child, eval_time_utc=eval_now
         )
-        assert can_read is True
-        assert policy is not None
-        assert len(policy.rules) == 2
+        assert read_check.allowed is True
+        assert read_check.policy is not None
+        assert len(read_check.policy.rules) == 2
+        assert read_check.effective_mask & int(AtomicOp.READ_DACL)
         assert len([s for s in statements if "cacl_ancestor_chain" in s]) == 1
 
         # 3. Soft-delete root check + descendant check uses 0 ancestor CTEs for descendants.
@@ -893,3 +899,191 @@ def test_handle_set_node_dacl_serializes_concurrent_revocation_and_soft_delete(
             verify_session, ["f-race"], include_deleted=True
         )["f-race"]
         assert persisted.fingerprint() == expected_fingerprint
+
+
+def test_listing_effective_masks_query_budgets_and_security_invariants(cacl_session):
+    alice = _make_user("alice_listing_mask", nickname="Alice")
+    bypass_no_global = _make_user(
+        "bypass_no_global",
+        nickname="BypassNoGlobal",
+        permissions=(Permissions.BYPASS_DACL,),
+    )
+    bypass_with_global = _make_user(
+        "bypass_with_global",
+        nickname="BypassWithGlobal",
+        permissions=(
+            Permissions.BYPASS_DACL,
+            Permissions.PURGE,
+            Permissions.DELETE_REVISION,
+        ),
+    )
+    traversable = models.Folder(id="f-trav", name="Traversable", parent_id="/")
+    no_traverse = models.Folder(id="f-notrav", name="NoTraverse", parent_id="/")
+    cacl_session.add_all(
+        [alice, bypass_no_global, bypass_with_global, traversable, no_traverse]
+    )
+    cacl_session.flush()
+
+    children_trav = [
+        models.Folder(id="sub-inherit", name="SubInherit", parent_id=traversable.id),
+        models.Folder(
+            id="sub-custom",
+            name="SubCustom",
+            parent_id=traversable.id,
+            inherit=False,
+        ),
+        models.Document(id="doc-inherit", title="DocInherit", folder_id=traversable.id),
+        models.Document(
+            id="doc-future",
+            title="DocFuture",
+            folder_id=traversable.id,
+            inherit=False,
+        ),
+    ]
+    child_blocked = models.Document(
+        id="doc-under-notrav",
+        title="DocUnderNoTrav",
+        folder_id=no_traverse.id,
+        inherit=False,
+    )
+    cacl_session.add_all([*children_trav, child_blocked])
+    cacl_session.flush()
+
+    for node, src in (
+        (
+            traversable,
+            (
+                "inherit off; "
+                "allow [TRAVERSE, LIST_DIRECTORY, READ_CONTENT, READ_METADATA, DELETE_REVISION, PURGE] "
+                f'to user("{alice.id}");'
+            ),
+        ),
+        (
+            no_traverse,
+            f'inherit off; allow [LIST_DIRECTORY] to user("{alice.id}");',
+        ),
+        (
+            children_trav[1],
+            f'inherit off; allow [LIST_DIRECTORY, RENAME] to user("{alice.id}");',
+        ),
+        (
+            children_trav[3],
+            (
+                "inherit off; "
+                f'allow [READ_CONTENT] to user("{alice.id}") from "2026-07-01T00:00:00Z"; '
+                f'allow [READ_METADATA] to user("{alice.id}") until "2026-05-01T00:00:00Z";'
+            ),
+        ),
+        (
+            child_blocked,
+            f'inherit off; allow [READ_CONTENT, READ_METADATA] to user("{alice.id}");',
+        ),
+    ):
+        compiled = compile_policy_source(cacl_session, src).policy
+        assert compiled is not None
+        persist_node_policy(cacl_session, node, compiled)
+    cacl_session.commit()
+
+    for u in (alice, bypass_no_global, bypass_with_global):
+        _ = u.all_permissions
+        _ = u.all_groups
+
+    eval_now = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+    trav_targets = [
+        ListingMaskTarget(
+            "sub-inherit", ObjectType.DIRECTORY, ObjectState.NORMAL, True
+        ),
+        ListingMaskTarget(
+            "sub-custom", ObjectType.DIRECTORY, ObjectState.NORMAL, False
+        ),
+        ListingMaskTarget("doc-inherit", ObjectType.DOCUMENT, ObjectState.NORMAL, True),
+        ListingMaskTarget("doc-future", ObjectType.DOCUMENT, ObjectState.NORMAL, False),
+    ]
+    notrav_targets = [
+        ListingMaskTarget(
+            "doc-under-notrav", ObjectType.DOCUMENT, ObjectState.NORMAL, False
+        ),
+    ]
+
+    access_trav = authorize_directory_access(
+        cacl_session,
+        alice,
+        traversable,
+        AtomicOp.LIST_DIRECTORY,
+        eval_time_utc=eval_now,
+    )
+    access_notrav = authorize_directory_access(
+        cacl_session,
+        alice,
+        no_traverse,
+        AtomicOp.LIST_DIRECTORY,
+        eval_time_utc=eval_now,
+    )
+    access_bypass_no = authorize_directory_access(
+        cacl_session,
+        bypass_no_global,
+        traversable,
+        AtomicOp.LIST_DIRECTORY,
+        eval_time_utc=eval_now,
+    )
+    access_bypass_yes = authorize_directory_access(
+        cacl_session,
+        bypass_with_global,
+        traversable,
+        AtomicOp.LIST_DIRECTORY,
+        eval_time_utc=eval_now,
+    )
+
+    engine = cacl_session.get_bind()
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        # 1. Normal user on traversable parent: exactly 1 dacl_rules query, 0 nodes/CTE queries.
+        statements.clear()
+        masks = compute_listing_item_effective_masks(
+            cacl_session, alice, access_trav, trav_targets
+        )
+        assert len(statements) == 1
+        assert "dacl_rules" in statements[0]
+        assert "cacl_ancestor_chain" not in statements[0]
+        assert masks["sub-inherit"] == int(
+            AtomicOp.TRAVERSE | AtomicOp.LIST_DIRECTORY | AtomicOp.READ_METADATA
+        )
+        assert masks["sub-custom"] == int(AtomicOp.LIST_DIRECTORY | AtomicOp.RENAME)
+        # DELETE_REVISION cleared because alice lacks global Permissions.DELETE_REVISION; PURGE cleared for NORMAL.
+        assert masks["doc-inherit"] == int(
+            AtomicOp.READ_CONTENT | AtomicOp.READ_METADATA
+        )
+        # Future & expired rules excluded at SQL level -> mask is 0.
+        assert masks["doc-future"] == 0
+
+        # 2. Parent lacking TRAVERSE -> 0 SQL queries and child masks forced to 0.
+        statements.clear()
+        blocked_masks = compute_listing_item_effective_masks(
+            cacl_session, alice, access_notrav, notrav_targets
+        )
+        assert statements == []
+        assert blocked_masks == {"doc-under-notrav": 0}
+
+        # 3. BYPASS_DACL -> 0 SQL queries, still respects applicability and global gates.
+        statements.clear()
+        bypass_no_masks = compute_listing_item_effective_masks(
+            cacl_session, bypass_no_global, access_bypass_no, trav_targets
+        )
+        assert statements == []
+        assert not (bypass_no_masks["doc-inherit"] & int(AtomicOp.DELETE_REVISION))
+        assert not (bypass_no_masks["doc-inherit"] & int(AtomicOp.PURGE))
+
+        statements.clear()
+        bypass_yes_masks = compute_listing_item_effective_masks(
+            cacl_session, bypass_with_global, access_bypass_yes, trav_targets
+        )
+        assert statements == []
+        assert bypass_yes_masks["doc-inherit"] & int(AtomicOp.DELETE_REVISION)
+        assert not (bypass_yes_masks["doc-inherit"] & int(AtomicOp.PURGE))
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)

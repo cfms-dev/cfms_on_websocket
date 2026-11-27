@@ -47,9 +47,11 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.authorization.evaluation import (
     authorize_create_on_parent,
+    authorize_node_access_with_mask,
     authorize_node_operation,
     authorize_reparent,
     authorize_restore,
+    compute_created_node_effective_mask,
 )
 from include.domains.access.authorization.storage import (
     delete_node_dacl_rules_for_targets,
@@ -264,9 +266,10 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
                 handler.conclude_request(404, {}, smsg.DOCUMENT_NOT_FOUND)
                 return Result(code=404, target=document_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
+            allowed, effective_mask = authorize_node_access_with_mask(
                 session, user, document, AtomicOp.READ_METADATA
-            ).allowed:
+            )
+            if not allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=document_id, user_id=handler.user_id)
 
@@ -287,6 +290,7 @@ class RequestGetDocumentInfoHandler(RequestHandler[_DocumentInfoRequest]):
                 "created_time": document.created_time,
                 "last_modified": latest_revision.created_time,
                 "metadata": serialize_document_metadata(document),
+                "effective_mask": effective_mask,
             }
 
             handler.conclude_request(200, data, "Document info retrieved successfully")
@@ -558,11 +562,20 @@ def _create_document_in_transaction(
                 new_file,
                 transfer_mode=TransferMode.UPLOAD,
             )
+            effective_mask = compute_created_node_effective_mask(
+                user,
+                node_id=new_document.id,
+                name=new_document.title,
+                object_type=ObjectType.DOCUMENT,
+                create_check=create_check,
+                initial_policy=compiled_policy,
+            )
             return (
                 200,
                 {
                     "document_id": new_document.id,
                     "task_data": task_data,
+                    "effective_mask": effective_mask,
                 },
                 "Task successfully created",
                 Result(

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from cacl_compiler import AtomicOp
 
 from include.domains.access.permissions import Permissions
 from tests.support.client import CFMSTestClient
@@ -865,3 +866,357 @@ class TestCaclAuthorizationSemantics:
                 },
             )
         )
+
+
+class TestEffectiveMaskEndpoints:
+    """End-to-end effective_mask contracts and side-channel regression tests."""
+
+    @pytest.mark.asyncio
+    async def test_directory_list_root_and_child_masks_and_side_channel_guards(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        # Root directory never exposes RENAME/REPARENT/DELETE/DIRECTORY_DELETE_CHILD/RESTORE/PURGE.
+        root_listing = assert_success(await authenticated_client.list_directory("/"))
+        root_mask = root_listing["effective_mask"]
+        assert root_mask & int(
+            AtomicOp.LIST_DIRECTORY | AtomicOp.CREATE_DIRECTORY | AtomicOp.LIST_DELETED
+        )
+        assert not (
+            root_mask
+            & int(
+                AtomicOp.RENAME
+                | AtomicOp.REPARENT
+                | AtomicOp.DELETE
+                | AtomicOp.DIRECTORY_DELETE_CHILD
+                | AtomicOp.RESTORE
+                | AtomicOp.PURGE
+            )
+        )
+
+        actor = await user_factory()
+        parent = await directory_factory("MaskParent")
+        doc_explicit_deny = await document_factory(
+            "ExplicitDenyDoc", folder_id=parent["folder_id"]
+        )
+        doc_inherit_off = await document_factory(
+            "InheritOffDoc", folder_id=parent["folder_id"]
+        )
+        doc_future_rule = await document_factory(
+            "FutureRuleDoc", folder_id=parent["folder_id"]
+        )
+        doc_readable = await document_factory(
+            "ReadableDoc", folder_id=parent["folder_id"]
+        )
+        nested_dir = await directory_factory("NestedDir", parent_id=parent["folder_id"])
+        hidden_sub = await directory_factory(
+            "HiddenSub", parent_id=nested_dir["folder_id"]
+        )
+
+        # Grant LIST_DIRECTORY WITHOUT TRAVERSE on parent first (T2 check).
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                f'inherit off; allow [LIST_DIRECTORY] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                doc_readable["document_id"],
+                f'inherit off; allow [READ_CONTENT, READ_METADATA] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                doc_explicit_deny["document_id"],
+                f'inherit on; deny [READ_CONTENT, READ_METADATA] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                doc_inherit_off["document_id"],
+                "inherit off;",
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                doc_future_rule["document_id"],
+                (
+                    "inherit off; "
+                    f'allow [READ_CONTENT, READ_METADATA] to user("{actor["user_id"]}") '
+                    'from "2099-01-01T00:00:00Z";'
+                ),
+            )
+        )
+
+        actor_client = await client_factory()
+        assert_success(await actor_client.login(actor["username"], actor["password"]))
+
+        # Without TRAVERSE on parent, ALL child masks MUST be 0 (no child DACL leakage).
+        no_trav_list = assert_success(
+            await actor_client.list_directory(parent["folder_id"])
+        )
+        assert no_trav_list["effective_mask"] == int(AtomicOp.LIST_DIRECTORY)
+        assert all(item["effective_mask"] == 0 for item in no_trav_list["items"])
+        for item in no_trav_list["items"]:
+            assert "inherit" not in item
+            assert "_node_inherit" not in item
+            assert "effective_allow_mask" not in item
+            assert "effective_deny_mask" not in item
+            assert "next_transition_at" not in item
+
+        # Granting BYPASS_TRAVERSE_CHECKING exposes the reachable child mask without parent TRAVERSE.
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                actor["user_id"],
+                [permission_entry(Permissions.BYPASS_TRAVERSE_CHECKING)],
+            )
+        )
+        bypass_trav_list = assert_success(
+            await actor_client.list_directory(parent["folder_id"])
+        )
+        by_id = {item["id"]: item for item in bypass_trav_list["items"]}
+        assert by_id[doc_readable["document_id"]]["effective_mask"] == int(
+            AtomicOp.READ_CONTENT | AtomicOp.READ_METADATA
+        )
+        # Explicit deny, inherit off, and future-scheduled rules are indistinguishable (all 0).
+        assert by_id[doc_explicit_deny["document_id"]]["effective_mask"] == 0
+        assert by_id[doc_inherit_off["document_id"]]["effective_mask"] == 0
+        assert by_id[doc_future_rule["document_id"]]["effective_mask"] == 0
+
+        # T3 hidden descendant check: adding a protected file inside unreadable hidden_sub
+        # must NOT change nested_dir's DELETE bit in parent listing.
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                nested_dir["folder_id"],
+                f'inherit off; allow [LIST_DIRECTORY, DELETE] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                hidden_sub["folder_id"],
+                "inherit off;",
+            )
+        )
+        before_list = assert_success(
+            await actor_client.list_directory(parent["folder_id"])
+        )
+        before_mask = next(
+            i["effective_mask"]
+            for i in before_list["items"]
+            if i["id"] == nested_dir["folder_id"]
+        )
+        assert before_mask == int(AtomicOp.LIST_DIRECTORY | AtomicOp.DELETE)
+
+        await document_factory("ClassifiedDoc", folder_id=hidden_sub["folder_id"])
+        after_list = assert_success(
+            await actor_client.list_directory(parent["folder_id"])
+        )
+        after_mask = next(
+            i["effective_mask"]
+            for i in after_list["items"]
+            if i["id"] == nested_dir["folder_id"]
+        )
+        assert after_mask == before_mask
+
+    @pytest.mark.asyncio
+    async def test_deleted_listing_search_info_revisions_dacl_and_create_masks(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+        owned_entities,
+    ):
+        actor = await user_factory(permissions=[permission_entry(Permissions.SEARCH)])
+        parent = await directory_factory("FullMaskParent")
+        sub = await directory_factory("FullMaskSub", parent_id=parent["folder_id"])
+        doc = await document_factory("FullMaskDoc", folder_id=sub["folder_id"])
+
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                parent["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, LIST_DIRECTORY, CREATE_DIRECTORY, CREATE_DOCUMENT, "
+                    "READ_METADATA, READ_CONTENT, LIST_REVISIONS, READ_REVISION, "
+                    "DELETE_REVISION, LIST_DELETED, RESTORE, PURGE, READ_DACL, WRITE_DACL] "
+                    f'to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+
+        actor_client = await client_factory()
+        assert_success(await actor_client.login(actor["username"], actor["password"]))
+
+        # info.get & revision.list & dacl.get: DELETE_REVISION bit must be 0 without global gate.
+        dir_info = assert_success(
+            await actor_client.get_directory_info(sub["folder_id"])
+        )
+        assert dir_info["effective_mask"] & int(
+            AtomicOp.READ_METADATA | AtomicOp.WRITE_DACL
+        )
+        assert not (dir_info["effective_mask"] & int(AtomicOp.PURGE | AtomicOp.RESTORE))
+
+        doc_info = assert_success(
+            await actor_client.get_document_info(doc["document_id"])
+        )
+        assert doc_info["effective_mask"] & int(
+            AtomicOp.READ_CONTENT
+            | AtomicOp.READ_METADATA
+            | AtomicOp.LIST_REVISIONS
+            | AtomicOp.READ_REVISION
+        )
+        assert not (
+            doc_info["effective_mask"] & int(AtomicOp.DELETE_REVISION | AtomicOp.PURGE)
+        )
+
+        revs = assert_success(await actor_client.list_revisions(doc["document_id"]))
+        assert revs["effective_mask"] == doc_info["effective_mask"]
+
+        search_res = assert_success(
+            await actor_client.search("FullMaskDoc", search_directories=False)
+        )
+        search_hit = next(
+            i for i in search_res["items"] if i["id"] == doc["document_id"]
+        )
+        assert search_hit["effective_mask"] == doc_info["effective_mask"]
+
+        # Grant global DELETE_REVISION -> bit immediately appears in info & revisions.
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                actor["user_id"],
+                [
+                    permission_entry(Permissions.SEARCH),
+                    permission_entry(Permissions.DELETE_REVISION),
+                ],
+            )
+        )
+        revs_after = assert_success(
+            await actor_client.list_revisions(doc["document_id"])
+        )
+        assert revs_after["effective_mask"] & int(AtomicOp.DELETE_REVISION)
+
+        # create directory (new + exists_ok) and create document return effective_mask.
+        created_dir = assert_success(
+            await actor_client.create_directory(
+                "CreatedMaskDir", parent_id=parent["folder_id"]
+            )
+        )
+        owned_entities["directories"].append(created_dir["id"])
+        assert created_dir["effective_mask"] & int(
+            AtomicOp.LIST_DIRECTORY | AtomicOp.WRITE_DACL
+        )
+
+        existing_dir = assert_success(
+            await actor_client.send_request(
+                "core.directory.create",
+                {
+                    "name": "CreatedMaskDir",
+                    "parent_id": parent["folder_id"],
+                    "exists_ok": True,
+                },
+            )
+        )
+        assert existing_dir["id"] == created_dir["id"]
+        assert existing_dir["effective_mask"] == created_dir["effective_mask"]
+
+        created_doc = assert_success(
+            await actor_client.create_document(
+                "CreatedMaskDoc",
+                folder_id=parent["folder_id"],
+                dacl=(
+                    "inherit off; "
+                    f'allow [READ_CONTENT, WRITE_DACL] to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+        owned_entities["documents"].append(created_doc["document_id"])
+        assert created_doc["effective_mask"] == int(
+            AtomicOp.READ_CONTENT | AtomicOp.WRITE_DACL
+        )
+
+        # dacl.get & dacl.set (including self-lockout override updating effective_mask).
+        dacl_get = assert_success(
+            await actor_client.get_directory_dacl(created_dir["id"])
+        )
+        assert dacl_get["effective_mask"] == created_dir["effective_mask"]
+
+        lockout_err = assert_error(
+            await actor_client.set_directory_dacl(
+                created_dir["id"],
+                f'inherit off; allow [READ_METADATA] to user("{actor["user_id"]}");',
+            ),
+            409,
+        )
+        assert "effective_mask" not in lockout_err["data"]
+
+        dacl_set = assert_success(
+            await actor_client.set_directory_dacl(
+                created_dir["id"],
+                f'inherit off; allow [READ_METADATA] to user("{actor["user_id"]}");',
+                allow_self_lockout=True,
+            )
+        )
+        assert dacl_set["effective_mask"] == int(AtomicOp.READ_METADATA)
+
+        # Soft-delete sub (and its child doc): verify deleted_item.list inside BOTH normal parent
+        # and soft-deleted sub, plus global PURGE gate masking.
+        assert_success(await authenticated_client.delete_directory(sub["folder_id"]))
+
+        deleted_under_normal = assert_success(
+            await actor_client.list_deleted_items(parent["folder_id"])
+        )
+        assert deleted_under_normal["effective_mask"] & int(AtomicOp.LIST_DELETED)
+        sub_deleted_item = next(
+            i for i in deleted_under_normal["items"] if i["id"] == sub["folder_id"]
+        )
+        # Lacks global Permissions.PURGE -> PURGE bit is 0.
+        assert sub_deleted_item["effective_mask"] == int(
+            AtomicOp.LIST_DELETED | AtomicOp.RESTORE
+        )
+
+        deleted_under_deleted = assert_success(
+            await actor_client.list_deleted_items(sub["folder_id"])
+        )
+        assert deleted_under_deleted["effective_mask"] == int(
+            AtomicOp.LIST_DELETED | AtomicOp.RESTORE
+        )
+        doc_deleted_item = next(
+            i for i in deleted_under_deleted["items"] if i["id"] == doc["document_id"]
+        )
+        assert doc_deleted_item["effective_mask"] == int(AtomicOp.RESTORE)
+
+        # Grant global PURGE -> PURGE bit appears in deleted_item.list.
+        assert_success(
+            await authenticated_client.change_user_permissions(
+                actor["user_id"], [permission_entry(Permissions.PURGE)]
+            )
+        )
+        deleted_with_purge = assert_success(
+            await actor_client.list_deleted_items(sub["folder_id"])
+        )
+        assert deleted_with_purge["effective_mask"] == int(
+            AtomicOp.LIST_DELETED | AtomicOp.RESTORE | AtomicOp.PURGE
+        )
+        doc_with_purge = next(
+            i for i in deleted_with_purge["items"] if i["id"] == doc["document_id"]
+        )
+        assert doc_with_purge["effective_mask"] == int(
+            AtomicOp.RESTORE | AtomicOp.PURGE
+        )
+
+        # Error responses (403 / 404) never include effective_mask.
+        forbidden_dacl = assert_error(
+            await actor_client.get_directory_dacl(created_dir["id"]), 403
+        )
+        assert "effective_mask" not in forbidden_dacl["data"]
+        missing_info = assert_error(
+            await actor_client.get_directory_info("nonexistent-dir-mask-test"), 404
+        )
+        assert "effective_mask" not in missing_info["data"]

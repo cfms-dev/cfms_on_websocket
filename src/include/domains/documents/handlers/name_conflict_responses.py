@@ -13,6 +13,7 @@ def respond_to_node_name_conflict(
     result_data: dict[str, Any],
 ) -> Result:
     payload.pop("entity", None)
+    payload.pop("raw_effective_mask", None)
     handler.conclude_request(409, payload, message)
     if "duplicate_id" in payload:
         result_data = {**result_data, "duplicate_id": payload["duplicate_id"]}

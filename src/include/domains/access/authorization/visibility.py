@@ -24,7 +24,10 @@ from include.domains.access.authorization.engine import (
     step_node_dacl,
 )
 from include.domains.access.authorization.evaluation import (
+    _ALL_OPS_MASK,
+    global_gate_ops_mask_from_perms,
     has_bypass_dacl,
+    project_effective_mask,
     should_check_ancestor_traverse,
     user_to_subject,
 )
@@ -63,6 +66,7 @@ class BatchVisibilityEvaluator:
         self._now_utc = now_utc.astimezone(datetime.UTC)
         self._check_traverse = check_traverse
         self._bypass_dacl = bypass_dacl
+        self._global_mask = global_gate_ops_mask_from_perms(subject.perms)
         self._node_meta: dict[str, AncestorNodeMeta] = {}
         self._node_policies: dict[str, CompiledPolicy] = {}
         self._dir_state_cache: dict[str, tuple[bool, InheritedDaclState]] = {}
@@ -288,9 +292,25 @@ class BatchVisibilityEvaluator:
 
         return self._dir_state_cache.get(dir_id, (False, _EMPTY_INHERITED_STATE))
 
-    def is_visible(self, candidate: VisibilityCandidate) -> bool:
+    def evaluate_visible_effective_mask(
+        self, candidate: VisibilityCandidate
+    ) -> int | None:
+        """Return the projected effective mask if candidate is visible, else None."""
+        candidate_state = (
+            ObjectState.SOFT_DELETED
+            if candidate.status == EntityStatus.DELETED.value
+            else ObjectState.NORMAL
+        )
+        is_root = candidate.node_id == ROOT_DIRECTORY_ID
+
         if self._bypass_dacl:
-            return True
+            return project_effective_mask(
+                _ALL_OPS_MASK,
+                object_type=candidate.object_type,
+                state=candidate_state,
+                global_mask=self._global_mask,
+                is_root=is_root,
+            )
 
         is_document = candidate.object_type is ObjectType.DOCUMENT
         parent_id = candidate.parent_id
@@ -299,12 +319,12 @@ class BatchVisibilityEvaluator:
             if not accessible:
                 if is_document:
                     self._node_policies.pop(candidate.node_id, None)
-                return False
+                return None
         else:
-            if candidate.node_id != ROOT_DIRECTORY_ID:
+            if not is_root:
                 if is_document:
                     self._node_policies.pop(candidate.node_id, None)
-                return False
+                return None
             parent_inherited = _EMPTY_INHERITED_STATE
 
         fallback_policy = CompiledPolicy(inherit=candidate.inherit, rules=())
@@ -320,4 +340,16 @@ class BatchVisibilityEvaluator:
             parent_inherited,
             self._now_utc,
         )
-        return is_effective_mask_visible(candidate.object_type, own_allow & ~own_deny)
+        raw_mask = own_allow & ~own_deny
+        if not is_effective_mask_visible(candidate.object_type, raw_mask):
+            return None
+        return project_effective_mask(
+            raw_mask,
+            object_type=candidate.object_type,
+            state=candidate_state,
+            global_mask=self._global_mask,
+            is_root=is_root,
+        )
+
+    def is_visible(self, candidate: VisibilityCandidate) -> bool:
+        return self.evaluate_visible_effective_mask(candidate) is not None

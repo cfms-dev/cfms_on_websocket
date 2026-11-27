@@ -1176,3 +1176,17 @@ def test_search_results_omit_internal_fields(search_query_context):
                 assert "name_sort_key" not in row
                 assert "inherit" not in row
                 assert "current_revision_id" not in row
+                assert isinstance(row["effective_mask"], int)
+                assert not (row["effective_mask"] & int(AtomicOp.PURGE))
+                assert not (row["effective_mask"] & int(AtomicOp.RESTORE))
+                if row["type"] == "directory":
+                    assert not (row["effective_mask"] & int(AtomicOp.READ_CONTENT))
+                    assert row["effective_mask"] & int(AtomicOp.LIST_DIRECTORY)
+                else:
+                    assert not (row["effective_mask"] & int(AtomicOp.LIST_DIRECTORY))
+                    assert row["effective_mask"] & int(AtomicOp.READ_CONTENT)
+                    if user is admin_user:
+                        # admin_user holds BYPASS_DACL without global DELETE_REVISION.
+                        assert not (
+                            row["effective_mask"] & int(AtomicOp.DELETE_REVISION)
+                        )

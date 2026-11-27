@@ -16,9 +16,10 @@ from include.database.models.documents import (
 )
 from include.database.models.identity import User
 from include.database.session import Session
+from include.domains.access.authorization.engine import ObjectState
 from include.domains.access.authorization.evaluation import (
     authorize_create_on_parent,
-    authorize_directory_access_with_parent,
+    authorize_directory_access,
     authorize_directory_reparent,
     authorize_node_operation,
     authorize_purge_descendants,
@@ -27,6 +28,9 @@ from include.domains.access.authorization.evaluation import (
     check_directory_purge_root,
     check_directory_restore_root,
     check_directory_soft_delete_root,
+    compute_created_node_effective_mask,
+    global_gate_ops_mask,
+    project_effective_mask,
 )
 from include.domains.access.authorization.storage import (
     delete_node_dacl_rules_for_targets,
@@ -62,6 +66,7 @@ from include.domains.documents.queries.file_references import (
     find_unreachable_document_file_ids,
 )
 from include.domains.documents.queries.listing import (
+    attach_listing_effective_masks,
     count_active_directory_children,
     directory_cursor_key,
     fetch_deleted_listing_items,
@@ -174,10 +179,14 @@ class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=folder_id, user_id=handler.user_id)
 
-            allowed, parent_id = authorize_directory_access_with_parent(
-                session, this_user, folder, AtomicOp.LIST_DIRECTORY
+            access = authorize_directory_access(
+                session,
+                this_user,
+                folder,
+                AtomicOp.LIST_DIRECTORY,
+                include_visible_parent=True,
             )
-            if not allowed:
+            if not access.allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=folder_id, user_id=handler.user_id)
 
@@ -201,7 +210,11 @@ class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
                 folder_id,
                 last_key,
                 page_size + 1,
+                include_inherit_meta=True,
             )
+            inherit_by_id = {
+                item["id"]: item["_node_inherit"] for item in items[:page_size]
+            }
 
             data = make_cursor_response(
                 items,
@@ -211,7 +224,16 @@ class RequestListDirectoryHandler(RequestHandler[_ListDirectoryRequest]):
                 filters=filters,
                 cursor_key=directory_cursor_key,
             )
-            data["parent_id"] = parent_id
+            attach_listing_effective_masks(
+                session,
+                this_user,
+                access,
+                data["items"],
+                inherit_by_id=inherit_by_id,
+                state=ObjectState.NORMAL,
+            )
+            data["parent_id"] = access.visible_parent_id
+            data["effective_mask"] = access.effective_mask
             response = {
                 "code": 200,
                 "message": "Directory listing successful",
@@ -239,10 +261,14 @@ class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=directory_id, user_id=handler.user_id)
 
-            allowed, parent_id = authorize_directory_access_with_parent(
-                session, user, directory, AtomicOp.READ_METADATA
+            access = authorize_directory_access(
+                session,
+                user,
+                directory,
+                AtomicOp.READ_METADATA,
+                include_visible_parent=True,
             )
-            if not allowed:
+            if not access.allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=directory_id, user_id=handler.user_id)
 
@@ -251,9 +277,10 @@ class RequestGetDirectoryInfoHandler(RequestHandler[_DirectoryIDRequest]):
                 "count_of_child": count_active_directory_children(
                     session, directory.id
                 ),
-                "parent_id": parent_id,
+                "parent_id": access.visible_parent_id,
                 "name": directory.name,
                 "created_time": directory.created_time,
+                "effective_mask": access.effective_mask,
             }
 
             handler.conclude_request(200, data, "Directory info retrieved successfully")
@@ -384,13 +411,22 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                     session, this_user, parent_id, name
                 )
                 existing_folder = payload.pop("entity", None)
+                raw_effective_mask = payload.pop("raw_effective_mask", 0)
                 if exists_ok and existing_folder is not None:
+                    existing_mask = project_effective_mask(
+                        raw_effective_mask,
+                        object_type=ObjectType.DIRECTORY,
+                        state=ObjectState.NORMAL,
+                        global_mask=global_gate_ops_mask(this_user),
+                        is_root=(existing_folder.id == ROOT_DIRECTORY_ID),
+                    )
                     handler.conclude_request(
                         200,
                         {
                             "id": existing_folder.id,
                             "name": existing_folder.name,
                             "last_modified": existing_folder.created_time,
+                            "effective_mask": existing_mask,
                         },
                         "Directory already exists",
                     )
@@ -403,12 +439,21 @@ class RequestCreateDirectoryHandler(RequestHandler[_CreateDirectoryRequest]):
                     result_data={"name": name},
                 )
 
+            effective_mask = compute_created_node_effective_mask(
+                this_user,
+                node_id=folder.id,
+                name=folder.name,
+                object_type=ObjectType.DIRECTORY,
+                create_check=create_check,
+                initial_policy=compiled_policy,
+            )
             handler.conclude_request(
                 200,
                 {
                     "id": folder.id,
                     "name": folder.name,
                     "last_modified": folder.created_time,
+                    "effective_mask": effective_mask,
                 },
                 "Directory created successfully",
             )
@@ -879,12 +924,14 @@ class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
                 handler.conclude_request(404, {}, smsg.DIRECTORY_NOT_FOUND)
                 return Result(code=404, target=parent_id, user_id=handler.user_id)
 
-            if not authorize_node_operation(
+            access = authorize_directory_access(
                 session,
                 user,
                 parent_folder,
                 AtomicOp.LIST_DELETED,
-            ).allowed:
+                include_visible_parent=False,
+            )
+            if not access.allowed:
                 handler.conclude_access_denial()
                 return Result(code=403, target=parent_id, user_id=handler.user_id)
 
@@ -908,7 +955,11 @@ class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
                 db_parent_id,
                 last_key,
                 page_size + 1,
+                include_inherit_meta=True,
             )
+            inherit_by_id = {
+                item["id"]: item["_node_inherit"] for item in items[:page_size]
+            }
 
             result_data = make_cursor_response(
                 items,
@@ -918,7 +969,17 @@ class RequestListDeletedItemsHandler(RequestHandler[_ListDeletedItemsRequest]):
                 filters=filters,
                 cursor_key=directory_cursor_key,
             )
+            attach_listing_effective_masks(
+                session,
+                user,
+                access,
+                result_data["items"],
+                inherit_by_id=inherit_by_id,
+                state=ObjectState.SOFT_DELETED,
+                include_deleted=True,
+            )
             result_data["parent_id"] = parent_id
+            result_data["effective_mask"] = access.effective_mask
 
             handler.conclude_request(200, result_data, "Deleted items retrieved")
             return Result(code=0, target=parent_id, user_id=handler.user_id)

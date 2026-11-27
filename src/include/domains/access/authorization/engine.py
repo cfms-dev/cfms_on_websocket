@@ -10,9 +10,11 @@ __all__ = [
     "PathMasksResult",
     "Subject",
     "SubtreeNode",
+    "applicable_ops_mask",
     "check_op_applicability",
     "eval_dnf",
     "evaluate_access",
+    "evaluate_child_effective_mask",
     "evaluate_effective_masks",
     "evaluate_path_masks",
     "evaluate_purge_subtree",
@@ -49,7 +51,11 @@ from cacl_compiler import (
     PredicateKind,
     Scope,
 )
-from cacl_compiler.permissions import StateApplicability, TargetApplicability
+from cacl_compiler.permissions import (
+    ATOMIC_OP_TABLE,
+    StateApplicability,
+    TargetApplicability,
+)
 
 
 class ObjectState(StrEnum):
@@ -323,6 +329,57 @@ DIRECTORY_VISIBILITY_MASK = int(AtomicOp.LIST_DIRECTORY | AtomicOp.READ_METADATA
 DOCUMENT_VISIBILITY_MASK = int(AtomicOp.READ_CONTENT | AtomicOp.READ_METADATA)
 _TRAVERSE_BIT = int(AtomicOp.TRAVERSE)
 _DELETE_BIT = int(AtomicOp.DELETE)
+_ROOT_FORBIDDEN_MASK = int(
+    AtomicOp.RENAME
+    | AtomicOp.REPARENT
+    | AtomicOp.DELETE
+    | AtomicOp.DIRECTORY_DELETE_CHILD
+    | AtomicOp.RESTORE
+    | AtomicOp.PURGE
+)
+_APPLICABLE_MASK_TABLE: dict[tuple[ObjectType, ObjectState], int] = {
+    (obj_type, obj_state): sum(
+        int(meta.op)
+        for meta in ATOMIC_OP_TABLE
+        if op_applies_to_object(meta.op, obj_type)
+        and op_applies_to_state(meta.op, obj_state)
+    )
+    for obj_type in ObjectType
+    for obj_state in ObjectState
+}
+
+
+def applicable_ops_mask(
+    object_type: ObjectType,
+    state: ObjectState,
+    *,
+    is_root: bool = False,
+) -> int:
+    """Return the bitmask of AtomicOps structurally valid for (object_type, state, is_root)."""
+    mask = _APPLICABLE_MASK_TABLE[(object_type, state)]
+    if is_root:
+        mask &= ~_ROOT_FORBIDDEN_MASK
+    return mask
+
+
+def evaluate_child_effective_mask(
+    subject: Subject,
+    policy: CompiledPolicy,
+    object_type: ObjectType,
+    parent_inherited: InheritedDaclState,
+    eval_time_utc: datetime.datetime,
+) -> int:
+    """Evaluate a direct child's raw effective mask given its parent's inherited DACL state."""
+    if not policy.rules:
+        if not policy.inherit:
+            return 0
+        if object_type is ObjectType.DIRECTORY:
+            return parent_inherited.dir_allow & ~parent_inherited.dir_deny
+        return parent_inherited.doc_allow & ~parent_inherited.doc_deny
+    own_allow, own_deny, _, _ = step_node_dacl(
+        subject, policy, object_type, parent_inherited, eval_time_utc
+    )
+    return own_allow & ~own_deny
 
 
 def check_op_applicability(
