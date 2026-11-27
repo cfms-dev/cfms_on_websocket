@@ -72,7 +72,7 @@ effective_mask = raw_effective_mask & applicable_ops_mask(type, state, is_root) 
 | `core.directory.deleted_item.list` | Top-level `data.effective_mask` (target folder) and each `data.items[].effective_mask` |
 | `core.directory.info.get` | `data.effective_mask` |
 | `core.document.info.get` | `data.effective_mask` |
-| `core.search.query` | Each `data.items[].effective_mask` |
+| `core.search.query` | Each `data.items[].effective_mask` and top-level `data.parent_effective_masks[<parent_id>]` (deduplicated per returned page) |
 | `core.document.revision.list` | Top-level `data.effective_mask` (document) |
 | `core.directory.dacl.get` | `data.effective_mask` |
 | `core.document.dacl.get` | `data.effective_mask` |

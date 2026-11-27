@@ -1086,6 +1086,10 @@ class TestEffectiveMaskEndpoints:
             i for i in search_res["items"] if i["id"] == doc["document_id"]
         )
         assert search_hit["effective_mask"] == doc_info["effective_mask"]
+        assert (
+            search_res["parent_effective_masks"][sub["folder_id"]]
+            == dir_info["effective_mask"]
+        )
 
         # Grant global DELETE_REVISION -> bit immediately appears in info & revisions.
         assert_success(
@@ -1220,3 +1224,80 @@ class TestEffectiveMaskEndpoints:
             await actor_client.get_directory_info("nonexistent-dir-mask-test"), 404
         )
         assert "effective_mask" not in missing_info["data"]
+
+    @pytest.mark.asyncio
+    async def test_search_parent_effective_masks_distinguish_traverse_only_and_listable_parents(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+        user_factory,
+        client_factory,
+    ):
+        actor = await user_factory(permissions=[permission_entry(Permissions.SEARCH)])
+        traverse_only_dir = await directory_factory("SearchParentTraverseOnlyDir")
+        listable_dir = await directory_factory("SearchParentListableDir")
+
+        trav_doc = await document_factory(
+            "SearchParentAccessDoc A", folder_id=traverse_only_dir["folder_id"]
+        )
+        list_doc = await document_factory(
+            "SearchParentAccessDoc B", folder_id=listable_dir["folder_id"]
+        )
+
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                traverse_only_dir["folder_id"],
+                f'inherit off; allow [TRAVERSE] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_document_dacl(
+                trav_doc["document_id"],
+                f'inherit off; allow [READ_CONTENT, READ_METADATA] to user("{actor["user_id"]}");',
+            )
+        )
+        assert_success(
+            await authenticated_client.set_directory_dacl(
+                listable_dir["folder_id"],
+                (
+                    "inherit off; "
+                    "allow [TRAVERSE, LIST_DIRECTORY, READ_METADATA, READ_CONTENT] "
+                    f'to user("{actor["user_id"]}");'
+                ),
+            )
+        )
+
+        actor_client = await client_factory()
+        assert_success(await actor_client.login(actor["username"], actor["password"]))
+
+        search_res = assert_success(
+            await actor_client.search(
+                "SearchParentAccessDoc",
+                search_documents=True,
+                search_directories=False,
+            )
+        )
+        by_id = {item["id"]: item for item in search_res["items"]}
+        assert set(by_id) == {trav_doc["document_id"], list_doc["document_id"]}
+
+        parent_masks = search_res["parent_effective_masks"]
+        assert set(parent_masks) == {
+            traverse_only_dir["folder_id"],
+            listable_dir["folder_id"],
+        }
+        assert parent_masks[traverse_only_dir["folder_id"]] == int(AtomicOp.TRAVERSE)
+        assert not (
+            parent_masks[traverse_only_dir["folder_id"]] & int(AtomicOp.LIST_DIRECTORY)
+        )
+        assert_error(
+            await actor_client.list_directory(traverse_only_dir["folder_id"]), 403
+        )
+
+        listed_parent = assert_success(
+            await actor_client.list_directory(listable_dir["folder_id"])
+        )
+        assert (
+            parent_masks[listable_dir["folder_id"]] == listed_parent["effective_mask"]
+        )
+        assert parent_masks[listable_dir["folder_id"]] & int(AtomicOp.LIST_DIRECTORY)

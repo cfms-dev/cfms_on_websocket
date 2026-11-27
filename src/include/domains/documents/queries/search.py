@@ -1,4 +1,5 @@
 __all__ = [
+    "PARENT_EFFECTIVE_MASK_KEY",
     "SearchQuerySpec",
     "fetch_visible_search_candidate_rows",
     "search_cursor_key",
@@ -52,6 +53,7 @@ from include.domains.documents.queries.active_revisions import (
 )
 
 _CURSOR_KEY = "_cursor_key"
+PARENT_EFFECTIVE_MASK_KEY = "_parent_effective_mask"
 _SEARCH_PROBE_MULTIPLIER = 2
 _SEARCH_MIN_PROBE_LIMIT = 128
 
@@ -498,6 +500,11 @@ class _SearchPageCollector:
             effective_mask = self._evaluator.evaluate_visible_effective_mask(candidate)
             if effective_mask is not None:
                 raw_item["effective_mask"] = effective_mask
+                raw_item[PARENT_EFFECTIVE_MASK_KEY] = (
+                    self._evaluator.cached_directory_effective_mask(candidate.parent_id)
+                    if candidate.parent_id is not None
+                    else None
+                )
                 self.visible_rows.append(_finalize_search_item(raw_item, self._sort_by))
                 if self.is_full:
                     return
@@ -521,6 +528,13 @@ class _SearchPageCollector:
                 )
                 if effective_mask is not None:
                     raw_item["effective_mask"] = effective_mask
+                    raw_item[PARENT_EFFECTIVE_MASK_KEY] = (
+                        self._evaluator.cached_directory_effective_mask(
+                            candidate.parent_id
+                        )
+                        if candidate.parent_id is not None
+                        else None
+                    )
                     pending_visible.append(raw_item)
             if not pending_visible:
                 break
@@ -583,6 +597,28 @@ def _fetch_bypass_search_rows(
         state=ObjectState.NORMAL,
         global_mask=global_mask,
     )
+    deleted_dir_mask = project_effective_mask(
+        _ALL_OPS_MASK,
+        object_type=ObjectType.DIRECTORY,
+        state=ObjectState.SOFT_DELETED,
+        global_mask=global_mask,
+    )
+    non_root_parent_ids = list(
+        dict.fromkeys(
+            row["parent_id"]
+            for row in raw_rows
+            if row["parent_id"] not in (None, ROOT_DIRECTORY_ID)
+        )
+    )
+    parent_statuses: dict[str, int] = {}
+    for chunk in batched(non_root_parent_ids, QUERY_CHUNK_SIZE):
+        for parent_row in session.execute(
+            select(Node.__table__.c.id, Node.__table__.c.status).where(
+                Node.__table__.c.id.in_(chunk)
+            )
+        ).mappings():
+            parent_statuses[str(parent_row["id"])] = int(parent_row["status"])
+
     for row in raw_rows:
         if row["type"] == "directory":
             row["effective_mask"] = (
@@ -590,6 +626,20 @@ def _fetch_bypass_search_rows(
             )
         else:
             row["effective_mask"] = doc_mask
+
+        parent_id = row["parent_id"]
+        if parent_id is None:
+            row[PARENT_EFFECTIVE_MASK_KEY] = None
+        elif parent_id == ROOT_DIRECTORY_ID:
+            row[PARENT_EFFECTIVE_MASK_KEY] = root_mask
+        else:
+            parent_status = parent_statuses.get(parent_id)
+            if parent_status is None:
+                row[PARENT_EFFECTIVE_MASK_KEY] = 0
+            elif parent_status == EntityStatus.DELETED.value:
+                row[PARENT_EFFECTIVE_MASK_KEY] = deleted_dir_mask
+            else:
+                row[PARENT_EFFECTIVE_MASK_KEY] = dir_mask
     if spec.needs_revision_in_sort or not spec.search_documents:
         return [_finalize_search_item(row, spec.sort_by) for row in raw_rows]
     return _hydrate_lightweight_search_rows(session, raw_rows, spec.sort_by)

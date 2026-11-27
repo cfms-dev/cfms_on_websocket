@@ -1,4 +1,5 @@
 import pytest
+from cacl_compiler import AtomicOp
 
 from tests.support.client import CFMSTestClient
 from tests.support.utils import assert_error, assert_success
@@ -330,3 +331,134 @@ class TestSearch:
     ):
         response = await authenticated_client.search(**payload)
         assert_error(response, 400)
+
+    @pytest.mark.asyncio
+    async def test_search_returns_deduplicated_parent_effective_masks_and_strips_internal_fields(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+    ):
+        folder = await directory_factory("SearchParentMaskFolder")
+        doc_a = await document_factory(
+            "SearchParentMaskDoc A", folder_id=folder["folder_id"]
+        )
+        doc_b = await document_factory(
+            "SearchParentMaskDoc B", folder_id=folder["folder_id"]
+        )
+        doc_root = await document_factory("SearchParentMaskDoc Root", folder_id="/")
+
+        response = await authenticated_client.search(
+            query="SearchParentMaskDoc",
+            search_documents=True,
+            search_directories=False,
+        )
+        data = assert_success(response)
+
+        item_ids = {item["id"] for item in data["items"]}
+        assert item_ids == {
+            doc_a["document_id"],
+            doc_b["document_id"],
+            doc_root["document_id"],
+        }
+        for item in data["items"]:
+            assert "_parent_effective_mask" not in item
+            assert "_cursor_key" not in item
+
+        parent_masks = data["parent_effective_masks"]
+        assert set(parent_masks) == {folder["folder_id"], "/"}
+        assert parent_masks[folder["folder_id"]] & int(
+            AtomicOp.LIST_DIRECTORY | AtomicOp.RENAME | AtomicOp.DELETE
+        )
+        assert parent_masks["/"] & int(AtomicOp.LIST_DIRECTORY | AtomicOp.TRAVERSE)
+        assert not (
+            parent_masks["/"]
+            & int(
+                AtomicOp.RENAME
+                | AtomicOp.REPARENT
+                | AtomicOp.DELETE
+                | AtomicOp.DIRECTORY_DELETE_CHILD
+                | AtomicOp.RESTORE
+                | AtomicOp.PURGE
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_parent_effective_masks_empty_and_root_results(
+        self, authenticated_client: CFMSTestClient
+    ):
+        empty_data = assert_success(
+            await authenticated_client.search(
+                query="DefinitelyNoMatchingParentMaskResult"
+            )
+        )
+        assert empty_data["items"] == []
+        assert empty_data["parent_effective_masks"] == {}
+
+        disabled_data = assert_success(
+            await authenticated_client.search(
+                query="Any",
+                search_documents=False,
+                search_directories=False,
+            )
+        )
+        assert disabled_data["items"] == []
+        assert disabled_data["parent_effective_masks"] == {}
+
+        root_data = assert_success(
+            await authenticated_client.search(
+                query="/",
+                search_documents=False,
+                search_directories=True,
+            )
+        )
+        root_item = next(item for item in root_data["items"] if item["id"] == "/")
+        assert root_item["parent_id"] is None
+        expected_parent_ids = {
+            item["parent_id"]
+            for item in root_data["items"]
+            if item["parent_id"] is not None
+        }
+        assert set(root_data["parent_effective_masks"]) == expected_parent_ids
+
+    @pytest.mark.asyncio
+    async def test_search_parent_effective_masks_excludes_pagination_lookahead_parent(
+        self,
+        authenticated_client: CFMSTestClient,
+        directory_factory,
+        document_factory,
+    ):
+        dir_a = await directory_factory("PageMaskScopeDirA")
+        dir_b = await directory_factory("PageMaskScopeDirB")
+        await document_factory("PageMaskScopeDoc 1", folder_id=dir_a["folder_id"])
+        await document_factory("PageMaskScopeDoc 2", folder_id=dir_a["folder_id"])
+        await document_factory("PageMaskScopeDoc 3", folder_id=dir_b["folder_id"])
+
+        first_page = assert_success(
+            await authenticated_client.search(
+                query="PageMaskScopeDoc",
+                page_size=2,
+                sort_by="name",
+                sort_order="asc",
+                search_documents=True,
+                search_directories=False,
+            )
+        )
+        assert len(first_page["items"]) == 2
+        assert first_page["has_more"] is True
+        assert set(first_page["parent_effective_masks"]) == {dir_a["folder_id"]}
+
+        second_page = assert_success(
+            await authenticated_client.search(
+                query="PageMaskScopeDoc",
+                page_size=2,
+                cursor=first_page["next_cursor"],
+                sort_by="name",
+                sort_order="asc",
+                search_documents=True,
+                search_directories=False,
+            )
+        )
+        assert len(second_page["items"]) == 1
+        assert second_page["has_more"] is False
+        assert set(second_page["parent_effective_masks"]) == {dir_b["folder_id"]}

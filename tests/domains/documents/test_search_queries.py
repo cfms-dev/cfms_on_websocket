@@ -17,6 +17,7 @@ from include.domains.access.authorization.visibility import (
     VisibilityCandidate,
 )
 from include.domains.access.permissions import Permissions
+from include.domains.documents.queries.search import PARENT_EFFECTIVE_MASK_KEY
 
 _NOW_DT = datetime.datetime(2026, 6, 15, 12, 0, 0, tzinfo=datetime.UTC)
 _NOW = _NOW_DT.timestamp()
@@ -1190,3 +1191,222 @@ def test_search_results_omit_internal_fields(search_query_context):
                         assert not (
                             row["effective_mask"] & int(AtomicOp.DELETE_REVISION)
                         )
+
+
+@pytest.mark.component
+@pytest.mark.parametrize("sort_by", ["name", "size"])
+def test_search_attaches_parent_effective_masks_across_permissions_and_states(
+    search_query_context,
+    sort_by: str,
+):
+    context = search_query_context
+    alice = _make_user(context, username=f"alice_parent_mask_{sort_by}")
+    admin_no_purge = _make_user(
+        context,
+        username=f"admin_no_purge_{sort_by}",
+        permissions=(Permissions.BYPASS_DACL,),
+    )
+    admin_with_purge = _make_user(
+        context,
+        username=f"admin_with_purge_{sort_by}",
+        permissions=(Permissions.BYPASS_DACL, Permissions.PURGE),
+    )
+
+    root_child_doc = _make_document(
+        context,
+        f"pm-root-doc-{sort_by}",
+        "ParentMaskTarget RootDoc",
+        folder_id="/",
+    )
+    traverse_only_dir = _make_folder(
+        context,
+        f"pm-trav-dir-{sort_by}",
+        "TraverseOnlyContainer",
+        dacl="""
+            inherit off;
+            allow [TRAVERSE] to any;
+            allow [READ_CONTENT] on docs to any;
+        """,
+    )
+    traverse_only_doc = _make_document(
+        context,
+        f"pm-trav-doc-{sort_by}",
+        "ParentMaskTarget TravDoc",
+        folder_id=traverse_only_dir.id,
+    )
+    nested_parent = _make_folder(
+        context,
+        f"pm-nested-parent-{sort_by}",
+        "ParentMaskTarget NestedParent",
+        dacl="""
+            inherit off;
+            allow [TRAVERSE, LIST_DIRECTORY, READ_METADATA] to any;
+        """,
+    )
+    nested_child = _make_folder(
+        context,
+        f"pm-nested-child-{sort_by}",
+        "ParentMaskTarget NestedChild",
+        parent_id=nested_parent.id,
+    )
+    inherit_off_dir = _make_folder(
+        context,
+        f"pm-inherit-off-dir-{sort_by}",
+        "InheritOffContainer",
+        dacl="inherit off;",
+    )
+    inherit_off_doc = _make_document(
+        context,
+        f"pm-inherit-off-doc-{sort_by}",
+        "ParentMaskTarget InheritOffDoc",
+        folder_id=inherit_off_dir.id,
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    deleted_parent = _make_folder(
+        context,
+        f"pm-deleted-parent-{sort_by}",
+        "DeletedContainer",
+        dacl="""
+            inherit off;
+            allow [TRAVERSE, LIST_DIRECTORY, LIST_DELETED, RESTORE, PURGE] to any;
+        """,
+    )
+    deleted_parent_doc = _make_document(
+        context,
+        f"pm-deleted-parent-doc-{sort_by}",
+        "ParentMaskTarget DeletedParentDoc",
+        folder_id=deleted_parent.id,
+        dacl="inherit off; allow [READ_CONTENT] to any;",
+    )
+    deleted_parent.status = EntityStatus.DELETED
+    context.session.commit()
+
+    root_forbidden = int(
+        AtomicOp.RENAME
+        | AtomicOp.REPARENT
+        | AtomicOp.DELETE
+        | AtomicOp.DIRECTORY_DELETE_CHILD
+        | AtomicOp.RESTORE
+        | AtomicOp.PURGE
+    )
+
+    # 1. Regular user with default traverse checking.
+    alice_rows = {
+        row["id"]: row
+        for row in _search(
+            context,
+            user=alice,
+            query="ParentMaskTarget",
+            sort_by=sort_by,
+            limit=20,
+        )
+    }
+    assert set(alice_rows) == {
+        root_child_doc.id,
+        traverse_only_doc.id,
+        nested_parent.id,
+        nested_child.id,
+    }
+    root_parent_mask = alice_rows[root_child_doc.id][PARENT_EFFECTIVE_MASK_KEY]
+    assert root_parent_mask & int(AtomicOp.LIST_DIRECTORY | AtomicOp.TRAVERSE)
+    assert not (root_parent_mask & root_forbidden)
+    assert alice_rows[traverse_only_doc.id][PARENT_EFFECTIVE_MASK_KEY] == int(
+        AtomicOp.TRAVERSE
+    )
+    assert (
+        alice_rows[nested_child.id][PARENT_EFFECTIVE_MASK_KEY]
+        == alice_rows[nested_parent.id]["effective_mask"]
+        == int(AtomicOp.TRAVERSE | AtomicOp.LIST_DIRECTORY | AtomicOp.READ_METADATA)
+    )
+
+    # Root directory itself has parent_id=None -> parent mask is None.
+    root_rows = {
+        row["id"]: row
+        for row in _search(
+            context,
+            user=alice,
+            query="/",
+            sort_by=sort_by,
+            search_documents=False,
+            search_directories=True,
+        )
+    }
+    assert "/" in root_rows
+    assert root_rows["/"][PARENT_EFFECTIVE_MASK_KEY] is None
+
+    # 2. bypass_dacl users (without and with global PURGE).
+    admin_no_purge_rows = {
+        row["id"]: row
+        for row in _search(
+            context,
+            user=admin_no_purge,
+            query="ParentMaskTarget",
+            sort_by=sort_by,
+            limit=20,
+        )
+    }
+    assert not (
+        admin_no_purge_rows[root_child_doc.id][PARENT_EFFECTIVE_MASK_KEY]
+        & root_forbidden
+    )
+    assert admin_no_purge_rows[traverse_only_doc.id][PARENT_EFFECTIVE_MASK_KEY] & int(
+        AtomicOp.LIST_DIRECTORY | AtomicOp.RENAME | AtomicOp.DELETE
+    )
+    assert not (
+        admin_no_purge_rows[traverse_only_doc.id][PARENT_EFFECTIVE_MASK_KEY]
+        & int(AtomicOp.RESTORE | AtomicOp.PURGE)
+    )
+    assert admin_no_purge_rows[deleted_parent_doc.id][PARENT_EFFECTIVE_MASK_KEY] == int(
+        AtomicOp.LIST_DELETED | AtomicOp.RESTORE
+    )
+
+    admin_with_purge_rows = {
+        row["id"]: row
+        for row in _search(
+            context,
+            user=admin_with_purge,
+            query="ParentMaskTarget",
+            sort_by=sort_by,
+            limit=20,
+        )
+    }
+    assert admin_with_purge_rows[deleted_parent_doc.id][
+        PARENT_EFFECTIVE_MASK_KEY
+    ] == int(AtomicOp.LIST_DELETED | AtomicOp.RESTORE | AtomicOp.PURGE)
+
+    admin_root_rows = {
+        row["id"]: row
+        for row in _search(
+            context,
+            user=admin_no_purge,
+            query="/",
+            sort_by=sort_by,
+            search_documents=False,
+            search_directories=True,
+        )
+    }
+    assert admin_root_rows["/"][PARENT_EFFECTIVE_MASK_KEY] is None
+
+    # 3. Regular user with bypass_traverse_checking enabled sees inherit-off and soft-deleted parents.
+    write_options(
+        context.session,
+        "access",
+        {"bypass_traverse_checking": True},
+        expected_revisions={"bypass_traverse_checking": 0},
+    )
+    context.session.commit()
+
+    alice_bypass_trav_rows = {
+        row["id"]: row
+        for row in _search(
+            context,
+            user=alice,
+            query="ParentMaskTarget",
+            sort_by=sort_by,
+            limit=20,
+        )
+    }
+    assert alice_bypass_trav_rows[inherit_off_doc.id][PARENT_EFFECTIVE_MASK_KEY] == 0
+    assert alice_bypass_trav_rows[deleted_parent_doc.id][
+        PARENT_EFFECTIVE_MASK_KEY
+    ] == int(AtomicOp.LIST_DELETED | AtomicOp.RESTORE)

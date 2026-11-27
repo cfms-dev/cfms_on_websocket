@@ -41,6 +41,16 @@ _EMPTY_INHERITED_STATE = InheritedDaclState()
 
 
 @dataclass(frozen=True, slots=True)
+class _CachedDirState:
+    accessible: bool
+    inherited: InheritedDaclState
+    effective_mask: int = 0
+
+
+_INACCESSIBLE_DIR_STATE = _CachedDirState(False, _EMPTY_INHERITED_STATE, 0)
+
+
+@dataclass(frozen=True, slots=True)
 class VisibilityCandidate:
     node_id: str
     parent_id: str | None
@@ -69,7 +79,7 @@ class BatchVisibilityEvaluator:
         self._global_mask = global_gate_ops_mask_from_perms(subject.perms)
         self._node_meta: dict[str, AncestorNodeMeta] = {}
         self._node_policies: dict[str, CompiledPolicy] = {}
-        self._dir_state_cache: dict[str, tuple[bool, InheritedDaclState]] = {}
+        self._dir_state_cache: dict[str, _CachedDirState] = {}
 
     @classmethod
     def for_user(
@@ -123,7 +133,7 @@ class BatchVisibilityEvaluator:
 
             if parent_id is not None:
                 parent_state = self._dir_state_cache.get(parent_id)
-                if parent_state is not None and not parent_state[0]:
+                if parent_state is not None and not parent_state.accessible:
                     continue
 
             if (
@@ -234,7 +244,7 @@ class BatchVisibilityEvaluator:
         ]
         self._load_leftover_candidate_policies(leftover_candidates, batch_inherit)
 
-    def _resolve_ancestor_dir(self, dir_id: str) -> tuple[bool, InheritedDaclState]:
+    def _resolve_ancestor_dir(self, dir_id: str) -> _CachedDirState:
         cached = self._dir_state_cache.get(dir_id)
         if cached is not None:
             return cached
@@ -256,14 +266,15 @@ class BatchVisibilityEvaluator:
             accessible = bool(uncomputed) and uncomputed[-1] == ROOT_DIRECTORY_ID
             inherited = _EMPTY_INHERITED_STATE
         elif curr_id in self._dir_state_cache:
-            accessible, inherited = self._dir_state_cache[curr_id]
+            cached_parent = self._dir_state_cache[curr_id]
+            accessible, inherited = cached_parent.accessible, cached_parent.inherited
         else:
             # Missing parent or truncated ancestor chain: fail-closed unconditionally.
             accessible, inherited = False, _EMPTY_INHERITED_STATE
 
         for nid in reversed(uncomputed):
             if not accessible:
-                self._dir_state_cache[nid] = (False, _EMPTY_INHERITED_STATE)
+                self._dir_state_cache[nid] = _INACCESSIBLE_DIR_STATE
                 continue
             meta = self._node_meta[nid]
             policy = self._node_policies.get(
@@ -287,10 +298,26 @@ class BatchVisibilityEvaluator:
                 own_deny,
                 check_traverse=self._check_traverse,
             )
-            self._dir_state_cache[nid] = (node_accessible, next_inherited)
+            projected_mask = project_effective_mask(
+                own_allow & ~own_deny,
+                object_type=ObjectType.DIRECTORY,
+                state=ancestor_state,
+                global_mask=self._global_mask,
+                is_root=(nid == ROOT_DIRECTORY_ID),
+            )
+            self._dir_state_cache[nid] = _CachedDirState(
+                node_accessible, next_inherited, projected_mask
+            )
             accessible, inherited = node_accessible, next_inherited
 
-        return self._dir_state_cache.get(dir_id, (False, _EMPTY_INHERITED_STATE))
+        return self._dir_state_cache.get(dir_id, _INACCESSIBLE_DIR_STATE)
+
+    def cached_directory_effective_mask(self, dir_id: str) -> int | None:
+        """Return the cached projected effective mask for an accessible resolved directory."""
+        cached = self._dir_state_cache.get(dir_id)
+        if cached is None or not cached.accessible:
+            return None
+        return cached.effective_mask
 
     def evaluate_visible_effective_mask(
         self, candidate: VisibilityCandidate
@@ -315,11 +342,12 @@ class BatchVisibilityEvaluator:
         is_document = candidate.object_type is ObjectType.DOCUMENT
         parent_id = candidate.parent_id
         if parent_id is not None:
-            accessible, parent_inherited = self._resolve_ancestor_dir(parent_id)
-            if not accessible:
+            parent_state = self._resolve_ancestor_dir(parent_id)
+            if not parent_state.accessible:
                 if is_document:
                     self._node_policies.pop(candidate.node_id, None)
                 return None
+            parent_inherited = parent_state.inherited
         else:
             if not is_root:
                 if is_document:

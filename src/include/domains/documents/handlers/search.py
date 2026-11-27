@@ -16,6 +16,7 @@ from include.database.models.identity import User
 from include.database.session import Session
 from include.domains.access.permissions import Permissions
 from include.domains.documents.queries.search import (
+    PARENT_EFFECTIVE_MASK_KEY,
     SearchQuerySpec,
     fetch_visible_search_candidate_rows,
     search_cursor_key,
@@ -150,6 +151,12 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
                 now=now,
             )
 
+            parent_effective_masks = {
+                item["parent_id"]: item[PARENT_EFFECTIVE_MASK_KEY]
+                for item in all_results[:page_size]
+                if item["parent_id"] is not None
+            }
+
             response_data = make_cursor_response(
                 all_results,
                 page_size=page_size,
@@ -158,6 +165,7 @@ class RequestSearchHandler(RequestHandler[_SearchRequest]):
                 filters=filters,
                 cursor_key=lambda item: search_cursor_key(item, sort_by),
             )
+            response_data["parent_effective_masks"] = parent_effective_masks
             response_data["query"] = query
 
             handler.conclude_request(

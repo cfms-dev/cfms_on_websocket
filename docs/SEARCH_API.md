@@ -70,6 +70,10 @@ and returned with cursor pagination.
                 "effective_mask": 1040
             }
         ],
+        "parent_effective_masks": {
+            "parent_folder_id": 1049603,
+            "folder_id": 1
+        },
         "page_size": 128,
         "next_cursor": null,
         "has_more": false,
@@ -83,6 +87,7 @@ and returned with cursor pagination.
 | Field | Type | Description |
 |-------|------|-------------|
 | `items` | array | Matching documents and directories visible to the user. |
+| `parent_effective_masks` | object | Map from each distinct non-null `parent_id` appearing in `items` to that parent directory's 21-bit projected `effective_mask`. |
 | `page_size` | integer | Page size used for the request. |
 | `next_cursor` | string/null | Encrypted cursor for the next page, or null when no next page exists. |
 | `has_more` | boolean | Whether another page is available. |
@@ -93,6 +98,14 @@ Each item includes `type`, `id`, `name`, `parent_id`, `created_time`, and
 operations the authenticated user is currently permitted to perform on that
 node; see [Protocol 32 migration](PROTOCOL_32_MIGRATION.md)).
 Document items additionally include `last_modified` and `size`.
+
+`parent_effective_masks` contains one entry per unique non-null `parent_id`
+referenced by the returned `items` page (never including lookahead items beyond
+the page boundary, and omitting `null` when the root directory `/` itself
+appears in `items`). Each entry follows the same Protocol 32 projection and
+global gate rules as directory `effective_mask` values, allowing clients to
+determine whether the caller can access a result's containing directory (for
+example, `LIST_DIRECTORY` or `READ_METADATA`) without issuing extra requests.
 
 ## Cursor Rules
 
@@ -129,4 +142,4 @@ previous response's `next_cursor`.
 - Permission filtering is applied before pagination, so page boundaries and
   `has_more` are calculated from visible candidates.
 - Documents without active revisions are excluded.
-- Empty results return `items: []`, `has_more: false`, and `next_cursor: null`.
+- Empty results return `items: []`, `parent_effective_masks: {}`, `has_more: false`, and `next_cursor: null`.
